@@ -1326,7 +1326,10 @@ impl<'a> CigarParser<'a> {
     }
 
     #[inline]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "hot single-base Match fast path passes scalar pileup registers directly"
+    )]
     fn add_single_base_match_variation(
         &mut self,
         mapping_quality: i32,
@@ -1343,10 +1346,11 @@ impl<'a> CigarParser<'a> {
         hv.inc_dir(dir);
         hv.cnt = hv.cnt.saturating_add(1);
 
-        let tp = if read_pos_exc < rlen1 - read_pos_exc {
-            read_pos_exc + 1
+        let dist_from_end = rlen1.saturating_sub(read_pos_exc);
+        let tp = if read_pos_exc < dist_from_end {
+            read_pos_exc.saturating_add(1)
         } else {
-            rlen1 - read_pos_exc
+            dist_from_end
         };
 
         if !hv.pstd && hv.pp != 0 && tp != hv.pp {

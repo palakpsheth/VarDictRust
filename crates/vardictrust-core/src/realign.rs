@@ -619,6 +619,7 @@ impl CompactMismatches {
     }
 }
 
+/// Stack-allocated `[i32; 2]` buffer: `find_mm5_compact` and `find_mm3_compact` push at most 2 soft-clip positions.
 #[derive(Clone, Copy, Debug, Default)]
 struct CompactScp {
     buf: [i32; 2],

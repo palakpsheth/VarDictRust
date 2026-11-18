@@ -531,7 +531,10 @@ impl SamRecord {
     /// Single-pass `BamFeed` refill path: reuses pre-decoded `cigar_scratch`,
     /// `(alignment_start, alignment_end)`, `O(1)` `contig_names` lookup, and
     /// `<= 4096`-byte-capped `sa`/`mc`/`mate_reference_name` string stashes.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "hot BamFeed refill borrows individual scratch and stash buffers directly"
+    )]
     fn fill_from_bam_feed_record(
         &mut self,
         record: &noodles::bam::Record,
@@ -10580,8 +10583,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_bam_meta_tls_zero_stat_and_epoch_invalidation() {
+    fn write_indexed_bam(bam_path: &Path, chr_len: usize, read_names: &[&str]) {
         use noodles::bam::bai;
         use noodles::core::Position;
         use noodles::csi::binning_index::{
@@ -10597,59 +10599,67 @@ mod tests {
         };
         use noodles::sam::Header;
         use std::fs::File;
+
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(chr_len.try_into().unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder().add_reference_sequence("chr1", rs).build();
+        let tmp_bam = bam_path.with_extension("bam.tmp");
+        let tmp_bai = bam_path.with_extension("bam.bai.tmp");
+        let bgzf = noodles::bgzf::io::Writer::new(File::create(&tmp_bam).unwrap());
+        let mut writer = noodles::bam::io::Writer::from(bgzf);
+        writer.write_alignment_header(&header).unwrap();
+        let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+        let read_len = 20usize;
+        let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
+        for (idx, &qname) in read_names.iter().enumerate() {
+            let start_1 = 10 + idx * 30;
+            let rec = RecordBuf::builder()
+                .set_name(qname)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(MappingQuality::new(60).unwrap())
+                .set_cigar(cigar.clone())
+                .set_sequence(b"ACGTACGTACGTACGTACGT".to_vec().into())
+                .set_quality_scores(vec![35u8; read_len].into())
+                .build();
+            let s_vp = writer.get_ref().virtual_position();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            let e_vp = writer.get_ref().virtual_position();
+            let s = Position::try_from(start_1).unwrap();
+            let e = Position::try_from(start_1 + read_len - 1).unwrap();
+            indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
+                .unwrap();
+        }
+        writer.try_finish().unwrap();
+        bai::io::Writer::new(File::create(&tmp_bai).unwrap())
+            .write_index(&indexer.build(1))
+            .unwrap();
+        std::fs::rename(&tmp_bam, bam_path).unwrap();
+        std::fs::rename(&tmp_bai, bam_path.with_extension("bam.bai")).unwrap();
+    }
+
+    struct ForceProdIdGuard;
+    impl ForceProdIdGuard {
+        fn enter() -> Self {
+            FORCE_PRODUCTION_META_ID.with(|c| c.set(true));
+            Self
+        }
+    }
+    impl Drop for ForceProdIdGuard {
+        fn drop(&mut self) {
+            FORCE_PRODUCTION_META_ID.with(|c| c.set(false));
+        }
+    }
+
+    #[test]
+    fn test_bam_meta_tls_zero_stat_and_epoch_invalidation() {
         use std::sync::atomic::Ordering;
 
-        fn write_indexed_bam(bam_path: &Path, chr_len: usize, read_names: &[&str]) {
-            let rs = HeaderMap::<RefSeqMap>::builder()
-                .set_length(chr_len.try_into().unwrap())
-                .build()
-                .unwrap();
-            let header = Header::builder().add_reference_sequence("chr1", rs).build();
-            let tmp_bam = bam_path.with_extension("bam.tmp");
-            let tmp_bai = bam_path.with_extension("bam.bai.tmp");
-            let bgzf = noodles::bgzf::io::Writer::new(File::create(&tmp_bam).unwrap());
-            let mut writer = noodles::bam::io::Writer::from(bgzf);
-            writer.write_alignment_header(&header).unwrap();
-            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
-            let read_len = 20usize;
-            let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
-            for (idx, &qname) in read_names.iter().enumerate() {
-                let start_1 = 10 + idx * 30;
-                let rec = RecordBuf::builder()
-                    .set_name(qname)
-                    .set_flags(Flags::empty())
-                    .set_reference_sequence_id(0)
-                    .set_alignment_start(Position::try_from(start_1).unwrap())
-                    .set_mapping_quality(MappingQuality::new(60).unwrap())
-                    .set_cigar(cigar.clone())
-                    .set_sequence(b"ACGTACGTACGTACGTACGT".to_vec().into())
-                    .set_quality_scores(vec![35u8; read_len].into())
-                    .build();
-                let s_vp = writer.get_ref().virtual_position();
-                writer.write_alignment_record(&header, &rec).unwrap();
-                let e_vp = writer.get_ref().virtual_position();
-                let s = Position::try_from(start_1).unwrap();
-                let e = Position::try_from(start_1 + read_len - 1).unwrap();
-                indexer
-                    .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
-                    .unwrap();
-            }
-            writer.try_finish().unwrap();
-            bai::io::Writer::new(File::create(&tmp_bai).unwrap())
-                .write_index(&indexer.build(1))
-                .unwrap();
-            std::fs::rename(&tmp_bam, bam_path).unwrap();
-            std::fs::rename(&tmp_bai, bam_path.with_extension("bam.bai")).unwrap();
-        }
-
-        struct ForceProdIdGuard;
-        impl Drop for ForceProdIdGuard {
-            fn drop(&mut self) {
-                FORCE_PRODUCTION_META_ID.with(|c| c.set(false));
-            }
-        }
-        FORCE_PRODUCTION_META_ID.with(|c| c.set(true));
-        let _prod_guard = ForceProdIdGuard;
+        let _prod_guard = ForceProdIdGuard::enter();
 
         let dir = tempfile::tempdir().unwrap();
         let bam_a = dir.path().join("sample_a.bam");
@@ -10738,7 +10748,7 @@ mod tests {
         let bam_a_worker = bam_a.clone();
         let bam_b_worker = bam_b.clone();
         let worker = std::thread::spawn(move || {
-            FORCE_PRODUCTION_META_ID.with(|c| c.set(true));
+            let _worker_prod_guard = ForceProdIdGuard::enter();
             let cfg = Config::default();
             // Warm worker's 2-slot TLS with A and B (v1)
             let w_a1 = query_region(&bam_a_worker, "chr1", Pos0(0), Pos0(500), &cfg).unwrap();
@@ -10882,16 +10892,7 @@ mod tests {
 
     #[test]
     fn test_bam_cache_epoch_post_clear_release_and_cold_miss_guard() {
-        use noodles::bam::bai;
-        use noodles::core::Position;
-        use noodles::csi::binning_index::{
-            index::reference_sequence::{bin::Chunk, index::LinearIndex},
-            Indexer,
-        };
         use noodles::sam::alignment::io::Write as _;
-        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
-        use noodles::sam::alignment::record::{Flags, MappingQuality};
-        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
         use noodles::sam::header::record::value::{
             map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
         };
@@ -10899,57 +10900,7 @@ mod tests {
         use std::fs::File;
         use std::sync::atomic::Ordering;
 
-        fn write_indexed_bam(bam_path: &Path, chr_len: usize, read_names: &[&str]) {
-            let rs = HeaderMap::<RefSeqMap>::builder()
-                .set_length(chr_len.try_into().unwrap())
-                .build()
-                .unwrap();
-            let header = Header::builder().add_reference_sequence("chr1", rs).build();
-            let tmp_bam = bam_path.with_extension("bam.tmp");
-            let tmp_bai = bam_path.with_extension("bam.bai.tmp");
-            let bgzf = noodles::bgzf::io::Writer::new(File::create(&tmp_bam).unwrap());
-            let mut writer = noodles::bam::io::Writer::from(bgzf);
-            writer.write_alignment_header(&header).unwrap();
-            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
-            let read_len = 20usize;
-            let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
-            for (idx, &qname) in read_names.iter().enumerate() {
-                let start_1 = 10 + idx * 30;
-                let rec = RecordBuf::builder()
-                    .set_name(qname)
-                    .set_flags(Flags::empty())
-                    .set_reference_sequence_id(0)
-                    .set_alignment_start(Position::try_from(start_1).unwrap())
-                    .set_mapping_quality(MappingQuality::new(60).unwrap())
-                    .set_cigar(cigar.clone())
-                    .set_sequence(b"ACGTACGTACGTACGTACGT".to_vec().into())
-                    .set_quality_scores(vec![35u8; read_len].into())
-                    .build();
-                let s_vp = writer.get_ref().virtual_position();
-                writer.write_alignment_record(&header, &rec).unwrap();
-                let e_vp = writer.get_ref().virtual_position();
-                let s = Position::try_from(start_1).unwrap();
-                let e = Position::try_from(start_1 + read_len - 1).unwrap();
-                indexer
-                    .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
-                    .unwrap();
-            }
-            writer.try_finish().unwrap();
-            bai::io::Writer::new(File::create(&tmp_bai).unwrap())
-                .write_index(&indexer.build(1))
-                .unwrap();
-            std::fs::rename(&tmp_bam, bam_path).unwrap();
-            std::fs::rename(&tmp_bai, bam_path.with_extension("bam.bai")).unwrap();
-        }
-
-        struct ForceProdIdGuard;
-        impl Drop for ForceProdIdGuard {
-            fn drop(&mut self) {
-                FORCE_PRODUCTION_META_ID.with(|c| c.set(false));
-            }
-        }
-        FORCE_PRODUCTION_META_ID.with(|c| c.set(true));
-        let _prod_guard = ForceProdIdGuard;
+        let _prod_guard = ForceProdIdGuard::enter();
 
         let dir = tempfile::tempdir().unwrap();
         let bam_race = dir.path().join("toctou_race.bam");
@@ -10968,12 +10919,13 @@ mod tests {
 
         let (tx_continue, rx_continue) = std::sync::mpsc::channel::<()>();
         let (tx_done, rx_done) = std::sync::mpsc::channel::<(usize, Vec<Vec<u8>>)>();
+        let (tx_handle, rx_handle) = std::sync::mpsc::channel::<std::thread::JoinHandle<()>>();
         let bam_for_hook = bam_race.clone();
         TEST_MID_CLEAR_HOOK.with(|h| {
             let (tx_warmed, rx_warmed) = std::sync::mpsc::channel::<()>();
             *h.borrow_mut() = Some(Box::new(move || {
-                std::thread::spawn(move || {
-                    FORCE_PRODUCTION_META_ID.with(|c| c.set(true));
+                let handle = std::thread::spawn(move || {
+                    let _worker_prod_guard = ForceProdIdGuard::enter();
                     let wcfg = Config::default();
                     // Reads stale `v1` from `META_CACHE` mid-sweep and populates worker TLS.
                     let _ = read_reference_lengths(&bam_for_hook, &wcfg).unwrap();
@@ -10991,12 +10943,14 @@ mod tests {
                     tx_done.send((post_len, post_names)).unwrap();
                 });
                 rx_warmed.recv().unwrap();
+                tx_handle.send(handle).unwrap();
             }));
         });
 
         clear_bam_caches();
         tx_continue.send(()).unwrap();
         let (post_clear_len, post_clear_names) = rx_done.recv().unwrap();
+        rx_handle.recv().unwrap().join().unwrap();
         assert_eq!(
             post_clear_len, 3000,
             "post-clear Release bump must invalidate worker TLS populated mid-clear"

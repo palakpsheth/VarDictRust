@@ -784,7 +784,10 @@ fn replace_cigar_range(
 
 /// Zero-copy in-place CIGAR modifier for 2-op (`[S, M]`, `[M, S]`) and 3-op (`[S, M, S]`) reads
 /// whose `query_seq` and `query_qual` are guaranteed untouched by `CigarModifier.java:61-243`.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "in-place pure-SM CIGAR modifier borrows disjoint CigarParser fields without allocation"
+)]
 pub(crate) fn modify_pure_sm_in_place(
     position: &mut i32,
     cigar_elements: &mut Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,

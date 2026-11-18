@@ -125,6 +125,21 @@ struct CurrentWorkerRegion {
     override_label: Option<String>,
 }
 
+impl CurrentWorkerRegion {
+    const MAX_RETAINED_CHR_CAP: usize = 256;
+    const SHRUNK_CHR_CAP: usize = 64;
+
+    /// Marks the worker region inactive and reclaims oversized contig buffers across worker reuse.
+    #[inline]
+    fn deactivate(&mut self) {
+        self.active = false;
+        if self.chr.capacity() > Self::MAX_RETAINED_CHR_CAP {
+            self.chr.clear();
+            self.chr.shrink_to(Self::SHRUNK_CHR_CAP);
+        }
+    }
+}
+
 thread_local! {
     static CURRENT_WORKER_REGION: std::cell::RefCell<CurrentWorkerRegion> = const {
         std::cell::RefCell::new(CurrentWorkerRegion {
@@ -151,11 +166,7 @@ impl Drop for WorkerRegionGuard {
         }
         let _ = CURRENT_WORKER_REGION.try_with(|slot| {
             if let Ok(mut reg) = slot.try_borrow_mut() {
-                reg.active = false;
-                if reg.chr.capacity() > 256 {
-                    reg.chr.clear();
-                    reg.chr.shrink_to(64);
-                }
+                reg.deactivate();
             }
         });
     }
@@ -195,11 +206,7 @@ pub(crate) fn set_current_worker_region(region: Option<String>) {
 fn clear_current_worker_region() {
     let _ = CURRENT_WORKER_REGION.try_with(|slot| {
         if let Ok(mut reg) = slot.try_borrow_mut() {
-            reg.active = false;
-            if reg.chr.capacity() > 256 {
-                reg.chr.clear();
-                reg.chr.shrink_to(64);
-            }
+            reg.deactivate();
             #[cfg(test)]
             {
                 reg.override_label = None;
@@ -220,12 +227,8 @@ fn take_current_worker_region() -> Option<String> {
             if !reg.active {
                 return None;
             }
-            reg.active = false;
             let formatted = format!("{}:{}-{}", reg.chr, reg.start, reg.end);
-            if reg.chr.capacity() > 256 {
-                reg.chr.clear();
-                reg.chr.shrink_to(64);
-            }
+            reg.deactivate();
             Some(formatted)
         })
         .ok()
