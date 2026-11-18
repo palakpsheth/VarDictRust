@@ -13,7 +13,7 @@ source "$ROOT_DIR/harness/lib/portable.sh"
 RECIPE_DIR="$SCRIPT_DIR/recipes/vardictrust"
 META_YAML="$RECIPE_DIR/meta.yaml"
 
-VERSION="${1:-1.0.9}"
+VERSION="${1:-1.0.10}"
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "ERROR: Invalid VERSION '${VERSION}' (expected strict SemVer X.Y.Z)." >&2
   exit 1

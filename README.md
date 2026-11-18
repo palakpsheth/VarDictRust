@@ -12,11 +12,11 @@
 [![License: MIT AND GPL-2.0-or-later](https://img.shields.io/badge/License-MIT%20AND%20GPL--2.0--or--later-yellow.svg)](LICENSE)
 [![Security Policy](https://img.shields.io/badge/security-policy-blue.svg)](.github/SECURITY.md)
 
-**VarDictRust** is a fast, memory-safe NGS variant caller that delivers byte-identical results to [VarDictJava](https://github.com/AstraZeneca-NGS/VarDictJava) v1.8.3 while running **9.0×–41.8× faster on WGS/WES** (up to **76.0× faster** on amplicons) in **7.1×–14.2× less memory**. It consolidates the Java → R → Perl pipeline into a **single binary**, eliminating JVM crashes, WGS out-of-memory errors, and runtime dependency friction.
+**VarDictRust** is a fast, memory-safe NGS variant caller that delivers byte-identical results to [VarDictJava](https://github.com/AstraZeneca-NGS/VarDictJava) v1.8.3 while running **7.7×–33.9× faster on WGS/WES** (up to **51.2× faster** on amplicons) in **8.3×–15.7× less memory**. It consolidates the Java → R → Perl pipeline into a **single binary**, eliminating JVM crashes, WGS out-of-memory errors, and runtime dependency friction.
 
 - **Exact Parity:** Bitwise identical variant calls, `FILTER` tags, and somatic `STATUS` decisions to VarDictJava v1.8.3 across all cohorts ($\varepsilon = 10^{-6}$, 0 diffs).
-- **High-Throughput Speed:** **9.0×–41.8× faster** on WGS/WES, **76.0× faster** on amplicon panels, and **3.25× parallel scaling** on 8 threads across full chromosomes (`5:19.45` $\to$ `1:38.25` on `chr1`, where VarDictJava OOM-crashes on 31 GiB hosts).
-- **Bounded $O(1)$ Memory:** Flat RSS scaling ($1.24\times$ from 10 Mbp to 249 Mbp on Chr1, `0.95` $\to$ `1.19 GiB`), using **7.1×–14.2× less RAM** than VarDictJava on WGS/WES and **20.5× less RAM** than unchunked `vardictcpp` (`24.34 GiB`) on whole-chromosome 1.
+- **High-Throughput Speed:** **7.7×–33.9× faster** on WGS/WES, **51.2× faster** on amplicon panels, and **3.20× parallel scaling** on 8 threads across full chromosomes (`3:48.78` $\to$ `1:11.44` on `chr1`, where VarDictJava OOM-crashes on 31 GiB hosts).
+- **Bounded $O(1)$ Memory:** Flat RSS scaling ($1.34\times$ from 10 Mbp to 249 Mbp on Chr1, `0.97` $\to$ `1.31 GiB`), using **8.3×–15.7× less RAM** than VarDictJava on WGS/WES and **18.6× less RAM** than unchunked `vardictcpp` (`24.34 GiB`) on whole-chromosome 1.
 - **Zero External Runtimes:** Prebuilt static Linux (`x86_64`/`aarch64` `musl`) and native Linux (`x86_64` `gnu`) / macOS (`arm64`/`x86_64`) binaries—no JVM, R, or Perl.
 - **Robust by Construction:** `#![forbid(unsafe_code)]`. Malformed CIGARs, missing indexes, and corrupt records return actionable errors instead of crashing.
 
@@ -61,18 +61,18 @@ Evaluated on an isolated GCP `n2-standard-32` host (Intel Xeon @ 2.80 GHz, Linux
 
 | Workload / Benchmark | Threads | VarDictJava Wall Time | vardictcpp Wall Time¹ | VarDictRust Wall Time | Speedup (vs Java) | VarDictJava Peak RSS | vardictcpp Peak RSS¹ | VarDictRust Peak RSS | Memory Use (vs Java) | Evidence Artifact |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :---: |
-| **Targeted Amplicon Panel** | `8` (`-th 8`) | `0:03.04` | `0:03.75` ([`CPP-3`](docs/upstream-bugs.md#cpp-3)) | **`0:00.04`** | **76.0× faster** | `112.5 MiB` | `88.9 MiB` | **`11.4 MiB`** | **9.9× less** | [`amplicon-tier2.json`](benchmarks/evidence/amplicon-tier2.json) |
-| **GIAB HG002 (chr20:10M–30M, 30×)** | `8` (`-th 8`) | `2:40.54` | `0:18.87` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`0:10.51`** | **15.3× faster** | `3.89 GiB` | `853.1 MiB` | **`280.6 MiB`** | **14.2× less** | [`hg002-tier2.json`](benchmarks/evidence/hg002-tier2.json) |
-| **SEQC2 HCC1395 Somatic Exome** | `4` (`-th 4`²) | `1:37:23` | `7:11.99` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`3:25.43`** | **28.4× faster** | `3.19 GiB` | `2.15 GiB` | **`463.2 MiB`** | **7.1× less** | [`seqc2-exome-tier2.json`](benchmarks/evidence/seqc2-exome-tier2.json) |
-| **SEQC2 HCC1395 Somatic Slices** | `8` (`-th 8`) | `0:40.55` | `0:06.14` ([`CPP-1`](docs/upstream-bugs.md#cpp-1)) | **`0:00.97`** | **41.8× faster** | `2.38 GiB` | `247.1 MiB` | **`196.3 MiB`** | **12.4× less** | [`seqc2-slices-tier2.json`](benchmarks/evidence/seqc2-slices-tier2.json) |
-| **GIAB HG008 Somatic PDAC** | `4` (`-th 4`²) | `1:47.00` | `0:21.96` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`0:11.90`** | **9.0× faster** | `3.04 GiB` | `303.6 MiB` | **`234.9 MiB`** | **13.3× less** | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) |
-| **GIAB HG008 CRAM-vs-BAM Twin** | `4` (`-th 4`²) | `0:12.71` (Rust BAM) | — | **`0:29.22` (Rust CRAM)** | **2.30× CRAM/BAM** | `240.7 MiB` (BAM) | — | **`1.58 GiB` (CRAM)** | **Bounded `512 MiB` cache** | [`hg008-cram-twin.json`](benchmarks/evidence/hg008-cram-twin.json) |
-| **Whole Chromosome 1 Scale (249 Mbp)** | `1 → 8` (`-th 8`³) | `5:19.45` (Rust `-th 1`³; Java `OOM`) | `3:02.80` ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`1:38.25`** | **3.25× parallel** | `>31.0 GiB` (`OOM`³) | `24.34 GiB` ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`1.19 GiB`** | **1.24× flat RSS**⁴ | [`scale.json`](benchmarks/evidence/scale.json) |
+| **Targeted Amplicon Panel** | `8` (`-th 8`) | `0:02.05` | `0:03.75` ([`CPP-3`](docs/upstream-bugs.md#cpp-3)) | **`0:00.04`** | **51.2× faster** | `118.9 MiB` | `88.9 MiB` | **`11.9 MiB`** | **10.0× less** | [`amplicon-tier2.json`](benchmarks/evidence/amplicon-tier2.json) |
+| **GIAB HG002 (chr20:10M–30M, 30×)** | `8` (`-th 8`) | `1:31.72` | `0:18.87` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`0:08.20`** | **11.2× faster** | `4.02 GiB` | `853.1 MiB` | **`261.7 MiB`** | **15.7× less** | [`hg002-tier2.json`](benchmarks/evidence/hg002-tier2.json) |
+| **SEQC2 HCC1395 Somatic Exome** | `4` (`-th 4`²) | `51:10.05` | `7:11.99` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`2:28.63`** | **20.7× faster** | `3.70 GiB` | `2.15 GiB` | **`459.0 MiB`** | **8.3× less** | [`seqc2-exome-tier2.json`](benchmarks/evidence/seqc2-exome-tier2.json) |
+| **SEQC2 HCC1395 Somatic Slices** | `8` (`-th 8`) | `0:27.44` | `0:06.14` ([`CPP-1`](docs/upstream-bugs.md#cpp-1)) | **`0:00.81`** | **33.9× faster** | `2.29 GiB` | `247.1 MiB` | **`205.7 MiB`** | **11.4× less** | [`seqc2-slices-tier2.json`](benchmarks/evidence/seqc2-slices-tier2.json) |
+| **GIAB HG008 Somatic PDAC** | `4` (`-th 4`²) | `1:19.70` | `0:21.96` ([`CPP-9`](docs/upstream-bugs.md#cpp-9)) | **`0:10.36`** | **7.7× faster** | `3.34 GiB` | `303.6 MiB` | **`226.8 MiB`** | **15.1× less** | [`hg008-tier2.json`](benchmarks/evidence/hg008-tier2.json) |
+| **GIAB HG008 CRAM-vs-BAM Twin** | `4` (`-th 4`²) | `0:09.00` (Rust BAM) | — | **`0:19.58` (Rust CRAM)** | **2.18× CRAM/BAM** | `235.5 MiB` (BAM) | — | **`1.78 GiB` (CRAM)** | **Bounded `512 MiB` cache** | [`hg008-cram-twin.json`](benchmarks/evidence/hg008-cram-twin.json) |
+| **Whole Chromosome 1 Scale (249 Mbp)** | `1 → 8` (`-th 8`³) | `3:48.78` (Rust `-th 1`³; Java `OOM`) | `3:02.80` ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`1:11.44`** | **3.20× parallel** | `>31.0 GiB` (`OOM`³) | `24.34 GiB` ([`CPP-5`](docs/upstream-bugs.md#cpp-5)) | **`1.31 GiB`** | **1.34× flat RSS**⁴ | [`scale.json`](benchmarks/evidence/scale.json) |
 
 ¹ **`vardictcpp` comparison (`vardictcpp 3 hc52dbad_0`, bioconda).** Runs beside each benchmark under identical thread and timer constraints (`LC_ALL=C /usr/bin/time -v`). Release acceptance gates strictly on `VarDictRust == VarDictJava v1.8.3`; linked `CPP-*` codes document where `vardictcpp` diverges from `VarDictJava` (e.g., [`CPP-3`](docs/upstream-bugs.md#cpp-3) TSV-only `-a`, [`CPP-5`](docs/upstream-bugs.md#cpp-5) `24.34 GiB` unchunked `-R` RSS vs `815.7 MiB` with `--chunk 50000`, [`CPP-9`](docs/upstream-bugs.md#cpp-9) caller variant deltas).
 ² `hg008-tier2` and `seqc2-exome-tier2` run at `-th 4` because `VarDictJava` at `-th 8` is OOM-killed on 31 GiB hosts (bisected `1✓ / 4✓ / 8✗`); exact commands in evidence.
-³ On `Whole Chromosome 1 Scale`, `VarDictJava` at `-th 8` OOMs on 31 GiB hosts (completed in `57:16.00` on an 8-core Ryzen host; see the [`Omnibus Empirical Validation Report`](docs/validation/omnibus-empirical-validation.md)); `5:19.45` (`319.45 s`) → **`1:38.25`** (`98.25 s`) reports the 3-run median 1-core vs 8-core `VarDictRust` parallel scaling on `chr1`.
-⁴ **Flat $O(1)$ memory ratio ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)):** Bounded halo-tile RAII streaming keeps peak RSS at `1.19 GiB` (`1,246,100 KB`) across all 249 Mbp of `chr1` vs `0.95 GiB` (`1,001,048 KB`) on a 10 Mbp slice (**1.24× RSS ratio** across a 25× span increase; pre-registered gate $\le 1.50\times$).
+³ On `Whole Chromosome 1 Scale`, `VarDictJava` at `-th 8` OOMs on 31 GiB hosts (completed in `57:16.00` on an 8-core Ryzen host; see the [`Omnibus Empirical Validation Report`](docs/validation/omnibus-empirical-validation.md)); `3:48.78` (`228.78 s`) → **`1:11.44`** (`71.44 s`) reports the 3-run median 1-core vs 8-core `VarDictRust` parallel scaling on `chr1`.
+⁴ **Flat $O(1)$ memory ratio ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)):** Bounded halo-tile RAII streaming keeps peak RSS at `1.31 GiB` (`1,369,100 KB`) across all 249 Mbp of `chr1` vs `0.97 GiB` (`1,021,188 KB`) on a 10 Mbp slice (**1.34× RSS ratio** across a 25× span increase; pre-registered gate $\le 1.50\times$).
 
 ---
 
@@ -105,7 +105,7 @@ Requires a Rust stable toolchain (`rustc >= 1.91.0`):
 cargo install vardictrust
 
 # Or build the latest tagged release from source
-cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.9
+cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.10
 ```
 
 ### 3. Containerized Execution (Docker, Podman, Apptainer via Seqera Wave)
@@ -488,7 +488,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under human architectural direction, transliteration of R/Perl statistical routines into pure Rust, test harness engineering, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 688 automated Cargo workspace tests (488 core library tests, 110 corpus and modality parity tests, 29 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 29 CLI tests, and 27 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 37 harness diagnostic self-tests (25 shell tests and 12 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 691 automated Cargo workspace tests (491 core library tests, 110 corpus and modality parity tests, 29 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 29 CLI tests, and 27 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 37 harness diagnostic self-tests (25 shell tests and 12 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
 
 ---
 
@@ -542,7 +542,7 @@ If you use VarDictRust in published research, cite both Lai et al. (2016) and th
   author    = {Sheth, Palak},
   title     = {{VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS}},
   year      = {2026},
-  version   = {1.0.9},
+  version   = {1.0.10},
   url       = {https://github.com/palakpsheth/VarDictRust}
 }
 ```

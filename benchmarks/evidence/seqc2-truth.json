@@ -13,7 +13,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-11-16T02:52:51-08:00",
+  "date": "2026-11-18T12:16:53-08:00",
   "extra": {
     "cpp_f1": 0.1555,
     "cpp_f1_normalized": 0.1555,
@@ -37,8 +37,8 @@
       "tp_call": 1056
     }
   },
-  "fingerprint": "68308cfcd2303ad1",
-  "head": "abbbd41c9820ddcaf7a184164da2062015e29a6c",
+  "fingerprint": "2d82664ff81000f7",
+  "head": "2c2cc5fef125f787e285f075cdf891f5d31ea814",
   "inputs": [
     {
       "path": "scratch/g4/seqc2/truth/truth.vcf.gz",
