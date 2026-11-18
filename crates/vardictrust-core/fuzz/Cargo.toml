@@ -10,9 +10,16 @@ cargo-fuzz = true
 # Standalone workspace so main Cargo.lock and cargo-deny (libfuzzer-sys NCSA license) stay untouched.
 [workspace]
 
+[lints.clippy]
+field_reassign_with_default = "allow"
+manual_flatten = "allow"
+unnecessary_mut_passed = "allow"
+
 [dependencies]
 libfuzzer-sys = "0.4"
-noodles = { version = "0.119", features = ["bam", "sam"] }
+noodles = { version = "0.119", features = ["bam", "cram", "sam", "fasta", "bgzf"] }
+noodles-bgzf = "0.52.0"
+tempfile = "3"
 vardictrust-core = { path = ".." }
 
 [[bin]]
@@ -46,6 +53,20 @@ bench = false
 [[bin]]
 name = "fuzz_parse_and_realign"
 path = "fuzz_targets/fuzz_parse_and_realign.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_vcf_streamer"
+path = "fuzz_targets/fuzz_vcf_streamer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_cram_and_fai"
+path = "fuzz_targets/fuzz_cram_and_fai.rs"
 test = false
 doc = false
 bench = false
