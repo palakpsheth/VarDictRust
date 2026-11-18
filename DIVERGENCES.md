@@ -28,8 +28,8 @@ Verified Parity Baseline (release/v1.0.9, commit 0f752f0):
 
 ```
 Current Workspace Test Suite (main / pre-v1.0.10):
-- Core Library Tests: 479 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
-- Total Workspace:    679 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
+- Core Library Tests: 488 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    688 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>
