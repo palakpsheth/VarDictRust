@@ -66,122 +66,122 @@ fn find_conseq_with(
     dir: i32,
     has_fwd: impl FnOnce(&[u8; 6]) -> bool,
     has_rev: impl FnOnce(&[u8; 6]) -> bool,
-) -> Vec<u8> {
-    if let Some(ref seq) = soft_clip.sequence {
-        return seq.clone();
-    }
+) -> &[u8] {
+    if soft_clip.sequence.is_none() {
+        let mut total: i32 = 0;
+        let mut match_cnt: i32 = 0;
+        let mut seq = Vec::with_capacity(soft_clip.nt.len());
+        let mut flag = false;
 
-    let mut total: i32 = 0;
-    let mut match_cnt: i32 = 0;
-    let mut seq = Vec::with_capacity(soft_clip.nt.len());
-    let mut flag = false;
-
-    let mut seq_outer = soft_clip.seq.iter().peekable();
-    for (&position_in_sclip, nv) in &soft_clip.nt {
-        while seq_outer
-            .peek()
-            .is_some_and(|(&seq_pos, _)| seq_pos < position_in_sclip)
-        {
-            seq_outer.next();
-        }
-        let mut seq_inner = seq_outer
-            .next_if(|(&seq_pos, _)| seq_pos == position_in_sclip)
-            .map(|(_, m)| m.iter().peekable());
-
-        let mut max_count: i32 = 0;
-        let mut max_quality = 0.0;
-        let mut chosen_base: Option<u8> = None;
-        let mut total_count: i32 = 0;
-
-        for (&current_base, &current_count) in nv {
-            total_count = total_count.saturating_add(current_count);
-
-            let has_seq_qual = seq_inner.as_mut().and_then(|it| {
-                while it.peek().is_some_and(|(&b, _)| b < current_base) {
-                    it.next();
-                }
-                it.next_if(|(&b, _)| b == current_base).map(|(_, v)| v)
-            });
-            let mean_qual = has_seq_qual.map_or(0.0, |v| v.qmean);
-
-            if current_count > max_count || (has_seq_qual.is_some() && mean_qual > max_quality) {
-                max_count = current_count;
-                chosen_base = Some(current_base);
-                max_quality = mean_qual;
+        let mut seq_outer = soft_clip.seq.iter().peekable();
+        for (&position_in_sclip, nv) in &soft_clip.nt {
+            while seq_outer
+                .peek()
+                .is_some_and(|(&seq_pos, _)| seq_pos < position_in_sclip)
+            {
+                seq_outer.next();
             }
-        }
+            let mut seq_inner = seq_outer
+                .next_if(|(&seq_pos, _)| seq_pos == position_in_sclip)
+                .map(|(_, m)| m.iter().peekable());
 
-        let vars_count = soft_clip.variation.cnt;
-        if position_in_sclip == 3
-            && soft_clip.nt.len() >= 6
-            && vars_count > 0
-            && (total_count as f64) / (vars_count as f64) < 0.2
-            && total_count <= 2
-        {
-            break;
-        }
+            let mut max_count: i32 = 0;
+            let mut max_quality = 0.0;
+            let mut chosen_base: Option<u8> = None;
+            let mut total_count: i32 = 0;
 
-        let rem_count = i64::from(total_count) - i64::from(max_count);
-        if (rem_count > 2 || i64::from(max_count) <= rem_count)
-            && total_count > 0
-            && (max_count as f64) / (total_count as f64) < 0.8
-        {
-            if flag {
+            for (&current_base, &current_count) in nv {
+                total_count = total_count.saturating_add(current_count);
+
+                let has_seq_qual = seq_inner.as_mut().and_then(|it| {
+                    while it.peek().is_some_and(|(&b, _)| b < current_base) {
+                        it.next();
+                    }
+                    it.next_if(|(&b, _)| b == current_base).map(|(_, v)| v)
+                });
+                let mean_qual = has_seq_qual.map_or(0.0, |v| v.qmean);
+
+                if current_count > max_count || (has_seq_qual.is_some() && mean_qual > max_quality)
+                {
+                    max_count = current_count;
+                    chosen_base = Some(current_base);
+                    max_quality = mean_qual;
+                }
+            }
+
+            let vars_count = soft_clip.variation.cnt;
+            if position_in_sclip == 3
+                && soft_clip.nt.len() >= 6
+                && vars_count > 0
+                && (total_count as f64) / (vars_count as f64) < 0.2
+                && total_count <= 2
+            {
                 break;
             }
-            flag = true;
-        }
 
-        total = total.saturating_add(total_count);
-        match_cnt = match_cnt.saturating_add(max_count);
-        if let Some(b) = chosen_base {
-            seq.push(b);
-        }
-    }
-
-    let nt_size = soft_clip.nt.len() as i32;
-    let seq_len = seq.len() as i32;
-    let mut final_seq = Vec::new();
-
-    if total != 0
-        && (match_cnt as f64) / (total as f64) > 0.9
-        && (seq_len as f64) / 1.5 > (nt_size - seq_len) as f64
-        && ((seq_len as f64) / (nt_size as f64) > 0.8 || nt_size - seq_len < 10 || seq_len > 25)
-    {
-        final_seq = seq;
-    }
-
-    if !final_seq.is_empty() && final_seq.len() > 12 {
-        let matches_a7 = final_seq
-            .get(1..8)
-            .is_some_and(|s| s.iter().all(|&b| b == b'A' || b == b'a'));
-        let matches_t7 = final_seq
-            .get(1..8)
-            .is_some_and(|s| s.iter().all(|&b| b == b'T' || b == b't'));
-        if matches_a7 || matches_t7 || is_low_complex_seq(&final_seq) {
-            soft_clip.used = true;
-        }
-    }
-
-    if !final_seq.is_empty() && final_seq.len() >= 6 {
-        if let Some(seed_slice) = final_seq.get(0..6) {
-            let mut seed = [0u8; 6];
-            seed.copy_from_slice(seed_slice);
-            if dir == 3 {
-                if has_fwd(&seed) {
-                    final_seq.clear();
+            let rem_count = i64::from(total_count) - i64::from(max_count);
+            if (rem_count > 2 || i64::from(max_count) <= rem_count)
+                && total_count > 0
+                && (max_count as f64) / (total_count as f64) < 0.8
+            {
+                if flag {
+                    break;
                 }
-            } else if dir == 5 {
-                seed.reverse();
-                if has_rev(&seed) {
-                    final_seq.clear();
+                flag = true;
+            }
+
+            total = total.saturating_add(total_count);
+            match_cnt = match_cnt.saturating_add(max_count);
+            if let Some(b) = chosen_base {
+                seq.push(b);
+            }
+        }
+
+        let nt_size = soft_clip.nt.len() as i32;
+        let seq_len = seq.len() as i32;
+        let mut final_seq = Vec::new();
+
+        if total != 0
+            && (match_cnt as f64) / (total as f64) > 0.9
+            && (seq_len as f64) / 1.5 > (nt_size - seq_len) as f64
+            && ((seq_len as f64) / (nt_size as f64) > 0.8 || nt_size - seq_len < 10 || seq_len > 25)
+        {
+            final_seq = seq;
+        }
+
+        if !final_seq.is_empty() && final_seq.len() > 12 {
+            let matches_a7 = final_seq
+                .get(1..8)
+                .is_some_and(|s| s.iter().all(|&b| b == b'A' || b == b'a'));
+            let matches_t7 = final_seq
+                .get(1..8)
+                .is_some_and(|s| s.iter().all(|&b| b == b'T' || b == b't'));
+            if matches_a7 || matches_t7 || is_low_complex_seq(&final_seq) {
+                soft_clip.used = true;
+            }
+        }
+
+        if !final_seq.is_empty() && final_seq.len() >= 6 {
+            if let Some(seed_slice) = final_seq.get(0..6) {
+                let mut seed = [0u8; 6];
+                seed.copy_from_slice(seed_slice);
+                if dir == 3 {
+                    if has_fwd(&seed) {
+                        final_seq.clear();
+                    }
+                } else if dir == 5 {
+                    seed.reverse();
+                    if has_rev(&seed) {
+                        final_seq.clear();
+                    }
                 }
             }
         }
+
+        soft_clip.sequence = Some(final_seq);
     }
 
-    soft_clip.sequence = Some(final_seq.clone());
-    final_seq
+    soft_clip.sequence.as_deref().unwrap_or(&[])
 }
 
 /// Find the consensus sequence in soft-clipped reads.
@@ -204,6 +204,21 @@ pub fn find_conseq(
         |seed| adaptor_forward.contains_key(seed.as_slice()),
         |rev_seed| adaptor_reverse.contains_key(rev_seed.as_slice()),
     )
+    .to_vec()
+}
+
+pub(crate) fn find_conseq_slice<'a>(
+    soft_clip: &'a mut Sclip,
+    dir: i32,
+    adaptor_forward: &crate::realign::AdaptorSet,
+    adaptor_reverse: &crate::realign::AdaptorSet,
+) -> &'a [u8] {
+    find_conseq_with(
+        soft_clip,
+        dir,
+        |seed| adaptor_forward.contains_seed(seed),
+        |rev_seed| adaptor_reverse.contains_seed(rev_seed),
+    )
 }
 
 pub(crate) fn find_conseq_sets(
@@ -212,12 +227,7 @@ pub(crate) fn find_conseq_sets(
     adaptor_forward: &crate::realign::AdaptorSet,
     adaptor_reverse: &crate::realign::AdaptorSet,
 ) -> Vec<u8> {
-    find_conseq_with(
-        soft_clip,
-        dir,
-        |seed| adaptor_forward.contains_seed(seed),
-        |rev_seed| adaptor_reverse.contains_seed(rev_seed),
-    )
+    find_conseq_slice(soft_clip, dir, adaptor_forward, adaptor_reverse).to_vec()
 }
 
 /// Correct counts for negative values.
@@ -539,6 +549,117 @@ pub(crate) mod tests {
                     "spill/high-bit mismatch at l5={l5}, l3={l3}"
                 );
             }
+        }
+
+        // 5. Explicit length grid, exact IEEE-754 0.1 ratio boundaries, and multi-candidate rev3
+        let motif_non_rep: Vec<u8> = (0..200)
+            .map(|k| b"ACGT"[(k * 7 + (k / 4) * 3 + (k / 16)) % 4])
+            .collect();
+        for &l5 in &[8usize, 9, 10, 11, 20, 30, 31] {
+            for &l3 in &[9usize, 10, 11, 24, 25, 64, 73, 145] {
+                for mm_in_w0 in 0..=2usize {
+                    let mut s5 = motif_non_rep[..l5].to_vec();
+                    let copy_len = l5.min(l3);
+                    let mut s3_rev = vec![b'N'; l3];
+                    s3_rev[..copy_len].copy_from_slice(&motif_non_rep[..copy_len]);
+                    for m in 0..mm_in_w0.min(copy_len) {
+                        s5[m * 3 % copy_len] = b'N';
+                    }
+                    let s3: Vec<u8> = s3_rev.into_iter().rev().collect();
+                    assert_eq!(
+                        find_35_match(&s5, &s3, false),
+                        find_35_match_legacy(&s5, &s3, false),
+                        "grid mismatch at l5={l5}, l3={l3}, mm_in_w0={mm_in_w0}"
+                    );
+                }
+            }
+        }
+
+        // Exact IEEE-754 0.1 mismatch ratio boundaries: 1/10, 1/11, 2/20, 2/21, 3/30, 3/31
+        // Case A: rem5 < rem3 (sentinel adds +1 mismatch; +1 total_length when pre-sentinel mm < 2)
+        for &(real_mm_w0, l5, l3) in &[
+            (0usize, 9usize, 15usize), // 1/10 == 0.1 (reject)
+            (0, 10, 15),               // 1/11 <  0.1 (accept)
+            (1, 19, 25),               // 2/20 == 0.1 (reject)
+            (1, 20, 25),               // 2/21 <  0.1 (accept)
+            (2, 30, 35),               // 3/30 == 0.1 (reject)
+            (2, 31, 35),               // 3/31 <  0.1 (accept)
+        ] {
+            let mut s5 = motif_non_rep[..l5].to_vec();
+            let mut s3_rev = vec![b'N'; l3];
+            s3_rev[..l5].copy_from_slice(&motif_non_rep[..l5]);
+            for m in 0..real_mm_w0 {
+                s5[m * 2] = b'N';
+            }
+            let s3: Vec<u8> = s3_rev.into_iter().rev().collect();
+            assert_eq!(
+                find_35_match(&s5, &s3, false),
+                find_35_match_legacy(&s5, &s3, false),
+                "0.1 ratio rem5<rem3 mismatch at real_mm_w0={real_mm_w0}, l5={l5}, l3={l3}"
+            );
+        }
+
+        // Case B: rem5 >= rem3 (no sentinel; l5 == l3 and l5 > l3)
+        for &(mm_w0, extra_mm_tail, target_len) in &[
+            (1usize, false, 10usize), // 1/10 == 0.1 (reject)
+            (1, false, 11),           // 1/11 <  0.1 (accept)
+            (2, false, 20),           // 2/20 == 0.1 (reject)
+            (2, false, 21),           // 2/21 <  0.1 (accept)
+            (2, true, 30),            // 3/30 == 0.1 (reject)
+            (2, true, 31),            // 3/31 <  0.1 (accept)
+        ] {
+            let l3 = if extra_mm_tail {
+                target_len + 1
+            } else {
+                target_len
+            };
+            for &l5 in &[l3, l3 + 5] {
+                let mut s5 = motif_non_rep[..l5].to_vec();
+                let mut s3_rev = motif_non_rep[..l3].to_vec();
+                for m in 0..mm_w0 {
+                    s5[m * 2] = b'N';
+                }
+                if extra_mm_tail {
+                    s3_rev[target_len] = b'N';
+                }
+                let s3: Vec<u8> = s3_rev.into_iter().rev().collect();
+                assert_eq!(
+                    find_35_match(&s5, &s3, false),
+                    find_35_match_legacy(&s5, &s3, false),
+                    "0.1 ratio rem5>=rem3 mismatch at mm_w0={mm_w0}, tail={extra_mm_tail}, l5={l5}, l3={l3}"
+                );
+            }
+        }
+
+        // Multi-candidate rev3: j_idx = 0 has mm0 <= 2 in [0..8] but fails extension,
+        // while a later j_idx = 12 succeeds cleanly (tested on ACGTN and high-bit 0x80..=0xFF).
+        {
+            let s5 = b"ACGTTGCATGCAACGTTGCA".to_vec(); // 20 bp
+            let mut s3_rev = vec![b'N'; 40];
+            // j_idx = 0: first 8 bytes have 1 mismatch vs s5[..8], then 4 mismatches so extension fails
+            s3_rev[..8].copy_from_slice(&s5[..8]);
+            s3_rev[3] = b'N';
+            // j_idx = 12 (j = 13): exact 20-bp match to s5[..20] reaching i + total_length == len5
+            s3_rev[12..32].copy_from_slice(&s5);
+            let s3: Vec<u8> = s3_rev.into_iter().rev().collect();
+            let actual = find_35_match(&s5, &s3, false);
+            let expected = find_35_match_legacy(&s5, &s3, false);
+            assert_eq!(actual, expected, "multi-candidate ACGTN mismatch");
+            assert_eq!(actual.matched_3_end, 13);
+            assert!(actual.max_matched_length > 8);
+
+            let s5_hi: Vec<u8> = (0..20u8).map(|k| 0x80u8.wrapping_add(k * 5)).collect();
+            let mut s3_rev_hi = vec![0xFFu8; 40];
+            s3_rev_hi[..8].copy_from_slice(&s5_hi[..8]);
+            s3_rev_hi[2] ^= 0x03;
+            s3_rev_hi[5] ^= 0x07;
+            s3_rev_hi[14..34].copy_from_slice(&s5_hi);
+            let s3_hi: Vec<u8> = s3_rev_hi.into_iter().rev().collect();
+            let actual_hi = find_35_match(&s5_hi, &s3_hi, false);
+            let expected_hi = find_35_match_legacy(&s5_hi, &s3_hi, false);
+            assert_eq!(actual_hi, expected_hi, "multi-candidate high-bit mismatch");
+            assert_eq!(actual_hi.matched_3_end, 15);
+            assert!(actual_hi.max_matched_length > 8);
         }
     }
 

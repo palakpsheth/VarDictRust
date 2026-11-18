@@ -1,6 +1,6 @@
 //! CIGAR parse (pileup engine) — ports CigarParser.java.
 
-use crate::bam::{get_mate_reference_name, SamRecord};
+use crate::bam::SamRecord;
 use crate::config::Config;
 use crate::reference::Reference;
 use crate::regions::Region;
@@ -363,6 +363,7 @@ impl<'a> CigarParser<'a> {
         let read_start_u64 = record.alignment_start.map_or(0u64, |p| u64::from(p.0));
         let mut ref_span_u64 = 0u64;
         let mut query_len_u64 = 0u64;
+        let mut insertion_deletion_length = 0u32;
         for &(len, op) in &record.cigar {
             let len_u64 = u64::from(len);
             match op {
@@ -370,10 +371,18 @@ impl<'a> CigarParser<'a> {
                     ref_span_u64 = ref_span_u64.saturating_add(len_u64);
                     query_len_u64 = query_len_u64.saturating_add(len_u64);
                 }
-                CigarKind::Deletion | CigarKind::Skip => {
+                CigarKind::Deletion => {
+                    ref_span_u64 = ref_span_u64.saturating_add(len_u64);
+                    insertion_deletion_length = insertion_deletion_length.saturating_add(len);
+                }
+                CigarKind::Skip => {
                     ref_span_u64 = ref_span_u64.saturating_add(len_u64);
                 }
-                CigarKind::Insertion | CigarKind::SoftClip => {
+                CigarKind::Insertion => {
+                    query_len_u64 = query_len_u64.saturating_add(len_u64);
+                    insertion_deletion_length = insertion_deletion_length.saturating_add(len);
+                }
+                CigarKind::SoftClip => {
                     query_len_u64 = query_len_u64.saturating_add(len_u64);
                 }
                 CigarKind::HardClip | CigarKind::Pad => {}
@@ -401,7 +410,6 @@ impl<'a> CigarParser<'a> {
         }
 
         let direction = (record.flags & 0x10) != 0;
-        let insertion_deletion_length = get_insertion_deletion_length(&record.cigar);
         let adjusted_nm = record.nm.map_or(0, |n| {
             n.saturating_sub(i32::try_from(insertion_deletion_length).unwrap_or(i32::MAX))
         });
@@ -525,6 +533,8 @@ impl<'a> CigarParser<'a> {
                     &record.quality_scores,
                     ref_slice,
                     ref_start,
+                    &self.reference.seed,
+                    self.max_read_length,
                     self.config,
                 ) {
                     Ok(crate::cigar::modify::PureSmOutcome::Handled) => false,
@@ -613,7 +623,20 @@ impl<'a> CigarParser<'a> {
             }
         }
 
-        let read_len_match_ins = get_match_insertion_length(&cigar_elements);
+        let mut read_len_match_ins = 0u32;
+        let mut total_len_mis = 0u32;
+        for &(len, kind) in &cigar_elements {
+            match kind {
+                CigarKind::Match | CigarKind::Insertion => {
+                    read_len_match_ins = read_len_match_ins.saturating_add(len);
+                    total_len_mis = total_len_mis.saturating_add(len);
+                }
+                CigarKind::SoftClip => {
+                    total_len_mis = total_len_mis.saturating_add(len);
+                }
+                _ => {}
+            }
+        }
         if self.config.minmatch != 0 && read_len_match_ins < self.config.minmatch {
             if let Some((s, q)) = modified_bufs {
                 self.scratch_seq = s;
@@ -623,8 +646,7 @@ impl<'a> CigarParser<'a> {
             return Ok(()); // Drop read shorter than minmatch (Java -M)
         }
         let read_len_match_ins_i32 = i32::try_from(read_len_match_ins).unwrap_or(i32::MAX);
-        let total_length_including_soft_clipped =
-            i32::try_from(get_soft_clipped_length(&cigar_elements)).unwrap_or(i32::MAX);
+        let total_length_including_soft_clipped = i32::try_from(total_len_mis).unwrap_or(i32::MAX);
         if total_length_including_soft_clipped > self.max_read_length {
             self.max_read_length = total_length_including_soft_clipped;
         }
@@ -861,6 +883,27 @@ impl<'a> CigarParser<'a> {
 
                     let mut i = offset;
                     while i < cigar_element_len {
+                        if !self.config.include_n
+                            && !has_overlap_gate
+                            && self.region.start.0 >= 2
+                            && region_start <= region_end
+                            && start >= 0
+                            && start < region_start - 1
+                            && i < indel_prox_start
+                        {
+                            let skip = ((i64::from(region_start) - 1 - i64::from(start)) as usize)
+                                .min((indel_prox_start.min(cigar_element_len) - i) as usize)
+                                .min(query_seq.len().saturating_sub(read_pos_inc));
+                            if skip > 0 {
+                                i += skip as u32;
+                                start = start.saturating_add(skip as i32);
+                                read_pos_inc += skip;
+                                read_pos_exc += skip;
+                                if i >= cigar_element_len {
+                                    break;
+                                }
+                            }
+                        }
                         let Some(&ch1) = query_seq.get(read_pos_inc) else {
                             break;
                         };
@@ -892,96 +935,109 @@ impl<'a> CigarParser<'a> {
                         let mut start_with_deletion = false;
 
                         // T048: MNV Growth Look-Ahead
-                        // H1: single fused reference lookup (`ref_mismatch_not_n`)
-                        // instead of two identical `get_base` calls per base.
-                        while start < i32::MAX
-                            && u32::try_from(start.saturating_add(1)).is_ok_and(|pu| {
-                                pu >= self.region.start.0 && pu <= self.region.end.0
-                            })
-                            && i + 1 < cigar_element_len
-                            && q >= self.config.base_qual
-                            && u32::try_from(start).is_ok_and(|su| {
-                                self.ref_mismatch_not_n(su, query_seq.get(read_pos_inc).copied())
-                            })
-                        {
-                            let next_read_idx = read_pos_inc + 1;
-                            let Some(&nuc) = query_seq.get(next_read_idx) else {
-                                break;
-                            };
-                            if (qual_phred(&query_qual, next_read_idx))
-                                < self.config.base_qual + 5.0
+                        // H1: check reference base equality via `primary_ref_seq` first before
+                        // evaluating the 5-clause MNV `while` condition.
+                        let is_primary_ref_match = (start >= 0) && {
+                            (start as u32)
+                                .checked_sub(self.primary_ref_start)
+                                .and_then(|off| self.primary_ref_seq.get(off as usize))
+                                .is_some_and(|&rb| rb == ch1 || rb == b'N' || rb == b'n')
+                        };
+                        if !is_primary_ref_match {
+                            while start < i32::MAX
+                                && u32::try_from(start.saturating_add(1)).is_ok_and(|pu| {
+                                    pu >= self.region.start.0 && pu <= self.region.end.0
+                                })
+                                && i + 1 < cigar_element_len
+                                && q >= self.config.base_qual
+                                && u32::try_from(start).is_ok_and(|su| {
+                                    self.ref_mismatch_not_n(
+                                        su,
+                                        query_seq.get(read_pos_inc).copied(),
+                                    )
+                                })
                             {
-                                break;
-                            }
-                            if nuc == b'N' || nuc == b'n' {
-                                break;
-                            }
-                            if let Some(next_ref_base) = u32::try_from(start.saturating_add(1))
-                                .ok()
-                                .and_then(|pu| self.get_ref_base(pu))
-                            {
-                                if next_ref_base == b'N' || next_ref_base == b'n' {
+                                let next_read_idx = read_pos_inc + 1;
+                                let Some(&nuc) = query_seq.get(next_read_idx) else {
+                                    break;
+                                };
+                                if (qual_phred(&query_qual, next_read_idx))
+                                    < self.config.base_qual + 5.0
+                                {
                                     break;
                                 }
-                                if nuc != next_ref_base {
-                                    push_ascii_base(&mut buf_ss, nuc);
-                                    q += qual_phred(&query_qual, next_read_idx);
-                                    qbases = qbases.saturating_add(1);
-                                    read_pos_inc += 1;
-                                    read_pos_exc += 1;
-                                    i += 1;
-                                    start = start.saturating_add(1);
-                                    nmoff = nmoff.saturating_add(1);
-                                } else {
-                                    // CigarParser.java:638 sub-segment lookahead span
-                                    let mut subseq_len = 0;
-                                    for ssi in 1..=vext {
-                                        if i + 1 + u32::try_from(ssi).unwrap_or(u32::MAX)
-                                            >= cigar_element_len
-                                        {
-                                            break;
-                                        }
-                                        let lookahead_read_idx = read_pos_inc + 1 + ssi;
-                                        if let Some(&q_base) = query_seq.get(lookahead_read_idx) {
-                                            if let Some(lookahead_ref_base) =
-                                                u32::try_from(i64::from(start) + 1 + (ssi as i64))
-                                                    .ok()
-                                                    .and_then(|p| self.get_ref_base(p))
+                                if nuc == b'N' || nuc == b'n' {
+                                    break;
+                                }
+                                if let Some(next_ref_base) = u32::try_from(start.saturating_add(1))
+                                    .ok()
+                                    .and_then(|pu| self.get_ref_base(pu))
+                                {
+                                    if next_ref_base == b'N' || next_ref_base == b'n' {
+                                        break;
+                                    }
+                                    if nuc != next_ref_base {
+                                        push_ascii_base(&mut buf_ss, nuc);
+                                        q += qual_phred(&query_qual, next_read_idx);
+                                        qbases = qbases.saturating_add(1);
+                                        read_pos_inc += 1;
+                                        read_pos_exc += 1;
+                                        i += 1;
+                                        start = start.saturating_add(1);
+                                        nmoff = nmoff.saturating_add(1);
+                                    } else {
+                                        // CigarParser.java:638 sub-segment lookahead span
+                                        let mut subseq_len = 0;
+                                        for ssi in 1..=vext {
+                                            if i + 1 + u32::try_from(ssi).unwrap_or(u32::MAX)
+                                                >= cigar_element_len
                                             {
-                                                if q_base != lookahead_ref_base {
-                                                    subseq_len = ssi + 1;
-                                                    break;
+                                                break;
+                                            }
+                                            let lookahead_read_idx = read_pos_inc + 1 + ssi;
+                                            if let Some(&q_base) = query_seq.get(lookahead_read_idx)
+                                            {
+                                                if let Some(lookahead_ref_base) = u32::try_from(
+                                                    i64::from(start) + 1 + (ssi as i64),
+                                                )
+                                                .ok()
+                                                .and_then(|p| self.get_ref_base(p))
+                                                {
+                                                    if q_base != lookahead_ref_base {
+                                                        subseq_len = ssi + 1;
+                                                        break;
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-                                    if subseq_len == 0 {
-                                        break;
-                                    }
-                                    let subseq_read_idx = read_pos_inc + subseq_len;
-                                    if subseq_read_idx >= query_seq.len()
-                                        || (qual_phred(&query_qual, subseq_read_idx))
-                                            < self.config.base_qual + 5.0
-                                    {
-                                        break;
-                                    }
-                                    for ssi in 1..=subseq_len {
-                                        let idx = read_pos_inc + ssi;
-                                        if let Some(&q_base) = query_seq.get(idx) {
-                                            push_ascii_base(&mut buf_ss, q_base);
+                                        if subseq_len == 0 {
+                                            break;
                                         }
-                                        q += qual_phred(&query_qual, idx);
-                                        qbases = qbases.saturating_add(1);
+                                        let subseq_read_idx = read_pos_inc + subseq_len;
+                                        if subseq_read_idx >= query_seq.len()
+                                            || (qual_phred(&query_qual, subseq_read_idx))
+                                                < self.config.base_qual + 5.0
+                                        {
+                                            break;
+                                        }
+                                        for ssi in 1..=subseq_len {
+                                            let idx = read_pos_inc + ssi;
+                                            if let Some(&q_base) = query_seq.get(idx) {
+                                                push_ascii_base(&mut buf_ss, q_base);
+                                            }
+                                            q += qual_phred(&query_qual, idx);
+                                            qbases = qbases.saturating_add(1);
+                                        }
+                                        read_pos_inc += subseq_len;
+                                        read_pos_exc += subseq_len;
+                                        i += u32::try_from(subseq_len).unwrap_or(u32::MAX);
+                                        start = start.saturating_add(
+                                            i32::try_from(subseq_len).unwrap_or(i32::MAX),
+                                        );
                                     }
-                                    read_pos_inc += subseq_len;
-                                    read_pos_exc += subseq_len;
-                                    i += u32::try_from(subseq_len).unwrap_or(u32::MAX);
-                                    start = start.saturating_add(
-                                        i32::try_from(subseq_len).unwrap_or(i32::MAX),
-                                    );
+                                } else {
+                                    break;
                                 }
-                            } else {
-                                break;
                             }
                         }
 
@@ -1164,22 +1220,36 @@ impl<'a> CigarParser<'a> {
                                         .copied()
                                         .unwrap_or("N");
                                     if s != "N" {
-                                        self.add_variation_for_matching_part(
-                                            mapping_quality_i32,
-                                            adjusted_nm,
-                                            direction,
-                                            read_len_match_ins_i32,
-                                            nmoff,
-                                            s,
-                                            false,
-                                            q,
-                                            qbases,
-                                            qibases,
-                                            ddlen,
-                                            pos,
-                                            read_pos_exc as i32,
-                                            start,
-                                        );
+                                        if ch1 != b'+' {
+                                            self.add_single_base_match_variation(
+                                                mapping_quality_i32,
+                                                adjusted_nm,
+                                                direction,
+                                                read_len_match_ins_i32,
+                                                nmoff,
+                                                s,
+                                                q,
+                                                pos,
+                                                read_pos_exc as i32,
+                                            );
+                                        } else {
+                                            self.add_variation_for_matching_part(
+                                                mapping_quality_i32,
+                                                adjusted_nm,
+                                                direction,
+                                                read_len_match_ins_i32,
+                                                nmoff,
+                                                s,
+                                                false,
+                                                q,
+                                                qbases,
+                                                qibases,
+                                                ddlen,
+                                                pos,
+                                                read_pos_exc as i32,
+                                                start,
+                                            );
+                                        }
                                     }
                                 } else if !buf_s.contains('N') && !buf_s.contains('n') {
                                     self.add_variation_for_matching_part(
@@ -1253,6 +1323,56 @@ impl<'a> CigarParser<'a> {
         self.scratch_splice_key = scratch_splice_key;
 
         Ok(())
+    }
+
+    #[inline]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "hot single-base Match fast path passes scalar pileup registers directly"
+    )]
+    fn add_single_base_match_variation(
+        &mut self,
+        mapping_quality: i32,
+        nm: i32,
+        dir: bool,
+        rlen1: i32,
+        nmoff: i32,
+        s: &str,
+        q: f64,
+        pos: i32,
+        read_pos_exc: i32,
+    ) {
+        let hv = get_variation(&mut self.non_insertion_variants, pos, s);
+        hv.inc_dir(dir);
+        hv.cnt = hv.cnt.saturating_add(1);
+
+        let dist_from_end = rlen1.saturating_sub(read_pos_exc);
+        let tp = if read_pos_exc < dist_from_end {
+            read_pos_exc.saturating_add(1)
+        } else {
+            dist_from_end
+        };
+
+        if !hv.pstd && hv.pp != 0 && tp != hv.pp {
+            hv.pstd = true;
+        }
+        if !hv.qstd && hv.pq != 0.0 && q != hv.pq {
+            hv.qstd = true;
+        }
+
+        hv.pmean += tp as f64;
+        hv.qmean += q;
+        hv.mqmean += mapping_quality as f64;
+        hv.pp = tp;
+        hv.pq = q;
+        hv.nm += nm.saturating_sub(nmoff) as f64;
+        if q >= self.config.base_qual {
+            hv.hicnt = hv.hicnt.saturating_add(1);
+        } else {
+            hv.locnt = hv.locnt.saturating_add(1);
+        }
+
+        inc_cnt(&mut self.ref_coverage, pos, 1);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2880,39 +3000,6 @@ impl<'a> CigarParser<'a> {
             .map_or(0, |p| i32::try_from(p.0).unwrap_or(i32::MAX));
         let mend = mate_start.saturating_add(total_length_including_soft_clipped);
 
-        let mut end = start;
-        for &(len, op) in cigar_elements {
-            if matches!(op, CigarKind::Match | CigarKind::Deletion | CigarKind::Skip) {
-                end = end.saturating_add(i32::try_from(len).unwrap_or(i32::MAX));
-            }
-        }
-
-        let mut soft5 = 0;
-        if let Some(&(len, op)) = cigar_elements.first() {
-            if matches!(op, CigarKind::SoftClip | CigarKind::HardClip) {
-                let len = len as usize;
-                if len > 0 && len <= query_qual.len() {
-                    let qual_val = qual_phred(&query_qual, len.saturating_sub(1));
-                    if qual_val > self.config.base_qual {
-                        soft5 = start;
-                    }
-                }
-            }
-        }
-
-        let mut soft3 = 0;
-        if let Some(&(len, op)) = cigar_elements.last() {
-            if matches!(op, CigarKind::SoftClip | CigarKind::HardClip) {
-                let len = len as usize;
-                if len > 0 && query_qual.len() >= len {
-                    let qual_val = qual_phred(&query_qual, query_qual.len().saturating_sub(len));
-                    if qual_val > self.config.base_qual {
-                        soft3 = end;
-                    }
-                }
-            }
-        }
-
         let read_dir_num: i32 = if read_direction { -1 } else { 1 };
         let read_dir_num_64 = i64::from(read_dir_num);
         let mate_dir_num: i32 = if mate_direction { 1 } else { -1 };
@@ -2934,6 +3021,7 @@ impl<'a> CigarParser<'a> {
                 }
             }
 
+            let end = compute_sv_end(start, cigar_elements);
             let mq = record.mapping_quality.unwrap_or(0);
 
             let min_svc_dist = 1.5;
@@ -2953,6 +3041,13 @@ impl<'a> CigarParser<'a> {
                     (self.config.sv_min_af as f64 * self.config.sv_flanking as f64) as i64,
                 );
                 if mlen.abs() > sv_min_len {
+                    let (soft5, soft3) = compute_sv_soft5_soft3(
+                        start,
+                        end,
+                        cigar_elements,
+                        query_qual,
+                        self.config.base_qual,
+                    );
                     let mlen_i32 = mlen.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
                     if read_dir_num == 1 {
                         if self.sv_structures.svfdel.is_empty()
@@ -3072,6 +3167,13 @@ impl<'a> CigarParser<'a> {
                 && query_qual.len() > 15
             {
                 // Duplication
+                let (soft5, soft3) = compute_sv_soft5_soft3(
+                    start,
+                    end,
+                    cigar_elements,
+                    query_qual,
+                    self.config.base_qual,
+                );
                 let mlen_i32 = mlen.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
                 if read_dir_num == 1 {
                     if self.sv_structures.svfdup.is_empty()
@@ -3188,66 +3290,73 @@ impl<'a> CigarParser<'a> {
                 // Inversion
                 let mlen_i32 = mlen.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
                 let max_rl_64 = i64::from(self.max_read_length);
-                if read_dir_num == 1 && mlen != 0 {
-                    if mlen < -3 * max_rl_64 {
-                        if self.sv_structures.svfinv3.is_empty()
-                            || start_64 - i64::from(self.sv_structures.svinvfend3) > limit
-                        {
-                            let mut sclip = Sclip::new();
-                            sclip.variation.cnt = 0;
-                            self.sv_structures.svfinv3.push(sclip);
+                if mlen != 0 && (mlen < -3 * max_rl_64 || mlen > 3 * max_rl_64) {
+                    let (soft5, soft3) = compute_sv_soft5_soft3(
+                        start,
+                        end,
+                        cigar_elements,
+                        query_qual,
+                        self.config.base_qual,
+                    );
+                    if read_dir_num == 1 {
+                        if mlen < -3 * max_rl_64 {
+                            if self.sv_structures.svfinv3.is_empty()
+                                || start_64 - i64::from(self.sv_structures.svinvfend3) > limit
+                            {
+                                let mut sclip = Sclip::new();
+                                sclip.variation.cnt = 0;
+                                self.sv_structures.svfinv3.push(sclip);
+                            }
+                            if let Some(sdref) = self.sv_structures.svfinv3.last_mut() {
+                                add_sv(
+                                    sdref,
+                                    start,
+                                    end,
+                                    mate_start,
+                                    mend,
+                                    read_dir_num,
+                                    total_length_including_soft_clipped,
+                                    mlen_i32,
+                                    soft3,
+                                    self.max_read_length as f64 / 2.0,
+                                    qual_phred(&query_qual, 15),
+                                    mq as f64,
+                                    number_of_mismatches as f64,
+                                    self.config.base_qual,
+                                );
+                                sdref.disc = sdref.disc.saturating_add(1);
+                            }
+                            self.sv_structures.svinvfend3 = end;
+                        } else {
+                            if self.sv_structures.svfinv5.is_empty()
+                                || start_64 - i64::from(self.sv_structures.svinvfend5) > limit
+                            {
+                                let mut sclip = Sclip::new();
+                                sclip.variation.cnt = 0;
+                                self.sv_structures.svfinv5.push(sclip);
+                            }
+                            if let Some(sdref) = self.sv_structures.svfinv5.last_mut() {
+                                add_sv(
+                                    sdref,
+                                    start,
+                                    end,
+                                    mate_start,
+                                    mend,
+                                    read_dir_num,
+                                    total_length_including_soft_clipped,
+                                    mlen_i32,
+                                    soft3,
+                                    self.max_read_length as f64 / 2.0,
+                                    qual_phred(&query_qual, 15),
+                                    mq as f64,
+                                    number_of_mismatches as f64,
+                                    self.config.base_qual,
+                                );
+                                sdref.disc = sdref.disc.saturating_add(1);
+                            }
+                            self.sv_structures.svinvfend5 = end;
                         }
-                        if let Some(sdref) = self.sv_structures.svfinv3.last_mut() {
-                            add_sv(
-                                sdref,
-                                start,
-                                end,
-                                mate_start,
-                                mend,
-                                read_dir_num,
-                                total_length_including_soft_clipped,
-                                mlen_i32,
-                                soft3,
-                                self.max_read_length as f64 / 2.0,
-                                qual_phred(&query_qual, 15),
-                                mq as f64,
-                                number_of_mismatches as f64,
-                                self.config.base_qual,
-                            );
-                            sdref.disc = sdref.disc.saturating_add(1);
-                        }
-                        self.sv_structures.svinvfend3 = end;
-                    } else if mlen > 3 * max_rl_64 {
-                        if self.sv_structures.svfinv5.is_empty()
-                            || start_64 - i64::from(self.sv_structures.svinvfend5) > limit
-                        {
-                            let mut sclip = Sclip::new();
-                            sclip.variation.cnt = 0;
-                            self.sv_structures.svfinv5.push(sclip);
-                        }
-                        if let Some(sdref) = self.sv_structures.svfinv5.last_mut() {
-                            add_sv(
-                                sdref,
-                                start,
-                                end,
-                                mate_start,
-                                mend,
-                                read_dir_num,
-                                total_length_including_soft_clipped,
-                                mlen_i32,
-                                soft3,
-                                self.max_read_length as f64 / 2.0,
-                                qual_phred(&query_qual, 15),
-                                mq as f64,
-                                number_of_mismatches as f64,
-                                self.config.base_qual,
-                            );
-                            sdref.disc = sdref.disc.saturating_add(1);
-                        }
-                        self.sv_structures.svinvfend5 = end;
-                    }
-                } else if mlen != 0 {
-                    if mlen < -3 * max_rl_64 {
+                    } else if mlen < -3 * max_rl_64 {
                         if self.sv_structures.svrinv3.is_empty()
                             || start_64 - i64::from(self.sv_structures.svinvrend3) > limit
                         {
@@ -3275,7 +3384,7 @@ impl<'a> CigarParser<'a> {
                             sdref.disc = sdref.disc.saturating_add(1);
                         }
                         self.sv_structures.svinvrend3 = end;
-                    } else if mlen > 3 * max_rl_64 {
+                    } else {
                         if self.sv_structures.svrinv5.is_empty()
                             || start_64 - i64::from(self.sv_structures.svinvrend5) > limit
                         {
@@ -3339,38 +3448,42 @@ impl<'a> CigarParser<'a> {
                 }
             }
         } else if query_qual.len() > 15 {
-            // Inter-chr translocation (rare: mate mapped elsewhere — the only
-            // path that needs the owned name, built here instead of per read).
-            let mchr = get_mate_reference_name(record);
+            // Inter-chr translocation / unmapped mate (`IndexMap` `&str` lookup avoids per-read String allocs).
             // ports CigarParser.java:2208-2215: the MC-tag and mate-MQ(MQ tag) filters,
             // not the read's own mapping quality.
             let sv_allowed = !(record.mc.as_ref().is_some_and(|mc| has_two_soft_clips(mc))
                 || record.mq.is_some_and(|mate_mq| mate_mq < 15));
-            let mq = record.mapping_quality.unwrap_or(0);
-
-            let min_svc_dist = 1.5;
-            let limit = (min_svc_dist * self.max_read_length as f64) as i64;
 
             if sv_allowed {
+                let mchr = get_mate_reference_name_str(record);
+                let end = compute_sv_end(start, cigar_elements);
+                let (soft5, soft3) = compute_sv_soft5_soft3(
+                    start,
+                    end,
+                    cigar_elements,
+                    query_qual,
+                    self.config.base_qual,
+                );
+                let mq = record.mapping_quality.unwrap_or(0);
+                let min_svc_dist = 1.5;
+                let limit = (min_svc_dist * self.max_read_length as f64) as i64;
+
                 if read_dir_num == 1 {
-                    let last_fus_end = self
-                        .sv_structures
-                        .svfusfend
-                        .get(&mchr)
-                        .copied()
-                        .unwrap_or(0);
-                    if !self.sv_structures.svffus.contains_key(&mchr)
+                    let last_fus_end = self.sv_structures.svfusfend.get(mchr).copied().unwrap_or(0);
+                    if !self.sv_structures.svffus.contains_key(mchr)
                         || start_64 - i64::from(last_fus_end) > limit
                     {
                         let mut sclip = Sclip::new();
                         sclip.variation.cnt = 0;
-                        self.sv_structures
-                            .svffus
-                            .entry(mchr.clone())
-                            .or_default()
-                            .push(sclip);
+                        if let Some(sclips) = self.sv_structures.svffus.get_mut(mchr) {
+                            sclips.push(sclip);
+                        } else {
+                            self.sv_structures
+                                .svffus
+                                .insert(mchr.to_owned(), vec![sclip]);
+                        }
                     }
-                    if let Some(sclips) = self.sv_structures.svffus.get_mut(&mchr) {
+                    if let Some(sclips) = self.sv_structures.svffus.get_mut(mchr) {
                         if let Some(sdref) = sclips.last_mut() {
                             add_sv(
                                 sdref,
@@ -3391,26 +3504,27 @@ impl<'a> CigarParser<'a> {
                             sdref.disc = sdref.disc.saturating_add(1);
                         }
                     }
-                    self.sv_structures.svfusfend.insert(mchr, end);
+                    if let Some(slot) = self.sv_structures.svfusfend.get_mut(mchr) {
+                        *slot = end;
+                    } else {
+                        self.sv_structures.svfusfend.insert(mchr.to_owned(), end);
+                    }
                 } else {
-                    let last_fus_end = self
-                        .sv_structures
-                        .svfusrend
-                        .get(&mchr)
-                        .copied()
-                        .unwrap_or(0);
-                    if !self.sv_structures.svrfus.contains_key(&mchr)
+                    let last_fus_end = self.sv_structures.svfusrend.get(mchr).copied().unwrap_or(0);
+                    if !self.sv_structures.svrfus.contains_key(mchr)
                         || start_64 - i64::from(last_fus_end) > limit
                     {
                         let mut sclip = Sclip::new();
                         sclip.variation.cnt = 0;
-                        self.sv_structures
-                            .svrfus
-                            .entry(mchr.clone())
-                            .or_default()
-                            .push(sclip);
+                        if let Some(sclips) = self.sv_structures.svrfus.get_mut(mchr) {
+                            sclips.push(sclip);
+                        } else {
+                            self.sv_structures
+                                .svrfus
+                                .insert(mchr.to_owned(), vec![sclip]);
+                        }
                     }
-                    if let Some(sclips) = self.sv_structures.svrfus.get_mut(&mchr) {
+                    if let Some(sclips) = self.sv_structures.svrfus.get_mut(mchr) {
                         if let Some(sdref) = sclips.last_mut() {
                             add_sv(
                                 sdref,
@@ -3431,7 +3545,11 @@ impl<'a> CigarParser<'a> {
                             sdref.disc = sdref.disc.saturating_add(1);
                         }
                     }
-                    self.sv_structures.svfusrend.insert(mchr, end);
+                    if let Some(slot) = self.sv_structures.svfusrend.get_mut(mchr) {
+                        *slot = end;
+                    } else {
+                        self.sv_structures.svfusrend.insert(mchr.to_owned(), end);
+                    }
                 }
             }
 
@@ -3494,6 +3612,66 @@ impl<'a> CigarParser<'a> {
             }
         }
     }
+}
+
+#[inline]
+fn get_mate_reference_name_str(record: &SamRecord) -> &str {
+    match (
+        record.reference_name.as_deref(),
+        record.mate_reference_name.as_deref(),
+    ) {
+        (None, _) | (_, None) => "*",
+        (Some(ref_name), Some(mate_ref)) => {
+            if ref_name == mate_ref {
+                "="
+            } else {
+                mate_ref
+            }
+        }
+    }
+}
+
+#[inline]
+fn compute_sv_end(start: i32, cigar_elements: &[(u32, CigarKind)]) -> i32 {
+    let mut end = start;
+    for &(len, op) in cigar_elements {
+        if matches!(op, CigarKind::Match | CigarKind::Deletion | CigarKind::Skip) {
+            end = end.saturating_add(i32::try_from(len).unwrap_or(i32::MAX));
+        }
+    }
+    end
+}
+
+#[inline]
+fn compute_sv_soft5_soft3(
+    start: i32,
+    end: i32,
+    cigar_elements: &[(u32, CigarKind)],
+    query_qual: &[u8],
+    base_qual: f64,
+) -> (i32, i32) {
+    let mut soft5 = 0;
+    if let Some(&(len, op)) = cigar_elements.first() {
+        if matches!(op, CigarKind::SoftClip | CigarKind::HardClip) {
+            let len = len as usize;
+            if len > 0 && len <= query_qual.len() && qual_phred(&query_qual, len - 1) > base_qual {
+                soft5 = start;
+            }
+        }
+    }
+    let mut soft3 = 0;
+    if let Some(&(len, op)) = cigar_elements.last() {
+        if matches!(op, CigarKind::SoftClip | CigarKind::HardClip) {
+            let len = len as usize;
+            if len > 0
+                && query_qual.len() >= len
+                && qual_phred(&query_qual, query_qual.len() - len) > base_qual
+            {
+                soft3 = end;
+            }
+        }
+    }
+    (soft5, soft3)
 }
 
 fn add_sv(
@@ -7164,5 +7342,288 @@ mod tests {
         assert_eq!(max_parser.ref_coverage.get(&(i32::MAX - 200)), Some(&1));
         assert_eq!(max_parser.ref_coverage.get(&i32::MAX), Some(&1));
         assert!(max_parser.ref_coverage.keys().all(|&p| p > 0));
+    }
+
+    #[test]
+    fn test_parse_cigar_preregion_skip_preserves_boundary_mnv_nmoff_and_plus_ascii() {
+        let mut reference = Reference::new();
+        let ref_seq = vec![b'A'; 250];
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 250,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(180),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        // 1. Read spanning pos = 50..200 on region = 100..=180 with mismatches at 98, 99, 100
+        //    (MNV boundary at region_start - 1 = 99 incrementing nmoff) + downstream SNV at 120.
+        let mut seq = vec![b'A'; 150];
+        seq[60 - 50] = b'T'; // pre-region mismatch at 60 (< 99)
+        seq[98 - 50] = b'T'; // pre-region mismatch at 98 (< 99)
+        seq[99 - 50] = b'T'; // region_start - 1 = 99 (starts MNV into 100 -> nmoff += 1!)
+        seq[100 - 50] = b'T'; // region_start = 100 (consumed into 99..=100 MNV)
+        seq[120 - 50] = b'C'; // in-region SNV at 120 (observes adjusted_nm - nmoff = 5 - 1 = 4)
+
+        let boundary_rec = SamRecord {
+            name: b"r_boundary_mnv".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(50)),
+            alignment_end: Some(Pos1(199)),
+            mapping_quality: Some(60),
+            cigar: vec![(150, CigarKind::Match)],
+            sequence: seq,
+            quality_scores: vec![b'I'; 150],
+            nm: Some(5),
+            ..SamRecord::default()
+        };
+
+        let cfg_fast = Config::default(); // include_n == false -> pre-region skip active
+        let mut cfg_unskipped = Config::default();
+        cfg_unskipped.include_n = true; // disables pre-region skip; read has zero 'N' bases
+
+        let mut parser_fast = CigarParser::new(&reference, &region, &cfg_fast, false, 0, 0, 150);
+        parser_fast.parse_cigar(&boundary_rec).unwrap();
+        let vd_fast = parser_fast.into_variation_data();
+
+        let mut parser_unskipped =
+            CigarParser::new(&reference, &region, &cfg_unskipped, false, 0, 0, 150);
+        parser_unskipped.parse_cigar(&boundary_rec).unwrap();
+        let vd_unskipped = parser_unskipped.into_variation_data();
+
+        assert_eq!(vd_fast.ref_coverage, vd_unskipped.ref_coverage);
+        // pos 100 was absorbed into the 99..=100 MNV (whose start 99 < 100 is outside region),
+        // so pos 100 must NOT have a standalone 'T' SNV or ref_coverage, and pos 120 must observe nmoff == 1!
+        assert!(!vd_fast.ref_coverage.contains_key(&100));
+        assert_eq!(vd_fast.ref_coverage.get(&101), Some(&1));
+        assert!(vd_fast.non_insertion_variants.get(&100).is_none());
+        let hv_120_fast = vd_fast
+            .non_insertion_variants
+            .get(&120)
+            .and_then(|vm| vm.map.get("C"))
+            .expect("expected C SNV at 120");
+        let hv_120_unskipped = vd_unskipped
+            .non_insertion_variants
+            .get(&120)
+            .and_then(|vm| vm.map.get("C"))
+            .expect("expected C SNV at 120 in unskipped oracle");
+        assert_eq!(
+            hv_120_fast.nm, 4.0,
+            "boundary MNV at 99..=100 must increment nmoff to 1"
+        );
+        assert_eq!(hv_120_fast.nm, hv_120_unskipped.nm);
+        assert_eq!(hv_120_fast.pmean, hv_120_unskipped.pmean);
+        assert_eq!(hv_120_fast.qmean, hv_120_unskipped.qmean);
+
+        // 2. Negative `start` near contig start + `start == 0` (`alignment_start: None`) + truncated/exhausted
+        //    `query_seq` (`skip == 0` non-hanging check via `60P60M` — `AR-07`).
+        let mut neg_ref = Reference::new();
+        let neg_seq = vec![b'A'; 260];
+        neg_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: (-10i32) as u32, // ref_start = -10 as i32
+            sequence_end: 249,
+        });
+        neg_ref.region_sequences.push(neg_seq);
+        let neg_start_rec = SamRecord {
+            name: b"r_neg_start".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(2)),
+            alignment_end: Some(Pos1(151)),
+            mapping_quality: Some(60),
+            cigar: vec![(6, CigarKind::SoftClip), (150, CigarKind::Match)],
+            sequence: vec![b'A'; 156],
+            quality_scores: vec![b'I'; 156],
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+        let mut neg_parser = CigarParser::new(&neg_ref, &region, &cfg_fast, false, 0, 0, 150);
+        neg_parser.parse_cigar(&neg_start_rec).unwrap();
+        assert_eq!(neg_parser.ref_coverage.get(&100), Some(&1));
+
+        let zero_start_rec = SamRecord {
+            name: b"r_zero_start".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: None, // start = 0
+            alignment_end: Some(Pos1(150)),
+            mapping_quality: Some(60),
+            cigar: vec![(150, CigarKind::Match)],
+            sequence: vec![b'A'; 150],
+            quality_scores: vec![b'I'; 150],
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+        let mut zero_parser = CigarParser::new(&reference, &region, &cfg_fast, false, 0, 0, 150);
+        zero_parser.parse_cigar(&zero_start_rec).unwrap();
+        assert_eq!(zero_parser.ref_coverage.get(&100), Some(&1));
+
+        // Exhausted query_seq (`60P` consumes all 60 query bytes before `60M` enters at `start = 70 < 99` -> `skip == 0`):
+        // must break cleanly without hanging!
+        let skip_zero_rec = SamRecord {
+            name: b"r_skip_zero".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(50)),
+            alignment_end: Some(Pos1(109)),
+            mapping_quality: Some(60),
+            cigar: vec![(60, CigarKind::Pad), (60, CigarKind::Match)],
+            sequence: vec![b'A'; 60],
+            quality_scores: vec![b'I'; 60],
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+        let mut skip_zero_parser =
+            CigarParser::new(&reference, &region, &cfg_fast, false, 0, 0, 150);
+        skip_zero_parser.parse_cigar(&skip_zero_rec).unwrap();
+
+        // Whole Match block entirely pre-region (`20M30N80M` starting at 40: `20M` ends at 59 < 99):
+        // skipping all 20 bases (`i == cigar_element_len`) must exit the `while` loop without consuming a 21st base!
+        let mut splice_seq = vec![b'A'; 100];
+        splice_seq[20 + (110 - 90)] = b'G'; // downstream SNV at 110
+        let pre_splice_rec = SamRecord {
+            name: b"r_pre_splice".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(40)),
+            alignment_end: Some(Pos1(169)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (20, CigarKind::Match),
+                (30, CigarKind::Skip),
+                (80, CigarKind::Match),
+            ],
+            sequence: splice_seq,
+            quality_scores: vec![b'I'; 100],
+            nm: Some(1),
+            ..SamRecord::default()
+        };
+        let mut sp_fast = CigarParser::new(&reference, &region, &cfg_fast, false, 0, 0, 150);
+        sp_fast.parse_cigar(&pre_splice_rec).unwrap();
+        let mut sp_unskipped =
+            CigarParser::new(&reference, &region, &cfg_unskipped, false, 0, 0, 150);
+        sp_unskipped.parse_cigar(&pre_splice_rec).unwrap();
+        assert_eq!(sp_fast.splice_count, sp_unskipped.splice_count);
+        assert!(sp_fast
+            .non_insertion_variants
+            .get(&110)
+            .is_some_and(|vm| vm.map.contains_key("G")));
+
+        // 3. Corrupt SamRecord containing literal ASCII '+' (0x2B) in sequence at Match:
+        //    must still route to `insertion_variants` and `position_to_insertion_count` (`ch1 != b'+'` guard).
+        let mut plus_seq = vec![b'A'; 40];
+        plus_seq[10] = b'+'; // pos = 100 + 10 = 110
+        let plus_rec = SamRecord {
+            name: b"r_plus_ascii".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(100)),
+            alignment_end: Some(Pos1(139)),
+            mapping_quality: Some(60),
+            cigar: vec![(40, CigarKind::Match)],
+            sequence: plus_seq,
+            quality_scores: vec![b'I'; 40],
+            nm: Some(1),
+            ..SamRecord::default()
+        };
+        let mut plus_parser = CigarParser::new(&reference, &region, &cfg_fast, false, 0, 0, 150);
+        plus_parser.parse_cigar(&plus_rec).unwrap();
+        assert!(
+            plus_parser
+                .insertion_variants
+                .get(&110)
+                .and_then(|vm| vm.map.get("+"))
+                .is_some_and(|hv| hv.cnt == 1),
+            "literal '+' at Match must still route to insertion_variants"
+        );
+        assert_eq!(
+            plus_parser
+                .position_to_insertion_count
+                .get(&110)
+                .and_then(|m| m.get("+")),
+            Some(&1)
+        );
+        assert!(plus_parser
+            .non_insertion_variants
+            .get(&110)
+            .is_none_or(|vm| !vm.map.contains_key("+")));
+
+        // 4. `get_mate_reference_name_str` parity with `crate::bam::get_mate_reference_name`.
+        for (rname, mname) in [
+            (None, None),
+            (Some("chr1"), None),
+            (None, Some("chr2")),
+            (Some("chr1"), Some("chr1")),
+            (Some("chr1"), Some("chr2")),
+        ] {
+            let r = SamRecord {
+                reference_name: rname.map(str::to_string),
+                mate_reference_name: mname.map(str::to_string),
+                ..SamRecord::default()
+            };
+            assert_eq!(
+                get_mate_reference_name_str(&r),
+                crate::bam::get_mate_reference_name(&r)
+            );
+        }
+
+        // 5. `prepare_sv_structures_for_analysis` deferred `end` / `(soft5, soft3)` and repeated `&str` `mchr` updates (`AR-13`).
+        let mut sv_parser = CigarParser::new(&reference, &region, &cfg_fast, true, 0, 0, 150);
+        for (start_p, flags, mchr) in [
+            (105u32, 0x1u16, Some("chr2")),
+            (110u32, 0x1u16, Some("chr2")),
+            (115u32, 0x11u16, Some("chr2")),
+            (120u32, 0u16, None),
+        ] {
+            let mut sv_seq = vec![b'C'; 5];
+            sv_seq.extend_from_slice(&[b'A'; 30]);
+            sv_seq.extend_from_slice(&[b'C'; 5]);
+            let sv_rec = SamRecord {
+                name: b"r_sv_fus".to_vec(),
+                flags,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(start_p)),
+                alignment_end: Some(Pos1(start_p + 29)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (5, CigarKind::SoftClip),
+                    (30, CigarKind::Match),
+                    (5, CigarKind::SoftClip),
+                ],
+                sequence: sv_seq,
+                quality_scores: vec![b'I'; 40],
+                mate_reference_name: mchr.map(str::to_string),
+                mate_alignment_start: Some(Pos1(500)),
+                nm: Some(0),
+                ..SamRecord::default()
+            };
+            sv_parser.parse_cigar(&sv_rec).unwrap();
+        }
+        assert_eq!(sv_parser.sv_structures.svffus["chr2"][0].variation.cnt, 2);
+        assert_eq!(sv_parser.sv_structures.svfusfend["chr2"], 140);
+        assert_eq!(
+            sv_parser.sv_structures.svffus["chr2"][0].soft.get(&135),
+            Some(&1)
+        );
+        assert_eq!(sv_parser.sv_structures.svrfus["chr2"][0].variation.cnt, 1);
+        assert_eq!(
+            sv_parser.sv_structures.svrfus["chr2"][0].soft.get(&115),
+            Some(&1)
+        );
+        assert_eq!(sv_parser.sv_structures.svffus["*"][0].variation.cnt, 1);
     }
 }

@@ -6,8 +6,9 @@
 use crate::cigar::ModifiedCigar;
 use crate::config::Config;
 use crate::reference::SeedMap;
-use crate::util::{char_at, reverse_complement, subseq};
+use crate::util::{char_at, reverse_complement, reverse_complement_bytes, subseq};
 use regex::Regex;
+use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 // Define all the regexes from Patterns.java
@@ -34,10 +35,12 @@ static NUMBER_IOR_D_NUMBER_M_NUMBER_S_END: LazyLock<Regex> =
 
 static BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"^(\d)M(\d+)([ID])(\d+)M"));
+#[cfg(test)]
 static BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M_OPT: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"^\dM\d+[ID]\d+M"));
 static NUMBER_IOR_D_DIGIT_M_END: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d)M$"));
+#[cfg(test)]
 static NUMBER_IOR_D_NUMBER_M_END: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d+)M$"));
 
@@ -73,9 +76,13 @@ static ANY_NUMBER_M_NUMBER_S_END: LazyLock<Regex> =
 #[cfg(test)]
 static BEGIN_ANY_DIG_M_END: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"^(.*?)(\d+)M$"));
+#[cfg(test)]
 static DIG_M_END: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d+M$"));
+#[cfg(test)]
 static BEGIN_DIG_M: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)M"));
+#[cfg(test)]
 static DIG_S_DIG_M: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)S(\d+)M"));
+#[cfg(test)]
 static DIG_M_DIG_S_END: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d+M\d+S$"));
 
 #[cfg(test)]
@@ -739,8 +746,48 @@ pub(crate) fn step_combine_dig_s_dig_m(
     (pos, cigar_soft, cigar_mch, cigar_changed)
 }
 
+#[inline]
+fn unique_seed_map_pos(seed: &SeedMap, rc_seed: &[u8]) -> Option<u32> {
+    match seed.get(rc_seed) {
+        Some([pos]) => Some(*pos),
+        _ => None,
+    }
+}
+
+#[inline]
+fn is_chimeric_seed_hit(seed_pos: Option<u32>, position: i32, max_read_length: i32) -> bool {
+    seed_pos.is_some_and(|ref_pos_u32| {
+        let ref_pos = ref_pos_u32 as i32;
+        (i64::from(position) - i64::from(ref_pos)).abs() < 2 * i64::from(max_read_length)
+    })
+}
+
+#[inline]
+fn replace_cigar_range(
+    cigar_str: &mut String,
+    range: std::ops::Range<usize>,
+    args: std::fmt::Arguments<'_>,
+) {
+    if range.start <= range.end
+        && cigar_str.is_char_boundary(range.start)
+        && cigar_str.is_char_boundary(range.end)
+    {
+        let mut buf = crate::types::StackBuf::<64>::new();
+        if buf.write_fmt(args).is_ok() {
+            cigar_str.replace_range(range, buf.as_str());
+        } else {
+            let fallback = std::fmt::format(args);
+            cigar_str.replace_range(range, &fallback);
+        }
+    }
+}
+
 /// Zero-copy in-place CIGAR modifier for 2-op (`[S, M]`, `[M, S]`) and 3-op (`[S, M, S]`) reads
 /// whose `query_seq` and `query_qual` are guaranteed untouched by `CigarModifier.java:61-243`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "in-place pure-SM CIGAR modifier borrows disjoint CigarParser fields without allocation"
+)]
 pub(crate) fn modify_pure_sm_in_place(
     position: &mut i32,
     cigar_elements: &mut Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,
@@ -748,6 +795,8 @@ pub(crate) fn modify_pure_sm_in_place(
     query_qual: &[u8],
     reference: &[u8],
     ref_start: i32,
+    seed: &SeedMap,
+    max_read_length: i32,
     config: &Config,
 ) -> Result<PureSmOutcome, crate::types::VardictError> {
     use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
@@ -820,9 +869,32 @@ pub(crate) fn modify_pure_sm_in_place(
         return Ok(PureSmOutcome::Fallback);
     }
 
-    // 4. Reject clips that could trigger chimeric SEED_2 sequence/quality truncation.
-    if !config.chimeric && ((s5 as usize) >= SEED_2 || (s3 as usize) >= SEED_2) {
-        return Ok(PureSmOutcome::Fallback);
+    // 4. Mirror Patterns.java:156,159 (`^(\d\d+)S` / `(\d\d+)S$`) chimeric SEED_2 check (`AR-01`):
+    //    5' `>= 10S` enters Java's `if` branch (masking `else if` 3' check even for 10S/11S or 5' miss).
+    if !config.chimeric {
+        if s5 >= 10 {
+            if (s5 as usize) >= SEED_2 {
+                let s5_usize = s5 as usize;
+                let seed_pos = query_seq
+                    .get((s5_usize - SEED_2)..s5_usize)
+                    .and_then(reverse_complement_bytes::<SEED_2>)
+                    .and_then(|rc_seed| unique_seed_map_pos(seed, &rc_seed));
+                if is_chimeric_seed_hit(seed_pos, pos0, max_read_length) {
+                    return Ok(PureSmOutcome::Fallback);
+                }
+            }
+        } else if (s3 as usize) >= SEED_2 {
+            let seed_pos = query_seq
+                .len()
+                .checked_sub(s3 as usize)
+                .and_then(|idx| query_seq.get(idx..))
+                .and_then(|s| s.get(..SEED_2))
+                .and_then(reverse_complement_bytes::<SEED_2>)
+                .and_then(|rc_seed| unique_seed_map_pos(seed, &rc_seed));
+            if is_chimeric_seed_hit(seed_pos, pos0, max_read_length) {
+                return Ok(PureSmOutcome::Fallback);
+            }
+        }
     }
 
     let mut pos = pos0;
@@ -973,10 +1045,7 @@ impl<'a> CigarModifier<'a> {
     #[inline]
     fn unique_seed_pos(&mut self, rc_seed: &[u8]) -> Option<u32> {
         match &mut self.seed {
-            SeedBackend::Map(map) => match map.get(rc_seed) {
-                Some([pos]) => Some(*pos),
-                _ => None,
-            },
+            SeedBackend::Map(map) => unique_seed_map_pos(map, rc_seed),
             SeedBackend::Closure(f) => f(rc_seed),
         }
     }
@@ -1009,35 +1078,43 @@ impl<'a> CigarModifier<'a> {
         if has_d {
             // 1. Strip leading deletion
             if let Some(caps) = BEGIN_NUMBER_D.captures(&this.cigar_str) {
-                let dlen = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                this.position = this.position.saturating_add(dlen);
-                this.cigar_str = BEGIN_NUMBER_D.replace(&this.cigar_str, "").into_owned();
-                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                if let Some(m0) = caps.get(0) {
+                    let range = m0.range();
+                    let dlen = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                    this.position = this.position.saturating_add(dlen);
+                    this.cigar_str.replace_range(range, "");
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                }
             }
             // Strip trailing deletion
-            if has_d && END_NUMBER_D.is_match(&this.cigar_str) {
-                this.cigar_str = END_NUMBER_D.replace(&this.cigar_str, "").into_owned();
-                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+            if has_d {
+                if let Some(m0) = END_NUMBER_D.find(&this.cigar_str) {
+                    let range = m0.range();
+                    this.cigar_str.replace_range(range, "");
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                }
             }
         }
 
         if has_i {
             // 2. Replace leading insertion with soft clip
             if let Some(caps) = BEGIN_NUMBER_I.captures(&this.cigar_str) {
-                let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                this.cigar_str = BEGIN_NUMBER_I
-                    .replace(&this.cigar_str, &format!("{}S", ilen))
-                    .into_owned();
-                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                if let Some(m0) = caps.get(0) {
+                    let range = m0.range();
+                    let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                    replace_cigar_range(&mut this.cigar_str, range, format_args!("{ilen}S"));
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                }
             }
             // Replace trailing insertion with soft clip
             if has_i {
                 if let Some(caps) = END_NUMBER_I.captures(&this.cigar_str) {
-                    let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                    this.cigar_str = END_NUMBER_I
-                        .replace(&this.cigar_str, &format!("{}S", ilen))
-                        .into_owned();
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    if let Some(m0) = caps.get(0) {
+                        let range = m0.range();
+                        let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{ilen}S"));
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    }
                 }
             }
         }
@@ -1052,37 +1129,35 @@ impl<'a> CigarModifier<'a> {
                                 .checked_sub(SEED_2)
                                 .and_then(|idx| sseq.get(idx..))
                         })
-                        .and_then(crate::util::reverse_complement_bytes::<SEED_2>);
+                        .and_then(reverse_complement_bytes::<SEED_2>);
                     if let Some(rc_seed) = rc_seed_opt {
-                        if let Some(ref_pos_u32) = this.unique_seed_pos(&rc_seed) {
-                            let ref_pos = ref_pos_u32 as i32;
-                            if (i64::from(this.position) - i64::from(ref_pos)).abs()
-                                < 2 * i64::from(this.max_read_length)
-                            {
-                                let verbose_seq = if this.config.verbose {
-                                    subseq(&this.query_seq, 0, cigar_element).map(rc_seq)
+                        let seed_pos = this.unique_seed_pos(&rc_seed);
+                        if is_chimeric_seed_hit(seed_pos, this.position, this.max_read_length) {
+                            let verbose_seq = if this.config.verbose {
+                                subseq(&this.query_seq, 0, cigar_element).map(rc_seq)
+                            } else {
+                                None
+                            };
+                            if let Some(m0) = RE_START_S.find(&this.cigar_str) {
+                                let range = m0.range();
+                                this.cigar_str.replace_range(range, "");
+                            }
+                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                            if this.query_seq.len() >= cigar_element {
+                                this.query_seq.drain(..cigar_element);
+                                if this.query_qual.len() >= cigar_element {
+                                    this.query_qual.drain(..cigar_element);
                                 } else {
-                                    None
-                                };
-                                this.cigar_str =
-                                    RE_START_S.replace(&this.cigar_str, "").into_owned();
-                                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                                if this.query_seq.len() >= cigar_element {
-                                    this.query_seq.drain(..cigar_element);
-                                    if this.query_qual.len() >= cigar_element {
-                                        this.query_qual.drain(..cigar_element);
-                                    } else {
-                                        this.query_qual.clear();
-                                    }
+                                    this.query_qual.clear();
                                 }
-                                if let Some(sequence) = verbose_seq {
-                                    crate::verbose_eprintln!(
-                                        "{} at 5' is a chimeric at {} by SEED {}",
-                                        crate::util::SanitizedBytes(&sequence),
-                                        this.position,
-                                        SEED_2
-                                    );
-                                }
+                            }
+                            if let Some(sequence) = verbose_seq {
+                                crate::verbose_eprintln!(
+                                    "{} at 5' is a chimeric at {} by SEED {}",
+                                    crate::util::SanitizedBytes(&sequence),
+                                    this.position,
+                                    SEED_2
+                                );
                             }
                         }
                     }
@@ -1094,36 +1169,33 @@ impl<'a> CigarModifier<'a> {
                         let start_idx = seq_len - cigar_element;
                         let rc_seed_opt = subseq(&this.query_seq, start_idx, cigar_element)
                             .and_then(|sseq| sseq.get(..SEED_2))
-                            .and_then(crate::util::reverse_complement_bytes::<SEED_2>);
+                            .and_then(reverse_complement_bytes::<SEED_2>);
                         if let Some(rc_seed) = rc_seed_opt {
-                            if let Some(ref_pos_u32) = this.unique_seed_pos(&rc_seed) {
-                                let ref_pos = ref_pos_u32 as i32;
-                                if (i64::from(this.position) - i64::from(ref_pos)).abs()
-                                    < 2 * i64::from(this.max_read_length)
-                                {
-                                    let verbose_seq = if this.config.verbose {
-                                        subseq(&this.query_seq, start_idx, cigar_element)
-                                            .map(rc_seq)
-                                    } else {
-                                        None
-                                    };
-                                    this.cigar_str =
-                                        RE_END_2S.replace(&this.cigar_str, "").into_owned();
-                                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                                    this.query_seq.truncate(start_idx);
-                                    if this.query_qual.len() >= start_idx {
-                                        this.query_qual.truncate(start_idx);
-                                    } else {
-                                        this.query_qual.clear();
-                                    }
-                                    if let Some(sequence) = verbose_seq {
-                                        crate::verbose_eprintln!(
-                                            "{} at 3' is a chimeric at {} by SEED {}",
-                                            crate::util::SanitizedBytes(&sequence),
-                                            this.position,
-                                            SEED_2
-                                        );
-                                    }
+                            let seed_pos = this.unique_seed_pos(&rc_seed);
+                            if is_chimeric_seed_hit(seed_pos, this.position, this.max_read_length) {
+                                let verbose_seq = if this.config.verbose {
+                                    subseq(&this.query_seq, start_idx, cigar_element).map(rc_seq)
+                                } else {
+                                    None
+                                };
+                                if let Some(m0) = RE_END_2S.find(&this.cigar_str) {
+                                    let range = m0.range();
+                                    this.cigar_str.replace_range(range, "");
+                                }
+                                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                                this.query_seq.truncate(start_idx);
+                                if this.query_qual.len() >= start_idx {
+                                    this.query_qual.truncate(start_idx);
+                                } else {
+                                    this.query_qual.clear();
+                                }
+                                if let Some(sequence) = verbose_seq {
+                                    crate::verbose_eprintln!(
+                                        "{} at 3' is a chimeric at {} by SEED {}",
+                                        crate::util::SanitizedBytes(&sequence),
+                                        this.position,
+                                        SEED_2
+                                    );
                                 }
                             }
                         }
@@ -1155,31 +1227,34 @@ impl<'a> CigarModifier<'a> {
             // S followed by I/D
             if has_s && (has_d || has_i) {
                 if let Some(caps) = BEGIN_NUMBER_S_NUMBER_IOR_D.captures(&this.cigar_str) {
-                    let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                    let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                    let op = caps.get(3).map_or("", |m| m.as_str());
-                    let tslen = format!("{}S", g1.saturating_add(if op == "I" { g2 } else { 0 }));
-                    this.position = this.position.saturating_add(if op == "D" { g2 } else { 0 });
-                    this.cigar_str = BEGIN_NUMBER_S_NUMBER_IOR_D
-                        .replace(&this.cigar_str, &tslen)
-                        .into_owned();
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                    flag_loop = true;
+                    if let Some(m0) = caps.get(0) {
+                        let range = m0.range();
+                        let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                        let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
+                        let op = caps.get(3).map_or("", |m| m.as_str());
+                        let slen = g1.saturating_add(if op == "I" { g2 } else { 0 });
+                        this.position =
+                            this.position.saturating_add(if op == "D" { g2 } else { 0 });
+                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        flag_loop = true;
+                    }
                 }
             }
 
             // I/D followed by S
             if has_s && (has_d || has_i) {
                 if let Some(caps) = NUMBER_IOR_D_NUMBER_S_END.captures(&this.cigar_str) {
-                    let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                    let op = caps.get(2).map_or("", |m| m.as_str());
-                    let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                    let tslen = format!("{}S", g3.saturating_add(if op == "I" { g1 } else { 0 }));
-                    this.cigar_str = NUMBER_IOR_D_NUMBER_S_END
-                        .replace(&this.cigar_str, &tslen)
-                        .into_owned();
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                    flag_loop = true;
+                    if let Some(m0) = caps.get(0) {
+                        let range = m0.range();
+                        let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                        let op = caps.get(2).map_or("", |m| m.as_str());
+                        let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
+                        let slen = g3.saturating_add(if op == "I" { g1 } else { 0 });
+                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        flag_loop = true;
+                    }
                 }
             }
 
@@ -1188,22 +1263,31 @@ impl<'a> CigarModifier<'a> {
                 if let Some(caps) = BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D.captures(&this.cigar_str) {
                     let tmid = to_int(caps.get(2).map_or("", |m| m.as_str()));
                     if tmid <= 10 {
-                        let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                        let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                        let op = caps.get(4).map_or("", |m| m.as_str());
-                        let tslen = format!(
-                            "{}S",
-                            g1.saturating_add(tmid)
-                                .saturating_add(if op == "I" { g3 } else { 0 })
-                        );
-                        this.position = this
-                            .position
-                            .saturating_add(tmid.saturating_add(if op == "D" { g3 } else { 0 }));
-                        this.cigar_str = BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D
-                            .replace(&this.cigar_str, &tslen)
-                            .into_owned();
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                        flag_loop = true;
+                        if let Some(m0) = caps.get(0) {
+                            let range = m0.range();
+                            let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                            let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
+                            let op = caps.get(4).map_or("", |m| m.as_str());
+                            let slen = g1.saturating_add(tmid).saturating_add(if op == "I" {
+                                g3
+                            } else {
+                                0
+                            });
+                            this.position =
+                                this.position
+                                    .saturating_add(tmid.saturating_add(if op == "D" {
+                                        g3
+                                    } else {
+                                        0
+                                    }));
+                            replace_cigar_range(
+                                &mut this.cigar_str,
+                                range,
+                                format_args!("{slen}S"),
+                            );
+                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                            flag_loop = true;
+                        }
                     }
                 }
             }
@@ -1213,19 +1297,24 @@ impl<'a> CigarModifier<'a> {
                 if let Some(caps) = NUMBER_IOR_D_NUMBER_M_NUMBER_S_END.captures(&this.cigar_str) {
                     let tmid = to_int(caps.get(3).map_or("", |m| m.as_str()));
                     if tmid <= 10 {
-                        let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                        let op = caps.get(2).map_or("", |m| m.as_str());
-                        let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                        let tslen = format!(
-                            "{}S",
-                            g4.saturating_add(tmid)
-                                .saturating_add(if op == "I" { g1 } else { 0 })
-                        );
-                        this.cigar_str = NUMBER_IOR_D_NUMBER_M_NUMBER_S_END
-                            .replace(&this.cigar_str, &tslen)
-                            .into_owned();
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                        flag_loop = true;
+                        if let Some(m0) = caps.get(0) {
+                            let range = m0.range();
+                            let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                            let op = caps.get(2).map_or("", |m| m.as_str());
+                            let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
+                            let slen = g4.saturating_add(tmid).saturating_add(if op == "I" {
+                                g1
+                            } else {
+                                0
+                            });
+                            replace_cigar_range(
+                                &mut this.cigar_str,
+                                range,
+                                format_args!("{slen}S"),
+                            );
+                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                            flag_loop = true;
+                        }
                     }
                 }
             }
@@ -1233,49 +1322,61 @@ impl<'a> CigarModifier<'a> {
             // Single-digit M at start with I/D
             if has_d || has_i {
                 if let Some(caps) = BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M.captures(&this.cigar_str) {
-                    let tmid = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                    let mlen = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                    let op = caps.get(3).map_or("", |m| m.as_str()).to_string();
-                    let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                    flag_loop = this.begin_digit_m_number_ior_d_number_m(tmid, mlen, &op, g2);
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    if let Some(m0) = caps.get(0) {
+                        let range = m0.range();
+                        let tmid = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                        let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
+                        let op_str = caps.get(3).map_or("", |m| m.as_str());
+                        let is_ins = op_str == "I";
+                        let is_del = op_str == "D";
+                        let mlen = to_int(caps.get(4).map_or("", |m| m.as_str()));
+                        flag_loop = this.begin_digit_m_number_ior_d_number_m_range(
+                            range, tmid, mlen, is_ins, is_del, g2,
+                        );
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    }
                 }
             }
 
             // Single-digit M at end with I/D
             if has_d || has_i {
                 if let Some(caps) = NUMBER_IOR_D_DIGIT_M_END.captures(&this.cigar_str) {
-                    let tmid = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                    let op = caps.get(2).map_or("", |m| m.as_str());
-                    let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                    let tslen = format!("{}S", tmid.saturating_add(if op == "I" { g1 } else { 0 }));
-                    this.cigar_str = NUMBER_IOR_D_NUMBER_M_END
-                        .replace(&this.cigar_str, &tslen)
-                        .into_owned();
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                    flag_loop = true;
+                    if let Some(m0) = caps.get(0) {
+                        let range = m0.range();
+                        let tmid = to_int(caps.get(3).map_or("", |m| m.as_str()));
+                        let op = caps.get(2).map_or("", |m| m.as_str());
+                        let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                        let slen = tmid.saturating_add(if op == "I" { g1 } else { 0 });
+                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        flag_loop = true;
+                    }
                 }
             }
 
             // Combine close deletions/insertions into complex
+            // Keep outer if/else-if precedence intact while hoisting `mid <= MAX_MULTI_INDEL_MID_SPAN`
+            // before `.to_string()` capture extraction (`AR-07`).
             let caps_d_m_d = if has_d && has_i {
                 D_M_D_DD_M_D_I_D_M_D_DD.captures(&this.cigar_str)
             } else {
                 None
             };
             if let Some(caps) = caps_d_m_d {
-                let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
                 let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                let g5 = to_int(caps.get(5).map_or("", |m| m.as_str()));
                 let g6 = to_int(caps.get(6).map_or("", |m| m.as_str()));
-                let g7 = to_int(caps.get(7).map_or("", |m| m.as_str()));
-                let g8 = to_int(caps.get(8).map_or("", |m| m.as_str()));
-                flag_loop = this.two_deletions_insertion_to_complex(
-                    &ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop,
-                );
-                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                if g4.saturating_add(g6) <= MAX_MULTI_INDEL_MID_SPAN {
+                    let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                    let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
+                    let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
+                    let g5 = to_int(caps.get(5).map_or("", |m| m.as_str()));
+                    let g7 = to_int(caps.get(7).map_or("", |m| m.as_str()));
+                    let g8 = to_int(caps.get(8).map_or("", |m| m.as_str()));
+                    flag_loop = this.two_deletions_insertion_to_complex(
+                        &ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop,
+                    );
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                }
             } else {
                 let caps_three_del = if has_d {
                     THREE_DELETIONS_PATTERN.captures(&this.cigar_str)
@@ -1283,100 +1384,147 @@ impl<'a> CigarModifier<'a> {
                     None
                 };
                 if let Some(caps) = caps_three_del {
-                    let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                    let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                    let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
                     let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                    let g5 = to_int(caps.get(5).map_or("", |m| m.as_str()));
                     let g6 = to_int(caps.get(6).map_or("", |m| m.as_str()));
-                    let g7 = to_int(caps.get(7).map_or("", |m| m.as_str()));
-                    let g8 = to_int(caps.get(8).map_or("", |m| m.as_str()));
-                    flag_loop = this.three_deletions(&ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop);
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                } else if has_d || has_i {
-                    if let Some(caps) = THREE_INDELS_PATTERN.captures(&this.cigar_str) {
+                    if g4.saturating_add(g6) <= MAX_MULTI_INDEL_MID_SPAN {
                         let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
                         let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
                         let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                        let op1 = caps.get(4).map_or("", |m| m.as_str()).to_string();
                         let g5 = to_int(caps.get(5).map_or("", |m| m.as_str()));
-                        let g6 = to_int(caps.get(6).map_or("", |m| m.as_str()));
-                        let op2 = caps.get(7).map_or("", |m| m.as_str()).to_string();
+                        let g7 = to_int(caps.get(7).map_or("", |m| m.as_str()));
                         let g8 = to_int(caps.get(8).map_or("", |m| m.as_str()));
-                        let g9 = to_int(caps.get(9).map_or("", |m| m.as_str()));
-                        let op3 = caps.get(10).map_or("", |m| m.as_str()).to_string();
-                        let g11 = to_int(caps.get(11).map_or("", |m| m.as_str()));
-                        flag_loop = this.three_indels(
-                            &ov5, g2, g3, &op1, g5, g6, &op2, g8, g9, &op3, g11, flag_loop,
-                        );
+                        flag_loop =
+                            this.three_deletions(&ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop);
                         (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    }
+                } else if has_d || has_i {
+                    if let Some(caps) = THREE_INDELS_PATTERN.captures(&this.cigar_str) {
+                        let g5 = to_int(caps.get(5).map_or("", |m| m.as_str()));
+                        let g8 = to_int(caps.get(8).map_or("", |m| m.as_str()));
+                        if g5.saturating_add(g8) <= MAX_MULTI_INDEL_MID_SPAN {
+                            let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                            let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
+                            let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
+                            let op1 = caps.get(4).map_or("", |m| m.as_str()).to_string();
+                            let g6 = to_int(caps.get(6).map_or("", |m| m.as_str()));
+                            let op2 = caps.get(7).map_or("", |m| m.as_str()).to_string();
+                            let g9 = to_int(caps.get(9).map_or("", |m| m.as_str()));
+                            let op3 = caps.get(10).map_or("", |m| m.as_str()).to_string();
+                            let g11 = to_int(caps.get(11).map_or("", |m| m.as_str()));
+                            flag_loop = this.three_indels(
+                                &ov5, g2, g3, &op1, g5, g6, &op2, g8, g9, &op3, g11, flag_loop,
+                            );
+                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        }
                     }
                 }
             }
 
             if has_d {
                 if let Some(caps) = DIG_D_DIG_M_DIG_DI_DIGI.captures(&this.cigar_str) {
-                    let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
                     let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                    let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                    let op = caps.get(4).map_or("", |m| m.as_str()).to_string();
-                    let istr = caps.get(5).map(|m| m.as_str().to_string());
-                    flag_loop = this.combine_to_close_to_correct(
-                        g1,
-                        g2,
-                        g3,
-                        &op,
-                        istr.as_deref(),
-                        flag_loop,
-                    );
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    if g2 <= MAX_MULTI_INDEL_MID_SPAN {
+                        if let Some(m0) = caps.get(0) {
+                            let range = m0.range();
+                            let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
+                            let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
+                            let op = caps.get(4).map_or("", |m| m.as_str());
+                            let mut dlen = g1.saturating_add(g2);
+                            let mut ilen = g2;
+                            if op == "I" {
+                                ilen = ilen.saturating_add(g3);
+                            } else if op == "D" {
+                                dlen = dlen.saturating_add(g3);
+                                if let Some(istr_str) = caps.get(5).map(|m| m.as_str()) {
+                                    if let Some(prefix) = istr_str
+                                        .len()
+                                        .checked_sub(1)
+                                        .and_then(|n| istr_str.get(..n))
+                                    {
+                                        ilen = ilen.saturating_add(to_int(prefix));
+                                    }
+                                }
+                            }
+                            replace_cigar_range(
+                                &mut this.cigar_str,
+                                range,
+                                format_args!("{dlen}D{ilen}I"),
+                            );
+                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                            flag_loop = true;
+                        }
+                    }
                 }
             }
 
             if has_i {
                 if let Some(caps) = NOTDIG_DIG_I_DIG_M_DIG_DI_DIGI.captures(&this.cigar_str) {
-                    let op_prefix = caps.get(1).map_or("", |m| m.as_str()).to_string();
+                    let op_prefix = caps.get(1).map_or("", |m| m.as_str());
                     if op_prefix != "D" && op_prefix != "H" {
-                        let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
                         let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                        let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                        let op = caps.get(5).map_or("", |m| m.as_str()).to_string();
-                        let istr = caps.get(6).map(|m| m.as_str().to_string());
-                        flag_loop = this.combine_to_close_to_one(
-                            &op_prefix,
-                            g2,
-                            g3,
-                            g4,
-                            &op,
-                            istr.as_deref(),
-                            flag_loop,
-                        );
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        if g3 <= MAX_MULTI_INDEL_MID_SPAN {
+                            if let Some(m0) = caps.get(0) {
+                                let range = m0.range();
+                                let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
+                                let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
+                                let op = caps.get(5).map_or("", |m| m.as_str());
+                                let mut dlen = g3;
+                                let mut ilen = g2.saturating_add(g3);
+                                if op == "I" {
+                                    ilen = ilen.saturating_add(g4);
+                                } else if op == "D" {
+                                    dlen = dlen.saturating_add(g4);
+                                    if let Some(istr_str) = caps.get(6).map(|m| m.as_str()) {
+                                        if let Some(prefix) = istr_str
+                                            .len()
+                                            .checked_sub(1)
+                                            .and_then(|n| istr_str.get(..n))
+                                        {
+                                            ilen = ilen.saturating_add(to_int(prefix));
+                                        }
+                                    }
+                                }
+                                let mut buf = crate::types::StackBuf::<64>::new();
+                                let fallback = if write!(buf, "{op_prefix}{dlen}D{ilen}I").is_ok() {
+                                    None
+                                } else {
+                                    Some(format!("{op_prefix}{dlen}D{ilen}I"))
+                                };
+                                this.cigar_str.replace_range(
+                                    range,
+                                    fallback.as_deref().unwrap_or(buf.as_str()),
+                                );
+                                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                                flag_loop = true;
+                            }
+                        }
                     }
                 }
             }
 
             if has_d {
                 if let Some(caps) = DIG_D_DIG_D.captures(&this.cigar_str) {
-                    let dlen = to_int(caps.get(1).map_or("", |m| m.as_str()))
-                        .saturating_add(to_int(caps.get(2).map_or("", |m| m.as_str())));
-                    this.cigar_str = DIG_D_DIG_D
-                        .replace(&this.cigar_str, &format!("{}D", dlen))
-                        .into_owned();
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                    flag_loop = true;
+                    if let Some(m0) = caps.get(0) {
+                        let range = m0.range();
+                        let dlen = to_int(caps.get(1).map_or("", |m| m.as_str()))
+                            .saturating_add(to_int(caps.get(2).map_or("", |m| m.as_str())));
+                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{dlen}D"));
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        flag_loop = true;
+                    }
                 }
             }
 
             if has_i {
                 if let Some(caps) = DIG_I_DIG_I.captures(&this.cigar_str) {
-                    let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()))
-                        .saturating_add(to_int(caps.get(2).map_or("", |m| m.as_str())));
-                    this.cigar_str = DIG_I_DIG_I
-                        .replace(&this.cigar_str, &format!("{}I", ilen))
-                        .into_owned();
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                    flag_loop = true;
+                    if let Some(m0) = caps.get(0) {
+                        let range = m0.range();
+                        let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()))
+                            .saturating_add(to_int(caps.get(2).map_or("", |m| m.as_str())));
+                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{ilen}I"));
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        flag_loop = true;
+                    }
                 }
             }
         }
@@ -1711,10 +1859,10 @@ impl<'a> CigarModifier<'a> {
         if let Some(caps) = DIG_S_DIG_M.captures(&this.cigar_str) {
             let soft = to_int(caps.get(1).unwrap().as_str());
             let mch = to_int(caps.get(2).unwrap().as_str());
-            this.combine_dig_s_dig_m(soft, mch);
+            this.combine_dig_s_dig_m_legacy(soft, mch);
         } else if let Some(caps) = BEGIN_DIG_M.captures(&this.cigar_str) {
             let mch = to_int(caps.get(1).unwrap().as_str());
-            this.combine_begin_dig_m(mch);
+            this.combine_begin_dig_m_legacy(mch);
         }
 
         // ports CigarModifier.java:619-791, CigarParser.java:278
@@ -1750,6 +1898,34 @@ impl<'a> CigarModifier<'a> {
         );
         if rn > 0 && rn <= 3 {
             mch = mch.saturating_sub(rn);
+            let bytes = self.cigar_str.as_bytes();
+            let mut m_pos = 0;
+            while bytes.get(m_pos).is_some_and(u8::is_ascii_digit) {
+                m_pos += 1;
+            }
+            if m_pos > 0 && bytes.get(m_pos) == Some(&b'M') {
+                replace_cigar_range(
+                    &mut self.cigar_str,
+                    0..(m_pos + 1),
+                    format_args!("{rn}S{mch}M"),
+                );
+            }
+            self.position = self.position.saturating_add(rn);
+        }
+    }
+
+    #[cfg(test)]
+    fn combine_begin_dig_m_legacy(&mut self, mut mch: i32) {
+        let rn = count_start_mismatch_clip(
+            self.position,
+            mch,
+            0,
+            &self.query_seq,
+            self.reference,
+            self.ref_start,
+        );
+        if rn > 0 && rn <= 3 {
+            mch = mch.saturating_sub(rn);
             self.cigar_str = BEGIN_DIG_M
                 .replace(&self.cigar_str, &format!("{}S{}M", rn, mch))
                 .into_owned();
@@ -1758,6 +1934,49 @@ impl<'a> CigarModifier<'a> {
     }
 
     fn combine_dig_s_dig_m(&mut self, soft: i32, mch: i32) {
+        let (new_pos, cigar_soft, cigar_mch, changed) = step_combine_dig_s_dig_m(
+            self.position,
+            soft,
+            mch,
+            &self.query_seq,
+            &self.query_qual,
+            self.reference,
+            self.ref_start,
+        );
+        self.position = new_pos;
+        if changed {
+            let bytes = self.cigar_str.as_bytes();
+            let mut s_pos = 0;
+            while bytes.get(s_pos).is_some_and(u8::is_ascii_digit) {
+                s_pos += 1;
+            }
+            if s_pos > 0 && bytes.get(s_pos) == Some(&b'S') {
+                let mut m_pos = s_pos + 1;
+                while bytes.get(m_pos).is_some_and(u8::is_ascii_digit) {
+                    m_pos += 1;
+                }
+                if m_pos > s_pos + 1 && bytes.get(m_pos) == Some(&b'M') {
+                    let span = 0..(m_pos + 1);
+                    if cigar_soft > 0 {
+                        replace_cigar_range(
+                            &mut self.cigar_str,
+                            span,
+                            format_args!("{cigar_soft}S{cigar_mch}M"),
+                        );
+                    } else {
+                        replace_cigar_range(
+                            &mut self.cigar_str,
+                            span,
+                            format_args!("{cigar_mch}M"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn combine_dig_s_dig_m_legacy(&mut self, soft: i32, mch: i32) {
         let (new_pos, cigar_soft, cigar_mch, changed) = step_combine_dig_s_dig_m(
             self.position,
             soft,
@@ -1781,7 +2000,7 @@ impl<'a> CigarModifier<'a> {
         }
     }
 
-    fn capture_mis_softly_3mismatches(&mut self, ov5_len: usize, mch: i32) {
+    fn capture_mis_softly_3mismatches(&mut self, ov5_len: usize, mut mch: i32) {
         let mut refoff = self.position.saturating_add(mch);
         let mut rdoff = mch;
         if ov5_len > 0 {
@@ -1789,21 +2008,33 @@ impl<'a> CigarModifier<'a> {
             refoff = refoff.saturating_add(mnd);
             rdoff = rdoff.saturating_add(mis);
         }
-        self.apply_capture_mis_softly_3mismatches(refoff, rdoff, mch);
+        let rn = count_end_mismatch_clip(
+            refoff,
+            rdoff,
+            mch,
+            &self.query_seq,
+            self.reference,
+            self.ref_start,
+        );
+        mch -= rn;
+        if rn > 0 && rn <= 3 {
+            let end = self.cigar_str.len();
+            replace_cigar_range(
+                &mut self.cigar_str,
+                ov5_len..end,
+                format_args!("{mch}M{rn}S"),
+            );
+        }
     }
 
     #[cfg(test)]
-    fn capture_mis_softly_3mismatches_legacy(&mut self, ov5: &str, mch: i32) {
+    fn capture_mis_softly_3mismatches_legacy(&mut self, ov5: &str, mut mch: i32) {
         let mut refoff = self.position + mch;
         let mut rdoff = mch;
         if !ov5.is_empty() {
             refoff += global_find_sum(&ALIGNED_LENGTH_MND, ov5);
             rdoff += global_find_sum(&SOFT_CLIPPED, ov5);
         }
-        self.apply_capture_mis_softly_3mismatches(refoff, rdoff, mch);
-    }
-
-    fn apply_capture_mis_softly_3mismatches(&mut self, refoff: i32, rdoff: i32, mut mch: i32) {
         let rn = count_end_mismatch_clip(
             refoff,
             rdoff,
@@ -1828,7 +2059,29 @@ impl<'a> CigarModifier<'a> {
             refoff = refoff.saturating_add(mnd);
             rdoff = rdoff.saturating_add(mis);
         }
-        self.apply_capture_mis_softly_ms(refoff, rdoff, mch, soft);
+        let (new_mch, new_soft, changed) = step_capture_mis_softly_ms(
+            refoff,
+            rdoff,
+            mch,
+            soft,
+            &self.query_seq,
+            &self.query_qual,
+            self.reference,
+            self.ref_start,
+        );
+        if changed {
+            let end = self.cigar_str.len();
+            let span = ov5_len..end;
+            if new_soft > 0 {
+                replace_cigar_range(
+                    &mut self.cigar_str,
+                    span,
+                    format_args!("{new_mch}M{new_soft}S"),
+                );
+            } else {
+                replace_cigar_range(&mut self.cigar_str, span, format_args!("{new_mch}M"));
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1839,10 +2092,6 @@ impl<'a> CigarModifier<'a> {
             refoff += global_find_sum(&ALIGNED_LENGTH_MND, ov5);
             rdoff += global_find_sum(&SOFT_CLIPPED, ov5);
         }
-        self.apply_capture_mis_softly_ms(refoff, rdoff, mch, soft);
-    }
-
-    fn apply_capture_mis_softly_ms(&mut self, refoff: i32, rdoff: i32, mch: i32, soft: i32) {
         let (new_mch, new_soft, changed) = step_capture_mis_softly_ms(
             refoff,
             rdoff,
@@ -1866,6 +2115,7 @@ impl<'a> CigarModifier<'a> {
         }
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn combine_to_close_to_one(
         &mut self,
@@ -1902,6 +2152,7 @@ impl<'a> CigarModifier<'a> {
         flag
     }
 
+    #[cfg(test)]
     fn combine_to_close_to_correct(
         &mut self,
         g1: i32,
@@ -2175,6 +2426,47 @@ impl<'a> CigarModifier<'a> {
         true
     }
 
+    fn begin_digit_m_number_ior_d_number_m_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        tmid: i32,
+        mut mlen: i32,
+        is_ins: bool,
+        is_del: bool,
+        g2: i32,
+    ) -> bool {
+        let mut tn = 0;
+
+        let mut tslen = tmid.saturating_add(if is_ins { g2 } else { 0 });
+        self.position =
+            self.position
+                .saturating_add(tmid.saturating_add(if is_del { g2 } else { 0 }));
+
+        while tn < mlen {
+            if let Some(&q_base) = self.query_seq.get(tslen.saturating_add(tn) as usize) {
+                if is_has_and_not_equals_char(
+                    q_base,
+                    self.reference,
+                    self.position.saturating_add(tn),
+                    self.ref_start,
+                ) {
+                    tn += 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        tslen = tslen.saturating_add(tn);
+        mlen -= tn;
+        self.position = self.position.saturating_add(tn);
+
+        replace_cigar_range(&mut self.cigar_str, range, format_args!("{tslen}S{mlen}M"));
+        true
+    }
+
+    #[cfg(test)]
     fn begin_digit_m_number_ior_d_number_m(
         &mut self,
         tmid: i32,
@@ -3074,6 +3366,8 @@ mod tests {
                 qqual,
                 ref_bytes,
                 rstart,
+                &seed,
+                150,
                 cfg,
             );
             let mut cigar_str = String::new();
@@ -3251,6 +3545,8 @@ mod tests {
             &qqual_err,
             reference,
             ref_start,
+            &seed,
+            150,
             &config,
         )
         .is_err());
@@ -3272,7 +3568,7 @@ mod tests {
             PureSmOutcome::Handled
         );
 
-        // Targeted 3: Precondition Fallback checks (chimeric clip >= 12, contig overhang, adaptor, qual mismatch).
+        // Targeted 3: Precondition Fallback checks (chimeric clip >= 12 with SEED_2 hit, contig overhang, adaptor, qual mismatch).
         let long_clip_elems = [(12, CigarKind::SoftClip), (10, CigarKind::Match)];
         let long_seq = vec![b'A'; 22];
         let long_qual = vec![b'I'; 22];
@@ -3286,20 +3582,42 @@ mod tests {
                 ref_start,
                 &config,
             ),
+            PureSmOutcome::Handled
+        );
+        let mut seed_chim = SeedMap::new();
+        seed_chim.insert(vec![b'T'; SEED_2], vec![(ref_start + 4) as u32]);
+        let mut chim_pos = ref_start + 2;
+        let mut chim_elems = long_clip_elems.to_vec();
+        assert_eq!(
+            modify_pure_sm_in_place(
+                &mut chim_pos,
+                &mut chim_elems,
+                &long_seq,
+                &long_qual,
+                reference,
+                ref_start,
+                &seed_chim,
+                150,
+                &config,
+            )
+            .unwrap(),
             PureSmOutcome::Fallback
         );
         let mut chim_cfg = config.clone();
         chim_cfg.chimeric = true;
         assert_eq!(
-            check_pure_sm(
-                ref_start + 2,
-                &long_clip_elems,
+            modify_pure_sm_in_place(
+                &mut chim_pos,
+                &mut chim_elems,
                 &long_seq,
                 &long_qual,
                 reference,
                 ref_start,
+                &seed_chim,
+                150,
                 &chim_cfg,
-            ),
+            )
+            .unwrap(),
             PureSmOutcome::Handled
         );
         let mut adaptor_cfg = config.clone();
@@ -3626,6 +3944,315 @@ mod tests {
                 &config,
             )
             .modify_cigar();
+        }
+    }
+
+    #[test]
+    fn test_modify_pure_sm_chimeric_2digit_precedence_and_100s_parity() {
+        use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+        let config = get_default_config();
+        let mut reference = Vec::with_capacity(400);
+        for idx in 0..400usize {
+            reference.push(b"ACGTACGTGCTACGTAAACCGGTT"[(idx * 7 + idx / 3) % 24]);
+        }
+        let ref_start = 1i32;
+        let max_read_length = 150i32;
+
+        let compare_pure_sm_and_legacy = |pos: i32,
+                                          elems: &[(u32, CigarKind)],
+                                          qseq: &[u8],
+                                          qqual: &[u8],
+                                          seed: &SeedMap,
+                                          cfg: &Config|
+         -> (PureSmOutcome, ModifiedCigar) {
+            let mut fast_pos = pos;
+            let mut fast_elems = elems.to_vec();
+            let fast_res = modify_pure_sm_in_place(
+                &mut fast_pos,
+                &mut fast_elems,
+                qseq,
+                qqual,
+                &reference,
+                ref_start,
+                seed,
+                max_read_length,
+                cfg,
+            )
+            .expect("pure S/M must not error on valid read");
+
+            let mut cigar_str = String::new();
+            crate::bam::push_cigar_string(&mut cigar_str, elems);
+            let full = CigarModifier::new(
+                pos,
+                cigar_str.clone(),
+                qseq.to_vec(),
+                qqual.to_vec(),
+                &reference,
+                ref_start,
+                seed,
+                0,
+                max_read_length,
+                cfg,
+            )
+            .modify_cigar()
+            .expect("modify_cigar must succeed");
+            let legacy = CigarModifier::new(
+                pos,
+                cigar_str,
+                qseq.to_vec(),
+                qqual.to_vec(),
+                &reference,
+                ref_start,
+                seed,
+                0,
+                max_read_length,
+                cfg,
+            )
+            .modify_cigar_legacy()
+            .expect("modify_cigar_legacy must succeed");
+
+            assert_eq!(full.position, legacy.position);
+            assert_eq!(full.cigar, legacy.cigar);
+            assert_eq!(full.query_seq, legacy.query_seq);
+            assert_eq!(full.query_qual, legacy.query_qual);
+
+            match fast_res {
+                PureSmOutcome::Handled => {
+                    let mut fast_cigar = String::new();
+                    crate::bam::push_cigar_string(&mut fast_cigar, &fast_elems);
+                    assert_eq!(fast_pos, legacy.position);
+                    assert_eq!(fast_cigar, legacy.cigar);
+                    assert_eq!(qseq, legacy.query_seq.as_slice());
+                    assert_eq!(qqual, legacy.query_qual.as_slice());
+                }
+                PureSmOutcome::Fallback => {
+                    assert_eq!(fast_pos, pos);
+                    assert_eq!(fast_elems.as_slice(), elems);
+                }
+            }
+            (fast_res, full)
+        };
+
+        // Helper to build a read matching `reference` across `mch` at `pos` with mismatching soft-clips.
+        let build_sm_read = |pos: i32, s5: usize, mch: usize, s3: usize| -> (Vec<u8>, Vec<u8>) {
+            let mut qseq = Vec::with_capacity(s5 + mch + s3);
+            let clip_pat = b"TTGGAACCTTGGCCAATTGGCCAA";
+            for i in 0..s5 {
+                let mut b = clip_pat[i % clip_pat.len()];
+                let r_idx = (pos - (s5 as i32) + (i as i32) - ref_start) as isize;
+                if r_idx >= 0
+                    && (r_idx as usize) < reference.len()
+                    && reference[r_idx as usize] == b
+                {
+                    b = if b == b'A' { b'C' } else { b'A' };
+                }
+                qseq.push(b);
+            }
+            let m_start = (pos - ref_start) as usize;
+            qseq.extend_from_slice(&reference[m_start..m_start + mch]);
+            for i in 0..s3 {
+                let mut b = clip_pat[(i + 5) % clip_pat.len()];
+                let r_idx = (pos + (mch as i32) + (i as i32) - ref_start) as isize;
+                if r_idx >= 0
+                    && (r_idx as usize) < reference.len()
+                    && reference[r_idx as usize] == b
+                {
+                    b = if b == b'G' { b'T' } else { b'G' };
+                }
+                qseq.push(b);
+            }
+            let qqual = vec![b'I'; qseq.len()];
+            (qseq, qqual)
+        };
+
+        let empty_seed = SeedMap::new();
+
+        // 1. [15S, 100M], [100M, 15S], [100S, 50M], [50M, 100S] without and with unique SEED_2 hits (`AR-01`).
+        for (pos, s5, mch, s3) in [
+            (50i32, 15usize, 100usize, 0usize),
+            (50, 0, 100, 15),
+            (120, 100, 50, 0),
+            (50, 0, 50, 100),
+        ] {
+            let elems: Vec<(u32, CigarKind)> = match (s5 > 0, s3 > 0) {
+                (true, false) => vec![
+                    (s5 as u32, CigarKind::SoftClip),
+                    (mch as u32, CigarKind::Match),
+                ],
+                (false, true) => vec![
+                    (mch as u32, CigarKind::Match),
+                    (s3 as u32, CigarKind::SoftClip),
+                ],
+                _ => unreachable!(),
+            };
+            let (qseq, qqual) = build_sm_read(pos, s5, mch, s3);
+
+            // (a) No seed hit -> Handled in-place (even for >= 15S and >= 100S!)
+            let (out_empty, mod_empty) =
+                compare_pure_sm_and_legacy(pos, &elems, &qseq, &qqual, &empty_seed, &config);
+            assert_eq!(out_empty, PureSmOutcome::Handled);
+            assert_eq!(mod_empty.query_seq.len(), s5 + mch + s3);
+
+            let rc_seed = if s5 > 0 {
+                crate::util::reverse_complement_bytes::<SEED_2>(&qseq[(s5 - SEED_2)..s5]).unwrap()
+            } else {
+                let start3 = qseq.len() - s3;
+                crate::util::reverse_complement_bytes::<SEED_2>(&qseq[start3..start3 + SEED_2])
+                    .unwrap()
+            };
+
+            // (b) Distant unique seed (>= 2 * max_read_length = 300 away) -> Handled in-place
+            let mut distant_seed = SeedMap::new();
+            distant_seed.insert(rc_seed.to_vec(), vec![(pos + 2 * max_read_length) as u32]);
+            let (out_dist, _) =
+                compare_pure_sm_and_legacy(pos, &elems, &qseq, &qqual, &distant_seed, &config);
+            assert_eq!(out_dist, PureSmOutcome::Handled);
+
+            // (c) Multi-position seed (non-unique) -> Handled in-place
+            let mut multi_seed = SeedMap::new();
+            multi_seed.insert(rc_seed.to_vec(), vec![pos as u32 + 5, pos as u32 + 20]);
+            let (out_multi, _) =
+                compare_pure_sm_and_legacy(pos, &elems, &qseq, &qqual, &multi_seed, &config);
+            assert_eq!(out_multi, PureSmOutcome::Handled);
+
+            // (d) Unique SEED_2 hit within < 2 * max_read_length -> Fallback & truncates (including 100S! AR-01)
+            let mut hit_seed = SeedMap::new();
+            hit_seed.insert(rc_seed.to_vec(), vec![(pos + 10) as u32]);
+            let (out_hit, mod_hit) =
+                compare_pure_sm_and_legacy(pos, &elems, &qseq, &qqual, &hit_seed, &config);
+            assert_eq!(out_hit, PureSmOutcome::Fallback);
+            assert_eq!(mod_hit.cigar, format!("{mch}M"));
+            assert_eq!(mod_hit.query_seq.len(), mch);
+        }
+
+        // 2. [10S, 100M, 15S] where 3' 15S has a chimeric SEED_2 hit:
+        //    5' `10S` matches `^(\d\d+)S`, entering Java's `if` branch (`10 < 12` no-op) and masking `else if`!
+        let pos_sms = 60i32;
+        let elems_10s_15s = [
+            (10, CigarKind::SoftClip),
+            (100, CigarKind::Match),
+            (15, CigarKind::SoftClip),
+        ];
+        let (qseq_10s_15s, qqual_10s_15s) = build_sm_read(pos_sms, 10, 100, 15);
+        let start3_sms = qseq_10s_15s.len() - 15;
+        let rc_seed_3 = crate::util::reverse_complement_bytes::<SEED_2>(
+            &qseq_10s_15s[start3_sms..start3_sms + SEED_2],
+        )
+        .unwrap();
+        let mut seed_3_hit = SeedMap::new();
+        seed_3_hit.insert(rc_seed_3.to_vec(), vec![(pos_sms + 15) as u32]);
+
+        let (out_masked, mod_masked) = compare_pure_sm_and_legacy(
+            pos_sms,
+            &elems_10s_15s,
+            &qseq_10s_15s,
+            &qqual_10s_15s,
+            &seed_3_hit,
+            &config,
+        );
+        assert_eq!(out_masked, PureSmOutcome::Handled);
+        assert_eq!(mod_masked.cigar, "10S100M15S");
+        assert_eq!(mod_masked.query_seq.len(), 125);
+
+        // Contrast: [9S, 100M, 15S] (1-digit 5' clip) DOES enter `else if` and truncate 3' 15S!
+        let elems_9s_15s = [
+            (9, CigarKind::SoftClip),
+            (100, CigarKind::Match),
+            (15, CigarKind::SoftClip),
+        ];
+        let (qseq_9s_15s, qqual_9s_15s) = build_sm_read(pos_sms, 9, 100, 15);
+        let start3_9 = qseq_9s_15s.len() - 15;
+        let rc_seed_3_9 = crate::util::reverse_complement_bytes::<SEED_2>(
+            &qseq_9s_15s[start3_9..start3_9 + SEED_2],
+        )
+        .unwrap();
+        let mut seed_3_9_hit = SeedMap::new();
+        seed_3_9_hit.insert(rc_seed_3_9.to_vec(), vec![(pos_sms + 15) as u32]);
+        let (out_9s, mod_9s) = compare_pure_sm_and_legacy(
+            pos_sms,
+            &elems_9s_15s,
+            &qseq_9s_15s,
+            &qqual_9s_15s,
+            &seed_3_9_hit,
+            &config,
+        );
+        assert_eq!(out_9s, PureSmOutcome::Fallback);
+        assert_eq!(mod_9s.cigar, "9S100M");
+        assert_eq!(mod_9s.query_seq.len(), 109);
+
+        // 3. Multi-indel rewrites, mid = 20 > 15, 3-indel ov5-prefixed CIGARs, endpoint helpers, and non-ASCII `\D` (`AR-07`).
+        let q_long = reference[49..250].to_vec();
+        let qual_long = vec![b'I'; q_long.len()];
+        for cigar_case in [
+            "10M1I5M1D20M",
+            "10M1D5M1I20M",
+            "10M1D5M1D2I20M",
+            "10M1I5M1D2I20M",
+            "10M1I20M1D10M",
+            "10M1D20M1I10M",
+            "5S10M1D4M1I4M1D15M",
+            "5S10M1D10M1I10M1D15M",
+            "10M1D10M1I10M1D5M1D5M1D10M",
+            "5S10M1D4M1D4M1D15M",
+            "5S10M1I4M1I4M1D15M",
+            "3D20M2D",
+            "3I20M2I",
+            "5S2I20M",
+            "20M2D5S",
+            "5S6M2I20M",
+            "20M2I6M5S",
+            "4M2I20M",
+            "20M2I4M",
+            "10M2D3D10M",
+            "10M2I3I10M",
+            "10ä1I5M1D20M",
+            "10€1I5M1I20M",
+            "10🧬1I5M1D2I20M",
+            "10ä1I20M1D10M",
+        ] {
+            let got = CigarModifier::new(
+                50,
+                cigar_case,
+                q_long.clone(),
+                qual_long.clone(),
+                &reference,
+                ref_start,
+                &empty_seed,
+                3,
+                max_read_length,
+                &config,
+            )
+            .modify_cigar();
+            let want = CigarModifier::new(
+                50,
+                cigar_case,
+                q_long.clone(),
+                qual_long.clone(),
+                &reference,
+                ref_start,
+                &empty_seed,
+                3,
+                max_read_length,
+                &config,
+            )
+            .modify_cigar_legacy();
+
+            match (got, want) {
+                (Ok(g), Ok(w)) => {
+                    assert_eq!(g.position, w.position, "pos mismatch on {cigar_case}");
+                    assert_eq!(g.cigar, w.cigar, "cigar mismatch on {cigar_case}");
+                    assert_eq!(g.query_seq, w.query_seq, "seq mismatch on {cigar_case}");
+                    assert_eq!(g.query_qual, w.query_qual, "qual mismatch on {cigar_case}");
+                }
+                (
+                    Err(crate::types::VardictError::JavaThrows(gm)),
+                    Err(crate::types::VardictError::JavaThrows(wm)),
+                ) => {
+                    assert_eq!(gm, wm, "err mismatch on {cigar_case}");
+                }
+                (g, w) => panic!("result mismatch on {cigar_case}: {g:?} vs {w:?}"),
+            }
         }
     }
 }

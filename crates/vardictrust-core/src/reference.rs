@@ -701,6 +701,23 @@ impl SeedKey {
             u64::from_ne_bytes([b16, b17, b18, b19, b20, b21, b22, key.len() as u8]),
         ]))
     }
+
+    #[inline]
+    fn pair_17_12(win: &[u8; 17]) -> (Self, Self) {
+        let &[b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, b16] = win;
+        let w0 = u64::from_ne_bytes([b0, b1, b2, b3, b4, b5, b6, b7]);
+        let k17 = Self([
+            w0,
+            u64::from_ne_bytes([b8, b9, b10, b11, b12, b13, b14, b15]),
+            u64::from_ne_bytes([b16, 0, 0, 0, 0, 0, 0, 17]),
+        ]);
+        let k12 = Self([
+            w0,
+            u64::from_ne_bytes([b8, b9, b10, b11, 0, 0, 0, 0]),
+            u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, 12]),
+        ]);
+        (k17, k12)
+    }
 }
 
 impl std::hash::Hash for SeedKey {
@@ -769,11 +786,8 @@ impl SeedMap {
         self.map.get().is_some()
     }
 
-    fn insert_into_raw(map: &mut RawSeedMap, key: &[u8], pos: u32) {
-        let Some(sk) = SeedKey::from_slice(key) else {
-            debug_assert!(key.len() <= MAX_SEED_BYTES, "seed key exceeds 17 bytes");
-            return;
-        };
+    #[inline]
+    fn insert_seed_key(map: &mut RawSeedMap, sk: SeedKey, pos: u32) {
         match map.entry(sk) {
             std::collections::hash_map::Entry::Occupied(mut e) => match e.get_mut() {
                 SeedPositions::One(first) => {
@@ -788,10 +802,18 @@ impl SeedMap {
         }
     }
 
+    #[cfg(test)]
+    fn insert_into_raw(map: &mut RawSeedMap, key: &[u8], pos: u32) {
+        let Some(sk) = SeedKey::from_slice(key) else {
+            debug_assert!(key.len() <= MAX_SEED_BYTES, "seed key exceeds 17 bytes");
+            return;
+        };
+        Self::insert_seed_key(map, sk, pos);
+    }
+
     /// Ports `ReferenceResource.java:106-125` k-mer indexing for one loaded chunk.
     fn index_chunk(map: &mut RawSeedMap, chunk: &PendingSeedChunk) {
         const SEED1_LEN: usize = 17;
-        const SEED2_LEN: usize = 12;
 
         let bases = chunk.bases.as_ref();
         let site_end = if chunk.chr_len == chunk.sequence_end {
@@ -823,12 +845,13 @@ impl SeedMap {
                 continue;
             }
 
-            if let Some(key) = bases.get(i..i + SEED1_LEN) {
-                Self::insert_into_raw(map, key, pos);
-            }
-
-            if let Some(key) = bases.get(i..i + SEED2_LEN) {
-                Self::insert_into_raw(map, key, pos);
+            if let Some(win) = bases
+                .get(i..i.saturating_add(SEED1_LEN))
+                .and_then(|s| <&[u8; SEED1_LEN]>::try_from(s).ok())
+            {
+                let (k17, k12) = SeedKey::pair_17_12(win);
+                Self::insert_seed_key(map, k17, pos);
+                Self::insert_seed_key(map, k12, pos);
             }
             i += 1;
         }
@@ -2910,5 +2933,54 @@ mod tests {
         assert_eq!(seed.get(&bases[5..17]), Some(&[105u32][..]));
         // Last 16 bp at chromosome end (i + 17 > bases.len()) are excluded per ReferenceResource.java:120
         assert_eq!(seed.get(&bases[bases.len() - 12..]), None);
+    }
+
+    #[test]
+    fn test_seed_key_pair_17_12_matches_from_slice() {
+        use std::hash::{Hash, Hasher};
+
+        fn fx_hash(k: &SeedKey) -> u64 {
+            let mut h = rustc_hash::FxHasher::default();
+            k.hash(&mut h);
+            h.finish()
+        }
+
+        let mut windows: Vec<[u8; 17]> = vec![
+            [0u8; 17],
+            [0xFFu8; 17],
+            *b"ACGTACGTACGTACGTA",
+            *b"NNNNNNNNNNNNNNNNN",
+            *b"acgtACGTnN-=*RYSW",
+        ];
+        for hot in 0..17 {
+            let mut w = [0u8; 17];
+            w[hot] = 0xA5;
+            windows.push(w);
+            let mut w2 = [0xFFu8; 17];
+            w2[hot] = 0x00;
+            windows.push(w2);
+        }
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..256 {
+            let mut w = [0u8; 17];
+            for slot in &mut w {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                *slot = (state >> 32) as u8;
+            }
+            windows.push(w);
+        }
+
+        for win in windows {
+            let (k17, k12) = SeedKey::pair_17_12(&win);
+            let expected_17 = SeedKey::from_slice(&win).unwrap();
+            let expected_12 = SeedKey::from_slice(&win[..12]).unwrap();
+            assert_eq!(Some(k17), SeedKey::from_slice(&win));
+            assert_eq!(Some(k12), SeedKey::from_slice(&win[..12]));
+            assert_eq!(fx_hash(&k17), fx_hash(&expected_17));
+            assert_eq!(fx_hash(&k12), fx_hash(&expected_12));
+            assert_ne!(k17, k12);
+        }
     }
 }

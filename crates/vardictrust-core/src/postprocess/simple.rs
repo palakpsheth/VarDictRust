@@ -103,7 +103,10 @@ pub fn simple_post_process(
                         vrefs.push(ref_var);
                     }
                 }
-                vref.var_type = vtype_cow.into_owned();
+                if vref.var_type != vtype_cow.as_ref() {
+                    vref.var_type.clear();
+                    vref.var_type.push_str(&vtype_cow);
+                }
                 vrefs.push(vref);
             }
         }

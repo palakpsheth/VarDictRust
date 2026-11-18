@@ -144,6 +144,16 @@ fn decode_bam_quality_scores_into(
     }
 }
 
+const MAX_FEED_STRING_STASH_CAP: usize = 4096;
+
+#[inline]
+fn stash_capped_string(stash: &mut String, mut buf: String) {
+    if buf.capacity() <= MAX_FEED_STRING_STASH_CAP && buf.capacity() > stash.capacity() {
+        buf.clear();
+        *stash = buf;
+    }
+}
+
 #[inline]
 fn set_opt_contig_name(dst: &mut Option<String>, expected: Option<&str>) {
     match expected {
@@ -155,6 +165,28 @@ fn set_opt_contig_name(dst: &mut Option<String>, expected: Option<&str>) {
             }
         }
         None => *dst = None,
+    }
+}
+
+#[inline]
+fn set_opt_contig_name_with_stash(
+    dst: &mut Option<String>,
+    expected: Option<&str>,
+    stash: &mut String,
+) {
+    match expected {
+        Some(expected) => {
+            if dst.as_deref() != Some(expected) {
+                let buf = dst.get_or_insert_with(|| std::mem::take(stash));
+                buf.clear();
+                buf.push_str(expected);
+            }
+        }
+        None => {
+            if let Some(buf) = dst.take() {
+                stash_capped_string(stash, buf);
+            }
+        }
     }
 }
 
@@ -497,7 +529,12 @@ impl SamRecord {
     }
 
     /// Single-pass `BamFeed` refill path: reuses pre-decoded `cigar_scratch`,
-    /// `(alignment_start, alignment_end)`, and `O(1)` `contig_names` lookup.
+    /// `(alignment_start, alignment_end)`, `O(1)` `contig_names` lookup, and
+    /// `<= 4096`-byte-capped `sa`/`mc`/`mate_reference_name` string stashes.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "hot BamFeed refill borrows individual scratch and stash buffers directly"
+    )]
     fn fill_from_bam_feed_record(
         &mut self,
         record: &noodles::bam::Record,
@@ -506,6 +543,9 @@ impl SamRecord {
         alignment_start: Option<noodles::core::Position>,
         alignment_end: Option<noodles::core::Position>,
         cigar_scratch: &mut Vec<(u32, CigarKind)>,
+        sa_buf: &mut String,
+        mc_buf: &mut String,
+        mate_ref_buf: &mut String,
     ) {
         self.clear();
 
@@ -540,7 +580,7 @@ impl SamRecord {
             .and_then(|ref_id| ref_id.ok())
             .and_then(|id| contig_names.get(id))
             .map(Box::as_ref);
-        set_opt_contig_name(&mut self.mate_reference_name, mate_contig);
+        set_opt_contig_name_with_stash(&mut self.mate_reference_name, mate_contig, mate_ref_buf);
 
         self.mate_alignment_start = if let Some(pos) = record.mate_alignment_start() {
             pos.ok().map(crate::types::Pos1::from)
@@ -550,11 +590,30 @@ impl SamRecord {
 
         self.template_length = record.template_length();
 
-        self.fill_aux_from_iter(record.data().iter());
+        self.fill_aux_from_iter_with_stashes(record.data().iter(), sa_buf, mc_buf);
     }
 
     fn fill_aux_from_iter<'a, I>(&mut self, iter: I)
     where
+        I: Iterator<
+            Item = Result<
+                (
+                    noodles::sam::alignment::record::data::field::Tag,
+                    noodles::sam::alignment::record::data::field::Value<'a>,
+                ),
+                std::io::Error,
+            >,
+        >,
+    {
+        self.fill_aux_from_iter_with_stashes(iter, &mut String::new(), &mut String::new());
+    }
+
+    fn fill_aux_from_iter_with_stashes<'a, I>(
+        &mut self,
+        iter: I,
+        sa_stash: &mut String,
+        mc_stash: &mut String,
+    ) where
         I: Iterator<
             Item = Result<
                 (
@@ -602,7 +661,7 @@ impl SamRecord {
             } else if tag == TAG_SA {
                 if !seen_sa {
                     seen_sa = true;
-                    let buf = self.sa.get_or_insert_with(String::new);
+                    let buf = self.sa.get_or_insert_with(|| std::mem::take(sa_stash));
                     buf.clear();
                     match val {
                         Value::String(s) => {
@@ -617,7 +676,7 @@ impl SamRecord {
             } else if tag == TAG_MC {
                 if !seen_mc {
                     seen_mc = true;
-                    let buf = self.mc.get_or_insert_with(String::new);
+                    let buf = self.mc.get_or_insert_with(|| std::mem::take(mc_stash));
                     buf.clear();
                     match val {
                         Value::String(s) => {
@@ -644,10 +703,14 @@ impl SamRecord {
             nm_upper_val
         };
         if !seen_sa {
-            self.sa = None;
+            if let Some(buf) = self.sa.take() {
+                stash_capped_string(sa_stash, buf);
+            }
         }
         if !seen_mc {
-            self.mc = None;
+            if let Some(buf) = self.mc.take() {
+                stash_capped_string(mc_stash, buf);
+            }
         }
     }
 
@@ -662,6 +725,23 @@ impl SamRecord {
         rec.fill_from_alignment_record(record, header)?;
         Ok(rec)
     }
+}
+
+#[inline]
+fn is_strict_nm_match_base(b: u8) -> bool {
+    matches!(
+        b,
+        b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't' | b'='
+    )
+}
+
+#[inline]
+fn is_sam_nm_base_match(read_b: u8, ref_b: u8) -> bool {
+    read_b == b'='
+        || (matches!(
+            read_b,
+            b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't'
+        ) && read_b.eq_ignore_ascii_case(&ref_b))
 }
 
 /// Reconstruct the SAMtags §1.5 `NM` tag (edit distance to the reference,
@@ -683,17 +763,50 @@ pub(crate) fn compute_cram_nm(rec: &SamRecord, ref_seq: &[u8]) -> Option<i32> {
         let len = len as usize;
         match op {
             CigarKind::Match | CigarKind::SequenceMatch | CigarKind::SequenceMismatch => {
+                if let (Some(read_end), Some(ref_end)) =
+                    (read_pos.checked_add(len), ref_pos.checked_add(len))
+                {
+                    if let (Some(read_slice), Some(ref_slice)) = (
+                        rec.sequence.get(read_pos..read_end),
+                        ref_seq.get(ref_pos..ref_end),
+                    ) {
+                        if read_slice == ref_slice
+                            && read_slice.iter().copied().all(is_strict_nm_match_base)
+                        {
+                            read_pos = read_end;
+                            ref_pos = ref_end;
+                            continue;
+                        }
+                        let mut r_chunks = read_slice.chunks_exact(8);
+                        let mut f_chunks = ref_slice.chunks_exact(8);
+                        for (r8, f8) in r_chunks.by_ref().zip(f_chunks.by_ref()) {
+                            if r8 == f8 && r8.iter().copied().all(is_strict_nm_match_base) {
+                                continue;
+                            }
+                            for (&read_b, &ref_b) in r8.iter().zip(f8.iter()) {
+                                if !is_sam_nm_base_match(read_b, ref_b) {
+                                    nm = nm.saturating_add(1);
+                                }
+                            }
+                        }
+                        for (&read_b, &ref_b) in
+                            r_chunks.remainder().iter().zip(f_chunks.remainder().iter())
+                        {
+                            if !is_sam_nm_base_match(read_b, ref_b) {
+                                nm = nm.saturating_add(1);
+                            }
+                        }
+                        read_pos = read_end;
+                        ref_pos = ref_end;
+                        continue;
+                    }
+                }
                 for _ in 0..len {
                     let Some(&read_b) = rec.sequence.get(read_pos) else {
                         break;
                     };
                     let ref_b = ref_seq.get(ref_pos).copied().unwrap_or(b'N');
-                    let is_match = read_b == b'='
-                        || (matches!(
-                            read_b,
-                            b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't'
-                        ) && read_b.eq_ignore_ascii_case(&ref_b));
-                    if !is_match {
+                    if !is_sam_nm_base_match(read_b, ref_b) {
                         nm = nm.saturating_add(1);
                     }
                     read_pos = read_pos.saturating_add(1);
@@ -1112,13 +1225,47 @@ pub fn query_region(
 }
 
 static NEXT_BAM_META_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static BAM_CACHE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Synthetic `meta_id` floor reserved for isolated unit tests so concurrent
 /// `clear_bam_caches()` calls in parallel tests never evict in-flight test blocks (`AR-4`).
 #[cfg(test)]
 const TEST_META_ID_BASE: u64 = 1u64 << 63;
+#[cfg(test)]
+static NEXT_PROD_TEST_META_ID: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1u64 << 32);
+#[cfg(test)]
+type OneShotTestHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_PRODUCTION_META_ID: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_MID_CLEAR_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
+    static TEST_MID_COLD_OPEN_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
+}
+
+#[inline]
+fn next_bam_meta_id() -> u64 {
+    #[cfg(test)]
+    if FORCE_PRODUCTION_META_ID.with(|c| c.get()) {
+        return NEXT_PROD_TEST_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    NEXT_BAM_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+#[inline]
+fn tls_epoch_valid(cached_epoch: u64, cur_epoch: u64, meta_id: u64) -> bool {
+    #[cfg(test)]
+    if meta_id >= TEST_META_ID_BASE {
+        return true;
+    }
+    #[cfg(not(test))]
+    let _ = meta_id;
+    cached_epoch == cur_epoch
+}
 
 struct SharedBamMeta {
     id: u64,
+    path: PathBuf,
     header: noodles::sam::Header,
     contig_names: Vec<Box<str>>,
     index: noodles::bam::Index,
@@ -1460,6 +1607,7 @@ type RawBamReader = noodles::bam::io::Reader<CachedBgzfReader>;
 type PathSlot = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<SharedBamMeta>>>>;
 type PooledReaderEntry = (std::sync::Arc<SharedBamMeta>, RawBamReader);
 type BamReaderPoolMap = HashMap<PathBuf, Vec<PooledReaderEntry>>;
+type BamMetaTlsSlots = [Option<(u64, std::sync::Arc<SharedBamMeta>)>; 2];
 
 static META_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, PathSlot>>> =
     std::sync::OnceLock::new();
@@ -1468,6 +1616,7 @@ const MAX_POOLED_READERS_PER_PATH: usize = 4;
 
 thread_local! {
     static BAM_READER_POOL: RefCell<BamReaderPoolMap> = RefCell::new(HashMap::new());
+    static BAM_META_TLS: RefCell<BamMetaTlsSlots> = const { RefCell::new([None, None]) };
 }
 
 /// Clear the process-wide shared BAM/CRAM metadata caches, bounded FASTA
@@ -1475,6 +1624,15 @@ thread_local! {
 /// pooled readers. Called at the start and end of [`crate::run`] via an
 /// RAII drop guard (`F-5`).
 pub fn clear_bam_caches() {
+    BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
+    #[cfg(test)]
+    if let Some(hook) = TEST_MID_CLEAR_HOOK
+        .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
+        .ok()
+        .flatten()
+    {
+        hook();
+    }
     if let Some(cache) = META_CACHE.get() {
         let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
         #[cfg(test)]
@@ -1498,6 +1656,11 @@ pub fn clear_bam_caches() {
     let _ = BAM_READER_POOL.try_with(|pool| {
         if let Ok(mut map) = pool.try_borrow_mut() {
             map.clear();
+        }
+    });
+    let _ = BAM_META_TLS.try_with(|tls| {
+        if let Ok(mut slots) = tls.try_borrow_mut() {
+            *slots = [None, None];
         }
     });
     if let Some(cache) = CRAM_META_CACHE.get() {
@@ -1534,6 +1697,7 @@ pub fn clear_bam_caches() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
     crate::reference::clear_fasta_reader_cache();
+    BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
 type ReaderPoolMap<M, R> = HashMap<PathBuf, Vec<(std::sync::Arc<M>, R)>>;
@@ -1559,16 +1723,19 @@ fn pop_from_pool<M: 'static, R: 'static>(
 
 fn return_to_pool<M: 'static, R: 'static>(
     pool: &'static std::thread::LocalKey<RefCell<ReaderPoolMap<M, R>>>,
-    path: PathBuf,
+    path: &Path,
     meta: std::sync::Arc<M>,
     reader: R,
 ) {
     let _ = pool.try_with(|cell| {
         if let Ok(mut map) = cell.try_borrow_mut() {
-            let vec = map.entry(path).or_default();
-            vec.retain(|(m, _)| std::sync::Arc::ptr_eq(m, &meta));
-            if vec.len() < MAX_POOLED_READERS_PER_PATH {
-                vec.push((meta, reader));
+            if let Some(vec) = map.get_mut(path) {
+                vec.retain(|(m, _)| std::sync::Arc::ptr_eq(m, &meta));
+                if vec.len() < MAX_POOLED_READERS_PER_PATH {
+                    vec.push((meta, reader));
+                }
+            } else if MAX_POOLED_READERS_PER_PATH > 0 {
+                map.insert(path.to_path_buf(), vec![(meta, reader)]);
             }
         }
     });
@@ -1578,13 +1745,62 @@ fn pop_pooled_reader(path: &Path, meta: &std::sync::Arc<SharedBamMeta>) -> Optio
     pop_from_pool(&BAM_READER_POOL, path, meta)
 }
 
-fn return_pooled_reader(path: PathBuf, meta: std::sync::Arc<SharedBamMeta>, reader: RawBamReader) {
+fn return_pooled_reader(path: &Path, meta: std::sync::Arc<SharedBamMeta>, reader: RawBamReader) {
     return_to_pool(&BAM_READER_POOL, path, meta, reader);
+}
+
+#[inline]
+fn lookup_bam_meta_tls(path: &Path, cur_epoch: u64) -> Option<std::sync::Arc<SharedBamMeta>> {
+    BAM_META_TLS
+        .try_with(|tls| {
+            let mut slots = tls.try_borrow_mut().ok()?;
+            let [s0, s1] = &mut *slots;
+            if let Some((ep, meta)) = s0.as_ref() {
+                if tls_epoch_valid(*ep, cur_epoch, meta.id) && meta.path.as_path() == path {
+                    return Some(std::sync::Arc::clone(meta));
+                }
+            }
+            if let Some((ep, meta)) = s1.as_ref() {
+                if tls_epoch_valid(*ep, cur_epoch, meta.id) && meta.path.as_path() == path {
+                    let hit = std::sync::Arc::clone(meta);
+                    std::mem::swap(s0, s1);
+                    return Some(hit);
+                }
+            }
+            None
+        })
+        .ok()
+        .flatten()
+}
+
+#[inline]
+fn insert_bam_meta_tls(cur_epoch: u64, meta: &std::sync::Arc<SharedBamMeta>) {
+    let _ = BAM_META_TLS.try_with(|tls| {
+        if let Ok(mut slots) = tls.try_borrow_mut() {
+            let [s0, s1] = &mut *slots;
+            if s0.as_ref().is_some_and(|(_, m)| m.path == meta.path) {
+                *s0 = Some((cur_epoch, std::sync::Arc::clone(meta)));
+            } else {
+                *s1 = s0.take();
+                *s0 = Some((cur_epoch, std::sync::Arc::clone(meta)));
+            }
+        }
+    });
 }
 
 fn acquire_bam_meta_and_reader(
     path: &Path,
 ) -> Result<(std::sync::Arc<SharedBamMeta>, RawBamReader), crate::types::VardictError> {
+    let cur_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+    if let Some(meta) = lookup_bam_meta_tls(path, cur_epoch) {
+        if let Some(reader) = pop_pooled_reader(path, &meta) {
+            return Ok((meta, reader));
+        }
+        let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
+        let reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, meta.id));
+        return Ok((meta, reader));
+    }
+
     let slot = {
         let cache = META_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
         let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -1597,7 +1813,13 @@ fn acquire_bam_meta_and_reader(
     let meta = {
         let mut slot_guard = slot.lock().unwrap_or_else(|e| e.into_inner());
         match slot_guard.as_ref() {
-            Some(meta) => std::sync::Arc::clone(meta),
+            Some(meta) => {
+                let meta_clone = std::sync::Arc::clone(meta);
+                if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
+                    insert_bam_meta_tls(cur_epoch, &meta_clone);
+                }
+                meta_clone
+            }
             None => {
                 // Exact same open sequence as `open_reader` (index load ->
                 // File::open -> read_header). Errors return without storing
@@ -1606,7 +1828,7 @@ fn acquire_bam_meta_and_reader(
                 let index =
                     read_bam_index_with_fallbacks(path).map_err(crate::types::VardictError::Io)?;
                 let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
-                let id = NEXT_BAM_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let id = next_bam_meta_id();
                 let mut reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, id));
                 let header = reader
                     .read_header()
@@ -1618,11 +1840,23 @@ fn acquire_bam_meta_and_reader(
                     .collect();
                 let meta = std::sync::Arc::new(SharedBamMeta {
                     id,
+                    path: path.to_path_buf(),
                     header,
                     contig_names,
                     index,
                 });
-                *slot_guard = Some(std::sync::Arc::clone(&meta));
+                #[cfg(test)]
+                if let Some(hook) = TEST_MID_COLD_OPEN_HOOK
+                    .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
+                    .ok()
+                    .flatten()
+                {
+                    hook();
+                }
+                if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
+                    *slot_guard = Some(std::sync::Arc::clone(&meta));
+                    insert_bam_meta_tls(cur_epoch, &meta);
+                }
                 return Ok((meta, reader));
             }
         }
@@ -1655,7 +1889,7 @@ pub fn read_reference_lengths(
         Ok(lengths)
     } else {
         let (meta, reader) = acquire_bam_meta_and_reader(path)?;
-        return_pooled_reader(path.to_path_buf(), std::sync::Arc::clone(&meta), reader);
+        return_pooled_reader(path, std::sync::Arc::clone(&meta), reader);
         let mut lengths = HashMap::with_capacity(meta.header.reference_sequences().len());
         for (name, ref_seq) in meta.header.reference_sequences().iter() {
             lengths.insert(
@@ -1718,7 +1952,6 @@ pub struct BamFeed {
 }
 
 struct BamFeedInner {
-    path: PathBuf,
     meta: std::sync::Arc<SharedBamMeta>,
     reader: Option<RawBamReader>,
     tainted: bool,
@@ -1728,6 +1961,9 @@ struct BamFeedInner {
     chunk_end: Option<noodles::bgzf::VirtualPosition>,
     record: noodles::bam::Record,
     cigar_scratch: Vec<(u32, CigarKind)>,
+    sa_buf: String,
+    mc_buf: String,
+    mate_ref_buf: String,
 }
 
 impl Drop for BamFeedInner {
@@ -1738,9 +1974,8 @@ impl Drop for BamFeedInner {
         let Some(reader) = self.reader.take() else {
             return;
         };
-        let path = std::mem::take(&mut self.path);
         let meta = std::sync::Arc::clone(&self.meta);
-        return_pooled_reader(path, meta, reader);
+        return_pooled_reader(&self.meta.path, meta, reader);
     }
 }
 
@@ -1869,6 +2104,9 @@ impl BamFeedInner {
                                     alignment_start,
                                     alignment_end,
                                     &mut self.cigar_scratch,
+                                    &mut self.sa_buf,
+                                    &mut self.mc_buf,
+                                    &mut self.mate_ref_buf,
                                 );
                                 return Ok(true);
                             }
@@ -1898,7 +2136,7 @@ impl BamFeed {
 impl std::fmt::Debug for BamFeed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BamFeed")
-            .field("path", &self.inner.path)
+            .field("path", &self.inner.meta.path)
             .field("reference_sequence_id", &self.inner.reference_sequence_id)
             .field("interval", &self.inner.interval)
             .finish_non_exhaustive()
@@ -2658,7 +2896,7 @@ impl std::fmt::Debug for SharedCramMeta {
 
 type CramMetaSlot = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<SharedCramMeta>>>>;
 type CramMetaKey = (PathBuf, PathBuf);
-type CramMetaTlsEntry = (PathBuf, PathBuf, std::sync::Arc<SharedCramMeta>);
+type CramMetaTlsEntry = (u64, PathBuf, PathBuf, std::sync::Arc<SharedCramMeta>);
 type RawCramReader = noodles::cram::io::Reader<std::fs::File>;
 type CramReaderPoolMap = ReaderPoolMap<SharedCramMeta, RawCramReader>;
 
@@ -2678,7 +2916,7 @@ fn pop_pooled_cram_reader(
 }
 
 fn return_pooled_cram_reader(
-    path: PathBuf,
+    path: &Path,
     meta: std::sync::Arc<SharedCramMeta>,
     reader: RawCramReader,
 ) {
@@ -2690,11 +2928,15 @@ fn acquire_cram_meta(
     config: &crate::config::Config,
 ) -> Result<std::sync::Arc<SharedCramMeta>, crate::types::VardictError> {
     let fasta_path = Path::new(&config.reference);
+    let cur_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
     if let Some(cached_meta) = CRAM_META_TLS
         .try_with(|tls| {
             let guard = tls.try_borrow().ok()?;
-            let (ref cached_cram, ref cached_fasta, ref meta) = *guard.as_ref()?;
-            if cached_cram.as_path() == path && cached_fasta.as_path() == fasta_path {
+            let (cached_epoch, ref cached_cram, ref cached_fasta, ref meta) = *guard.as_ref()?;
+            if tls_epoch_valid(cached_epoch, cur_epoch, meta.id)
+                && cached_cram.as_path() == path
+                && cached_fasta.as_path() == fasta_path
+            {
                 Some(std::sync::Arc::clone(meta))
             } else {
                 None
@@ -2721,15 +2963,18 @@ fn acquire_cram_meta(
     if let Some(meta) = slot_guard.as_ref() {
         if std::sync::Arc::ptr_eq(&meta.fasta_repo, &fasta_repo) {
             let meta_clone = std::sync::Arc::clone(meta);
-            let _ = CRAM_META_TLS.try_with(|tls| {
-                if let Ok(mut guard) = tls.try_borrow_mut() {
-                    *guard = Some((
-                        path.to_path_buf(),
-                        fasta_path.to_path_buf(),
-                        std::sync::Arc::clone(&meta_clone),
-                    ));
-                }
-            });
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
+                let _ = CRAM_META_TLS.try_with(|tls| {
+                    if let Ok(mut guard) = tls.try_borrow_mut() {
+                        *guard = Some((
+                            cur_epoch,
+                            path.to_path_buf(),
+                            fasta_path.to_path_buf(),
+                            std::sync::Arc::clone(&meta_clone),
+                        ));
+                    }
+                });
+            }
             return Ok(meta_clone);
         }
     }
@@ -2765,7 +3010,7 @@ fn acquire_cram_meta(
         .iter()
         .map(|(name, _)| std::sync::Arc::<str>::from(String::from_utf8_lossy(name).as_ref()))
         .collect();
-    let id = NEXT_BAM_META_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let id = next_bam_meta_id();
     let meta = std::sync::Arc::new(SharedCramMeta {
         id,
         file_len,
@@ -2775,17 +3020,28 @@ fn acquire_cram_meta(
         spans_by_offset,
         fasta_repo,
     });
-    *slot_guard = Some(std::sync::Arc::clone(&meta));
-    return_pooled_cram_reader(path.to_path_buf(), std::sync::Arc::clone(&meta), reader);
-    let _ = CRAM_META_TLS.try_with(|tls| {
-        if let Ok(mut guard) = tls.try_borrow_mut() {
-            *guard = Some((
-                path.to_path_buf(),
-                fasta_path.to_path_buf(),
-                std::sync::Arc::clone(&meta),
-            ));
-        }
-    });
+    #[cfg(test)]
+    if let Some(hook) = TEST_MID_COLD_OPEN_HOOK
+        .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
+        .ok()
+        .flatten()
+    {
+        hook();
+    }
+    if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
+        *slot_guard = Some(std::sync::Arc::clone(&meta));
+        return_pooled_cram_reader(path, std::sync::Arc::clone(&meta), reader);
+        let _ = CRAM_META_TLS.try_with(|tls| {
+            if let Ok(mut guard) = tls.try_borrow_mut() {
+                *guard = Some((
+                    cur_epoch,
+                    path.to_path_buf(),
+                    fasta_path.to_path_buf(),
+                    std::sync::Arc::clone(&meta),
+                ));
+            }
+        });
+    }
     Ok(meta)
 }
 
@@ -4285,7 +4541,7 @@ fn fetch_cram_container_in(
     let mut container = noodles::cram::io::reader::Container::default();
     let bytes_read = reader.read_container(&mut container)?;
     if bytes_read == 0 {
-        return_pooled_cram_reader(path.to_path_buf(), std::sync::Arc::clone(meta), reader);
+        return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
         return Ok(None);
     }
     if container.header().record_count() > MAX_CRAM_CONTAINER_RECORDS {
@@ -4315,7 +4571,7 @@ fn fetch_cram_container_in(
         container.header().landmarks(),
     )?;
     reader.get_mut().seek(SeekFrom::Start(post_container_pos))?;
-    return_pooled_cram_reader(path.to_path_buf(), std::sync::Arc::clone(meta), reader);
+    return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
 
     let (hint_repo, hint_seq) = match pinned_slot {
         Some(slot) if slot.name.as_slice() == hint_contig => {
@@ -4389,14 +4645,25 @@ fn fetch_cram_container_in(
                         && cached.reference_sequence_id.is_some()
                         && cached.alignment_start.is_some()
                     {
-                        let rec_seq = match cached.reference_name.as_deref() {
-                            Some(rn) if rn.as_bytes() == hint_contig => hint_seq.clone(),
-                            Some(rn) => meta.fasta_repo.warm_contig(rn.as_bytes()).1,
-                            None => None,
-                        };
-                        if let Some(ref seq) = rec_seq {
-                            cached.sam.nm =
-                                compute_cram_nm(&cached.sam, SharedFastaRepo::unpadded_slice(seq));
+                        match cached.reference_name.as_deref() {
+                            Some(rn) if rn.as_bytes() == hint_contig => {
+                                if let Some(seq) = hint_seq.as_deref() {
+                                    cached.sam.nm = compute_cram_nm(
+                                        &cached.sam,
+                                        SharedFastaRepo::unpadded_slice(seq),
+                                    );
+                                }
+                            }
+                            Some(rn) => {
+                                if let Some(ref seq) = meta.fasta_repo.warm_contig(rn.as_bytes()).1
+                                {
+                                    cached.sam.nm = compute_cram_nm(
+                                        &cached.sam,
+                                        SharedFastaRepo::unpadded_slice(seq),
+                                    );
+                                }
+                            }
+                            None => {}
                         }
                     }
                     out_records.push(cached);
@@ -4672,7 +4939,6 @@ pub fn query_region_iter(
         if start_pos > end_pos {
             return Ok(RecordFeed::Bam(Box::new(BamFeed {
                 inner: BamFeedInner {
-                    path: bam_path.to_path_buf(),
                     meta,
                     reader: Some(reader),
                     tainted: false,
@@ -4682,6 +4948,9 @@ pub fn query_region_iter(
                     chunk_end: None,
                     record: noodles::bam::Record::default(),
                     cigar_scratch: Vec::new(),
+                    sa_buf: String::new(),
+                    mc_buf: String::new(),
+                    mate_ref_buf: String::new(),
                 },
                 sam: SamRecord::new(),
             })));
@@ -4690,7 +4959,7 @@ pub fn query_region_iter(
         let region = match build_noodles_region(chr, start_pos, end_pos) {
             Ok(r) => r,
             Err(err) => {
-                return_pooled_reader(bam_path.to_path_buf(), meta, reader);
+                return_pooled_reader(bam_path, meta, reader);
                 return Err(err);
             }
         };
@@ -4700,7 +4969,7 @@ pub fn query_region_iter(
             .reference_sequences()
             .get_index_of(region.name())
         else {
-            return_pooled_reader(bam_path.to_path_buf(), meta, reader);
+            return_pooled_reader(bam_path, meta, reader);
             return Err(crate::types::VardictError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
@@ -4712,14 +4981,13 @@ pub fn query_region_iter(
         let chunks = match meta.index.query(reference_sequence_id, region.interval()) {
             Ok(c) => c,
             Err(e) => {
-                return_pooled_reader(bam_path.to_path_buf(), meta, reader);
+                return_pooled_reader(bam_path, meta, reader);
                 return Err(crate::types::VardictError::Io(e));
             }
         };
 
         Ok(RecordFeed::Bam(Box::new(BamFeed {
             inner: BamFeedInner {
-                path: bam_path.to_path_buf(),
                 meta,
                 reader: Some(reader),
                 tainted: false,
@@ -4729,6 +4997,9 @@ pub fn query_region_iter(
                 chunk_end: None,
                 record: noodles::bam::Record::default(),
                 cigar_scratch: Vec::new(),
+                sa_buf: String::new(),
+                mc_buf: String::new(),
+                mate_ref_buf: String::new(),
             },
             sam: SamRecord::new(),
         })))
@@ -4916,10 +5187,27 @@ impl RecordPreprocessor {
             return false;
         }
 
-        // CIGAR query consumption consistency check (SAMv1 §1.4.6)
+        // Fused CIGAR query + reference consumption consistency check (SAMv1 §1.4.6)
         // Corrupted or hostile reads where CIGAR query consumption exceeds SEQ length
         // or quality scores length cause out-of-bounds indexing in downstream pileup/parsers.
-        let query_consumption = crate::cigar::parse::query_consumed_len(&record.cigar);
+        let mut query_consumption = 0u64;
+        let mut ref_consumption = 0u64;
+        for &(n, kind) in &record.cigar {
+            let n64 = u64::from(n);
+            match kind {
+                CigarKind::Match | CigarKind::SequenceMatch | CigarKind::SequenceMismatch => {
+                    query_consumption = query_consumption.saturating_add(n64);
+                    ref_consumption = ref_consumption.saturating_add(n64);
+                }
+                CigarKind::Insertion | CigarKind::SoftClip => {
+                    query_consumption = query_consumption.saturating_add(n64);
+                }
+                CigarKind::Deletion | CigarKind::Skip => {
+                    ref_consumption = ref_consumption.saturating_add(n64);
+                }
+                CigarKind::HardClip | CigarKind::Pad => {}
+            }
+        }
         if query_consumption > record.sequence.len() as u64
             || (!record.quality_scores.is_empty()
                 && query_consumption > record.quality_scores.len() as u64)
@@ -4933,12 +5221,6 @@ impl RecordPreprocessor {
             return false;
         }
 
-        let ref_consumption = record
-            .cigar
-            .iter()
-            .filter(|(_, k)| k.consumes_reference())
-            .map(|&(n, _)| u64::from(n))
-            .sum::<u64>();
         let start_u64 = record.alignment_start.map_or(0u64, |p| u64::from(p.0));
         let mate_start_u64 = record.mate_alignment_start.map_or(0u64, |p| u64::from(p.0));
         if start_u64 > i32::MAX as u64
@@ -8908,6 +9190,9 @@ mod tests {
             );
             let contig_names: Vec<Box<str>> = vec!["chr1".into()];
             let mut cigar_scratch = vec![(8, CigarKind::Match)];
+            let mut sa_buf = String::new();
+            let mut mc_buf = String::new();
+            let mut mate_ref_buf = String::new();
             let mut sat_feed_out = SamRecord::new();
             sat_feed_out.fill_from_bam_feed_record(
                 &raw_bam_rec,
@@ -8916,6 +9201,9 @@ mod tests {
                 Position::new(100),
                 Position::new(107),
                 &mut cigar_scratch,
+                &mut sa_buf,
+                &mut mc_buf,
+                &mut mate_ref_buf,
             );
             let mut sat_bam_out = SamRecord::new();
             sat_bam_out
@@ -8944,6 +9232,9 @@ mod tests {
                 Position::new(100),
                 Position::new(106),
                 &mut star_cigar,
+                &mut sa_buf,
+                &mut mc_buf,
+                &mut mate_ref_buf,
             );
             assert_eq!(sat_feed_out.sequence, b"ACGTACG");
             assert!(sat_feed_out.quality_scores.is_empty());
@@ -10290,5 +10581,457 @@ mod tests {
         for (a, b) in block_1.iter().zip(bypassed.iter()) {
             assert_eq!(a.sam, b.sam);
         }
+    }
+
+    fn write_indexed_bam(bam_path: &Path, chr_len: usize, read_names: &[&str]) {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::{
+            index::reference_sequence::{bin::Chunk, index::LinearIndex},
+            Indexer,
+        };
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::{Flags, MappingQuality};
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+        use std::fs::File;
+
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(chr_len.try_into().unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder().add_reference_sequence("chr1", rs).build();
+        let tmp_bam = bam_path.with_extension("bam.tmp");
+        let tmp_bai = bam_path.with_extension("bam.bai.tmp");
+        let bgzf = noodles::bgzf::io::Writer::new(File::create(&tmp_bam).unwrap());
+        let mut writer = noodles::bam::io::Writer::from(bgzf);
+        writer.write_alignment_header(&header).unwrap();
+        let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+        let read_len = 20usize;
+        let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
+        for (idx, &qname) in read_names.iter().enumerate() {
+            let start_1 = 10 + idx * 30;
+            let rec = RecordBuf::builder()
+                .set_name(qname)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(MappingQuality::new(60).unwrap())
+                .set_cigar(cigar.clone())
+                .set_sequence(b"ACGTACGTACGTACGTACGT".to_vec().into())
+                .set_quality_scores(vec![35u8; read_len].into())
+                .build();
+            let s_vp = writer.get_ref().virtual_position();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            let e_vp = writer.get_ref().virtual_position();
+            let s = Position::try_from(start_1).unwrap();
+            let e = Position::try_from(start_1 + read_len - 1).unwrap();
+            indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
+                .unwrap();
+        }
+        writer.try_finish().unwrap();
+        bai::io::Writer::new(File::create(&tmp_bai).unwrap())
+            .write_index(&indexer.build(1))
+            .unwrap();
+        std::fs::rename(&tmp_bam, bam_path).unwrap();
+        std::fs::rename(&tmp_bai, bam_path.with_extension("bam.bai")).unwrap();
+    }
+
+    struct ForceProdIdGuard;
+    impl ForceProdIdGuard {
+        fn enter() -> Self {
+            FORCE_PRODUCTION_META_ID.with(|c| c.set(true));
+            Self
+        }
+    }
+    impl Drop for ForceProdIdGuard {
+        fn drop(&mut self) {
+            FORCE_PRODUCTION_META_ID.with(|c| c.set(false));
+        }
+    }
+
+    #[test]
+    fn test_bam_meta_tls_zero_stat_and_epoch_invalidation() {
+        use std::sync::atomic::Ordering;
+
+        let _prod_guard = ForceProdIdGuard::enter();
+
+        let dir = tempfile::tempdir().unwrap();
+        let bam_a = dir.path().join("sample_a.bam");
+        let bam_b = dir.path().join("sample_b.bam");
+        let config = Config::default();
+
+        // Retry the TLS hit verification if a parallel unit test calls `clear_bam_caches()`
+        // and bumps `BAM_CACHE_EPOCH` mid-window.
+        let (meta_a_v1, meta_b_v1) = loop {
+            write_indexed_bam(&bam_a, 1000, &["a_v1_r1"]);
+            write_indexed_bam(&bam_b, 1200, &["b_v1_r1", "b_v1_r2"]);
+            let epoch_start = BAM_CACHE_EPOCH.load(Ordering::Acquire);
+
+            let recs_a1 = query_region(&bam_a, "chr1", Pos0(0), Pos0(500), &config).unwrap();
+            let recs_b1 = query_region(&bam_b, "chr1", Pos0(0), Pos0(500), &config).unwrap();
+            if BAM_CACHE_EPOCH.load(Ordering::Acquire) != epoch_start {
+                continue;
+            }
+            assert_eq!(recs_a1.len(), 1);
+            assert_eq!(recs_b1.len(), 2);
+
+            let (tls_a, tls_b) = BAM_META_TLS.with(|tls| {
+                let slots = tls.borrow();
+                let s0 = slots[0].as_ref().map(|(_, m)| std::sync::Arc::clone(m));
+                let s1 = slots[1].as_ref().map(|(_, m)| std::sync::Arc::clone(m));
+                (s0, s1)
+            });
+            let (Some(m0), Some(m1)) = (tls_a, tls_b) else {
+                panic!("both BAM_META_TLS slots must be populated after querying A and B");
+            };
+            // Most-recently-used slot[0] is bam_b, slot[1] is bam_a.
+            assert_eq!(m0.path, bam_b);
+            assert_eq!(m1.path, bam_a);
+
+            // Evict A and B from META_CACHE and unlink `.bai` files: alternating queries on
+            // the same thread must still succeed via 2-slot `BAM_META_TLS` + `BAM_READER_POOL`
+            // without locking `META_CACHE` or calling `stat()` / opening `.bai`.
+            if let Some(cache) = META_CACHE.get() {
+                let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+                map.remove(&bam_a);
+                map.remove(&bam_b);
+            }
+            std::fs::remove_file(bam_a.with_extension("bam.bai")).unwrap();
+            std::fs::remove_file(bam_b.with_extension("bam.bai")).unwrap();
+
+            let r_a2 = query_region(&bam_a, "chr1", Pos0(0), Pos0(500), &config);
+            let r_b2 = query_region(&bam_b, "chr1", Pos0(0), Pos0(500), &config);
+            let r_a3 = query_region(&bam_a, "chr1", Pos0(0), Pos0(500), &config);
+            let r_b3 = query_region(&bam_b, "chr1", Pos0(0), Pos0(500), &config);
+            if BAM_CACHE_EPOCH.load(Ordering::Acquire) != epoch_start {
+                continue;
+            }
+            assert_eq!(r_a2.unwrap().len(), 1);
+            assert_eq!(r_b2.unwrap().len(), 2);
+            assert_eq!(r_a3.unwrap().len(), 1);
+            assert_eq!(r_b3.unwrap().len(), 2);
+            break (m1, m0);
+        };
+        assert_eq!(
+            meta_a_v1
+                .header
+                .reference_sequences()
+                .get(b"chr1".as_slice())
+                .unwrap()
+                .length()
+                .get(),
+            1000
+        );
+        assert_eq!(
+            meta_b_v1
+                .header
+                .reference_sequences()
+                .get(b"chr1".as_slice())
+                .unwrap()
+                .length()
+                .get(),
+            1200
+        );
+
+        // Also warm a worker thread's `BAM_META_TLS` before overwriting `bam_a` in place
+        // so `clear_bam_caches()` proves cross-thread `BAM_CACHE_EPOCH` invalidation.
+        write_indexed_bam(&bam_a, 1000, &["a_v1_r1"]);
+        write_indexed_bam(&bam_b, 1200, &["b_v1_r1", "b_v1_r2"]);
+        let (tx_cmd, rx_cmd) = std::sync::mpsc::channel::<()>();
+        let (tx_ack, rx_ack) = std::sync::mpsc::channel::<(usize, Vec<Vec<u8>>)>();
+        let bam_a_worker = bam_a.clone();
+        let bam_b_worker = bam_b.clone();
+        let worker = std::thread::spawn(move || {
+            let _worker_prod_guard = ForceProdIdGuard::enter();
+            let cfg = Config::default();
+            // Warm worker's 2-slot TLS with A and B (v1)
+            let w_a1 = query_region(&bam_a_worker, "chr1", Pos0(0), Pos0(500), &cfg).unwrap();
+            let w_b1 = query_region(&bam_b_worker, "chr1", Pos0(0), Pos0(500), &cfg).unwrap();
+            assert_eq!(w_a1.len(), 1);
+            assert_eq!(w_b1.len(), 2);
+            tx_ack
+                .send((
+                    read_reference_lengths(&bam_a_worker, &cfg).unwrap()["chr1"],
+                    w_a1.into_iter().map(|r| r.name).collect(),
+                ))
+                .unwrap();
+
+            // Wait until main thread overwrites `bam_a` and calls `clear_bam_caches()`
+            rx_cmd.recv().unwrap();
+            let lens = read_reference_lengths(&bam_a_worker, &cfg).unwrap();
+            let w_a2 = query_region(&bam_a_worker, "chr1", Pos0(0), Pos0(500), &cfg).unwrap();
+            tx_ack
+                .send((lens["chr1"], w_a2.into_iter().map(|r| r.name).collect()))
+                .unwrap();
+        });
+
+        let (worker_len_v1, worker_names_v1) = rx_ack.recv().unwrap();
+        assert_eq!(worker_len_v1, 1000);
+        assert_eq!(worker_names_v1, vec![b"a_v1_r1".to_vec()]);
+
+        // Overwrite `bam_a` + `.bai` in place with updated header LN=2400 and 3 new reads,
+        // then call `clear_bam_caches()` (bumping `BAM_CACHE_EPOCH`).
+        let epoch_before_clear = BAM_CACHE_EPOCH.load(Ordering::Acquire);
+        write_indexed_bam(&bam_a, 2400, &["a_v2_r1", "a_v2_r2", "a_v2_r3"]);
+        clear_bam_caches();
+        let epoch_after_clear = BAM_CACHE_EPOCH.load(Ordering::Acquire);
+        assert!(
+            epoch_after_clear > epoch_before_clear,
+            "clear_bam_caches() must bump BAM_CACHE_EPOCH"
+        );
+
+        let updated_lens = read_reference_lengths(&bam_a, &config).unwrap();
+        assert_eq!(updated_lens.get("chr1"), Some(&2400));
+        let updated_recs = query_region(&bam_a, "chr1", Pos0(0), Pos0(500), &config).unwrap();
+        let updated_names: Vec<Vec<u8>> = updated_recs.into_iter().map(|r| r.name).collect();
+        assert_eq!(
+            updated_names,
+            vec![
+                b"a_v2_r1".to_vec(),
+                b"a_v2_r2".to_vec(),
+                b"a_v2_r3".to_vec()
+            ]
+        );
+
+        tx_cmd.send(()).unwrap();
+        let (worker_len_v2, worker_names_v2) = rx_ack.recv().unwrap();
+        worker.join().unwrap();
+        assert_eq!(worker_len_v2, 2400);
+        assert_eq!(
+            worker_names_v2,
+            vec![
+                b"a_v2_r1".to_vec(),
+                b"a_v2_r2".to_vec(),
+                b"a_v2_r3".to_vec()
+            ]
+        );
+
+        // Verify `<= 4096`-byte cap on `BamFeedInner` string stashes (`AR-14`).
+        let mut stash = String::new();
+        let mut small = String::with_capacity(256);
+        small.push_str("chr1,100,+,50M,60,0;");
+        stash_capped_string(&mut stash, small);
+        assert!(stash.is_empty() && stash.capacity() >= 256 && stash.capacity() <= 4096);
+        let oversized = String::with_capacity(8192);
+        stash_capped_string(&mut stash, oversized);
+        assert!(stash.capacity() <= 4096);
+    }
+
+    #[test]
+    fn test_compute_cram_nm_counts_matching_n_and_iupac_as_mismatch() {
+        for b in 0u8..=u8::MAX {
+            let expected = matches!(
+                b,
+                b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't' | b'='
+            );
+            assert_eq!(
+                is_strict_nm_match_base(b),
+                expected,
+                "byte 0x{b:02x} ({:?}) strict NM match classification mismatch",
+                char::from(b)
+            );
+        }
+
+        // 1. Matching ACGT / soft-masked acgt / '=' runs across multiple 8-byte chunks + remainder -> NM = 0
+        let ref_mixed = b"ACGTACGTacgtacgtACGTACGTacgtacgtACGTa";
+        let rec_exact = SamRecord {
+            flags: 0,
+            alignment_start: Some(Pos1(1)),
+            cigar: vec![(ref_mixed.len() as u32, CigarKind::Match)],
+            sequence: ref_mixed.to_vec(),
+            ..SamRecord::default()
+        };
+        assert_eq!(compute_cram_nm(&rec_exact, ref_mixed), Some(0));
+
+        let rec_upper_vs_softmask = SamRecord {
+            sequence: ref_mixed.to_ascii_uppercase(),
+            ..rec_exact.clone()
+        };
+        assert_eq!(compute_cram_nm(&rec_upper_vs_softmask, ref_mixed), Some(0));
+
+        let rec_eq = SamRecord {
+            sequence: vec![b'='; ref_mixed.len()],
+            ..rec_exact.clone()
+        };
+        assert_eq!(
+            compute_cram_nm(&rec_eq, b"NNNNRRRRACGTNNNNRRRRACGTNNNNRRRRACGTN"),
+            Some(0)
+        );
+
+        // 2. SAMtags §1.5 (`AR-02`): matching 'N' == 'N', 'n' == 'n', and IUPAC 'R' == 'R' / 'Y' == 'Y'
+        //    both inside 8-byte aligned chunks and in the <8-byte tail MUST each increment NM by +1!
+        let ref_ambig = b"ACGTNACGRACGTACGTnACGTYACGTN";
+        // Ambiguity positions (0-based): 4 ('N'), 8 ('R'), 17 ('n'), 22 ('Y'), 27 ('N') => 5 total
+        let rec_ambig = SamRecord {
+            flags: 0,
+            alignment_start: Some(Pos1(1)),
+            cigar: vec![(ref_ambig.len() as u32, CigarKind::Match)],
+            sequence: ref_ambig.to_vec(),
+            ..SamRecord::default()
+        };
+        assert_eq!(compute_cram_nm(&rec_ambig, ref_ambig), Some(5));
+
+        // 3. 3' reference overhang: positions past `ref_seq.len()` compare against implicit 'N'
+        //    ('=' matches -> +0, 'A' vs implicit 'N' -> +1, 'N' vs implicit 'N' -> +1).
+        let short_ref = b"ACGTACGTACGT"; // 12 bp
+        let rec_overhang = SamRecord {
+            flags: 0,
+            alignment_start: Some(Pos1(1)),
+            cigar: vec![(15, CigarKind::Match)],
+            sequence: b"ACGTACGTACGT=AN".to_vec(), // 12 exact + '=' (0) + 'A' (+1) + 'N' (+1) = 2
+            ..SamRecord::default()
+        };
+        assert_eq!(compute_cram_nm(&rec_overhang, short_ref), Some(2));
+    }
+
+    #[test]
+    fn test_bam_cache_epoch_post_clear_release_and_cold_miss_guard() {
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+        use std::fs::File;
+        use std::sync::atomic::Ordering;
+
+        let _prod_guard = ForceProdIdGuard::enter();
+
+        let dir = tempfile::tempdir().unwrap();
+        let bam_race = dir.path().join("toctou_race.bam");
+        let cfg = Config::default();
+
+        // 1. TOCTOU mid-clear race: populate `META_CACHE` with v1 (`LN = 1000`), overwrite
+        //    `bam_race` on disk with v2 (`LN = 3000`), then have a worker thread query `bam_race`
+        //    mid-`clear_bam_caches()` BEFORE `META_CACHE` is cleared. Once `clear_bam_caches()`
+        //    completes, its post-clear `Release` epoch bump must invalidate the worker's TLS.
+        write_indexed_bam(&bam_race, 1000, &["v1_only"]);
+        assert_eq!(
+            read_reference_lengths(&bam_race, &cfg).unwrap().get("chr1"),
+            Some(&1000)
+        );
+        write_indexed_bam(&bam_race, 3000, &["v2_r1", "v2_r2"]);
+
+        let (tx_continue, rx_continue) = std::sync::mpsc::channel::<()>();
+        let (tx_done, rx_done) = std::sync::mpsc::channel::<(usize, Vec<Vec<u8>>)>();
+        let (tx_handle, rx_handle) = std::sync::mpsc::channel::<std::thread::JoinHandle<()>>();
+        let bam_for_hook = bam_race.clone();
+        TEST_MID_CLEAR_HOOK.with(|h| {
+            let (tx_warmed, rx_warmed) = std::sync::mpsc::channel::<()>();
+            *h.borrow_mut() = Some(Box::new(move || {
+                let handle = std::thread::spawn(move || {
+                    let _worker_prod_guard = ForceProdIdGuard::enter();
+                    let wcfg = Config::default();
+                    // Reads stale `v1` from `META_CACHE` mid-sweep and populates worker TLS.
+                    let _ = read_reference_lengths(&bam_for_hook, &wcfg).unwrap();
+                    let _ = query_region(&bam_for_hook, "chr1", Pos0(0), Pos0(500), &wcfg).unwrap();
+                    tx_warmed.send(()).unwrap();
+
+                    rx_continue.recv().unwrap();
+                    let post_len = read_reference_lengths(&bam_for_hook, &wcfg).unwrap()["chr1"];
+                    let post_names: Vec<Vec<u8>> =
+                        query_region(&bam_for_hook, "chr1", Pos0(0), Pos0(500), &wcfg)
+                            .unwrap()
+                            .into_iter()
+                            .map(|r| r.name)
+                            .collect();
+                    tx_done.send((post_len, post_names)).unwrap();
+                });
+                rx_warmed.recv().unwrap();
+                tx_handle.send(handle).unwrap();
+            }));
+        });
+
+        clear_bam_caches();
+        tx_continue.send(()).unwrap();
+        let (post_clear_len, post_clear_names) = rx_done.recv().unwrap();
+        rx_handle.recv().unwrap().join().unwrap();
+        assert_eq!(
+            post_clear_len, 3000,
+            "post-clear Release bump must invalidate worker TLS populated mid-clear"
+        );
+        assert_eq!(post_clear_names, vec![b"v2_r1".to_vec(), b"v2_r2".to_vec()]);
+
+        // 2. Cold-miss epoch mismatch guard (BAM + CRAM): if `BAM_CACHE_EPOCH` advances while
+        //    a cold miss has already opened pre-clear disk files, neither `META_CACHE` /
+        //    `CRAM_META_CACHE` nor TLS may cache the pre-clear metadata.
+        let bam_cold = dir.path().join("cold_race.bam");
+        write_indexed_bam(&bam_cold, 1100, &["cold_v1"]);
+        let bam_cold_hook = bam_cold.clone();
+        TEST_MID_COLD_OPEN_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                write_indexed_bam(&bam_cold_hook, 4200, &["cold_v2_a", "cold_v2_b"]);
+                BAM_CACHE_EPOCH.fetch_add(1, Ordering::Release);
+            }));
+        });
+        let first_cold_len = read_reference_lengths(&bam_cold, &cfg).unwrap()["chr1"];
+        assert_eq!(first_cold_len, 1100);
+        // Next query must NOT hit stale 1100 metadata in `META_CACHE` or `BAM_META_TLS`:
+        let second_cold_len = read_reference_lengths(&bam_cold, &cfg).unwrap()["chr1"];
+        assert_eq!(
+            second_cold_len, 4200,
+            "cold-miss BAM open spanning epoch bump must not cache stale SharedBamMeta"
+        );
+
+        // Same cold-miss epoch mismatch guard on CRAM:
+        let ref_fa = dir.path().join("cold_ref.fa");
+        let ref_fai = dir.path().join("cold_ref.fa.fai");
+        std::fs::write(&ref_fa, b">chr1\nACGTACGTACGTACGTACGTACGTACGTACGT\n").unwrap();
+        std::fs::write(&ref_fai, b"chr1\t32\t6\t32\t33\n").unwrap();
+        let cram_cold = dir.path().join("cold_race.cram");
+        fn write_cram(cram_path: &Path, ref_fa: &Path, ref_fai: &Path, sq_len: usize) {
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(sq_len.try_into().unwrap())
+                .build()
+                .unwrap();
+            let header = Header::builder().add_reference_sequence("chr1", rs).build();
+            let tmp_cram = cram_path.with_extension("cram.tmp");
+            let tmp_crai = cram_path.with_extension("cram.crai.tmp");
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(File::open(ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut cram_writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&tmp_cram)
+                .unwrap();
+            cram_writer.write_alignment_header(&header).unwrap();
+            cram_writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&tmp_cram).unwrap();
+            noodles::cram::crai::fs::write(&tmp_crai, &crai).unwrap();
+            std::fs::rename(&tmp_cram, cram_path).unwrap();
+            std::fs::rename(&tmp_crai, cram_path.with_extension("cram.crai")).unwrap();
+        }
+        write_cram(&cram_cold, &ref_fa, &ref_fai, 32);
+        let cram_cfg = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let cram_cold_hook = cram_cold.clone();
+        let ref_fa_hook = ref_fa.clone();
+        let ref_fai_hook = ref_fai.clone();
+        TEST_MID_COLD_OPEN_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                write_cram(&cram_cold_hook, &ref_fa_hook, &ref_fai_hook, 64);
+                BAM_CACHE_EPOCH.fetch_add(1, Ordering::Release);
+            }));
+        });
+        assert_eq!(
+            read_reference_lengths(&cram_cold, &cram_cfg).unwrap()["chr1"],
+            32
+        );
+        assert_eq!(
+            read_reference_lengths(&cram_cold, &cram_cfg).unwrap()["chr1"],
+            64,
+            "cold-miss CRAM open spanning epoch bump must not cache stale SharedCramMeta"
+        );
     }
 }

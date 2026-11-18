@@ -7,10 +7,11 @@
 //! chunk decodes — which overflows the 2 MiB default worker-thread
 //! stack (`thread '<unknown>' has overflowed its stack`). No frame in
 //! `vardictrust-core` is oversized, so there is nothing to Box on our side;
-//! the `RUST_MIN_STACK=67108864` override in `harness/cram_twin.sh` is
-//! required until upstream shrinks its decoder frames.
+//! `runner::CRAM_WORKER_THREAD_STACK_FLOOR_BYTES` (`64 MiB`) automatically
+//! enforces the required worker stack floor on `.cram` inputs until upstream
+//! shrinks its decoder frames.
 //!
-//! This test pins the workaround with measured thresholds: the tile-0 CRAM
+//! This test pins that floor with measured thresholds: the tile-0 CRAM
 //! query MUST die on a small stack and MUST succeed with an identical record
 //! count on a 64 MiB stack. Each case runs in a child process so the fatal
 //! overflow cannot abort the test harness. If the small-stack child ever
@@ -143,8 +144,8 @@ fn cram_worker_stack_thresholds() {
     assert!(
         !died.status.success(),
         "{small}B child unexpectedly SUCCEEDED ({}). If upstream shrank the \
-         noodles-cram decoder frames, re-evaluate the RUST_MIN_STACK=64M \
-         workaround in harness/cram_twin.sh — it may now be removable.",
+         noodles-cram decoder frames, re-evaluate \
+         runner::CRAM_WORKER_THREAD_STACK_FLOOR_BYTES (64 MiB).",
         String::from_utf8_lossy(&died.stdout)
     );
     // Death must be by signal (stack overflow), not a wrong-reason exit
@@ -198,8 +199,8 @@ fn run_single_thread_survives_2mib_caller() {
     let region = format!("{TILE_CHR}:{TILE_START}-{TILE_END}");
 
     // Even when the caller thread only has a 2 MiB stack, `vardictrust_core::run`
-    // with `threads = 1` dispatches onto `run_with_worker_stack` (>= 16 MiB floor)
-    // and completes without stack overflow.
+    // with `threads = 1` dispatches `.cram` inputs onto `run_with_worker_stack_for_bam`
+    // (`CRAM_WORKER_THREAD_STACK_FLOOR_BYTES` = 64 MiB floor) and completes without overflow.
     let h = std::thread::Builder::new()
         .name("caller-2mib".to_string())
         .stack_size(2 * 1024 * 1024)

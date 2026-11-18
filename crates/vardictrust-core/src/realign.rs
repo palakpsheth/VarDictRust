@@ -547,26 +547,176 @@ pub struct MismatchResult {
     pub misnt: String,
 }
 
-/// Find mismatches and softclipping positions at the 5' end.
-///
-/// Ports `VariationRealigner.findMM5`.
-pub fn find_mm5(
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CompactMismatch {
+    buf: [u8; 4],
+    len: u8,
+    end: u8,
+    position: i32,
+}
+
+impl CompactMismatch {
+    #[inline]
+    fn from_slice(raw: &[u8], position: i32, end: u8) -> Self {
+        let mut buf = [0u8; 4];
+        let n = raw.len().min(buf.len());
+        if let (Some(dst), Some(src)) = (buf.get_mut(..n), raw.get(..n)) {
+            dst.copy_from_slice(src);
+        }
+        Self {
+            buf,
+            len: n as u8,
+            end,
+            position,
+        }
+    }
+
+    #[inline]
+    fn as_bytes(&self) -> &[u8] {
+        self.buf.get(..usize::from(self.len)).unwrap_or(&[])
+    }
+
+    #[inline]
+    fn into_mismatch(self) -> Mismatch {
+        Mismatch {
+            mismatch_sequence: String::from_utf8_lossy(self.as_bytes()).into_owned(),
+            mismatch_position: self.position,
+            end: i32::from(self.end),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct CompactMismatches {
+    inline: [CompactMismatch; 8],
+    len: usize,
+    overflow: Vec<CompactMismatch>,
+}
+
+impl CompactMismatches {
+    #[inline]
+    fn push(&mut self, item: CompactMismatch) {
+        if let Some(slot) = self.inline.get_mut(self.len) {
+            *slot = item;
+            self.len += 1;
+        } else {
+            self.overflow.push(item);
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len.saturating_add(self.overflow.len())
+    }
+
+    #[inline]
+    fn iter(&self) -> impl Iterator<Item = &CompactMismatch> {
+        self.inline
+            .get(..self.len)
+            .unwrap_or(&[])
+            .iter()
+            .chain(self.overflow.iter())
+    }
+}
+
+/// Stack-allocated `[i32; 2]` buffer: `find_mm5_compact` and `find_mm3_compact` push at most 2 soft-clip positions.
+#[derive(Clone, Copy, Debug, Default)]
+struct CompactScp {
+    buf: [i32; 2],
+    len: u8,
+}
+
+impl CompactScp {
+    #[inline]
+    fn push(&mut self, pos: i32) {
+        if let Some(slot) = self.buf.get_mut(usize::from(self.len)) {
+            *slot = pos;
+            self.len += 1;
+        }
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[i32] {
+        self.buf.get(..usize::from(self.len)).unwrap_or(&[])
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct CompactMismatchResult {
+    mismatches: CompactMismatches,
+    scp: CompactScp,
+    nm: i32,
+    misp: i32,
+    misnt: Option<u8>,
+}
+
+impl CompactMismatchResult {
+    fn into_mismatch_result(self) -> MismatchResult {
+        MismatchResult {
+            mismatches: self
+                .mismatches
+                .iter()
+                .copied()
+                .map(CompactMismatch::into_mismatch)
+                .collect(),
+            scp: self.scp.as_slice().to_vec(),
+            nm: self.nm,
+            misp: self.misp,
+            misnt: self
+                .misnt
+                .map(|b| (b as char).to_string())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+#[inline]
+fn format_compact_mismatch_key<'a>(
+    raw: &'a [u8],
+    stack_buf: &'a mut crate::types::StackBuf<16>,
+    lossy_slot: &'a mut String,
+    heap_fallback: &'a mut String,
+) -> &'a str {
+    use std::fmt::Write as _;
+    let decoded: &str = match std::str::from_utf8(raw) {
+        Ok(s) => s,
+        Err(_) => {
+            lossy_slot.clear();
+            lossy_slot.push_str(&String::from_utf8_lossy(raw));
+            lossy_slot.as_str()
+        }
+    };
+    if let (Some(head), Some(tail)) = (decoded.get(..1), decoded.get(1..)) {
+        if !tail.is_empty() {
+            *stack_buf = crate::types::StackBuf::new();
+            if write!(stack_buf, "{head}&{tail}").is_ok() {
+                return stack_buf.as_str();
+            }
+            heap_fallback.clear();
+            let _ = write!(heap_fallback, "{head}&{tail}");
+            return heap_fallback.as_str();
+        }
+    }
+    decoded
+}
+
+fn find_mm5_compact(
     reference: &Reference,
     chr: &str,
     position: i32,
     wupseq: &[u8],
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
-) -> MismatchResult {
+) -> CompactMismatchResult {
     let clean_seq2 = strip_markers(wupseq);
 
     let longmm = 3;
-    let mut mismatches = Vec::new();
+    let mut mismatches = CompactMismatches::default();
     let mut n = 0;
     let mut mn: i32 = 0;
     let mut mcnt = 0;
     let mut mm_buf = [0u8; 3];
     let mut mm_len = 0usize;
-    let mut sc5p = Vec::new();
+    let mut sc5p = CompactScp::default();
 
     loop {
         let seq_idx = (clean_seq2.len() as i32)
@@ -592,15 +742,8 @@ pub fn find_mm5(
                 if let Some(slot) = mm_buf.get_mut(start) {
                     *slot = c_seq;
                 }
-                let mismatch_str = mm_buf
-                    .get(start..)
-                    .map(|s| String::from_utf8_lossy(s).into_owned())
-                    .unwrap_or_default();
-                mismatches.push(Mismatch {
-                    mismatch_sequence: mismatch_str,
-                    mismatch_position: ref_pos,
-                    end: 5,
-                });
+                let raw = mm_buf.get(start..).unwrap_or(&[]);
+                mismatches.push(CompactMismatch::from_slice(raw, ref_pos, 5));
                 n += 1;
                 mcnt += 1;
                 continue;
@@ -656,33 +799,43 @@ pub fn find_mm5(
         }
     }
 
-    MismatchResult {
+    CompactMismatchResult {
         mismatches,
         scp: sc5p,
         nm: mn,
         misp,
-        misnt: misnt.map(|b| (b as char).to_string()).unwrap_or_default(),
+        misnt,
     }
 }
 
-/// Find mismatches and softclipping positions at the 3' end.
+/// Find mismatches and softclipping positions at the 5' end.
 ///
-/// Ports `VariationRealigner.findMM3`.
-pub fn find_mm3(
+/// Ports `VariationRealigner.findMM5`.
+pub fn find_mm5(
+    reference: &Reference,
+    chr: &str,
+    position: i32,
+    wupseq: &[u8],
+    soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
+) -> MismatchResult {
+    find_mm5_compact(reference, chr, position, wupseq, soft_clips_5_end).into_mismatch_result()
+}
+
+fn find_mm3_compact(
     reference: &Reference,
     chr: &str,
     p: i32,
     sanpseq: &[u8],
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
-) -> MismatchResult {
+) -> CompactMismatchResult {
     let clean_seq2 = strip_markers(sanpseq);
 
     let longmm = 3;
-    let mut mismatches = Vec::new();
+    let mut mismatches = CompactMismatches::default();
     let mut n = 0;
     let mut mn: i32 = 0;
     let mut mcnt = 0;
-    let mut sc3p = Vec::new();
+    let mut sc3p = CompactScp::default();
     let mut mm_buf = [0u8; 4];
     let mut mm_len = 0usize;
 
@@ -720,15 +873,8 @@ pub fn find_mm3(
                     *slot = c_seq;
                 }
                 mm_len += 1;
-                let mismatch_str = mm_buf
-                    .get(..mm_len)
-                    .map(|s| String::from_utf8_lossy(s).into_owned())
-                    .unwrap_or_default();
-                mismatches.push(Mismatch {
-                    mismatch_sequence: mismatch_str,
-                    mismatch_position: tbp,
-                    end: 3,
-                });
+                let raw = mm_buf.get(..mm_len).unwrap_or(&[]);
+                mismatches.push(CompactMismatch::from_slice(raw, tbp, 3));
                 n += 1;
                 mcnt += 1;
                 continue;
@@ -810,13 +956,26 @@ pub fn find_mm3(
         }
     }
 
-    MismatchResult {
+    CompactMismatchResult {
         mismatches,
         scp: sc3p,
         nm: mn,
         misp,
-        misnt: misnt.map(|b| (b as char).to_string()).unwrap_or_default(),
+        misnt,
     }
+}
+
+/// Find mismatches and softclipping positions at the 3' end.
+///
+/// Ports `VariationRealigner.findMM3`.
+pub fn find_mm3(
+    reference: &Reference,
+    chr: &str,
+    p: i32,
+    sanpseq: &[u8],
+    soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
+) -> MismatchResult {
+    find_mm3_compact(reference, chr, p, sanpseq, soft_clips_3_end).into_mismatch_result()
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -1522,11 +1681,19 @@ pub fn realigndel(
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
 ) {
-    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
+    if position_to_deletion_count.is_empty() {
+        return;
+    }
     let tmp = fill_and_sort_tmp(position_to_deletion_count);
+    if tmp.is_empty() {
+        return;
+    }
+    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
     let mut extra_buf = String::new();
     let mut wupseq = String::new();
     let mut sanpseq = String::new();
+    let mut mm_lossy = String::new();
+    let mut mm_heap = String::new();
 
     for tpl in &tmp {
         let p = tpl.position;
@@ -1595,29 +1762,29 @@ pub fn realigndel(
             }
         }
 
-        let r3 = find_mm3(reference, chr, p, sanpseq.as_bytes(), soft_clips_3_end);
+        let r3 = find_mm3_compact(reference, chr, p, sanpseq.as_bytes(), soft_clips_3_end);
         let r5 = if let Ok(r5_pos) = i32::try_from(start_pos_ref64 - 1) {
-            find_mm5(reference, chr, r5_pos, wupseq.as_bytes(), soft_clips_5_end)
+            find_mm5_compact(reference, chr, r5_pos, wupseq.as_bytes(), soft_clips_5_end)
         } else {
-            MismatchResult::default()
+            CompactMismatchResult::default()
         };
 
-        let MismatchResult {
-            mismatches: mm3,
-            scp: ref sc3p,
-            nm: nm3,
-            misp: misp3,
-            misnt: ref misnt3,
-        } = r3;
-        let MismatchResult {
-            mismatches: mm5,
-            scp: ref sc5p,
-            nm: nm5,
-            misp: misp5,
-            misnt: ref misnt5,
-        } = r5;
-        let mm3_len_is_one = mm3.len() == 1;
-        let mm5_len_is_one = mm5.len() == 1;
+        let sc3p = r3.scp.as_slice();
+        let sc5p = r5.scp.as_slice();
+        let nm3 = r3.nm;
+        let nm5 = r5.nm;
+        let misp3 = r3.misp;
+        let misp5 = r5.misp;
+        let mut misnt3_buf = [0u8; 4];
+        let misnt3: &str = r3
+            .misnt
+            .map_or("", |b| (b as char).encode_utf8(&mut misnt3_buf));
+        let mut misnt5_buf = [0u8; 4];
+        let misnt5: &str = r5
+            .misnt
+            .map_or("", |b| (b as char).encode_utf8(&mut misnt5_buf));
+        let mm3_len_is_one = r3.mismatches.len() == 1;
+        let mm5_len_is_one = r5.mismatches.len() == 1;
 
         if config.verbose {
             crate::verbose_eprintln!(
@@ -1631,23 +1798,20 @@ pub fn realigndel(
             );
         }
 
-        let mut mmm = mm3;
-        mmm.extend(mm5);
-
-        for mismatch in mmm {
-            let mut mm = mismatch.mismatch_sequence;
-            let mp = mismatch.mismatch_position;
-            let me = mismatch.end;
-
-            if let (Some(head), Some(tail)) = (mm.get(..1), mm.get(1..)) {
-                if !tail.is_empty() {
-                    mm = format!("{head}&{tail}");
-                }
-            }
+        for mismatch in r3.mismatches.iter().chain(r5.mismatches.iter()) {
+            let mut mm_stack = crate::types::StackBuf::<16>::new();
+            let mm = format_compact_mismatch_key(
+                mismatch.as_bytes(),
+                &mut mm_stack,
+                &mut mm_lossy,
+                &mut mm_heap,
+            );
+            let mp = mismatch.position;
+            let me = i32::from(mismatch.end);
 
             let mut should_adjust = false;
             if let Some(entry) = non_insertion_variants.get(&mp) {
-                if let Some(tv) = entry.map.get(&mm) {
+                if let Some(tv) = entry.map.get(mm) {
                     if tv.cnt > 0 {
                         let mean_qual = tv.qmean / (tv.cnt as f64);
                         let mean_pos = tv.pmean / (tv.cnt as f64);
@@ -1673,7 +1837,7 @@ pub fn realigndel(
 
             let tv = match non_insertion_variants
                 .get_mut(&mp)
-                .and_then(|entry| entry.map.swap_remove(&mm))
+                .and_then(|entry| entry.map.swap_remove(mm))
             {
                 Some(tv) => tv,
                 None => continue,
@@ -2091,12 +2255,20 @@ pub fn realignins(
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     max_read_length: i32,
 ) -> String {
-    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
+    if position_to_insertion_count.is_empty() {
+        return String::new();
+    }
     let tmp = fill_and_sort_tmp(position_to_insertion_count);
+    if tmp.is_empty() {
+        return String::new();
+    }
+    let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
     let mut new_ins = String::new();
     let mut tn_buf = String::new();
     let mut wupseq = String::new();
     let mut sanpseq = String::new();
+    let mut mm_lossy = String::new();
+    let mut mm_heap = String::new();
 
     for tpl in &tmp {
         let p = tpl.position;
@@ -2161,7 +2333,7 @@ pub fn realignins(
                 );
             }
             if let Ok(p3_plus_1) = i32::try_from(p3_64 + 1) {
-                find_mm3(
+                find_mm3_compact(
                     reference,
                     chr,
                     p3_plus_1,
@@ -2169,7 +2341,7 @@ pub fn realignins(
                     soft_clips_3_end,
                 )
             } else {
-                MismatchResult::default()
+                CompactMismatchResult::default()
             }
         } else {
             let start_pos_ref64 =
@@ -2187,7 +2359,7 @@ pub fn realignins(
                 }
             }
             if let Some(p_plus_1) = p.checked_add(1) {
-                find_mm3(
+                find_mm3_compact(
                     reference,
                     chr,
                     p_plus_1,
@@ -2195,52 +2367,53 @@ pub fn realignins(
                     soft_clips_3_end,
                 )
             } else {
-                MismatchResult::default()
+                CompactMismatchResult::default()
             }
         };
 
         let p5_pos64 =
             i64::from(p) + (extra.len() as i64) + (compm.len() as i64) + i64::from(newdel);
         let find_mm5_res = if let Ok(p5_pos) = i32::try_from(p5_pos64) {
-            find_mm5(reference, chr, p5_pos, wupseq.as_bytes(), soft_clips_5_end)
+            find_mm5_compact(reference, chr, p5_pos, wupseq.as_bytes(), soft_clips_5_end)
         } else {
-            MismatchResult::default()
+            CompactMismatchResult::default()
         };
 
-        let MismatchResult {
-            mismatches: mm3,
-            scp: ref sc3p,
-            nm: nm3,
-            misp: misp3,
-            misnt: ref misnt3,
-        } = find_mm3_res;
-        let MismatchResult {
-            mismatches: mm5,
-            scp: ref sc5p,
-            nm: nm5,
-            misp: misp5,
-            misnt: ref misnt5,
-        } = find_mm5_res;
-        let mm3_len_is_one = mm3.len() == 1;
-        let mm5_len_is_one = mm5.len() == 1;
+        let sc3p = find_mm3_res.scp.as_slice();
+        let sc5p = find_mm5_res.scp.as_slice();
+        let nm3 = find_mm3_res.nm;
+        let nm5 = find_mm5_res.nm;
+        let misp3 = find_mm3_res.misp;
+        let misp5 = find_mm5_res.misp;
+        let mut misnt3_buf = [0u8; 4];
+        let misnt3: &str = find_mm3_res
+            .misnt
+            .map_or("", |b| (b as char).encode_utf8(&mut misnt3_buf));
+        let mut misnt5_buf = [0u8; 4];
+        let misnt5: &str = find_mm5_res
+            .misnt
+            .map_or("", |b| (b as char).encode_utf8(&mut misnt5_buf));
+        let mm3_len_is_one = find_mm3_res.mismatches.len() == 1;
+        let mm5_len_is_one = find_mm5_res.mismatches.len() == 1;
 
-        let mut mmm = mm3;
-        mmm.extend(mm5);
-
-        for mismatch in mmm {
-            let mut mismatch_bases = mismatch.mismatch_sequence;
-            let mismatch_position = mismatch.mismatch_position;
-            let mismatch_end = mismatch.end;
-
-            if let (Some(head), Some(tail)) = (mismatch_bases.get(..1), mismatch_bases.get(1..)) {
-                if !tail.is_empty() {
-                    mismatch_bases = format!("{head}&{tail}");
-                }
-            }
+        for mismatch in find_mm3_res
+            .mismatches
+            .iter()
+            .chain(find_mm5_res.mismatches.iter())
+        {
+            let mut mm_stack = crate::types::StackBuf::<16>::new();
+            let mismatch_bases = format_compact_mismatch_key(
+                mismatch.as_bytes(),
+                &mut mm_stack,
+                &mut mm_lossy,
+                &mut mm_heap,
+            );
+            let mismatch_position = mismatch.position;
+            let mismatch_end = i32::from(mismatch.end);
 
             let mut should_adjust = false;
             if let Some(entry) = non_insertion_variants.get(&mismatch_position) {
-                if let Some(variation) = entry.map.get(&mismatch_bases) {
+                if let Some(variation) = entry.map.get(mismatch_bases) {
                     if variation.cnt > 0 {
                         let mean_qual = variation.qmean / (variation.cnt as f64);
                         let mean_pos = variation.pmean / (variation.cnt as f64);
@@ -2266,7 +2439,7 @@ pub fn realignins(
 
             let variation = match non_insertion_variants
                 .get_mut(&mismatch_position)
-                .and_then(|entry| entry.map.swap_remove(&mismatch_bases))
+                .and_then(|entry| entry.map.swap_remove(mismatch_bases))
             {
                 Some(variation) => variation,
                 None => continue,
@@ -3114,7 +3287,7 @@ pub fn realignlgdel(
     });
 
     for (p, _) in tmp3 {
-        let (cnt, seq) = {
+        let (cnt, seq, mut sc3_variation) = {
             let Some(sc) = soft_clips_3_end.get_mut(&p) else {
                 continue;
             };
@@ -3134,10 +3307,7 @@ pub fn realignlgdel(
             if seq.len() < 7 {
                 continue;
             }
-            (cnt, seq)
-        };
-        let Some(mut sc3v) = soft_clips_3_end.get(&p).cloned() else {
-            continue;
+            (cnt, seq, sc.variation.clone())
         };
 
         if config.verbose {
@@ -3349,7 +3519,7 @@ pub fn realignlgdel(
                 region,
                 bp,
                 tp_end,
-                sc3v.variation.cnt,
+                sc3_variation.cnt,
             );
         }
 
@@ -3357,21 +3527,19 @@ pub fn realignlgdel(
             if let Some(&cov_p_prev) = ref_coverage.get(&(p.saturating_sub(1))) {
                 ref_coverage.insert(bp, cov_p_prev);
             } else {
-                ref_coverage.insert(bp, sc3v.variation.cnt);
+                ref_coverage.insert(bp, sc3_variation.cnt);
             }
         }
 
-        sc3v.variation.pmean += (dellen as f64) * (sc3v.variation.cnt as f64);
+        sc3_variation.pmean += (dellen as f64) * (sc3_variation.cnt as f64);
         {
             let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
-            crate::variations::util::adj_cnt(tv, &sc3v.variation, None);
+            crate::variations::util::adj_cnt(tv, &sc3_variation, None);
         }
-        sc3v.used = p.saturating_add(dellen) != 0;
 
         if let Some(sc) = soft_clips_3_end.get_mut(&p) {
             sc.used = p.saturating_add(dellen) != 0;
-            sc.sequence = sc3v.sequence;
-            sc.variation.pmean = sc3v.variation.pmean;
+            sc.variation.pmean = sc3_variation.pmean;
         }
 
         let mut dels5 = BTreeMap::new();
@@ -3469,6 +3637,10 @@ pub fn realignlgins30(
     }
     let mut tmp3_sorted: Option<Vec<(i32, i32)>> = None;
     let mut win_buf: Vec<(i32, i32)> = Vec::new();
+    let mut seq5_stack = [0u8; 512];
+    let mut seq5_heap = Vec::new();
+    let mut seq3_stack = [0u8; 512];
+    let mut seq3_heap = Vec::new();
 
     let max_dist_53 = (max_read_length as f64 * 2.5) as i32;
     let max_dist_35 = max_read_length.saturating_sub(10);
@@ -3520,48 +3692,64 @@ pub fn realignlgins30(
             if soft_clips_3_end.get(&p3).is_none_or(|sc| sc.used) {
                 continue;
             }
-            let seq5 = {
+            let seq5_len = {
                 let Some(sc5v) = soft_clips_5_end.get_mut(&p5) else {
                     break;
                 };
-                let s = crate::variations::util::find_conseq_sets(
+                let s = crate::variations::util::find_conseq_slice(
                     sc5v,
                     5,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
+                let n = s.len();
+                if let Some(dst) = seq5_stack.get_mut(..n) {
+                    dst.copy_from_slice(s);
+                } else {
+                    seq5_heap.clear();
+                    seq5_heap.extend_from_slice(s);
+                }
                 sc5_used = sc5v.used;
-                s
+                n
             };
-            let seq3 = {
+            let seq3_len = {
                 let Some(sc3v) = soft_clips_3_end.get_mut(&p3) else {
                     continue;
                 };
-                crate::variations::util::find_conseq_sets(
+                let s = crate::variations::util::find_conseq_slice(
                     sc3v,
                     3,
                     &adaptor_forward,
                     &adaptor_reverse,
-                )
+                );
+                if let Some(dst) = seq3_stack.get_mut(..s.len()) {
+                    dst.copy_from_slice(s);
+                } else {
+                    seq3_heap.clear();
+                    seq3_heap.extend_from_slice(s);
+                }
+                s.len()
             };
-            if seq5.len() <= 10 || seq3.len() <= 10 {
+            if seq5_len <= 10 || seq3_len <= 10 {
                 continue;
             }
+            let seq5: &[u8] = seq5_stack.get(..seq5_len).unwrap_or(&seq5_heap);
+            let seq3: &[u8] = seq3_stack.get(..seq3_len).unwrap_or(&seq3_heap);
             if config.verbose {
                 crate::verbose_eprintln!(
                     "  Working lgins30: {} {} 3: {} {} 5: {} {}",
                     p3,
                     p5,
-                    String::from_utf8_lossy(&seq3),
+                    String::from_utf8_lossy(seq3),
                     cnt3,
-                    String::from_utf8_lossy(&reverse(&seq5)),
+                    String::from_utf8_lossy(&reverse(seq5)),
                     cnt5
                 );
             }
             if !((cnt5 as f64) / (cnt3 as f64) >= 0.08 && (cnt5 as f64) / (cnt3 as f64) <= 12.0) {
                 continue;
             }
-            let match35 = find_35_match(&seq5, &seq3, config.verbose);
+            let match35 = find_35_match(seq5, seq3, config.verbose);
             let bp5 = match35.matched_5_end as isize;
             let bp3 = match35.matched_3_end as isize;
             let score = match35.max_matched_length;
@@ -3571,13 +3759,13 @@ pub fn realignlgins30(
             let smscore = (score / 2) as isize;
             let bp3_plus_sm = bp3.saturating_add(smscore);
             let mut ins = if bp3_plus_sm > 1 {
-                substr(&seq3, 0, 1_isize.saturating_sub(bp3_plus_sm)).to_vec()
+                substr(seq3, 0, 1_isize.saturating_sub(bp3_plus_sm)).to_vec()
             } else {
-                seq3.clone()
+                seq3.to_vec()
             };
             let bp5_plus_sm = bp5.saturating_add(smscore);
             if bp5_plus_sm > 0 {
-                ins.extend_from_slice(&reverse(substr(&seq5, 0, bp5_plus_sm)));
+                ins.extend_from_slice(&reverse(substr(seq5, 0, bp5_plus_sm)));
             }
             if crate::variations::util::is_low_complex_seq(&ins) {
                 if config.verbose {
@@ -3600,7 +3788,7 @@ pub fn realignlgins30(
             }
             if p5 > p3 {
                 if seq3.len() > ins.len() {
-                    let sub = substr_from(&seq3, ins.len() as isize);
+                    let sub = substr_from(seq3, ins.len() as isize);
                     let jref = join_ref_int(
                         reference,
                         chr,
@@ -3613,7 +3801,7 @@ pub fn realignlgins30(
                     }
                 }
                 if seq5.len() > ins.len() {
-                    let sub = substr_from(&seq5, ins.len() as isize);
+                    let sub = substr_from(seq5, ins.len() as isize);
                     let jref = join_ref_int(
                         reference,
                         chr,
@@ -3654,7 +3842,7 @@ pub fn realignlgins30(
                 }
             } else {
                 if seq3.len() > ins.len() {
-                    let sub = substr_from(&seq3, ins.len() as isize);
+                    let sub = substr_from(seq3, ins.len() as isize);
                     let jref = join_ref_int(
                         reference,
                         chr,
@@ -3667,7 +3855,7 @@ pub fn realignlgins30(
                     }
                 }
                 if seq5.len() > ins.len() {
-                    let sub = substr_from(&seq5, ins.len() as isize);
+                    let sub = substr_from(seq5, ins.len() as isize);
                     let jref = join_ref_int(
                         reference,
                         chr,
@@ -4792,12 +4980,9 @@ pub struct Match35 {
 #[inline]
 fn swar_mismatch_count_u64(a: u64, b: u64) -> i32 {
     let diff = a ^ b;
-    if diff == 0 {
-        return 0;
-    }
     let nz = (diff | ((diff & 0x7F7F_7F7F_7F7F_7F7F).wrapping_add(0x7F7F_7F7F_7F7F_7F7F)))
         & 0x8080_8080_8080_8080;
-    nz.count_ones() as i32
+    (((nz >> 7).wrapping_mul(0x0101_0101_0101_0101)) >> 56) as i32
 }
 
 #[inline]
@@ -4818,7 +5003,7 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     let len5 = seq5.len();
     let len3 = seq3.len();
 
-    if len5 <= 8 || len3 <= 9 {
+    if len5 <= 9 || len3 <= 9 {
         return Match35 {
             matched_5_end: 0,
             matched_3_end: 0,
@@ -4861,22 +5046,25 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
         &rev3_w0_heap
     };
 
-    for i in 0..(len5 - 8) {
+    for i in 0..(len5 - 9) {
         let rem5 = len5 - i;
         let w5_0 = load_u64_le(seq5, i);
-        for (j_idx, &w3_0) in rev3_w0.iter().enumerate() {
-            // Fast SWAR reject: since `i < len5 - 8` (`rem5 >= 9`) and
-            // `j < len3 - 8` (`rem3 >= 10`), `valid_len = rem3.min(rem5) >= 9`.
-            // If the first 8 bytes alone have > 2 mismatches, the scalar loop is
-            // guaranteed to break at `total_length <= 7` with `number_of_mismatch == 3`,
-            // yielding `score <= 4 < 8`.
-            let mm0 = swar_mismatch_count_u64(w3_0, w5_0);
-            if mm0 > long_mismatch {
-                continue;
-            }
+        let mut cur_j = 0usize;
+        while let Some(rel) = rev3_w0.get(cur_j..).and_then(|s| {
+            s.iter()
+                .position(|&w3_0| swar_mismatch_count_u64(w3_0, w5_0) <= long_mismatch)
+        }) {
+            let j_idx = cur_j + rel;
+            cur_j = j_idx + 1;
+            let mm0 = swar_mismatch_count_u64(rev3_w0.get(j_idx).copied().unwrap_or(0), w5_0);
 
             let j = j_idx + 1;
             let rem3 = len3 - j + 1;
+            if (mm0 == 2 && ((rem5 < rem3 && rem5 < 31) || (rem5 >= rem3 && rem3 < 21)))
+                || (mm0 == 1 && rem5 < rem3 && rem5 < 20)
+            {
+                continue;
+            }
             let valid_len = rem3.min(rem5);
             let s3 = rev3.get(j_idx..(j_idx + valid_len)).unwrap_or(&[]);
             let s5 = seq5.get(i..(i + valid_len)).unwrap_or(&[]);
@@ -5301,7 +5489,7 @@ fn partial_pipeline(
     for (pos, sc) in var_data.soft_clips_3_end {
         merge_sclip(soft_clips_3_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
-    for (pos, var_map) in var_data.non_insertion_variants {
+    for (pos, var_map) in var_data.non_insertion_variants.into_entries() {
         let dest = non_insertion_variants.get_or_put_with(pos, VariationMap::new);
         if !mate_owned(pos) {
             dest.merge_planted = true;
@@ -5340,7 +5528,7 @@ fn partial_pipeline(
             }
         }
     }
-    for (pos, var_map) in var_data.insertion_variants {
+    for (pos, var_map) in var_data.insertion_variants.into_entries() {
         let dest = insertion_variants.get_or_put_with(pos, VariationMap::new);
         if !mate_owned(pos) {
             dest.merge_planted = true;
@@ -5424,7 +5612,13 @@ pub fn adjust_mnp(
     config: &crate::config::Config,
     var_data: &mut crate::variations::VariationData,
 ) {
+    if var_data.mnp.is_empty() {
+        return;
+    }
     let tmp = fill_and_sort_tmp(&var_data.mnp);
+    if tmp.is_empty() {
+        return;
+    }
     let adaptor_forward = AdaptorSet::default();
     let adaptor_reverse = AdaptorSet::default();
     let mut left = String::new();
@@ -8566,6 +8760,136 @@ mod tests {
         assert!(
             dense_fallbacks > 0,
             "expected >1024 dense cluster around 60k..61.15k to exercise tmp3_sorted fallback"
+        );
+    }
+
+    #[test]
+    fn test_realignlgins30_preserves_sc3_conseq_side_effect_when_seq5_short() {
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 1000,
+            });
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'G'; 1000]);
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(50),
+            end: crate::types::Pos1(500),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let config = crate::config::Config::default();
+        let mut non_ins = crate::javamap::JavaHashMap::new();
+        let mut ins = crate::javamap::JavaHashMap::new();
+        let mut cov = rustc_hash::FxHashMap::default();
+        let mut soft_clips_5_end = BTreeMap::new();
+        let mut soft_clips_3_end = BTreeMap::new();
+
+        // Direct slice check on `find_conseq_slice`:
+        let (adapt_f, adapt_r) = fill_adaptor_sets(&[]);
+        let mut probe_sc = Sclip::new();
+        probe_sc.variation.cnt = 6;
+        for (idx, &b) in b"ACGTACGT".iter().enumerate() {
+            let mut nt = BTreeMap::new();
+            nt.insert(b, 10);
+            probe_sc.nt.insert(idx as i32, nt);
+        }
+        assert_eq!(
+            crate::variations::util::find_conseq_slice(&mut probe_sc, 5, &adapt_f, &adapt_r),
+            b"ACGTACGT"
+        );
+
+        // p5 = 100 has consensus len 8 <= 10 (non-low-complexity so sc5.used remains false).
+        let mut sc5 = Sclip::new();
+        sc5.variation.cnt = 6;
+        for (idx, &b) in b"ACGTACGT".iter().enumerate() {
+            let mut nt = BTreeMap::new();
+            nt.insert(b, 10);
+            sc5.nt.insert(idx as i32, nt);
+        }
+        soft_clips_5_end.insert(100, sc5);
+
+        // p3 = 105 is 15-bp poly-A (> 12 bp), so `find_conseq_slice(sc3v, 3, ...)` MUST still
+        // execute and set `soft_clips_3_end[&105].used = true` even though `seq5.len() == 8 <= 10`.
+        let mut sc3 = Sclip::new();
+        sc3.variation.cnt = 6;
+        for idx in 0..15 {
+            let mut nt = BTreeMap::new();
+            nt.insert(b'A', 10);
+            sc3.nt.insert(idx, nt);
+        }
+        soft_clips_3_end.insert(105, sc3);
+
+        realignlgins30(
+            None,
+            &mut reference,
+            "chr1",
+            1000,
+            &region,
+            &config,
+            &mut non_ins,
+            &mut ins,
+            &mut cov,
+            &mut soft_clips_5_end,
+            &mut soft_clips_3_end,
+            150,
+        );
+        assert!(
+            soft_clips_3_end[&105].used,
+            "realignlgins30 must run find_conseq on sc3 before checking seq5.len() <= 10"
+        );
+        assert!(!soft_clips_5_end[&100].used);
+
+        // Verify `find_mm5` and `find_mm3` on invalid UTF-8 bytes (`0xFF`).
+        let mut mm_sc5 = BTreeMap::new();
+        let res5 = find_mm5(
+            &reference,
+            "chr1",
+            20,
+            &[b'G', b'G', b'C', 0xFF],
+            &mut mm_sc5,
+        );
+        assert_eq!(res5.mismatches.len(), 2);
+        assert_eq!(res5.mismatches[0].mismatch_sequence, "\u{FFFD}");
+        assert_eq!(res5.mismatches[1].mismatch_sequence, "C\u{FFFD}");
+
+        let mut mm_sc3 = BTreeMap::new();
+        let res3 = find_mm3(
+            &reference,
+            "chr1",
+            20,
+            &[0xFF, b'C', b'G', b'G'],
+            &mut mm_sc3,
+        );
+        assert_eq!(res3.mismatches.len(), 2);
+        assert_eq!(res3.mismatches[0].mismatch_sequence, "\u{FFFD}");
+        assert_eq!(res3.mismatches[1].mismatch_sequence, "\u{FFFD}C");
+
+        let mut stack_buf = crate::types::StackBuf::<16>::new();
+        let mut lossy_slot = String::new();
+        let mut heap_slot = String::new();
+        assert_eq!(
+            format_compact_mismatch_key(
+                &[0xFF, b'C'],
+                &mut stack_buf,
+                &mut lossy_slot,
+                &mut heap_slot,
+            ),
+            "\u{FFFD}C"
+        );
+        assert_eq!(
+            format_compact_mismatch_key(
+                &[b'C', 0xFF],
+                &mut stack_buf,
+                &mut lossy_slot,
+                &mut heap_slot,
+            ),
+            "C&\u{FFFD}"
         );
     }
 }
