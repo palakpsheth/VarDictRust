@@ -9,8 +9,21 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 import markdown
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _read_workspace_version(cargo_toml_path: Path | None = None) -> str:
+    """Read [workspace.package].version from root Cargo.toml via stdlib tomllib."""
+    path = cargo_toml_path if cargo_toml_path is not None else ROOT / "Cargo.toml"
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    ver = ((data.get("workspace") or {}).get("package") or {}).get("version")
+    if not isinstance(ver, str) or not ver:
+        raise ValueError(f"Could not parse [workspace.package].version from {path}")
+    return ver
 
 
 LATEX_SYMBOLS = {
@@ -175,12 +188,12 @@ def preprocess_markdown_for_html(md_text: str, base_dir: Path) -> str:
     return text
 
 
-PRINT_CSS = """
+_PRINT_CSS_TEMPLATE = """
 @page {
   size: letter;
   margin: 13mm 13mm 15mm 13mm;
   @bottom-left {
-    content: "VarDictRust v1.0.6 — Empirical Validation & Architectural Manuscript";
+    content: "@@FOOTER_LEFT@@";
     font-family: "Liberation Sans", "DejaVu Sans", Arial, sans-serif;
     font-size: 7.2pt;
     color: #64748b;
@@ -439,6 +452,14 @@ blockquote ul {
 """
 
 
+def _build_print_css(cargo_toml_path: Path | None = None) -> str:
+    ver = _read_workspace_version(cargo_toml_path)
+    footer_left = (
+        f"VarDictRust v{ver} (v1.0.6 GCP Study) — Empirical Validation & Architectural Manuscript"
+    )
+    return _PRINT_CSS_TEMPLATE.replace("@@FOOTER_LEFT@@", footer_left)
+
+
 def _postprocess_body_html(body_html: str) -> str:
     """Pair figure blocks with their caption paragraphs and add clean identifier break hints."""
     # 1. Pair <figure class="paper-figure">...</figure> with following <p><strong>Figure N...</strong>...</p>
@@ -495,13 +516,14 @@ def markdown_to_html_document(md_text: str, base_dir: Path, title: str) -> str:
         extensions=["tables", "fenced_code", "sane_lists"],
     )
     body_html = _postprocess_body_html(body_html)
+    print_css = _build_print_css()
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
         "<head>\n"
         '  <meta charset="utf-8" />\n'
         f"  <title>{html.escape(title)}</title>\n"
-        f"  <style>{PRINT_CSS}</style>\n"
+        f"  <style>{print_css}</style>\n"
         "</head>\n"
         "<body>\n"
         f"{body_html}\n"
