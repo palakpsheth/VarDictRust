@@ -1,14 +1,14 @@
-# VarDictRust v1.0.6 Paper Reproducibility Package
+# VarDictRust Paper Reproducibility Package (`v1.0.10` Release / `v1.0.6` GCP Study)
 
-This package provides a deterministic, single-command reproducibility pipeline for all figures, tables, text statistics, and LinkedIn dissemination assets accompanying the VarDictRust evaluation manuscript:
+This package provides a deterministic, single-command reproducibility pipeline for all figures, tables, text statistics, and LinkedIn dissemination assets accompanying the `VarDictRust` evaluation manuscript:
 
-> **"Scaling Somatic and Germline Variant Calling with Byte Parity: An Empirical Study of VarDictRust Across 60 Cloud Workloads, 10 Sequencing Chemistries, and Full Human Genomes"**
+> **"VarDictRust: A Memory-Bounded, Oracle-Equivalent Rust Consolidation of the VarDict Variant-Calling Pipeline for Deep Whole-Genome and Ultra-Low-VAF Sequencing"**
 
 ---
 
 ## 1. Quickstart: Offline Reproduction (After One-Time Setup)
 
-All aggregated metrics, per-cell runtime/RSS measurements, truth evaluations, and cryptographic digests from the 60 Google Cloud Platform (GCP) study cells are committed in-tree under [`benchmarks/gcp-study-v106/`](../benchmarks/gcp-study-v106/).
+All aggregated metrics, per-cell runtime/RSS measurements, truth evaluations, and cryptographic digests from the 60 Google Cloud Platform (GCP) study cells are committed in-tree under [`benchmarks/gcp-study-v106/`](../benchmarks/gcp-study-v106/) (pinned to the `v1.0.6` cloud benchmark baseline, engine fingerprint `5865a2a0b24a8c17`, performance fingerprint `c490c36317b8f25b`). Alongside this frozen empirical dataset, [`paper/build_manuscript.py`](build_manuscript.py) and [`paper/render_pdf.py`](render_pdf.py) dynamically read `Cargo.toml`, `.agents/skills/vardictrust-release/scripts/check_release_consistency.py`, `crates/vardictrust-core/src/`, and `benchmarks/evidence/*.json` to synchronize the current `v1.0.10` release architecture ([`docs/release/v1.0.10-pr.md`](../docs/release/v1.0.10-pr.md), engine fingerprint `2d82664ff81000f7`: `89` CLI flags across `7` functional groups, multithreaded BGZF `--output` + `--tbi`/`--csi` indexing, OpenJDK 8 `TreeNode` `JavaHashMap`, `8 MiB` `SpillableVcfAccumulator` VCF spill cap, singleflight `16 MiB` Illumina CRAM container cache + 2-slot `CRAM_META_TLS` + `SeekWindowReader`, `.bai`/`.csi` structural header pre-validation, `691` Cargo workspace tests + `37` harness self-tests, and `cargo-fuzz` harnesses).
 
 > **Prerequisites (one-time, needs network):** building the Python virtual environment (`.venv`) via `uv` downloads dependencies from PyPI, and PDF rendering needs a headless Chrome/Chromium binary. Do this once with network access; everything after it runs fully offline from committed data. To run the pipeline on a machine without Chrome, export `PAPER_ALLOW_STALE_PDF=1` to reuse the checked-in PDFs — without it, `reproduce_all.sh` fails fast instead of reporting stale PDFs as reproduced (see §5).
 
@@ -93,7 +93,7 @@ The 60 cloud study cells span 6 experimental stages plus multi-core Option C par
 | **Figure 5** | Full-Genome chr1..chr22 Germline & Somatic WGS Scaling | `s5_wgs_hg002_*`, `s5_wgs_hg008_*` | Stage 5 (WGS Arms A & B) |
 | **Figure 6** | 10-Platform Sequencing Chemistry & GA4GH v3.5 | `s5_cross_platform_*`, `s6_ga4gh_v35_*` | Stage 5, Stage 6 |
 | **Figure 7** | Next-Gen Truth (v5.0Q, CMRG, Mosaic) & HG008 Landscape | `s4_tier3_*`, `s6_hg002_v50q_*`, `s6_hg008_modern_*` | Stage 4, Stage 6 |
-| **Figure 8** | Supply Chain, Determinism, CLI Parity & CPP-1..10 | `s2_tierp_mode_*`, `s4_scale_*`, `s5_h4_*` | Stage 2, Stage 4, Stage 5 |
+| **Figure 8** | Supply Chain, Determinism, CLI Parity & CPP-1..12 | `s2_tierp_mode_*`, `s4_scale_*`, `s5_h4_*` | Stage 2, Stage 4, Stage 5 |
 | **Table 1** | Algorithmic Parity (H1/H1a) & Option C Summary | `s1_*`, `s2_tierp_*`, `s3_rna_*`, `s4_*`, `sweep_*` | Stage 1, Stage 2, Stage 3, Stage 4, Sweeps |
 | **Table 2** | vardictcpp Direct Replication & Table 3 -R chr1 | `s2_fig1_*`, `s2_fig2_*`, `s2_table3_*`, `s2_tierp_*` | Stage 2 |
 | **Table 3** | Germline/Somatic Truth, Native GRCh38 & Titration | `s2_fig2_*`, `s4_tier3_*`, `s5_grch38_*`, `s6_low_vaf_*` | Stage 2, Stage 4, Stage 5, Stage 6 |
@@ -107,7 +107,7 @@ The 60 cloud study cells span 6 experimental stages plus multi-core Option C par
 | **Table S3** | Complete Technical Replicate (n=3) Wall-Clock & RSS | `s2_tierp_*`, `s4_scale_*`, `s4_span_*`, `s4_perf_*`, etc. | Technical Replicates (n=3) |
 | **Table S4** | QUAL ROC Sweep & 18-Arm Somatic Noise Floor | `s4_tier3_*`, `s5_cross_platform_*` (Part B) | Stage 4, Stage 5 |
 | **Table S5** | Complete 70-Cell GA4GH v3.5 Genomic Stratification | `s6_ga4gh_v35_stratification_matrix` | Stage 6 |
-| **Table S6** | 13-Mode Functional Parity & CPP-1..10 Catalog | `s2_tierp_mode_*`, `s5_h4_maintenance_security_matrix` | Stage 2, Stage 5 |
+| **Table S6** | 13-Mode Functional Parity & CPP-1..12 Catalog | `s2_tierp_mode_*`, `s5_h4_maintenance_security_matrix` | Stage 2, Stage 5 |
 
 ---
 

@@ -2,7 +2,8 @@
 
 **Authors:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/)<sup>1,*</sup>  
 <sup>1</sup>Independent Researcher ([palakpsheth@gmail.com](mailto:palakpsheth@gmail.com) | [https://www.linkedin.com/in/palak-p-sheth/](https://www.linkedin.com/in/palak-p-sheth/))  
-**Engine Release:** `VarDictRust` `v1.0.6` (commit `2a8e9a3`, engine fingerprint `5865a2a0b24a8c17`, performance fingerprint `c490c36317b8f25b`)  
+**Cloud Study Engine Baseline:** `VarDictRust` `v1.0.6` (commit `2a8e9a3`, engine fingerprint `5865a2a0b24a8c17`, performance fingerprint `c490c36317b8f25b`)  
+**Current Consolidated Release:** `VarDictRust` `v1.0.10` (engine fingerprint `2d82664ff81000f7`, performance fingerprint `052f5458a6dd77bb`; `89` CLI flags across `7` functional groups, `691` Cargo workspace tests + `37` harness self-tests)  
 **Reference Oracles:** `VarDictJava v1.8.3 (0886261)` and `vardictcpp ae93fe39dc (Wolff 2026)`  
 **Cloud Benchmark Host:** `GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake, 32 vCPUs, 128 GiB RAM, 4x375 GB NVMe RAID0)` (`1.5` TB NVMe RAID0 scratch; exploratory staging also verified on `c3d-standard-32`)
 
@@ -54,28 +55,29 @@ The crosswalk below maps each main-text Figure (`Figure 1`–`Figure 8`) and Tab
 
 - **`Figure 7` & `Table 7` (Next-Generation `GIAB v5.0q T2T-Q100`, `CMRG v1.00`, `Mosaic v1.10`, and 11-Caller `HG008 v0.4` Benchmark):** `s6_hg002_v50q_cmrg_mosaic_eval` and `s6_hg008_modern_ml_and_commercial_callers`.
 
-- **`Figure 8` & `Table 8` (Software Supply Chain and 10-Point `vardictcpp` Divergence Audit):** `s5_h4_maintenance_security_matrix` and `s2_tierp_mode_parity_sweep`.
+- **`Figure 8` & `Table 8` (Software Supply Chain and 12-Point `vardictcpp` Divergence Audit):** `s5_h4_maintenance_security_matrix` and `s2_tierp_mode_parity_sweep`.
 
 ### 1.1 Domain 1: Ceiling, Multi-Region Boundary, and Tile-Invariance Cells (`s1_*`)
 Domain 1 comprises `4` cells (`s1_ceiling_amplicon`, `s1_ceiling_hg008`, `s1_gate7_ref_multiregion`, and `s1_h1a_simple_tiles`):
 ```bash
 # Cell 1: s1_ceiling_amplicon (EGFR/MRE11a amplicon -a 10:0.95, 2 variants)
 vardictrust -G hg19.fa -f 0.01 -N SAMPLE -b amplicon.bam \
-  -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 --vcf amplicon.bed > rust_amp.vcf
+  -a 10:0.95 --fisher -c 1 -S 2 -E 3 -g 4 amplicon.bed > rust_amp.vcf
 
 # Cell 2: s1_ceiling_hg008 (NIST GIAB HG008 somatic slice, 18,426 variants)
 vardictrust -G GRCh38_GIABv3.fasta -f 0.01 -N "HG008-T|HG008-N" \
   -b "HG008-T.bam|HG008-N.bam" -th 8 --fisher -z -c 1 -S 2 -E 3 -g 4 \
-  --vcf hg008_slice.bed > rust_hg008.vcf
+  hg008_slice.bed > rust_hg008.vcf
 
 # Cell 3: s1_gate7_ref_multiregion (HG002 chr20 multi-region boundary gate, 2,572 variants)
 vardictrust -G GRCh38.fa -f 0.01 -N HG002 -b hg002_chr20.bam \
-  -th 8 --fisher -c 1 -S 2 -E 3 -g 4 --vcf chr20_multiregion.bed > rust_chr20_multiregion.vcf
+  -th 8 --fisher -c 1 -S 2 -E 3 -g 4 chr20_multiregion.bed > rust_chr20_multiregion.vcf
 
 # Cell 4: s1_h1a_simple_tiles (Tile-size invariance: 500,000, 1,000,000, 2,000,000, 10,000,000 bp -> 5,090 variants)
 for TILE in 500000 1000000 2000000 10000000; do
-  VARDICTRUST_TILE_BP="${TILE}" vardictrust -G GRCh38.fa -f 0.01 -N HCC1395 \
-    -b HCC1395.bam -th 8 --fisher -c 1 -S 2 -E 3 -g 4 --vcf seqc2_slice.bed > "tile_${TILE}.vcf"
+  vardictrust -G GRCh38.fa -f 0.01 -N HCC1395 \
+    -b HCC1395.bam -th 8 --fisher -z -c 1 -S 2 -E 3 -g 4 \
+    --tile-size "${TILE}" seqc2_slice.bed > "tile_${TILE}.vcf"
 done
 ```
 
@@ -91,11 +93,11 @@ Domain 2 comprises `17` cells replicating and extending Wolff (2026) [11]:
 ```bash
 # AML single-sample & paired somatic replication (s2_tierp_v2_*):
 /usr/bin/time -v vardictrust -G hg19.fa -f 0.01 -N SRR8657348 \
-  -b SRR8657348.bam -th 8 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf SRR8657348.bed > SRR8657348.vcf
+  -b SRR8657348.bam -th 8 --fisher -z -c 1 -S 2 -E 3 -g 4 SRR8657348.bed > SRR8657348.vcf
 
 # Table 3 contiguous chromosome 1 (-R chr1:1-249250621 on SRR8657348, s2_table3_R_chr1_*):
 /usr/bin/time -v vardictrust -G hg19.fa -f 0.01 -N SRR8657348 \
-  -b SRR8657348.bam -th 8 -R chr1:1-249250621 > rust_chr1.var
+  -b SRR8657348.bam -th 8 -R chr1:1-249250621 > rust_R_chr1.vcf
 JAVA_OPTS="-Xmx200g" /usr/bin/time -v VarDict -G hg19.fa -f 0.01 -N SRR8657348 \
   -b SRR8657348.bam -th 8 -R chr1:1-249250621 > java_chr1.var
 ```
@@ -105,7 +107,7 @@ JAVA_OPTS="-Xmx200g" /usr/bin/time -v VarDict -G hg19.fa -f 0.01 -N SRR8657348 \
 Cell `s3_rna_splice_parity_n3` (`n = 3` technical replicates) evaluates `-i` RNA splice-junction mode on the `51.8` GiB HG002 GM24385 RNA-seq alignment. It produced `12,668` `.var` and `.splice.tsv` records in `4.94` s vs `23.31` s (`4.72`× speedup, `13.6`× RSS reduction):
 ```bash
 /usr/bin/time -v vardictrust -G GRCh38.fa -f 0.01 -N HG002_RNA \
-  -b HG002_GM24385_RNA.bam -i -th 8 -c 1 -S 2 -E 3 -g 4 gencode_exons.bed > rust_rna.var
+  -b HG002_GM24385_RNA.bam -z -i --emit-intermediate -th 8 -c 1 -S 2 -E 3 -g 4 gencode_exons.bed > rust.splice.tsv
 ```
 
 ### 1.4 Domain 4: Whole-Exome Scaling, Chromosome 1 Span-to-RSS, Node Packing, and `QUAL` ROC (`s4_*`)
@@ -115,17 +117,18 @@ Domain 4 comprises `15` cells. The scaling series runs `s4_perf_budget_4targets_
 for TH in 1 2 4 8 16 32; do
   /usr/bin/time -v vardictrust -G GRCh38.fa -f 0.01 -N HCC1395 \
     -b HCC1395.bam -th "${TH}" --fisher -z -c 1 -S 2 -E 3 -g 4 \
-    --vcf seqc2_exome.bed > "seqc2_th${TH}.vcf"
+    seqc2_exome.bed > "seqc2_th${TH}.vcf"
 done
 
 # Chromosome 1 span-to-RSS invariance across 1M, 10M, 100M, 249M bp on SEQC2 HCC1395 (s4_span_chr1_3way_th8..th32):
 for SPAN in 1000000 10000000 100000000 248956422; do
   /usr/bin/time -v vardictrust -G GRCh38.fa -f 0.01 -N HCC1395 \
-    -b HCC1395.bam -th 32 -R "chr1:1-${SPAN}" > "chr1_${SPAN}.var"
+    -b HCC1395.bam -th 32 -R "chr1:1-${SPAN}" > "chr1_${SPAN}.vcf"
 done
 
 # All-positions (-f 0) pileup stress on chr1 10 Mbp (s4_span_chr1_f0) and 2x4c node packing (s4_jobs_per_node_2x4c_n3):
-/usr/bin/time -v vardictrust -G GRCh38.fa -f 0 -N HCC1395 -b HCC1395.bam -th 8 -R chr1:10000000-20000000 > chr1_f0.var
+/usr/bin/time -v vardictrust -G GRCh38.fa -f 0 -N HCC1395 \
+  -b HCC1395.bam -c 1 -S 2 -E 3 -g 4 -z --tile-size 10000000 -th 8 chr1_10m.bed > chr1_10m_f0.vcf
 ```
 
 ### 1.5 Multi-Regime Parameter Sweep: Comprehensive 87-Arm `.var` and `.vcf` Parity Sweep (`sweep_*`)
@@ -133,9 +136,9 @@ done
 The `12` multi-regime sweep cells are `sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, and `sweep_span_chr1_f0`. They continue with `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, and `sweep_wgs_mrd_matrix`. Together they validate `.var` and `.vcf` equivalence across `87` comparative arms (`87/87` `MATCH`, `100.00%`, `Supplementary Table S2`):
 ```bash
 # Ultra-deep 45000x ctDNA MRD stress (-f 0.0005 and -f 0 with --fisher, sweep_ultradeep_mrd_stress):
-vardictrust -G GRCh38.fa -f 0.0005 -N SAMPLE -b ultradeep_45000x.bam --fisher -c 1 -S 2 -E 3 -g 4 panel.bed > rust_ultradeep_f0005.var
+vardictrust -G GRCh38.fa -f 0.0005 -N SAMPLE -b ultradeep_45000x.bam --fisher --emit-intermediate -c 1 -S 2 -E 3 -g 4 panel.bed > rust_ultradeep_f0005.var
 # WGS & exome MRD matrix (-f 0.001 and -f 0, sweep_wgs_mrd_matrix):
-vardictrust -G GRCh38.fa -f 0.001 -N HG005 -b hg005_300x.bam --fisher -c 1 -S 2 -E 3 -g 4 --vcf mrd_targets.bed > rust_hg005_300x_mrd.vcf
+vardictrust -G GRCh38.fa -f 0.001 -N HG005 -b hg005_300x.bam --fisher -c 1 -S 2 -E 3 -g 4 mrd_targets.bed > rust_hg005_300x_mrd.vcf
 ```
 
 ### 1.6 Domain 5: Full-Genome WGS (Unchunked Full Chromosomes vs. Pre-Chunked Callable Intervals), 10-Platform Chr20 Panel, and Supply Chain (`s5_*`)
@@ -143,17 +146,17 @@ Domain 5 comprises `7` cells (`s5_wgs_hg002_full_contigs_3way_th32`, `s5_wgs_hg0
 ```bash
 # Unchunked full chromosomes (chr1..chr22, s5_wgs_hg002_full_contigs_3way_th32 & s5_wgs_hg008_full_contigs_3way_th32):
 timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f 0.01 -N HG002 \
-  -b HG002_2x250_131GB.bam -th 32 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf grch38_22autosomes_full.bed > hg002_unchunked.vcf
+  -b HG002_2x250_131GB.bam -th 32 --fisher -z -c 1 -S 2 -E 3 -g 4 grch38_22autosomes_full.bed > hg002_unchunked.vcf
 
 timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f 0.01 -N "HG008-T|HG008-N" \
-  -b "HG008-T_195x.bam|HG008-N_169x.bam" -th 32 -U --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf grch38_22autosomes_full.bed > hg008_unchunked.vcf
+  -b "HG008-T_195x.bam|HG008-N_169x.bam" -th 32 -U --fisher -z -c 1 -S 2 -E 3 -g 4 grch38_22autosomes_full.bed > hg008_unchunked.vcf
 
 # Pre-chunked <=50 kbp GIAB callable intervals (s5_wgs_hg002_full_giab_3way_th32 & s5_wgs_hg008_full_giab_3way_th32):
 timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f 0.01 -N HG002 \
-  -b HG002_2x250_131GB.bam -th 32 --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf HG002_GRCh38_v421_50kb.bed > hg002_giab50kb.vcf
+  -b HG002_2x250_131GB.bam -th 32 --fisher -z -c 1 -S 2 -E 3 -g 4 HG002_GRCh38_v421_50kb.bed > hg002_giab50kb.vcf
 
 timeout 10800 /usr/bin/time -v vardictrust -G GRCh38_GIABv3.fasta -f 0.01 -N "HG008-T|HG008-N" \
-  -b "HG008-T_195x.bam|HG008-N_169x.bam" -th 32 -U --fisher -z -c 1 -S 2 -E 3 -g 4 --vcf HG008_GRCh38_v0.3_50kb.bed > hg008_giab50kb.vcf
+  -b "HG008-T_195x.bam|HG008-N_169x.bam" -th 32 -U --fisher -z -c 1 -S 2 -E 3 -g 4 HG008_GRCh38_v0.3_50kb.bed > hg008_giab50kb.vcf
 ```
 
 ### 1.7 Domain 6: GA4GH v3.5 Stratification, GIAB v5.0q/CMRG/Mosaic, HG008 v0.4 11-Caller Matrix, and Low-VAF Titration (`s6_*`)
@@ -163,7 +166,7 @@ Domain 6 comprises `4` cells: `s6_ga4gh_v35_stratification_matrix`, `s6_hg002_v5
 for PURITY in 20 10 5 2 1; do
   vardictrust -G GRCh38_GIABv3.fasta -f 0.002 -N "HG008_P${PURITY}|HG008-N" \
     -b "hg008_titration_p${PURITY}.bam|HG008-N.bam" -th 16 --fisher -z -c 1 -S 2 -E 3 -g 4 \
-    --vcf hg008_slice.bed > "rust_titration_p${PURITY}.vcf"
+    hg008_slice.bed > "rust_titration_p${PURITY}.vcf"
 done
 
 # Next-gen GIAB v5.0q T2T-Q100, CMRG v1.00, and Mosaic v1.10 evaluation (s6_hg002_v50q_cmrg_mosaic_eval):
@@ -183,7 +186,7 @@ In `VarDictJava` v1.8.3 (`CigarParser.java` and `VariationRealigner.java`), the 
    $$\text{RSS}_{\text{Java / C++} }(L, T) = \Theta\!\left(\sum_{t=1}^{T} L_t \cdot (c_{\text{ref} } + c_{\text{var} } \cdot \bar{a}(D))\right)$$
    where $L_t$ is the region length assigned to thread $t$ and $\bar{a}(D)$ is the mean allele count per locus. When $L_t \le 50$ kbp (pre-chunked intervals), garbage collection reclaims objects between intervals (`34.14` GB on HG002; `62.51` GB with timeout `rc=124` on HG008). When $L_t \in [50, 249]$ Mbp (unchunked chromosomes or `-R chr1:1-249250621`), live objects remain reachable until the chromosome finishes. That drives `VarDictJava` to `106.47` GiB on `chr1` and `>213.7` GB (`rc=3` `OutOfMemoryError`) on multi-threaded full genomes (`Table 2`, `Table 5`). `vardictcpp` similarly retains per-region C++ hash tables across each interval. It consumes `10.58` GiB on `chr1`, `31.91` GB on HG002 unchunked chromosomes, and `91.85` GB (`rc=124` timeout) on HG008 unchunked chromosomes. An external script must pre-split the BED file (`CPP_CHUNK=50,000`) to avoid this.
 
-`VarDictRust` leaves intervals $\le 1,000,000$ bp untiled. Any region $L > 1,000,000$ bp splits into tiles. Default width is $W = 100$ kbp with halo $H = 0.5$ kbp (`0.5` kbp in `-i` splice mode; `Figure 1b`). Memory is then bounded by:
+`VarDictRust` leaves intervals $\le 1,000,000$ bp untiled. Any region $L > 1,000,000$ bp splits into tiles. Default width is $W = 100$ kbp with halo $H = 0.5$ kbp (`0.5` kbp in `-i` splice mode; `Figure 2b`, `Figure 4d`). Memory is then bounded by:
 $$\text{RSS}_{\text{VarDictRust} }(L, T) = O\!\left(T \cdot (W + 2H)\right) \perp L$$
 Increasing $L$ by `250`× on chromosome 1 (`1` Mbp to `249` Mbp, `s4_span_chr1_3way_th8`..`th32`) changes `VarDictRust` RSS by `1.18`×–`1.41`× (`1.38`–`3.69` GiB), allowing unchunked full-genome calling in `4.93` GB (HG002) and `12.14` GB (HG008).
 
@@ -191,7 +194,7 @@ Increasing $L$ by `250`× on chromosome 1 (`1` Mbp to `249` Mbp, `s4_span_chr1_3
 
 ## 3. Supplementary Note 2: Twelve-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-12`)
 
-Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, `s5_wgs_hg002_full_contigs_3way_th32`, and `s6_low_vaf_titration_truth_curve`, we cataloged ten reproducibility and capability gaps in `vardictcpp ae93fe39dc (Wolff 2026)` (`Table 8`, `Supplementary Table S6`):
+Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, `s5_wgs_hg002_full_contigs_3way_th32`, and `s6_low_vaf_titration_truth_curve`, we cataloged 12 reproducibility and capability gaps in `vardictcpp ae93fe39dc (Wolff 2026)` (`Table 8`, `Supplementary Table S6`):
 
 - **`CPP-1` (VCF Header & `INFO/END` Schema):** `vardictcpp` omits the `##INFO=<ID=END>` header definition and diverges from `var2vcf_valid.pl` / `var2vcf_paired.pl` VCF 4.3 schema formatting.
 
@@ -215,7 +218,7 @@ Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, 
 
 - **`CPP-11` (BAM/CRAM Reference & Decode):** `vardictcpp` diverges on CRAM reference decoding (`-G ref.fa`). It requires dynamic linkage against external `libhts`, `libcurl`, `liblzma`, `libbz2`, and `libdeflate`. `VarDictRust` natively decodes BAM and CRAM in a `4.56` MB zero-dependency static `musl` binary (`s4_multimodal_and_cram_twin`).
 
-- **`CPP-12` (RNA-Seq Splice Mode (`-i`.var / `.splice.tsv`):** `vardictcpp` does not implement `-i` exon-junction splice-site accounting (`s3_rna_splice_parity_n3`, `51.8` GiB RNA-seq BAM, `12,668` records).
+- **`CPP-12` (RNA-Seq Splice Mode, `-i` `.var` / `.splice.tsv`):** `vardictcpp` does not implement `-i` exon-junction splice-site accounting (`s3_rna_splice_parity_n3`, `51.8` GiB RNA-seq BAM, `12,668` records).
 
 ---
 
@@ -242,8 +245,8 @@ with $p_{\text{lo} } = 0$ when $k = 0$ and $p_{\text{hi} } = 1$ when $k = n$:
 
 Across the $N = 12$ AML sample-by-thread cells (`s2_tierp_v2_*`, `n = 3` technical replicates each), we report the mean. Replicate range is min–max (`Supplementary Table S3`). Comparing `VarDictRust` against `VarDictJava` across $N = 12$ gives two-sided Mann-Whitney $U = 4.0$ ($p = 9.735e-05$) for wall time. For peak RSS, $U = 0.0$ ($p = 3.658e-05$). An exact paired sign-flip permutation test gives $p = 2^{-12} = 0.00024$.
 
-### 4.3 Release Governance: `v1.0.x` Parity Versus `v1.1+` Opt-In `--fix` Flags
-All `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. Output-changing upstream fixes (`#92` `VD > DP`, `#62` over-filtering, `#292` `SHIFT3`, `#342` `<dup-N>` symbolic alleles) are gated behind opt-in `--fix <id>` flags starting in `v1.1.0`, while parity-restoring fixes (`splice-tile-ownership`, `mate-window-ownership`) ship as verified defaults.
+### 4.3 Release Governance: `v1.0.x` Parity Consolidation (`v1.0.6` to `v1.0.10`) Versus `v1.1+` Opt-In `--fix` Flags
+All `v1.0.x` releases (`v1.0.6` cloud benchmark baseline through `v1.0.10`, certified under engine fingerprint `2d82664ff81000f7`) enforce strict oracle parity on valid inputs. Subsequent `v1.0.7`–`v1.0.10` releases consolidated all `89` CLI flags across `7` functional groups (including `var2vcf` post-filtering, multithreaded BGZF `--output`, and `--tbi`/`--csi` indexing), OpenJDK 8 `TreeNode` Red-Black treeification in `JavaHashMap`, `8` MiB `SpillableVcfAccumulator` VCF disk spilling, singleflight `16` MiB Illumina CRAM container caching with two-slot `CRAM_META_TLS` and `SeekWindowReader` validation, pre-validated `.bai`/`.csi` index bounds (`512`/`256` MiB), `691` Cargo workspace tests (`491` core library unit tests), `37` harness diagnostic self-tests, and in-process `cargo-fuzz` targets without altering valid-input variant calls. Output-changing upstream fixes (`#92` `VD > DP`, `#62` over-filtering, `#292` `SHIFT3`, `#342` `<dup-N>` symbolic alleles, and `eqx-read-length` `=`/`X` CIGAR accounting for `minimap2 --eqx` / `pbmm2` alignments) remain gated behind opt-in `--fix <id>` flags starting in `v1.1.0` (`--modern`, followed by `v2.0` `--preset hifi|ont`), while parity-restoring fixes (`splice-tile-ownership`, `mate-window-ownership`) ship as verified defaults.
 
 ---
 
@@ -306,12 +309,12 @@ All `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. O
 | sweep_wgs_mrd_matrix | Full-Core Multi-Regime Parity Sweep | Exome & WGS | 0 | 86 | Figure 1, Figure 2, Table 1, Supplementary Table S1, Supplementary Table S2 | 100% Exact Match (24/24 sub-arms) | Full-core multi-regime WGS & exome MRD matrix (-f 0.001 and -f 0 across HG002, HG005 300x, SEQC2, HG008) |
 | s5_cross_platform_short_read_chr20_panel | Full-Genome WGS, 10-Platform & Security | 10-Platform Chr20 WGS | 0 | 420 | Figure 1, Figure 6, Table 6, Supplementary Table S1, Supplementary Table S4 | 100% Exact Match (11/11 completing Chr20 runs & 18/18 noise-floor runs) | 10-platform sequencing chemistry chr20 panel (Part A -f 0.01/-f 0 std/UG-HCR; Part B 18-arm noise floor; Ultima CRAM twin) |
 | s5_grch38_field_callers_truth | Full-Genome WGS, 10-Platform & Security | Whole Genome | 0 | 78 | Figure 1, Figure 3, Table 3, Supplementary Table S1 | 19/19 caller-cohort evaluations completed (VarDictRust == VarDictJava) | Native GRCh38 germline (HG002 chr20) & somatic (HG008 slice, SEQC2) field-caller truth evaluation |
-| s5_h4_maintenance_security_matrix | Full-Genome WGS, 10-Platform & Security | Cross-Modal Security & Parity | 0 | 13 | Figure 1, Figure 8, Table 8, Supplementary Table S1, Supplementary Table S6 | Static musl equivalence verified & CPP-1..10 cataloged | supply-chain security, static musl binary, CLI flag parity, and CPP-1..10 divergence matrix |
+| s5_h4_maintenance_security_matrix | Full-Genome WGS, 10-Platform & Security | Cross-Modal Security & Parity | 0 | 13 | Figure 1, Figure 8, Table 8, Supplementary Table S1, Supplementary Table S6 | Static musl equivalence verified & CPP-1..12 cataloged | supply-chain security, static musl binary, CLI flag parity, and CPP-1..12 divergence matrix |
 | s5_wgs_hg002_full_contigs_3way_th32 | Full-Genome WGS, 10-Platform & Security | Full-Genome WGS (chr1–chr22) | 0 | 14 | Figure 1, Figure 5, Table 5, Supplementary Table S1 | VarDictJava OOM (rc=3); VarDictRust completes (9,643,769 variants) | Full-genome HG002 (130.8 GB 2x250 bp) (22 unchunked chromosomes) 3-way scaling |
 | s5_wgs_hg002_full_giab_3way_th32 | Full-Genome WGS, 10-Platform & Security | Full-Genome WGS (chr1–chr22) | 0 | 27 | Figure 1, Figure 5, Table 1, Table 5, Supplementary Table S1 | 100% Exact Match (8,111,171 variants) | Full-genome HG002 (130.8 GB 2x250 bp) (<=50 kbp GIAB callable intervals) 3-way parity & truth |
 | s5_wgs_hg008_full_contigs_3way_th32 | Full-Genome WGS, 10-Platform & Security | Full-Genome WGS (chr1–chr22) | 0 | 12 | Figure 1, Figure 5, Table 5, Supplementary Table S1 | VarDictJava OOM (rc=3) & C++ timeout; VarDictRust completes (13,067,287 variants) | Full-genome HG008 (329.0 GB 364x T/N) (22 unchunked chromosomes) 3-way scaling |
 | s5_wgs_hg008_full_giab_3way_th32 | Full-Genome WGS, 10-Platform & Security | Full-Genome WGS (chr1–chr22) | 0 | 20 | Figure 1, Figure 5, Table 5, Supplementary Table S1 | VarDictJava & C++ timeout (rc=124); VarDictRust completes (10,195,118 variants) | Full-genome HG008 (329.0 GB 364x T/N) (<=50 kbp GIAB v0.4 callable intervals) 3-way scaling & v0.3/v0.4 truth |
-| s6_ga4gh_v35_stratification_matrix | Next-Gen GIAB, GA4GH v3.5 & Low-VAF Titration | GA4GH v3.5 Stratification [17] | 0 | 2 | Figure 1, Figure 6, Table 6, Supplementary Table S1, Supplementary Table S5 | 100% Exact Match across all 70 GA4GH v3.5 stratification cells | 70-cell GA4GH v3.5 genomic stratification matrix (7 strata x 10 sequencing platforms) |
+| s6_ga4gh_v35_stratification_matrix | Next-Gen GIAB, GA4GH v3.5 & Low-VAF Titration | GA4GH v3.5 Stratification [17] | 0 | 2 | Figure 1, Figure 6, Table 6, Supplementary Table S1, Supplementary Table S5 | 70/70 Rust truth evaluations completed (Java parity on 11/11 completing Chr20 runs) | 70-cell GA4GH v3.5 genomic stratification matrix (7 strata x 10 sequencing platforms) |
 | s6_hg002_v50q_cmrg_mosaic_eval | Next-Gen GIAB, GA4GH v3.5 & Low-VAF Titration | Next-Gen GIAB Truth [14–16, 20] | 0 | 2 | Figure 1, Figure 7, Table 7, Supplementary Table S1 | 12/12 evaluations completed (100% Match on callable BED) | HG002 GIAB v5.0q T2T-Q100, CMRG v1.00, and Mosaic SNV v1.10 evaluation |
 | s6_hg008_modern_ml_and_commercial_callers | Next-Gen GIAB, GA4GH v3.5 & Low-VAF Titration | GIAB HG008 v0.4 Somatic [19] | 0 | 2 | Figure 1, Figure 7, Table 7, Supplementary Table S1 | 27/27 caller-benchmark evaluations completed across 11 callers | HG008 GIAB v0.4 benchmark across VarDictRust, 7 NIST Liss_lab callers (DRAGEN, DeepSomatic, ClairS, Lancet2, SAGE, Ultima DV), Mutect2, Strelka2, LoFreq |
 | s6_low_vaf_titration_truth_curve | Next-Gen GIAB, GA4GH v3.5 & Low-VAF Titration | Somatic Low-VAF Titration [19] | 0 | 42 | Figure 1, Figure 3, Table 3, Supplementary Table S1 | 100% Exact Match across all 5 purities (30/30 caller-purity runs) | HG008 somatic tumor-purity titration (20%->1% purity / 10%->0.5% VAF) at -f 0.002 across 6 callers |
@@ -703,7 +706,7 @@ All `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. O
 | GIAB HG008 Somatic [19] | Ultima UG100 | Low Mappability | 0.9167 | 0.9167 | 0.9167 | 0.5000 / 0.3333 / 0.4000 |
 | GIAB HG008 Somatic [19] | Ultima UG100 | RefSeq CDS | 1.0000 | 1.0000 | 1.0000 | No Truth InDels in Stratum<sup>c</sup> |
 
-*<sup>a</sup>Evaluates Chromosome 20 callsets at -f 0.01 across 4 GIAB HG002 [13, 18] germline platforms and 6 GIAB HG008 [19] somatic platforms; across all 70/70 stratification cells (Clopper-Pearson 95% CI 94.87%–100.00%), VarDictRust v1.0.6 and VarDictJava v1.8.3 [1] exhibit 0 site differences. <sup>b</sup>Genomic strata follow the NIST GIAB / GA4GH v3.5 [17] stratification BED definitions on GRCh38 (homopolymers of 4–6 bp, 7–11 bp, and >=12 bp, all tandem repeats, segmental duplications, low-mappability regions, and RefSeq coding sequences). <sup>c</sup>Within the Chromosome 20 RefSeq CDS stratum of GIAB HG008 v0.4 [19], the somatic truth set contains SNVs only and zero truth InDels. Source ledger: stratification values are generated from the stage6 TSVs via master_gcp_metrics.json; this table is the formatted view.*
+*<sup>a</sup>Evaluates Chromosome 20 callsets at -f 0.01 across 4 GIAB HG002 [13, 18] germline platforms and 6 GIAB HG008 [19] somatic platforms; all 70/70 VarDictRust v1.0.6 truth evaluations completed (Clopper-Pearson 95% CI 94.87%–100.00%), with 0 site differences against VarDictJava v1.8.3 [1] across all completing paired Chromosome 20 runs (see Table 6). <sup>b</sup>Genomic strata follow the NIST GIAB / GA4GH v3.5 [17] stratification BED definitions on GRCh38 (homopolymers of 4–6 bp, 7–11 bp, and >=12 bp, all tandem repeats, segmental duplications, low-mappability regions, and RefSeq coding sequences). <sup>c</sup>Within the Chromosome 20 RefSeq CDS stratum of GIAB HG008 v0.4 [19], the somatic truth set contains SNVs only and zero truth InDels. Source ledger: stratification values are generated from the stage6 TSVs via master_gcp_metrics.json; this table is the formatted view.*
 
 ---
 
@@ -729,7 +732,7 @@ All `v1.0.x` releases (`v1.0.6`) enforce strict oracle parity on valid inputs. O
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-1: VCF Header & INFO/END Schema | Standard VCF 4.2 + INFO/END tag | Exact v1.8.3 header & INFO/END parity | Malformed or omitted INFO/END & header lines | Schema mismatch in downstream VCF parsers |
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-2: CRISPR (-J/-j) & Structural Variant Modes | Supported | Supported (100% Exact Match) | Unimplemented / drops SV calls | Verified across 17-modality extended coverage suite |
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-3: Amplicon (-a) Output Format | 38/40-col .var + VCF via var2vcf_valid.pl | Exact 38/40-col .var + VCF parity | Emits raw intermediate TSV instead of VCF | Incompatible with standard VCF comparators & bcftools [26] |
-| vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-4: Concatenated CLI Flag Parsing | Supported | Supported (60-flag CLI parity) | Exits with code 120 on bundled CLI flags | Breaks existing VarDict pipeline CLI wrappers |
+| vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-4: Concatenated CLI Flag Parsing | Supported | Supported (60-flag v1.0.6 CLI parity) | Exits with code 120 on bundled CLI flags | Breaks existing VarDict pipeline CLI wrappers |
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-5: Chunk Boundary Deduplication (--chunk 50,000) | Single-region calling (or OOM on contigs) | 100 kbp halo tiling + cross-tile dedup | Emits +309,569 duplicate boundary calls on unchunked HG002 WGS | Uncoordinated 50 kbp window splitting without dedup |
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-6: Missing ##contig VCF Header Lines | Emits ##contig lines from reference .fai | Emits exact ##contig lines from reference .fai | Omits ##contig header lines | Requires manual header injection prior to rtg vcfeval [12] |
 | vardictcpp Divergence Taxonomy [11]<sup>c</sup> | CPP-7: GRCh37 / b37 Numeric Chromosome Naming | Supported | Supported (100% Match on GIAB NA24385 GRCh37 [13]) | Hardcoded chr-prefix assumptions | Verified on GIAB NA24385 GRCh37 v4.2.1 benchmark [13] |
