@@ -367,10 +367,36 @@ impl<'a> ToVarsBuilder<'a> {
     pub fn build_aligned_variants_with_ref_mode(
         &self,
         var_data: &VariationData,
+        ref_mode: RefSiteMode<'_>,
+    ) -> crate::javamap::JavaHashMap<i32, crate::variations::Vars> {
+        self.build_aligned_variants_inner(var_data, ref_mode, None)
+    }
+
+    /// Convert `VariationData` into a map of `position -> Vars` under `ref_mode`, clearing
+    /// doomed sub-threshold non-reference allele lists at positions selected by `prune_doomed_at`
+    /// before Phase-2 flank/MSI/genotype finalization while preserving `JavaHashMap` key order.
+    pub(crate) fn build_aligned_variants_pruned(
+        &self,
+        var_data: &VariationData,
+        ref_mode: RefSiteMode<'_>,
+        prune_doomed_at: &dyn Fn(i32) -> bool,
+    ) -> crate::javamap::JavaHashMap<i32, crate::variations::Vars> {
+        self.build_aligned_variants_inner(var_data, ref_mode, Some(prune_doomed_at))
+    }
+
+    fn build_aligned_variants_inner(
+        &self,
+        var_data: &VariationData,
         mut ref_mode: RefSiteMode<'_>,
+        prune_doomed_at: Option<&dyn Fn(i32) -> bool>,
     ) -> crate::javamap::JavaHashMap<i32, crate::variations::Vars> {
         let mut aligned_variants = crate::javamap::JavaHashMap::new();
         let duprate = var_data.duprate;
+        let can_prune_doomed = !self.config.pileup
+            && !self.config.debug
+            && self.config.amplicon.is_none()
+            && prune_doomed_at.is_some();
+        let min_reads = i32::try_from(self.config.min_reads).unwrap_or(i32::MAX);
 
         // Sparse copy-on-write overlay for positions mutated by create_insertion (position + 1);
         // lookup-only, never iterated.
@@ -466,6 +492,18 @@ impl<'a> ToVarsBuilder<'a> {
             }
 
             let entry = crate::variations::get_or_put_vars(&mut aligned_variants, position);
+            if can_prune_doomed
+                && prune_doomed_at.is_some_and(|pred| pred(position))
+                && !entry.variants.is_empty()
+                && entry.variants.iter().all(|v| {
+                    v.hicnt < min_reads
+                        || v.mean_position < self.config.read_pos
+                        || v.mean_quality < self.config.base_qual
+                })
+            {
+                entry.variants.clear();
+                continue;
+            }
             self.collect_reference_variants(
                 position,
                 current_total_cov,
@@ -1279,36 +1317,29 @@ impl<'a> ToVarsBuilder<'a> {
         let mut changed_ref_variant_at_pos = false;
 
         if !variations_at_pos.variants.is_empty() {
-            let format_plus_genotype1 = |desc: &str| -> String {
-                if let Some(dup_val) = get_dup_num(desc) {
-                    format!("+{}", (dup_val as u32).saturating_add(50))
-                } else {
-                    format!("+{}", (desc.len() as i32).saturating_sub(1))
-                }
-            };
-
+            let mut gt1_buf = crate::types::StackBuf::<24>::new();
             let genotype1_current: std::borrow::Cow<'_, str> =
                 if let Some(ref ref_var) = variations_at_pos.ref_variant {
                     if ref_var.frequency >= self.config.freq {
                         if ref_var.description.starts_with('+') {
-                            std::borrow::Cow::Owned(format_plus_genotype1(&ref_var.description))
+                            format_plus_genotype1(&ref_var.description, &mut gt1_buf)
                         } else {
                             std::borrow::Cow::Borrowed(ref_var.description.as_str())
                         }
                     } else if let Some(first_var) = variations_at_pos.variants.first() {
                         if first_var.description.starts_with('+') {
-                            std::borrow::Cow::Owned(format_plus_genotype1(&first_var.description))
+                            format_plus_genotype1(&first_var.description, &mut gt1_buf)
                         } else {
                             std::borrow::Cow::Owned(first_var.description.clone())
                         }
                     } else if ref_var.description.starts_with('+') {
-                        std::borrow::Cow::Owned(format_plus_genotype1(&ref_var.description))
+                        format_plus_genotype1(&ref_var.description, &mut gt1_buf)
                     } else {
                         std::borrow::Cow::Borrowed(ref_var.description.as_str())
                     }
                 } else if let Some(first_var) = variations_at_pos.variants.first() {
                     if first_var.description.starts_with('+') {
-                        std::borrow::Cow::Owned(format_plus_genotype1(&first_var.description))
+                        format_plus_genotype1(&first_var.description, &mut gt1_buf)
                     } else {
                         std::borrow::Cow::Owned(first_var.description.clone())
                     }
@@ -1321,12 +1352,13 @@ impl<'a> ToVarsBuilder<'a> {
             for vref in &mut variations_at_pos.variants {
                 let mut genotype1_current_inner: std::borrow::Cow<'_, str> =
                     std::borrow::Cow::Borrowed(genotype1_current.as_ref());
+                let mut gt2_buf = crate::types::StackBuf::<24>::new();
                 let mut genotype2: std::borrow::Cow<'_, str> = if vref.description.starts_with('+')
                 {
-                    std::borrow::Cow::Owned(format!(
-                        "+{}",
-                        (vref.description.len() as i32).saturating_sub(1)
-                    ))
+                    format_plus_genotype(
+                        &mut gt2_buf,
+                        (vref.description.len() as i32).saturating_sub(1),
+                    )
                 } else {
                     std::borrow::Cow::Borrowed(vref.description.as_str())
                 };
@@ -1744,7 +1776,8 @@ impl<'a> ToVarsBuilder<'a> {
                     .ref_variant
                     .as_ref()
                     .map_or("0", |ref_var| ref_var.bias.as_str());
-                vref.bias = format!("{ref_bias};{}", vref.bias);
+                vref.bias.insert(0, ';');
+                vref.bias.insert_str(0, ref_bias);
 
                 vref.var_type = if vref.var_allele.starts_with('+')
                     || vref.description.starts_with('+')
@@ -1886,6 +1919,32 @@ impl<'a> ToVarsBuilder<'a> {
 fn construct_debug_lines(debug_lines: &[String], vref: &mut Variant, enabled: bool) {
     if enabled {
         vref.debug = debug_lines.join(" & ");
+    }
+}
+
+#[inline]
+fn format_plus_genotype<D: std::fmt::Display>(
+    buf: &mut crate::types::StackBuf<24>,
+    val: D,
+) -> std::borrow::Cow<'_, str> {
+    use std::fmt::Write as _;
+    *buf = crate::types::StackBuf::new();
+    if write!(buf, "+{val}").is_ok() {
+        std::borrow::Cow::Borrowed(buf.as_str())
+    } else {
+        std::borrow::Cow::Owned(format!("+{val}"))
+    }
+}
+
+#[inline]
+fn format_plus_genotype1<'b>(
+    desc: &str,
+    buf: &'b mut crate::types::StackBuf<24>,
+) -> std::borrow::Cow<'b, str> {
+    if let Some(dup_val) = get_dup_num(desc) {
+        format_plus_genotype(buf, (dup_val as u32).saturating_add(50))
+    } else {
+        format_plus_genotype(buf, (desc.len() as i32).saturating_sub(1))
     }
 }
 
@@ -4376,6 +4435,423 @@ mod tests {
         assert!(
             elapsed_e2e < std::time::Duration::from_secs(10),
             "build_vars_at_position for +A#C^200000000 across 200 Mbp gap hung: {elapsed_e2e:?}"
+        );
+    }
+
+    #[test]
+    fn test_build_aligned_variants_pruned_matches_postprocess_with_del_amp_and_somatic_bam2() {
+        let seq: Vec<u8> = (0..200).map(|i| b"ACGT"[i % 4]).collect();
+        let ref_base_str = |pos: i32| -> String { (seq[(pos - 1) as usize] as char).to_string() };
+
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 200,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq.clone());
+        let chr_lengths = HashMap::from([("chr1".to_string(), 200usize)]);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32, hicnt: i32, fwd: i32, rev: i32, pos_val: f64, qual_val: f64| {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = hicnt;
+            v.locnt = cnt - hicnt;
+            v.fwd = fwd;
+            v.rev = rev;
+            v.pmean = pos_val * f64::from(cnt);
+            v.qmean = qual_val * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.nm = 1.0 * f64::from(cnt);
+            v.pstd = true;
+            v.qstd = true;
+            v
+        };
+
+        // --- 1. Single-sample (!pileup, !debug) ---
+        let mut vd = VariationData::new();
+        vd.duprate = 0.05;
+
+        // pos 10: doomed by hicnt = 1 < min_reads = 2 (freq = 1/20 = 0.05 > config.freq = 0.01)
+        vd.ref_coverage.insert(10, 20);
+        let mut vm10 = VariationMap::new();
+        vm10.map
+            .insert(ref_base_str(10), mk_var(19, 19, 10, 9, 20.0, 35.0));
+        vm10.map
+            .insert("A".to_string(), mk_var(1, 1, 1, 0, 20.0, 35.0));
+        vd.non_insertion_variants.insert(10, vm10);
+
+        // pos 20: doomed by mean_position = 3.0 < config.read_pos = 5.0
+        vd.ref_coverage.insert(20, 20);
+        let mut vm20 = VariationMap::new();
+        vm20.map
+            .insert(ref_base_str(20), mk_var(17, 17, 9, 8, 20.0, 35.0));
+        vm20.map
+            .insert("A".to_string(), mk_var(3, 3, 2, 1, 3.0, 35.0));
+        vd.non_insertion_variants.insert(20, vm20);
+
+        // pos 30: doomed by mean_quality = 20.0 < config.base_qual = 22.5
+        vd.ref_coverage.insert(30, 20);
+        let mut vm30 = VariationMap::new();
+        vm30.map
+            .insert(ref_base_str(30), mk_var(17, 17, 9, 8, 20.0, 35.0));
+        vm30.map
+            .insert("A".to_string(), mk_var(3, 3, 2, 1, 20.0, 20.0));
+        vd.non_insertion_variants.insert(30, vm30);
+
+        // pos 50: long >30-byte MNP/Complex description with &ATGC extension (AR-12) + +len insertion
+        vd.ref_coverage.insert(50, 20);
+        let mut vm50 = VariationMap::new();
+        let long_complex = "G#ACGTACGTACGTACGTACGTACGTACGTACGT&TT";
+        assert!(long_complex.len() > 30);
+        vm50.map
+            .insert(long_complex.to_string(), mk_var(12, 12, 6, 6, 22.0, 35.0));
+        vd.non_insertion_variants.insert(50, vm50);
+        let mut ins50 = VariationMap::new();
+        ins50
+            .map
+            .insert("+ACGTACGTACGT".to_string(), mk_var(8, 8, 4, 4, 22.0, 35.0));
+        vd.insertion_variants.insert(50, ins50);
+
+        // pos 55: ref_var with strand bias ("1") + +len insertion ("+12" / "+4") (AR-04, AR-12)
+        vd.ref_coverage.insert(55, 32);
+        let mut vm55 = VariationMap::new();
+        vm55.map
+            .insert(ref_base_str(55), mk_var(20, 20, 20, 0, 22.0, 35.0));
+        vd.non_insertion_variants.insert(55, vm55);
+        let mut ins55 = VariationMap::new();
+        ins55
+            .map
+            .insert("+TTAA".to_string(), mk_var(12, 12, 6, 6, 22.0, 35.0));
+        vd.insertion_variants.insert(55, ins55);
+
+        // pos 58: pure insertion site (no ref_var) -> exercises gt1_buf ("+12") + gt2_buf ("+12")
+        vd.ref_coverage.insert(58, 12);
+        vd.non_insertion_variants.insert(58, VariationMap::new());
+        let mut ins58 = VariationMap::new();
+        ins58.map.insert(
+            "+ACGTACGTACGT".to_string(),
+            mk_var(12, 12, 6, 6, 22.0, 35.0),
+        );
+        vd.insertion_variants.insert(58, ins58);
+
+        // pos 80: <DEL>&ATGC candidate (hicnt = 3 >= min_reads) whose initial freq = 3/400 = 0.0075
+        // is below config.freq (0.01) before tovars.rs:1540 recomputes it against ref_coverage[79] = 15
+        // to 3/15 = 0.20 >= config.freq, paired with a doomed hicnt = 1 allele so maxfreq = 5/400 > 0.01.
+        vd.ref_coverage.insert(79, 15);
+        vd.ref_coverage.insert(80, 400);
+        let mut vm80 = VariationMap::new();
+        vm80.map
+            .insert(ref_base_str(80), mk_var(392, 392, 196, 196, 20.0, 35.0));
+        vm80.map
+            .insert("A".to_string(), mk_var(5, 1, 3, 2, 20.0, 25.0));
+        vm80.map
+            .insert("-60&ATGC".to_string(), mk_var(3, 3, 2, 1, 20.0, 35.0));
+        vd.non_insertion_variants.insert(80, vm80);
+
+        let mut single_cfg = Config::default();
+        single_cfg.bam = "sample.bam".to_string();
+        single_cfg.sample = "S1".to_string();
+        single_cfg.freq = 0.01;
+        single_cfg.min_reads = 2;
+        single_cfg.read_pos = 5.0;
+        single_cfg.base_qual = 22.5;
+        single_cfg.sv_min_len = 50;
+        single_cfg.pileup = false;
+        single_cfg.debug = false;
+        single_cfg.emit_intermediate = true;
+
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &single_cfg);
+        let unpruned = builder.build_aligned_variants(&vd);
+        let pruned = builder.build_aligned_variants_pruned(&vd, RefSiteMode::DropAll, &|_| true);
+
+        let keys_unpruned: Vec<i32> = unpruned.keys().copied().collect();
+        let keys_pruned: Vec<i32> = pruned.keys().copied().collect();
+        assert_eq!(
+            keys_pruned, keys_unpruned,
+            "JavaHashMap key iteration order must be identical"
+        );
+
+        for doomed_pos in [10, 20, 30] {
+            assert!(
+                !unpruned.get(&doomed_pos).unwrap().variants.is_empty(),
+                "unpruned pos {doomed_pos} should carry unpruned variant"
+            );
+            assert!(
+                pruned.get(&doomed_pos).unwrap().variants.is_empty(),
+                "pruned pos {doomed_pos} must have empty variants while keeping map key"
+            );
+        }
+
+        let vars50 = pruned.get(&50).expect("pos 50");
+        let complex50 = vars50
+            .variant_by_desc(long_complex)
+            .expect("long complex at pos 50");
+        assert!(
+            complex50.genotype.as_ref().unwrap().len() > 60,
+            "long >30-byte MNP/Complex genotype must not truncate: {:?}",
+            complex50.genotype
+        );
+        let vars55 = pruned.get(&55).expect("pos 55");
+        let ins55_var = vars55.variant_by_desc("+TTAA").expect("+TTAA at pos 55");
+        assert_eq!(ins55_var.bias, "1;2");
+        assert_eq!(ins55_var.genotype.as_deref(), Some("G/+4"));
+        let vars58 = pruned.get(&58).expect("pos 58");
+        let ins58_var = vars58
+            .variant_by_desc("+ACGTACGTACGT")
+            .expect("+ACGTACGTACGT at pos 58");
+        assert_eq!(ins58_var.genotype.as_deref(), Some("+12/+12"));
+
+        let vars80 = pruned.get(&80).expect("pos 80");
+        let del80 = vars80
+            .variant_by_desc("-60&ATGC")
+            .expect("<DEL>&ATGC at pos 80 must survive pruning");
+        assert_eq!(del80.var_allele, "<DEL>");
+        assert_eq!(del80.frequency, 0.2);
+
+        let splice = rustc_hash::FxHashSet::default();
+        for emit_inter in [true, false] {
+            let mut post_cfg = single_cfg.clone();
+            post_cfg.emit_intermediate = emit_inter;
+            let out_unpruned = crate::postprocess::simple::simple_post_process(
+                &post_cfg, &region, &unpruned, &splice,
+            );
+            let out_pruned = crate::postprocess::simple::simple_post_process(
+                &post_cfg, &region, &pruned, &splice,
+            );
+            assert!(!out_pruned.is_empty());
+            let mut buf_unpruned = String::new();
+            let mut buf_pruned = String::new();
+            for v in &out_unpruned {
+                crate::output::table::simple_36_append(
+                    &mut buf_unpruned,
+                    v,
+                    &region,
+                    &post_cfg.sample,
+                    &v.sv,
+                );
+                buf_unpruned.push('\n');
+            }
+            for v in &out_pruned {
+                crate::output::table::simple_36_append(
+                    &mut buf_pruned,
+                    v,
+                    &region,
+                    &post_cfg.sample,
+                    &v.sv,
+                );
+                buf_pruned.push('\n');
+            }
+            assert_eq!(
+                buf_pruned, buf_unpruned,
+                "simple_post_process byte parity failed for emit_intermediate={emit_inter}"
+            );
+        }
+
+        // Guard check: pileup, debug, or amplicon disables doomed pruning even if pred returns true.
+        for mode_idx in 0..3 {
+            let mut guard_cfg = single_cfg.clone();
+            match mode_idx {
+                0 => guard_cfg.pileup = true,
+                1 => guard_cfg.debug = true,
+                _ => guard_cfg.amplicon = Some("10:0.95".to_string()),
+            }
+            let guard_builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &guard_cfg);
+            let guard_aligned =
+                guard_builder.build_aligned_variants_pruned(&vd, RefSiteMode::DropAll, &|_| true);
+            assert!(
+                !guard_aligned.get(&10).unwrap().variants.is_empty(),
+                "doomed pruning must be disabled for mode_idx={mode_idx}"
+            );
+        }
+
+        // --- 2. Somatic BAM1 (CompactOut) + BAM2 (KeepWhere + pruned) ---
+        let mut som_cfg = Config::default();
+        som_cfg.bam = "tumor.bam|normal.bam".to_string();
+        som_cfg.sample = "TUMOR|NORMAL".to_string();
+        som_cfg.freq = 0.01;
+        som_cfg.min_reads = 2;
+        som_cfg.read_pos = 5.0;
+        som_cfg.base_qual = 22.5;
+        som_cfg.pileup = false;
+        som_cfg.debug = false;
+        som_cfg.emit_intermediate = true;
+
+        let som_region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "SOM".to_string(),
+            amplicon: None,
+        };
+
+        let mut vd1 = VariationData::new();
+        vd1.duprate = 0.02;
+        let mut vd2 = VariationData::new();
+        vd2.duprate = 0.03;
+
+        // pos 25 (ref 'A'): Tumor has cnt = 8 variant "G", Normal has cnt = 1 (hicnt = 1 < min_reads) "G"
+        // -> Tumor has !variants.is_empty(), so Normal at pos 25 MUST NOT be pruned!
+        vd1.ref_coverage.insert(25, 20);
+        let mut vm1_25 = VariationMap::new();
+        vm1_25
+            .map
+            .insert(ref_base_str(25), mk_var(12, 12, 6, 6, 20.0, 35.0));
+        vm1_25
+            .map
+            .insert("G".to_string(), mk_var(8, 8, 4, 4, 20.0, 35.0));
+        vd1.non_insertion_variants.insert(25, vm1_25);
+
+        vd2.ref_coverage.insert(25, 20);
+        let mut vm2_25 = VariationMap::new();
+        vm2_25
+            .map
+            .insert(ref_base_str(25), mk_var(19, 19, 10, 9, 20.0, 35.0));
+        vm2_25
+            .map
+            .insert("G".to_string(), mk_var(1, 1, 1, 0, 20.0, 35.0));
+        vd2.non_insertion_variants.insert(25, vm2_25);
+
+        // pos 40 (ref 'T'): Tumor is pure-ref (cnt = 20), Normal has cnt = 1 error "A" (hicnt = 1 < min_reads)
+        // -> BAM2 prunes pos 40 so pos 40 does NOT hydrate ref_sites1!
+        vd1.ref_coverage.insert(40, 20);
+        let mut vm1_40 = VariationMap::new();
+        vm1_40
+            .map
+            .insert(ref_base_str(40), mk_var(20, 20, 10, 10, 20.0, 35.0));
+        vd1.non_insertion_variants.insert(40, vm1_40);
+
+        vd2.ref_coverage.insert(40, 20);
+        let mut vm2_40 = VariationMap::new();
+        vm2_40
+            .map
+            .insert(ref_base_str(40), mk_var(19, 19, 10, 9, 20.0, 35.0));
+        vm2_40
+            .map
+            .insert("A".to_string(), mk_var(1, 1, 1, 0, 20.0, 35.0));
+        vd2.non_insertion_variants.insert(40, vm2_40);
+
+        // pos 60 (ref 'T'): Tumor is pure-ref (cnt = 20), Normal has cnt = 3 StrongLOH "G" (hicnt = 3 >= min_reads)
+        // -> BAM2 keeps pos 60, hydrates ref_sites1[60], and emits StrongLOH!
+        vd1.ref_coverage.insert(60, 20);
+        let mut vm1_60 = VariationMap::new();
+        vm1_60
+            .map
+            .insert(ref_base_str(60), mk_var(20, 20, 10, 10, 20.0, 35.0));
+        vd1.non_insertion_variants.insert(60, vm1_60);
+
+        vd2.ref_coverage.insert(60, 20);
+        let mut vm2_60 = VariationMap::new();
+        vm2_60
+            .map
+            .insert(ref_base_str(60), mk_var(17, 17, 9, 8, 20.0, 35.0));
+        vm2_60
+            .map
+            .insert("G".to_string(), mk_var(3, 3, 2, 1, 20.0, 35.0));
+        vd2.non_insertion_variants.insert(60, vm2_60);
+
+        let som_builder = ToVarsBuilder::new(&ref_genome, &som_region, &chr_lengths, &som_cfg);
+        let keep_all_1 =
+            som_builder.build_aligned_variants_with_ref_mode(&vd1, RefSiteMode::KeepAll);
+        let keep_all_2 =
+            som_builder.build_aligned_variants_with_ref_mode(&vd2, RefSiteMode::KeepAll);
+
+        let mut ref_sites1: rustc_hash::FxHashMap<i32, CompactRefSite> =
+            rustc_hash::FxHashMap::default();
+        let mut aligned1 = som_builder
+            .build_aligned_variants_with_ref_mode(&vd1, RefSiteMode::CompactOut(&mut ref_sites1));
+        assert!(ref_sites1.contains_key(&40));
+        assert!(ref_sites1.contains_key(&60));
+
+        let aligned2 = som_builder.build_aligned_variants_pruned(
+            &vd2,
+            RefSiteMode::KeepWhere(&|p| aligned1.get(&p).is_some_and(|v1| !v1.variants.is_empty())),
+            &|p| aligned1.get(&p).is_none_or(|v1| v1.variants.is_empty()),
+        );
+        assert!(
+            aligned2.get(&40).unwrap().variants.is_empty(),
+            "BAM2 doomed error at pos 40 must be pruned"
+        );
+        assert!(
+            !aligned2.get(&25).unwrap().variants.is_empty(),
+            "BAM2 sub-min_reads allele at Tumor variant pos 25 must NOT be pruned"
+        );
+        assert!(
+            !aligned2.get(&60).unwrap().variants.is_empty(),
+            "BAM2 StrongLOH at pos 60 must survive"
+        );
+
+        for (&pos, v2) in aligned2.iter() {
+            if !v2.variants.is_empty() && !aligned1.contains_key(&pos) {
+                if let Some(site) = ref_sites1.get(&pos) {
+                    aligned1.insert(pos, som_builder.hydrate_compact_ref_site(pos, site));
+                }
+            }
+        }
+        assert!(
+            !aligned1.contains_key(&40),
+            "pos = 40 must NOT hydrate ref_sites1"
+        );
+        assert!(
+            aligned1.contains_key(&60),
+            "pos = 60 StrongLOH MUST hydrate ref_sites1"
+        );
+
+        let som_keep_all = crate::postprocess::somatic::somatic_post_process_at(
+            &som_cfg,
+            &som_region,
+            &keep_all_1,
+            &keep_all_2,
+            &splice,
+            None,
+            100,
+        );
+        let som_pruned = crate::postprocess::somatic::somatic_post_process_at(
+            &som_cfg,
+            &som_region,
+            &aligned1,
+            &aligned2,
+            &splice,
+            None,
+            100,
+        );
+        assert_eq!(som_pruned.len(), 2);
+
+        let render_som = |rows: &[crate::postprocess::somatic::SomaticVariant]| -> String {
+            let mut out = String::new();
+            for sv in rows {
+                crate::output::table::somatic_55_append(
+                    &mut out,
+                    &sv.variant1,
+                    sv.variant2.as_ref(),
+                    &som_region,
+                    &som_cfg.sample,
+                    &sv.status,
+                    &sv.sv1,
+                    &sv.sv2,
+                    sv.end_is_variant2,
+                );
+                out.push('\n');
+            }
+            out
+        };
+        assert_eq!(
+            render_som(&som_pruned),
+            render_som(&som_keep_all),
+            "somatic_post_process_at output must be byte-identical to KeepAll"
         );
     }
 }

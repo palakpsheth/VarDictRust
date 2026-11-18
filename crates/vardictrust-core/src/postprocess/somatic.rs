@@ -208,7 +208,10 @@ fn calling_for_one_sample(
             continue;
         }
         let mut v = variant.clone();
-        v.var_type = vtype.into_owned();
+        if v.var_type != vtype.as_ref() {
+            v.var_type.clear();
+            v.var_type.push_str(&vtype);
+        }
         if v.var_type == COMPLEX {
             v.adj_complex();
         }
@@ -334,7 +337,10 @@ fn print_variations_from_first_sample(
 
         let mut vref = vref_orig.clone();
         let nt = vref_orig.description.as_str();
-        vref.var_type = vartype_check.into_owned();
+        if vref.var_type != vartype_check.as_ref() {
+            vref.var_type.clear();
+            vref.var_type.push_str(&vartype_check);
+        }
         if vref.var_type == COMPLEX {
             vref.adj_complex();
         }
@@ -516,7 +522,10 @@ fn print_variations_from_second_sample(
             continue;
         }
         let mut v2var = v2var_orig.clone();
-        v2var.var_type = vtype.into_owned();
+        if v2var.var_type != vtype.as_ref() {
+            v2var.var_type.clear();
+            v2var.var_type.push_str(&vtype);
+        }
 
         // combineAnalysis gate (:301-302): low normal coverage, not an SV, long
         // description or a -\d\d pattern (MINUS_NUM_NUM, Patterns.java:18)

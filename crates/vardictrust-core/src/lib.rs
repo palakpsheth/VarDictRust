@@ -5303,7 +5303,19 @@ fn run_with_writer_inner<W: EngineWriter>(
                 &chromosomes_lengths_clone,
                 &config_clone,
             );
-            let aligned_variants = builder.build_aligned_variants(&var_data);
+            let aligned_variants = if !config_clone.bam.contains('|')
+                && !config_clone.pileup
+                && !config_clone.debug
+                && config_clone.amplicon.is_none()
+            {
+                builder.build_aligned_variants_pruned(
+                    &var_data,
+                    crate::tovars::RefSiteMode::DropAll,
+                    &|_| true,
+                )
+            } else {
+                builder.build_aligned_variants(&var_data)
+            };
             let variants = crate::postprocess::simple::simple_post_process(
                 &config_clone,
                 &builder_region,
@@ -6064,11 +6076,12 @@ fn run_somatic<W: EngineWriter>(
                 &config_clone,
             );
             let aligned2 = if use_compact_somatic_ref_mode {
-                let aligned2 = builder2.build_aligned_variants_with_ref_mode(
+                let aligned2 = builder2.build_aligned_variants_pruned(
                     &var_data2,
                     crate::tovars::RefSiteMode::KeepWhere(&|p| {
                         aligned1.get(&p).is_some_and(|v1| !v1.variants.is_empty())
                     }),
+                    &|p| aligned1.get(&p).is_none_or(|v1| v1.variants.is_empty()),
                 );
                 for (&pos, v2) in aligned2.iter() {
                     if !v2.variants.is_empty() && !aligned1.contains_key(&pos) {
