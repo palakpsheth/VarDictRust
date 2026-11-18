@@ -413,9 +413,12 @@ fuzz_target!(|data: &[u8]| {
     let mid = payload.len() / 2;
     let (part_a, part_b) = payload.split_at(mid);
 
-    let chr = match sub_mode & 3 {
-        0 | 1 => "chr1",
-        2 => "chr_missing",
+    // Use bits [3:2] & [5] of `sub_mode` (independent of `sub_mode % 4` mutation-mode bits [1:0]
+    // and bit [4] `use_mutated_ref`) so every index mutation mode queries `chr1` as well as
+    // missing/empty contigs.
+    let chr = match (sub_mode >> 2) & 3 {
+        0..=2 => "chr1",
+        _ if (sub_mode & 0x20) == 0 => "chr_missing",
         _ => "",
     };
 
