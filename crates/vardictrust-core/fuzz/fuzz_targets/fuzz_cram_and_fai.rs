@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::OnceLock;
 
 use libfuzzer_sys::fuzz_target;
@@ -19,10 +19,7 @@ const MAX_REGION_SPAN_BP: u32 = 4096;
 /// Maximum records drained per `query_region_iter` probe to prevent mutated index loops.
 const MAX_DRAINED_RECORDS: usize = 64;
 
-struct FuzzWorkspace {
-    _temp_dir: tempfile::TempDir,
-    dir: PathBuf,
-    clean_fa_path: PathBuf,
+struct FuzzTemplates {
     plain_fa: Vec<u8>,
     plain_fai: Vec<u8>,
     bgzf_fa: Vec<u8>,
@@ -33,7 +30,7 @@ struct FuzzWorkspace {
     valid_crai: Vec<u8>,
 }
 
-static WORKSPACE: OnceLock<Option<FuzzWorkspace>> = OnceLock::new();
+static TEMPLATES: OnceLock<Option<FuzzTemplates>> = OnceLock::new();
 
 struct CacheClearGuard;
 
@@ -43,7 +40,15 @@ impl Drop for CacheClearGuard {
     }
 }
 
-fn init_workspace() -> Option<FuzzWorkspace> {
+fn create_fuzz_tempdir() -> Option<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix("vdr-fuzz-")
+        .tempdir_in("/dev/shm")
+        .or_else(|_| tempfile::tempdir())
+        .ok()
+}
+
+fn init_templates() -> Option<FuzzTemplates> {
     use noodles::csi::binning_index::index::reference_sequence::{bin::Chunk, index::LinearIndex};
     use noodles::csi::binning_index::Indexer;
     use noodles::sam::alignment::io::Write as _;
@@ -58,12 +63,8 @@ fn init_workspace() -> Option<FuzzWorkspace> {
     };
     use noodles::sam::Header;
 
-    let temp_dir = tempfile::Builder::new()
-        .prefix("vdr-fuzz-")
-        .tempdir_in("/dev/shm")
-        .or_else(|_| tempfile::tempdir())
-        .ok()?;
-    let dir = temp_dir.path().to_path_buf();
+    let temp_dir = create_fuzz_tempdir()?;
+    let dir = temp_dir.path();
 
     // Build a deterministic 512-bp reference sequence (8 lines x 64 bp) on `chr1`.
     let ref_len = 512usize;
@@ -210,13 +211,8 @@ fn init_workspace() -> Option<FuzzWorkspace> {
     }
     let valid_cram = fs::read(&init_cram).ok()?;
     let valid_crai = fs::read(&init_crai).ok()?;
-    let _ = fs::remove_file(&init_cram);
-    let _ = fs::remove_file(&init_crai);
 
-    Some(FuzzWorkspace {
-        _temp_dir: temp_dir,
-        dir,
-        clean_fa_path,
+    Some(FuzzTemplates {
         plain_fa,
         plain_fai,
         bgzf_fa,
@@ -396,12 +392,18 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
-    let Some(ws) = WORKSPACE.get_or_init(init_workspace).as_ref() else {
+    let Some(tpl) = TEMPLATES.get_or_init(init_templates).as_ref() else {
         return;
     };
 
     clear_bam_caches();
+    // Declare `temp_dir` before `_guard` so reverse drop order runs `CacheClearGuard::drop`
+    // (`clear_bam_caches()`, closing pooled BAM/CRAM/FASTA FDs) before unlinking `temp_dir`.
+    let Some(temp_dir) = create_fuzz_tempdir() else {
+        return;
+    };
     let _guard = CacheClearGuard;
+    let dir = temp_dir.path();
 
     let selector = data[0];
     let sub_mode = data[1];
@@ -422,17 +424,19 @@ fuzz_target!(|data: &[u8]| {
         _ => "",
     };
 
-    let fuzz_fa = ws.dir.join("fuzz_ref.fa");
-    let fuzz_fai = ws.dir.join("fuzz_ref.fa.fai");
-    let fuzz_gz_fa = ws.dir.join("fuzz_ref.fa.gz");
-    let fuzz_gz_fai = ws.dir.join("fuzz_ref.fa.gz.fai");
-    let fuzz_gz_gzi = ws.dir.join("fuzz_ref.fa.gz.gzi");
-    let fuzz_bam = ws.dir.join("fuzz_in.bam");
-    let fuzz_bai = ws.dir.join("fuzz_in.bam.bai");
-    let fuzz_csi = ws.dir.join("fuzz_in.bam.csi");
-    let fuzz_cram = ws.dir.join("fuzz_in.cram");
-    let fuzz_crai = ws.dir.join("fuzz_in.cram.crai");
-    let fuzz_bed = ws.dir.join("fuzz_regions.bed");
+    let clean_fa = dir.join("clean_ref.fa");
+    let clean_fai = dir.join("clean_ref.fa.fai");
+    let fuzz_fa = dir.join("fuzz_ref.fa");
+    let fuzz_fai = dir.join("fuzz_ref.fa.fai");
+    let fuzz_gz_fa = dir.join("fuzz_ref.fa.gz");
+    let fuzz_gz_fai = dir.join("fuzz_ref.fa.gz.fai");
+    let fuzz_gz_gzi = dir.join("fuzz_ref.fa.gz.gzi");
+    let fuzz_bam = dir.join("fuzz_in.bam");
+    let fuzz_bai = dir.join("fuzz_in.bam.bai");
+    let fuzz_csi = dir.join("fuzz_in.bam.csi");
+    let fuzz_cram = dir.join("fuzz_in.cram");
+    let fuzz_crai = dir.join("fuzz_in.cram.crai");
+    let fuzz_bed = dir.join("fuzz_regions.bed");
 
     match selector % 4 {
         0 => {
@@ -443,7 +447,7 @@ fuzz_target!(|data: &[u8]| {
                     let _ = fs::write(&fuzz_fai, part_b);
                 }
                 1 => {
-                    let fa_bytes = mutate_bytes(&ws.plain_fa, part_a, 6);
+                    let fa_bytes = mutate_bytes(&tpl.plain_fa, part_a, 6);
                     let fuzzed_len = u32::from(u16::from_le_bytes([data[3], data[4]]));
                     let fuzzed_off = u32::from(data[5]);
                     let line_b = u32::from(data[6]).max(1);
@@ -453,8 +457,8 @@ fuzz_target!(|data: &[u8]| {
                     let _ = fs::write(&fuzz_fai, fai_txt.as_bytes());
                 }
                 _ => {
-                    let _ = fs::write(&fuzz_fa, mutate_bytes(&ws.plain_fa, part_a, 0));
-                    let _ = fs::write(&fuzz_fai, mutate_bytes(&ws.plain_fai, part_b, 0));
+                    let _ = fs::write(&fuzz_fa, mutate_bytes(&tpl.plain_fa, part_a, 0));
+                    let _ = fs::write(&fuzz_fai, mutate_bytes(&tpl.plain_fai, part_b, 0));
                 }
             }
             let _ = fetch_subsequence(&fuzz_fa, chr, Pos1(start_1), Pos1(end_1));
@@ -470,14 +474,14 @@ fuzz_target!(|data: &[u8]| {
                     ];
                     raw_bgzf.extend_from_slice(part_a);
                     let _ = fs::write(&fuzz_gz_fa, raw_bgzf);
-                    let _ = fs::write(&fuzz_gz_fai, &ws.plain_fai);
+                    let _ = fs::write(&fuzz_gz_fai, &tpl.plain_fai);
                     let _ = fs::write(&fuzz_gz_gzi, part_b);
                 }
                 1 => {
                     // Valid/mutated BGZF FASTA + structured hostile GZI (count + 16-byte pairs)
-                    let fa_gz = mutate_bytes(&ws.bgzf_fa, part_a, 18);
+                    let fa_gz = mutate_bytes(&tpl.bgzf_fa, part_a, 18);
                     let _ = fs::write(&fuzz_gz_fa, fa_gz);
-                    let _ = fs::write(&fuzz_gz_fai, mutate_bytes(&ws.plain_fai, part_b, 0));
+                    let _ = fs::write(&fuzz_gz_fai, mutate_bytes(&tpl.plain_fai, part_b, 0));
                     let n_entries = (part_b.len() / 16).min(16);
                     let declared = if (ctrl & 1) == 0 {
                         n_entries as u64
@@ -490,23 +494,25 @@ fuzz_target!(|data: &[u8]| {
                     let _ = fs::write(&fuzz_gz_gzi, gzi_bytes);
                 }
                 2 => {
-                    // Missing GZI index path check
-                    let _ = fs::write(&fuzz_gz_fa, &ws.bgzf_fa);
-                    let _ = fs::write(&fuzz_gz_fai, &ws.plain_fai);
-                    let _ = fs::remove_file(&fuzz_gz_gzi);
+                    // Missing GZI index path check (fresh `temp_dir` has no `.gzi` file)
+                    let _ = fs::write(&fuzz_gz_fa, &tpl.bgzf_fa);
+                    let _ = fs::write(&fuzz_gz_fai, &tpl.plain_fai);
                 }
                 _ => {
-                    let _ = fs::write(&fuzz_gz_fa, mutate_bytes(&ws.bgzf_fa, part_a, 0));
-                    let _ = fs::write(&fuzz_gz_fai, mutate_bytes(&ws.plain_fai, part_b, 0));
-                    let _ = fs::write(&fuzz_gz_gzi, mutate_bytes(&ws.bgzf_gzi, part_b, 0));
+                    let _ = fs::write(&fuzz_gz_fa, mutate_bytes(&tpl.bgzf_fa, part_a, 0));
+                    let _ = fs::write(&fuzz_gz_fai, mutate_bytes(&tpl.plain_fai, part_b, 0));
+                    let _ = fs::write(&fuzz_gz_gzi, mutate_bytes(&tpl.bgzf_gzi, part_b, 0));
                 }
             }
             let _ = fetch_subsequence(&fuzz_gz_fa, chr, Pos1(start_1), Pos1(end_1));
         }
         2 => {
             // Hostile / mutated BAM + .bai / .csi
-            let _ = fs::remove_file(&fuzz_bai);
-            let _ = fs::remove_file(&fuzz_csi);
+            if fs::write(&clean_fa, &tpl.plain_fa).is_err()
+                || fs::write(&clean_fai, &tpl.plain_fai).is_err()
+            {
+                return;
+            }
             match sub_mode % 4 {
                 0 => {
                     // Raw hostile BAM + raw hostile BAI
@@ -515,41 +521,40 @@ fuzz_target!(|data: &[u8]| {
                 }
                 1 => {
                     // Mutated valid BAM + valid BAI
-                    let _ = fs::write(&fuzz_bam, mutate_bytes(&ws.valid_bam, payload, 4));
-                    let _ = fs::write(&fuzz_bai, &ws.valid_bai);
+                    let _ = fs::write(&fuzz_bam, mutate_bytes(&tpl.valid_bam, payload, 4));
+                    let _ = fs::write(&fuzz_bai, &tpl.valid_bai);
                 }
                 2 => {
                     // Valid BAM + mutated BAI
-                    let _ = fs::write(&fuzz_bam, &ws.valid_bam);
-                    let _ = fs::write(&fuzz_bai, mutate_bytes(&ws.valid_bai, payload, 4));
+                    let _ = fs::write(&fuzz_bam, &tpl.valid_bam);
+                    let _ = fs::write(&fuzz_bai, mutate_bytes(&tpl.valid_bai, payload, 4));
                 }
                 _ => {
                     // Mutated BAM + BGZF-wrapped hostile CSI index (`CSI\x01` prefix)
-                    let _ = fs::write(&fuzz_bam, mutate_bytes(&ws.valid_bam, part_a, 0));
+                    let _ = fs::write(&fuzz_bam, mutate_bytes(&tpl.valid_bam, part_a, 0));
                     let mut csi_raw = b"CSI\x01".to_vec();
                     csi_raw.extend_from_slice(part_b);
                     let _ = fs::write(&fuzz_csi, bgzf_compress(&csi_raw));
                 }
             }
             exercise_alignment_and_runner(
-                &fuzz_bam,
-                &ws.clean_fa_path,
-                &fuzz_bed,
-                chr,
-                start_1,
-                end_1,
-                ctrl,
+                &fuzz_bam, &clean_fa, &fuzz_bed, chr, start_1, end_1, ctrl,
             );
         }
         _ => {
             // Hostile / mutated CRAM + .crai + reference FASTA
             let use_mutated_ref = (sub_mode & 0x10) != 0;
             let active_ref = if use_mutated_ref {
-                let _ = fs::write(&fuzz_fa, mutate_bytes(&ws.plain_fa, part_b, 6));
-                let _ = fs::write(&fuzz_fai, mutate_bytes(&ws.plain_fai, part_b, 0));
+                let _ = fs::write(&fuzz_fa, mutate_bytes(&tpl.plain_fa, part_b, 6));
+                let _ = fs::write(&fuzz_fai, mutate_bytes(&tpl.plain_fai, part_b, 0));
                 &fuzz_fa
             } else {
-                &ws.clean_fa_path
+                if fs::write(&clean_fa, &tpl.plain_fa).is_err()
+                    || fs::write(&clean_fai, &tpl.plain_fai).is_err()
+                {
+                    return;
+                }
+                &clean_fa
             };
 
             match sub_mode % 4 {
@@ -566,12 +571,12 @@ fuzz_target!(|data: &[u8]| {
                 1 => {
                     // Mutated valid CRAM container/slice bytes + valid CRAI
                     let keep_hdr = if (ctrl & 1) == 0 { 64 } else { 6 };
-                    let _ = fs::write(&fuzz_cram, mutate_bytes(&ws.valid_cram, payload, keep_hdr));
-                    let _ = fs::write(&fuzz_crai, &ws.valid_crai);
+                    let _ = fs::write(&fuzz_cram, mutate_bytes(&tpl.valid_cram, payload, keep_hdr));
+                    let _ = fs::write(&fuzz_crai, &tpl.valid_crai);
                 }
                 2 => {
                     // Valid/mutated CRAM + gzip-compressed hostile CRAI lines
-                    let _ = fs::write(&fuzz_cram, mutate_bytes(&ws.valid_cram, part_a, 64));
+                    let _ = fs::write(&fuzz_cram, mutate_bytes(&tpl.valid_cram, part_a, 64));
                     let crai_txt = if (ctrl & 1) == 0 {
                         let ref_id = i32::from(data[3] as i8);
                         let aln_start = i32::from(u16::from_le_bytes([data[4], data[5]]));
@@ -590,8 +595,8 @@ fuzz_target!(|data: &[u8]| {
                 }
                 _ => {
                     // Mutated CRAM + byte-mutated CRAI
-                    let _ = fs::write(&fuzz_cram, mutate_bytes(&ws.valid_cram, part_a, 26));
-                    let _ = fs::write(&fuzz_crai, mutate_bytes(&ws.valid_crai, part_b, 2));
+                    let _ = fs::write(&fuzz_cram, mutate_bytes(&tpl.valid_cram, part_a, 26));
+                    let _ = fs::write(&fuzz_crai, mutate_bytes(&tpl.valid_crai, part_b, 2));
                 }
             }
             exercise_alignment_and_runner(

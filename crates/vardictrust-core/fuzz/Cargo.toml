@@ -10,6 +10,7 @@ cargo-fuzz = true
 # Standalone workspace so main Cargo.lock and cargo-deny (libfuzzer-sys NCSA license) stay untouched.
 [workspace]
 
+# Pre-existing fuzz_targets/* style; kept at crate level to avoid unrelated diffs.
 [lints.clippy]
 field_reassign_with_default = "allow"
 manual_flatten = "allow"
