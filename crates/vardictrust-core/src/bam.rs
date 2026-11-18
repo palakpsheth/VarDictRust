@@ -382,6 +382,7 @@ impl SamRecord {
                 }
                 Err(_) => {
                     cigar_err = true;
+                    break;
                 }
             }
         }
@@ -934,16 +935,401 @@ fn is_absent_index_candidate(cand: &Path, err: &std::io::Error) -> bool {
         )
 }
 
+const MAX_BAI_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_CSI_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_CSI_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+const BAI_METADATA_BIN_ID: u32 = 37_450;
+
+fn take_bai_rem(rem: &mut u64, n: u64, path: &Path) -> std::io::Result<()> {
+    *rem = rem.checked_sub(n).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("truncated BAI index '{}'", path.display()),
+        )
+    })?;
+    Ok(())
+}
+
+fn read_bai_u32_le<R: std::io::Read>(
+    reader: &mut R,
+    rem: &mut u64,
+    path: &Path,
+) -> std::io::Result<u32> {
+    take_bai_rem(rem, 4, path)?;
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn read_bai_i32_le<R: std::io::Read>(
+    reader: &mut R,
+    rem: &mut u64,
+    path: &Path,
+) -> std::io::Result<i32> {
+    take_bai_rem(rem, 4, path)?;
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    Ok(i32::from_le_bytes(buf))
+}
+
+fn read_validated_bai_index(path: &Path) -> std::io::Result<noodles::bam::bai::Index> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len > MAX_BAI_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "BAI index '{}' ({file_len} bytes) exceeds maximum size of {MAX_BAI_BYTES} bytes",
+                path.display()
+            ),
+        ));
+    }
+
+    let mut reader = std::io::BufReader::new(file);
+    let mut rem = file_len;
+
+    take_bai_rem(&mut rem, 4, path)?;
+    let mut magic = [0u8; 4];
+    reader.read_exact(&mut magic)?;
+    if magic != *b"BAI\x01" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid BAI header in '{}'", path.display()),
+        ));
+    }
+
+    let n_ref = read_bai_u32_le(&mut reader, &mut rem, path)?;
+    let min_refs_bytes = u64::from(n_ref).checked_mul(8).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("BAI n_ref overflow in '{}'", path.display()),
+        )
+    })?;
+    if min_refs_bytes > rem {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "corrupt BAI index '{}': n_ref ({n_ref}) exceeds remaining {rem} bytes",
+                path.display()
+            ),
+        ));
+    }
+
+    for _ in 0..n_ref {
+        let n_bin = read_bai_u32_le(&mut reader, &mut rem, path)?;
+        let min_bins_bytes = u64::from(n_bin).checked_mul(8).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("BAI n_bin overflow in '{}'", path.display()),
+            )
+        })?;
+        if min_bins_bytes > rem {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "corrupt BAI index '{}': n_bin ({n_bin}) exceeds remaining {rem} bytes",
+                    path.display()
+                ),
+            ));
+        }
+
+        for _ in 0..n_bin {
+            let bin_id = read_bai_u32_le(&mut reader, &mut rem, path)?;
+            if bin_id == BAI_METADATA_BIN_ID {
+                if rem < 36 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("truncated BAI metadata bin in '{}'", path.display()),
+                    ));
+                }
+                take_bai_rem(&mut rem, 36, path)?;
+                reader.seek_relative(36)?;
+            } else {
+                let n_chunk = read_bai_i32_le(&mut reader, &mut rem, path)?;
+                let n_chunk_u64 = u64::try_from(n_chunk).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "negative BAI chunk count ({n_chunk}) in '{}'",
+                            path.display()
+                        ),
+                    )
+                })?;
+                let skip = n_chunk_u64.checked_mul(16).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("BAI chunk byte count overflow in '{}'", path.display()),
+                    )
+                })?;
+                if skip > rem {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "corrupt BAI index '{}': n_chunk ({n_chunk}) exceeds remaining {rem} bytes",
+                            path.display()
+                        ),
+                    ));
+                }
+                take_bai_rem(&mut rem, skip, path)?;
+                let skip_i64 = i64::try_from(skip).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("BAI chunk skip overflow in '{}'", path.display()),
+                    )
+                })?;
+                reader.seek_relative(skip_i64)?;
+            }
+        }
+
+        let n_intv = read_bai_u32_le(&mut reader, &mut rem, path)?;
+        let skip = u64::from(n_intv).checked_mul(8).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("BAI interval byte count overflow in '{}'", path.display()),
+            )
+        })?;
+        if skip > rem {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "corrupt BAI index '{}': n_intv ({n_intv}) exceeds remaining {rem} bytes",
+                    path.display()
+                ),
+            ));
+        }
+        take_bai_rem(&mut rem, skip, path)?;
+        let skip_i64 = i64::try_from(skip).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("BAI interval skip overflow in '{}'", path.display()),
+            )
+        })?;
+        reader.seek_relative(skip_i64)?;
+    }
+
+    reader.seek(SeekFrom::Start(0))?;
+    noodles::bam::bai::io::Reader::new(reader).read_index()
+}
+
+fn take_csi_slice<'a>(slice: &mut &'a [u8], len: usize, path: &Path) -> std::io::Result<&'a [u8]> {
+    let Some((head, tail)) = slice.split_at_checked(len) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("truncated CSI index '{}'", path.display()),
+        ));
+    };
+    *slice = tail;
+    Ok(head)
+}
+
+fn read_csi_u32_le(slice: &mut &[u8], path: &Path) -> std::io::Result<u32> {
+    let bytes = take_csi_slice(slice, 4, path)?;
+    let arr: [u8; 4] = bytes.try_into().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("truncated CSI index '{}'", path.display()),
+        )
+    })?;
+    Ok(u32::from_le_bytes(arr))
+}
+
+fn read_csi_i32_le(slice: &mut &[u8], path: &Path) -> std::io::Result<i32> {
+    let bytes = take_csi_slice(slice, 4, path)?;
+    let arr: [u8; 4] = bytes.try_into().map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("truncated CSI index '{}'", path.display()),
+        )
+    })?;
+    Ok(i32::from_le_bytes(arr))
+}
+
+fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
+    use noodles::csi::binning_index::index::reference_sequence::Bin;
+
+    let magic = take_csi_slice(&mut slice, 4, path)?;
+    if magic != b"CSI\x01" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid CSI magic header in '{}'", path.display()),
+        ));
+    }
+
+    let min_shift = read_csi_i32_le(&mut slice, path)?;
+    if u8::try_from(min_shift).is_err() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid CSI min_shift ({min_shift}) in '{}'",
+                path.display()
+            ),
+        ));
+    }
+
+    let depth = read_csi_i32_le(&mut slice, path)?;
+    let depth_u8 = u8::try_from(depth)
+        .ok()
+        .filter(|&d| d <= 9)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid CSI depth ({depth}) in '{}'", path.display()),
+            )
+        })?;
+    let metadata_id = Bin::metadata_id(depth_u8);
+
+    let l_aux = read_csi_i32_le(&mut slice, path)?;
+    let l_aux_usize = usize::try_from(l_aux).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("negative CSI l_aux ({l_aux}) in '{}'", path.display()),
+        )
+    })?;
+    let aux_bytes = take_csi_slice(&mut slice, l_aux_usize, path)?;
+    if l_aux_usize > 0 {
+        let Some(l_nm_raw) = aux_bytes.get(24..28) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("truncated CSI aux header in '{}'", path.display()),
+            ));
+        };
+        let l_nm_arr: [u8; 4] = l_nm_raw.try_into().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("truncated CSI aux header in '{}'", path.display()),
+            )
+        })?;
+        let l_nm = usize::try_from(i32::from_le_bytes(l_nm_arr)).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("negative CSI l_nm in '{}'", path.display()),
+            )
+        })?;
+        if 28usize.checked_add(l_nm) != Some(l_aux_usize) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "corrupt CSI aux header length ({l_aux_usize} != 28 + {l_nm}) in '{}'",
+                    path.display()
+                ),
+            ));
+        }
+    }
+
+    let n_ref = read_csi_i32_le(&mut slice, path)?;
+    let n_ref_usize = usize::try_from(n_ref).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("negative CSI n_ref ({n_ref}) in '{}'", path.display()),
+        )
+    })?;
+    if n_ref_usize.checked_mul(4).is_none_or(|b| b > slice.len()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "corrupt CSI index '{}': n_ref ({n_ref}) exceeds remaining {} bytes",
+                path.display(),
+                slice.len()
+            ),
+        ));
+    }
+
+    for _ in 0..n_ref_usize {
+        let n_bin = read_csi_i32_le(&mut slice, path)?;
+        let n_bin_usize = usize::try_from(n_bin).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("negative CSI n_bin ({n_bin}) in '{}'", path.display()),
+            )
+        })?;
+        if n_bin_usize.checked_mul(16).is_none_or(|b| b > slice.len()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "corrupt CSI index '{}': n_bin ({n_bin}) exceeds remaining {} bytes",
+                    path.display(),
+                    slice.len()
+                ),
+            ));
+        }
+
+        for _ in 0..n_bin_usize {
+            let bin_id = read_csi_u32_le(&mut slice, path)?;
+            let _loffset = take_csi_slice(&mut slice, 8, path)?;
+            if usize::try_from(bin_id).ok() == metadata_id {
+                let _metadata = take_csi_slice(&mut slice, 36, path)?;
+            } else {
+                let n_chunk = read_csi_i32_le(&mut slice, path)?;
+                let n_chunk_usize = usize::try_from(n_chunk).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "negative CSI chunk count ({n_chunk}) in '{}'",
+                            path.display()
+                        ),
+                    )
+                })?;
+                let chunk_bytes = n_chunk_usize.checked_mul(16).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("CSI chunk byte count overflow in '{}'", path.display()),
+                    )
+                })?;
+                let _chunks = take_csi_slice(&mut slice, chunk_bytes, path)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn read_validated_csi_index(path: &Path) -> std::io::Result<noodles::csi::Index> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let mut file = std::fs::File::open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len > MAX_CSI_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "CSI index '{}' ({file_len} bytes) exceeds maximum size of {MAX_CSI_BYTES} bytes",
+                path.display()
+            ),
+        ));
+    }
+
+    let mut decomp = Vec::new();
+    noodles::bgzf::io::Reader::new(&mut file)
+        .take(MAX_CSI_DECOMPRESSED_BYTES + 1)
+        .read_to_end(&mut decomp)?;
+    if (decomp.len() as u64) > MAX_CSI_DECOMPRESSED_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "CSI index '{}' exceeds maximum decompressed size of {MAX_CSI_DECOMPRESSED_BYTES} bytes",
+                path.display()
+            ),
+        ));
+    }
+
+    validate_csi_payload(&decomp, path)?;
+
+    file.seek(SeekFrom::Start(0))?;
+    noodles::csi::io::Reader::new(file).read_index()
+}
+
 fn try_bam_index_for_path(src: &Path) -> Result<noodles::bam::Index, (std::io::Error, bool)> {
     let primary_bai = crate::reference::append_os_ext(src, ".bai");
-    let first_not_found = match noodles::bam::bai::fs::read(&primary_bai) {
+    let first_not_found = match read_validated_bai_index(&primary_bai) {
         Ok(idx) => return Ok(noodles::bam::Index::Bai(idx)),
         Err(e) if is_absent_index_candidate(&primary_bai, &e) => e,
         Err(e) => return Err((e, false)),
     };
 
     let primary_csi = crate::reference::append_os_ext(src, ".csi");
-    match noodles::csi::fs::read(&primary_csi) {
+    match read_validated_csi_index(&primary_csi) {
         Ok(idx) => return Ok(noodles::bam::Index::Csi(idx)),
         Err(e) if is_absent_index_candidate(&primary_csi, &e) => {}
         Err(e) => return Err((e, false)),
@@ -952,7 +1338,7 @@ fn try_bam_index_for_path(src: &Path) -> Result<noodles::bam::Index, (std::io::E
     if src.extension().is_some() {
         let stem_bai = src.with_extension("bai");
         if stem_bai != primary_bai && stem_bai != src {
-            match noodles::bam::bai::fs::read(&stem_bai) {
+            match read_validated_bai_index(&stem_bai) {
                 Ok(idx) => return Ok(noodles::bam::Index::Bai(idx)),
                 Err(e) if is_absent_index_candidate(&stem_bai, &e) => {}
                 Err(e) => return Err((e, false)),
@@ -960,7 +1346,7 @@ fn try_bam_index_for_path(src: &Path) -> Result<noodles::bam::Index, (std::io::E
         }
         let stem_csi = src.with_extension("csi");
         if stem_csi != primary_csi && stem_csi != src {
-            match noodles::csi::fs::read(&stem_csi) {
+            match read_validated_csi_index(&stem_csi) {
                 Ok(idx) => return Ok(noodles::bam::Index::Csi(idx)),
                 Err(e) if is_absent_index_candidate(&stem_csi, &e) => {}
                 Err(e) => return Err((e, false)),
@@ -1689,8 +2075,8 @@ pub fn clear_bam_caches() {
         }
     });
     let _ = CRAM_META_TLS.try_with(|tls| {
-        if let Ok(mut slot) = tls.try_borrow_mut() {
-            *slot = None;
+        if let Ok(mut slots) = tls.try_borrow_mut() {
+            *slots = [None, None];
         }
     });
     if let Some(cache) = FASTA_REPO_CACHE.get() {
@@ -2035,6 +2421,7 @@ fn intersects_record(
                     return Err(e);
                 }
                 cigar_err = true;
+                break;
             }
         }
     }
@@ -2905,7 +3292,74 @@ static CRAM_META_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<CramMetaKey
 
 thread_local! {
     static CRAM_READER_POOL: RefCell<CramReaderPoolMap> = RefCell::new(HashMap::new());
-    static CRAM_META_TLS: RefCell<Option<CramMetaTlsEntry>> = const { RefCell::new(None) };
+    static CRAM_META_TLS: RefCell<[Option<CramMetaTlsEntry>; 2]> = const { RefCell::new([None, None]) };
+}
+
+#[inline]
+fn lookup_cram_meta_tls(
+    path: &Path,
+    fasta_path: &Path,
+    cur_epoch: u64,
+) -> Option<std::sync::Arc<SharedCramMeta>> {
+    CRAM_META_TLS
+        .try_with(|tls| {
+            let mut slots = tls.try_borrow_mut().ok()?;
+            let [s0, s1] = &mut *slots;
+            if let Some((ep, cached_cram, cached_fasta, meta)) = s0.as_ref() {
+                if tls_epoch_valid(*ep, cur_epoch, meta.id)
+                    && cached_cram.as_path() == path
+                    && cached_fasta.as_path() == fasta_path
+                {
+                    return Some(std::sync::Arc::clone(meta));
+                }
+            }
+            if let Some((ep, cached_cram, cached_fasta, meta)) = s1.as_ref() {
+                if tls_epoch_valid(*ep, cur_epoch, meta.id)
+                    && cached_cram.as_path() == path
+                    && cached_fasta.as_path() == fasta_path
+                {
+                    let hit = std::sync::Arc::clone(meta);
+                    std::mem::swap(s0, s1);
+                    return Some(hit);
+                }
+            }
+            None
+        })
+        .ok()
+        .flatten()
+}
+
+#[inline]
+fn insert_cram_meta_tls(
+    cur_epoch: u64,
+    path: &Path,
+    fasta_path: &Path,
+    meta: &std::sync::Arc<SharedCramMeta>,
+) {
+    let _ = CRAM_META_TLS.try_with(|tls| {
+        if let Ok(mut slots) = tls.try_borrow_mut() {
+            let [s0, s1] = &mut *slots;
+            if s0
+                .as_ref()
+                .is_some_and(|(_, c, f, _)| c.as_path() == path && f.as_path() == fasta_path)
+            {
+                *s0 = Some((
+                    cur_epoch,
+                    path.to_path_buf(),
+                    fasta_path.to_path_buf(),
+                    std::sync::Arc::clone(meta),
+                ));
+            } else {
+                *s1 = s0.take();
+                *s0 = Some((
+                    cur_epoch,
+                    path.to_path_buf(),
+                    fasta_path.to_path_buf(),
+                    std::sync::Arc::clone(meta),
+                ));
+            }
+        }
+    });
 }
 
 fn pop_pooled_cram_reader(
@@ -2929,22 +3383,7 @@ fn acquire_cram_meta(
 ) -> Result<std::sync::Arc<SharedCramMeta>, crate::types::VardictError> {
     let fasta_path = Path::new(&config.reference);
     let cur_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
-    if let Some(cached_meta) = CRAM_META_TLS
-        .try_with(|tls| {
-            let guard = tls.try_borrow().ok()?;
-            let (cached_epoch, ref cached_cram, ref cached_fasta, ref meta) = *guard.as_ref()?;
-            if tls_epoch_valid(cached_epoch, cur_epoch, meta.id)
-                && cached_cram.as_path() == path
-                && cached_fasta.as_path() == fasta_path
-            {
-                Some(std::sync::Arc::clone(meta))
-            } else {
-                None
-            }
-        })
-        .ok()
-        .flatten()
-    {
+    if let Some(cached_meta) = lookup_cram_meta_tls(path, fasta_path, cur_epoch) {
         return Ok(cached_meta);
     }
 
@@ -2964,16 +3403,7 @@ fn acquire_cram_meta(
         if std::sync::Arc::ptr_eq(&meta.fasta_repo, &fasta_repo) {
             let meta_clone = std::sync::Arc::clone(meta);
             if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
-                let _ = CRAM_META_TLS.try_with(|tls| {
-                    if let Ok(mut guard) = tls.try_borrow_mut() {
-                        *guard = Some((
-                            cur_epoch,
-                            path.to_path_buf(),
-                            fasta_path.to_path_buf(),
-                            std::sync::Arc::clone(&meta_clone),
-                        ));
-                    }
-                });
+                insert_cram_meta_tls(cur_epoch, path, fasta_path, &meta_clone);
             }
             return Ok(meta_clone);
         }
@@ -3031,16 +3461,7 @@ fn acquire_cram_meta(
     if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
         *slot_guard = Some(std::sync::Arc::clone(&meta));
         return_pooled_cram_reader(path, std::sync::Arc::clone(&meta), reader);
-        let _ = CRAM_META_TLS.try_with(|tls| {
-            if let Ok(mut guard) = tls.try_borrow_mut() {
-                *guard = Some((
-                    cur_epoch,
-                    path.to_path_buf(),
-                    fasta_path.to_path_buf(),
-                    std::sync::Arc::clone(&meta),
-                ));
-            }
-        });
+        insert_cram_meta_tls(cur_epoch, path, fasta_path, &meta);
     }
     Ok(meta)
 }
@@ -3151,7 +3572,92 @@ struct CachedCramRecord {
 }
 
 type CachedCramBlock = std::sync::Arc<Vec<CachedCramRecord>>;
-type CramContainerCacheShard = LruCacheShard<CachedCramBlock, CRAM_CONTAINER_SLOTS_PER_SHARD>;
+
+enum InflightCramState {
+    Pending,
+    Ready(Option<CachedCramBlock>),
+    Failed,
+}
+
+struct InflightCramDecode {
+    state: std::sync::Mutex<InflightCramState>,
+    cvar: std::sync::Condvar,
+}
+
+impl InflightCramDecode {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(InflightCramState::Pending),
+            cvar: std::sync::Condvar::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct CramContainerCacheShard {
+    lru: LruCacheShard<CachedCramBlock, CRAM_CONTAINER_SLOTS_PER_SHARD>,
+    inflight: Vec<((u64, u64), std::sync::Arc<InflightCramDecode>)>,
+    #[cfg(test)]
+    decodes: usize,
+}
+
+impl CramContainerCacheShard {
+    fn clear_production(&mut self) {
+        self.lru.clear_production();
+    }
+}
+
+struct InflightCramGuard<'a> {
+    shard_mutex: &'a std::sync::Mutex<CramContainerCacheShard>,
+    key: (u64, u64),
+    entry: std::sync::Arc<InflightCramDecode>,
+    completed: bool,
+}
+
+impl InflightCramGuard<'_> {
+    fn complete(
+        mut self,
+        result: Option<CachedCramBlock>,
+        max_cached_bytes: usize,
+        start_epoch: u64,
+    ) {
+        self.completed = true;
+        {
+            let mut shard = self.shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
+            shard
+                .inflight
+                .retain(|(k, w)| !(*k == self.key && std::sync::Arc::ptr_eq(w, &self.entry)));
+            if let Some(ref arc_records) = result {
+                if should_cache_cram_container(arc_records, max_cached_bytes)
+                    && BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == start_epoch
+                {
+                    shard
+                        .lru
+                        .insert(self.key, std::sync::Arc::clone(arc_records));
+                }
+            }
+        }
+        let mut st = self.entry.state.lock().unwrap_or_else(|e| e.into_inner());
+        *st = InflightCramState::Ready(result);
+        self.entry.cvar.notify_all();
+    }
+}
+
+impl Drop for InflightCramGuard<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            {
+                let mut shard = self.shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
+                shard
+                    .inflight
+                    .retain(|(k, w)| !(*k == self.key && std::sync::Arc::ptr_eq(w, &self.entry)));
+            }
+            let mut st = self.entry.state.lock().unwrap_or_else(|e| e.into_inner());
+            *st = InflightCramState::Failed;
+            self.entry.cvar.notify_all();
+        }
+    }
+}
 
 static CRAM_CONTAINER_CACHE: std::sync::OnceLock<
     [std::sync::Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS],
@@ -3691,16 +4197,106 @@ fn read_cram_uint7<R: std::io::Read + ?Sized>(reader: &mut R) -> std::io::Result
     ))
 }
 
+/// Windowed `Read + Seek` adapter that retains its in-memory read window across
+/// `SeekFrom::Start` jumps (unlike `std::io::BufReader::seek`, which discards its
+/// buffer on every `SeekFrom::Start`), collapsing ~250k per-block header/codec
+/// seeks and 1-byte VLQ reads in `prevalidate_cram_container_slices` to memory hits.
+struct SeekWindowReader<R> {
+    inner: R,
+    buf: Vec<u8>,
+    buf_start: u64,
+    buf_len: usize,
+    pos: u64,
+}
+
+impl<R> SeekWindowReader<R> {
+    fn with_capacity(capacity: usize, inner: R) -> Self {
+        Self {
+            inner,
+            buf: vec![0_u8; capacity.max(1)],
+            buf_start: 0,
+            buf_len: 0,
+            pos: 0,
+        }
+    }
+}
+
+impl<R: std::io::Read + std::io::Seek> std::io::Read for SeekWindowReader<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        let buf_end = self.buf_start.saturating_add(self.buf_len as u64);
+        if self.pos < self.buf_start || self.pos >= buf_end {
+            self.inner.seek(std::io::SeekFrom::Start(self.pos))?;
+            self.buf_start = self.pos;
+            self.buf_len = 0;
+            loop {
+                match self.inner.read(&mut self.buf) {
+                    Ok(n) => {
+                        self.buf_len = n;
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            if self.buf_len == 0 {
+                return Ok(0);
+            }
+        }
+        let rel = usize::try_from(self.pos - self.buf_start).unwrap_or(self.buf_len);
+        let avail = self.buf.get(rel..self.buf_len).unwrap_or(&[]);
+        let n = out.len().min(avail.len());
+        if let (Some(dst), Some(src)) = (out.get_mut(..n), avail.get(..n)) {
+            dst.copy_from_slice(src);
+        }
+        self.pos = self.pos.saturating_add(n as u64);
+        Ok(n)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for SeekWindowReader<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        match pos {
+            std::io::SeekFrom::Start(p) => {
+                self.pos = p;
+                Ok(p)
+            }
+            std::io::SeekFrom::Current(rel) => {
+                let next = if rel >= 0 {
+                    self.pos.checked_add(rel as u64)
+                } else {
+                    self.pos.checked_sub(rel.unsigned_abs())
+                }
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid seek to a negative or overflowing position",
+                    )
+                })?;
+                self.pos = next;
+                Ok(next)
+            }
+            std::io::SeekFrom::End(rel) => {
+                let next = self.inner.seek(std::io::SeekFrom::End(rel))?;
+                self.pos = next;
+                Ok(next)
+            }
+        }
+    }
+}
+
 fn validate_cram_entropy_stream_at(
     path: &Path,
-    file: &mut std::fs::File,
+    file: &mut (impl std::io::Read + std::io::Seek),
     start_offset: u64,
     comp_len: usize,
     block_uncomp: usize,
     is_aac: bool,
     depth: u8,
 ) -> std::io::Result<usize> {
-    use std::io::{Read as _, Seek as _, SeekFrom};
+    use std::io::{Read as _, SeekFrom};
 
     let end_offset = start_offset.checked_add(comp_len as u64).ok_or_else(|| {
         std::io::Error::new(
@@ -3885,14 +4481,14 @@ fn validate_cram_entropy_stream_at(
 
 fn validate_cram_block_and_codec(
     path: &Path,
-    file: &mut std::fs::File,
+    file: &mut (impl std::io::Read + std::io::Seek),
     block_offset: u64,
     limit_end_offset: u64,
     expected_content_type: u8,
     max_uncompressed_bytes: usize,
     max_name_count: usize,
 ) -> std::io::Result<(u64, usize)> {
-    use std::io::{Read as _, Seek as _, SeekFrom};
+    use std::io::{Read as _, SeekFrom};
 
     if block_offset >= limit_end_offset {
         return Err(std::io::Error::new(
@@ -4222,12 +4818,12 @@ fn validate_cram_block_and_codec(
 /// `file` before `noodles-cram` slices `container.src` or allocates decoded buffers (`SEC-06`).
 fn prevalidate_cram_container_slices(
     path: &Path,
-    file: &mut std::fs::File,
+    file: &mut (impl std::io::Read + std::io::Seek),
     body_offset: u64,
     bytes_read: usize,
     landmarks: &[usize],
 ) -> std::io::Result<()> {
-    use std::io::{Read as _, Seek as _, SeekFrom};
+    use std::io::{Read as _, SeekFrom};
     const MAX_SLICE_HEADER_UNCOMPRESSED_BYTES: usize = 1024 * 1024;
     const COMPRESSION_HEADER_CONTENT_TYPE: u8 = 1;
     const SLICE_HEADER_CONTENT_TYPE: u8 = 2;
@@ -4505,13 +5101,44 @@ fn fetch_cram_container_in(
 ) -> Result<Option<CachedCramBlock>, crate::types::VardictError> {
     use std::io::{Read as _, Seek as _, SeekFrom};
 
+    let key = (meta.id, container_offset);
     let shard_idx = cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta.id, container_offset);
-    if let Some(shard_mutex) = cache.get(shard_idx) {
-        let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(records) = shard.get((meta.id, container_offset)) {
-            return Ok(Some(records));
+    let start_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+
+    let inflight_guard = if let Some(shard_mutex) = cache.get(shard_idx) {
+        loop {
+            let waiter_opt = {
+                let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(records) = shard.lru.get(key) {
+                    return Ok(Some(records));
+                }
+                if let Some((_, waiter)) = shard.inflight.iter().find(|(k, _)| *k == key) {
+                    Some(std::sync::Arc::clone(waiter))
+                } else {
+                    let inflight = std::sync::Arc::new(InflightCramDecode::new());
+                    shard.inflight.push((key, std::sync::Arc::clone(&inflight)));
+                    break Some(InflightCramGuard {
+                        shard_mutex,
+                        key,
+                        entry: inflight,
+                        completed: false,
+                    });
+                }
+            };
+            if let Some(waiter) = waiter_opt {
+                let mut st = waiter.state.lock().unwrap_or_else(|e| e.into_inner());
+                while matches!(*st, InflightCramState::Pending) {
+                    st = waiter.cvar.wait(st).unwrap_or_else(|e| e.into_inner());
+                }
+                match *st {
+                    InflightCramState::Ready(ref opt) => return Ok(opt.clone()),
+                    InflightCramState::Failed | InflightCramState::Pending => continue,
+                }
+            }
         }
-    }
+    } else {
+        None
+    };
 
     let mut reader = match pop_pooled_cram_reader(path, meta) {
         Some(r) => r,
@@ -4542,6 +5169,9 @@ fn fetch_cram_container_in(
     let bytes_read = reader.read_container(&mut container)?;
     if bytes_read == 0 {
         return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
+        if let Some(g) = inflight_guard {
+            g.complete(None, max_cached_bytes, start_epoch);
+        }
         return Ok(None);
     }
     if container.header().record_count() > MAX_CRAM_CONTAINER_RECORDS {
@@ -4563,13 +5193,16 @@ fn fetch_cram_container_in(
                 "CRAM container stream position precedes container payload",
             )
         })?;
-    prevalidate_cram_container_slices(
-        path,
-        reader.get_mut(),
-        body_offset,
-        bytes_read,
-        container.header().landmarks(),
-    )?;
+    {
+        let mut buffered = SeekWindowReader::with_capacity(64 * 1024, reader.get_mut());
+        prevalidate_cram_container_slices(
+            path,
+            &mut buffered,
+            body_offset,
+            bytes_read,
+            container.header().landmarks(),
+        )?;
+    }
     reader.get_mut().seek(SeekFrom::Start(post_container_pos))?;
     return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
 
@@ -4607,6 +5240,13 @@ fn fetch_cram_container_in(
         .is_some_and(|global| std::ptr::eq(cache, global))
     {
         CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    #[cfg(test)]
+    if let Some(shard_mutex) = cache.get(shard_idx) {
+        shard_mutex
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .decodes += 1;
     }
 
     // guideline deviation: M-PANIC-CONTINUATION — defensive boundary converting upstream noodles-cram parser panics on malformed untrusted CRAM inputs into io::ErrorKind::InvalidData without shared mutable state
@@ -4686,14 +5326,12 @@ fn fetch_cram_container_in(
     out_records.shrink_to_fit();
 
     let arc_records: CachedCramBlock = std::sync::Arc::new(out_records);
-    if should_cache_cram_container(&arc_records, max_cached_bytes) {
-        if let Some(shard_mutex) = cache.get(shard_idx) {
-            let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
-            shard.insert(
-                (meta.id, container_offset),
-                std::sync::Arc::clone(&arc_records),
-            );
-        }
+    if let Some(g) = inflight_guard {
+        g.complete(
+            Some(std::sync::Arc::clone(&arc_records)),
+            max_cached_bytes,
+            start_epoch,
+        );
     }
     Ok(Some(arc_records))
 }
@@ -6358,7 +6996,10 @@ mod tests {
 
             self.cigar.clear();
             self.cigar.reserve(record.cigar().len());
-            for op in record.cigar().iter().flatten() {
+            for res in record.cigar().iter() {
+                let Ok(op) = res else {
+                    break;
+                };
                 self.cigar.push((op.len() as u32, op.kind()));
             }
 
@@ -10538,7 +11179,7 @@ mod tests {
         assert_eq!(block_1.len(), read_count);
         let hit_entries: usize = hit_cache
             .iter()
-            .map(|s| s.lock().unwrap().entries.len())
+            .map(|s| s.lock().unwrap().lru.entries.len())
             .sum();
         assert_eq!(hit_entries, 1, "eligible container must be cached");
 
@@ -10574,7 +11215,7 @@ mod tests {
         .expect("decoded CRAM container on bypass");
         let bypass_entries: usize = bypass_cache
             .iter()
-            .map(|s| s.lock().unwrap().entries.len())
+            .map(|s| s.lock().unwrap().lru.entries.len())
             .sum();
         assert_eq!(bypass_entries, 0, "oversized container must bypass cache");
         assert_eq!(bypassed.len(), block_1.len());
@@ -11032,6 +11673,465 @@ mod tests {
             read_reference_lengths(&cram_cold, &cram_cfg).unwrap()["chr1"],
             64,
             "cold-miss CRAM open spanning epoch bump must not cache stale SharedCramMeta"
+        );
+    }
+
+    #[test]
+    fn fill_from_alignment_record_terminates_on_malformed_text_sam_cigar() {
+        let header_src = b"@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000000\n";
+        // Exact 41-byte `fuzz_sam_aux` `$`-CIGAR reproducer + prefix-valid malformed CIGAR line.
+        let fuzz_repro: &[u8] =
+            b"\t\t\xbd\x1a1\t1\t1\t$\t1\x1a\t\xbfO\x00\x00\xa8O\x00FHDI\x00\xa8+\t1\t1\t1\t1\x08\x01\t+";
+        let mut sam_bytes = Vec::new();
+        sam_bytes.extend_from_slice(header_src);
+        sam_bytes.extend_from_slice(fuzz_repro);
+        sam_bytes.push(b'\n');
+        sam_bytes.extend_from_slice(b"r2\t0\tchr1\t10\t60\t2M$2M\t*\t0\t0\tACGT\tIIII\n");
+
+        let mut reader = noodles::sam::io::Reader::new(std::io::Cursor::new(sam_bytes));
+        let header = reader.read_header().unwrap();
+        let cfg = Config::default();
+        let mut preproc = RecordPreprocessor::new();
+
+        let records: Vec<noodles::sam::Record> =
+            reader.records().take(16).filter_map(Result::ok).collect();
+        assert_eq!(records.len(), 2);
+
+        let mut rec0 = SamRecord::new();
+        rec0.fill_from_alignment_record(&records[0], &header)
+            .unwrap();
+        assert!(rec0.cigar.is_empty());
+        assert!(rec0.alignment_end.is_none());
+        let _ = preproc.preprocess_record(&rec0, &cfg);
+
+        let mut rec0_legacy = SamRecord::new();
+        rec0_legacy
+            .fill_from_alignment_record_legacy(&records[0], &header)
+            .unwrap();
+        assert!(rec0_legacy.cigar.is_empty());
+        assert!(rec0_legacy.alignment_end.is_none());
+
+        let mut rec1 = SamRecord::new();
+        rec1.fill_from_alignment_record(&records[1], &header)
+            .unwrap();
+        assert_eq!(rec1.cigar, vec![(2, CigarKind::Match)]);
+        assert!(rec1.alignment_end.is_none());
+    }
+
+    #[test]
+    fn bam_index_loader_rejects_oversized_bai_and_csi_counts() {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk,
+            index::{BinnedIndex, LinearIndex},
+        };
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::{
+            alignment::{
+                io::Write as _,
+                record::{
+                    cigar::{op::Kind, Op},
+                    Flags, MappingQuality,
+                },
+                record_buf::{Cigar, QualityScores as BufQual, RecordBuf, Sequence as BufSeq},
+            },
+            header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+            Header,
+        };
+        use std::io::Write as _;
+
+        fn bgzf_wrap(raw: &[u8]) -> Vec<u8> {
+            let mut out = Vec::new();
+            let mut w = noodles::bgzf::io::Writer::new(&mut out);
+            w.write_all(raw).unwrap();
+            w.finish().unwrap();
+            out
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let bam_path = dir.path().join("hostile_idx.bam");
+        let bai_path = dir.path().join("hostile_idx.bam.bai");
+        let csi_path = dir.path().join("hostile_idx.bam.csi");
+
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(1000.try_into().unwrap())
+            .build()
+            .unwrap();
+        let header = Header::builder().add_reference_sequence("chr1", rs).build();
+        let rec = RecordBuf::builder()
+            .set_name("read1")
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(50usize).unwrap())
+            .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+            .set_cigar([Op::new(Kind::Match, 10)].into_iter().collect::<Cigar>())
+            .set_sequence(BufSeq::from(b"ACGTACGTAC".to_vec()))
+            .set_quality_scores(BufQual::from(vec![35u8; 10]))
+            .build();
+
+        let mut bai_indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+        let mut csi_indexer = Indexer::<BinnedIndex>::new(14, 5).unwrap();
+        let mut csi_hdr_indexer = Indexer::<BinnedIndex>::new(14, 5).unwrap();
+        {
+            let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            let mut w = noodles::bam::io::Writer::from(bgzf);
+            w.write_alignment_header(&header).unwrap();
+            let s_vp = w.get_ref().virtual_position();
+            w.write_alignment_record(&header, &rec).unwrap();
+            let e_vp = w.get_ref().virtual_position();
+            let s = Position::try_from(50usize).unwrap();
+            let e = Position::try_from(59usize).unwrap();
+            let chunk = Chunk::new(s_vp, e_vp);
+            bai_indexer
+                .add_record(Some((0, s, e, true)), chunk)
+                .unwrap();
+            csi_indexer
+                .add_record(Some((0, s, e, true)), chunk)
+                .unwrap();
+            csi_hdr_indexer
+                .add_record(Some((0, s, e, true)), chunk)
+                .unwrap();
+            w.try_finish().unwrap();
+        }
+
+        let cfg = Config::default();
+
+        // 1. Valid `.bai` loads and queries cleanly.
+        bai::fs::write(&bai_path, &bai_indexer.build(1)).unwrap();
+        clear_bam_caches();
+        let bai_reads: Vec<SamRecord> =
+            query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert_eq!(bai_reads.len(), 1);
+        assert_eq!(bai_reads[0].name, b"read1");
+
+        // 2. Valid `.csi` (both headerless BAM `.csi` and headered `.csi`) loads identically.
+        std::fs::remove_file(&bai_path).unwrap();
+        noodles::csi::fs::write(&csi_path, &csi_indexer.build(1)).unwrap();
+        clear_bam_caches();
+        let csi_reads: Vec<SamRecord> =
+            query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert_eq!(csi_reads, bai_reads);
+
+        let mut names = noodles::csi::binning_index::index::header::ReferenceSequenceNames::new();
+        names.insert(b"chr1".as_slice().into());
+        csi_hdr_indexer = csi_hdr_indexer.set_header(
+            noodles::csi::binning_index::index::header::Builder::sam()
+                .set_reference_sequence_names(names)
+                .build(),
+        );
+        noodles::csi::fs::write(&csi_path, &csi_hdr_indexer.build(1)).unwrap();
+        clear_bam_caches();
+        let headered_csi_reads: Vec<SamRecord> =
+            query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+        assert_eq!(headered_csi_reads, bai_reads);
+        std::fs::remove_file(&csi_path).unwrap();
+
+        // Missing index still preserves `ErrorKind::NotFound`.
+        clear_bam_caches();
+        assert_eq!(
+            read_bam_index_with_fallbacks(&bam_path).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        // 3. Corrupt `.bai` cases: fuzzer `n_ref = 0x6573776f`, oversized `n_bin`,
+        //    oversized/negative `n_chunk`, truncated metadata bin, oversized `n_intv`.
+        let mut bai_oversized_nbin = b"BAI\x01".to_vec();
+        bai_oversized_nbin.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bai_oversized_nbin.extend_from_slice(&0x4000_0000u32.to_le_bytes()); // n_bin
+        bai_oversized_nbin.extend_from_slice(&0u32.to_le_bytes()); // n_intv
+
+        let mut bai_oversized_nchunk = b"BAI\x01".to_vec();
+        bai_oversized_nchunk.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bai_oversized_nchunk.extend_from_slice(&1u32.to_le_bytes()); // n_bin = 1
+        bai_oversized_nchunk.extend_from_slice(&0u32.to_le_bytes()); // bin_id = 0
+        bai_oversized_nchunk.extend_from_slice(&0x4000_0000i32.to_le_bytes()); // n_chunk
+        bai_oversized_nchunk.extend_from_slice(&0u32.to_le_bytes()); // n_intv
+
+        let mut bai_neg_nchunk = b"BAI\x01".to_vec();
+        bai_neg_nchunk.extend_from_slice(&1u32.to_le_bytes());
+        bai_neg_nchunk.extend_from_slice(&1u32.to_le_bytes());
+        bai_neg_nchunk.extend_from_slice(&0u32.to_le_bytes());
+        bai_neg_nchunk.extend_from_slice(&(-1i32).to_le_bytes());
+        bai_neg_nchunk.extend_from_slice(&0u32.to_le_bytes());
+
+        let mut bai_trunc_meta = b"BAI\x01".to_vec();
+        bai_trunc_meta.extend_from_slice(&1u32.to_le_bytes());
+        bai_trunc_meta.extend_from_slice(&1u32.to_le_bytes());
+        bai_trunc_meta.extend_from_slice(&37_450u32.to_le_bytes());
+        bai_trunc_meta.extend_from_slice(&[0u8; 12]);
+
+        let mut bai_oversized_nintv = b"BAI\x01".to_vec();
+        bai_oversized_nintv.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bai_oversized_nintv.extend_from_slice(&0u32.to_le_bytes()); // n_bin = 0
+        bai_oversized_nintv.extend_from_slice(&0x4000_0000u32.to_le_bytes()); // n_intv
+
+        for bad_bai in [
+            b"BAI\x01owser-".to_vec(),
+            bai_oversized_nbin,
+            bai_oversized_nchunk,
+            bai_neg_nchunk,
+            bai_trunc_meta,
+            bai_oversized_nintv,
+        ] {
+            std::fs::write(&bai_path, &bad_bai).unwrap();
+            clear_bam_caches();
+            assert!(read_bam_index_with_fallbacks(&bam_path).is_err());
+            assert!(query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg).is_err());
+        }
+        std::fs::remove_file(&bai_path).unwrap();
+
+        // 4. Corrupt BGZF `.csi` cases: oversized `n_ref`, `n_bin`, `n_chunk`, `l_aux`,
+        //    and misaligned `l_aux != 28 + l_nm`.
+        let csi_hdr = |l_aux: i32| -> Vec<u8> {
+            let mut v = b"CSI\x01".to_vec();
+            v.extend_from_slice(&14i32.to_le_bytes()); // min_shift
+            v.extend_from_slice(&5i32.to_le_bytes()); // depth
+            v.extend_from_slice(&l_aux.to_le_bytes());
+            v
+        };
+
+        let mut csi_bad_nref = csi_hdr(0);
+        csi_bad_nref.extend_from_slice(&0x4000_0000i32.to_le_bytes());
+
+        let mut csi_bad_nbin = csi_hdr(0);
+        csi_bad_nbin.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_bad_nbin.extend_from_slice(&0x4000_0000i32.to_le_bytes()); // n_bin
+
+        let mut csi_bad_nchunk = csi_hdr(0);
+        csi_bad_nchunk.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_bad_nchunk.extend_from_slice(&1i32.to_le_bytes()); // n_bin = 1
+        csi_bad_nchunk.extend_from_slice(&0u32.to_le_bytes()); // bin_id = 0
+        csi_bad_nchunk.extend_from_slice(&0u64.to_le_bytes()); // loffset
+        csi_bad_nchunk.extend_from_slice(&0x4000_0000i32.to_le_bytes()); // n_chunk
+
+        let csi_bad_laux = csi_hdr(0x4000_0000);
+
+        let mut csi_desync_laux = csi_hdr(40);
+        csi_desync_laux.extend_from_slice(&2i32.to_le_bytes()); // format = VCF
+        csi_desync_laux.extend_from_slice(&1i32.to_le_bytes()); // col_seq
+        csi_desync_laux.extend_from_slice(&2i32.to_le_bytes()); // col_beg
+        csi_desync_laux.extend_from_slice(&0i32.to_le_bytes()); // col_end
+        csi_desync_laux.extend_from_slice(&35i32.to_le_bytes()); // meta
+        csi_desync_laux.extend_from_slice(&0i32.to_le_bytes()); // skip
+        csi_desync_laux.extend_from_slice(&0i32.to_le_bytes()); // l_nm = 0 (28 != 40!)
+        csi_desync_laux.extend_from_slice(&0x7fff_ffffi32.to_le_bytes()); // hidden n_ref bomb
+        csi_desync_laux.extend_from_slice(&[0u8; 8]);
+        csi_desync_laux.extend_from_slice(&0i32.to_le_bytes());
+
+        for bad_csi in [
+            csi_bad_nref,
+            csi_bad_nbin,
+            csi_bad_nchunk,
+            csi_bad_laux,
+            csi_desync_laux,
+        ] {
+            std::fs::write(&csi_path, bgzf_wrap(&bad_csi)).unwrap();
+            clear_bam_caches();
+            assert!(read_bam_index_with_fallbacks(&bam_path).is_err());
+            assert!(query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg).is_err());
+        }
+    }
+
+    #[test]
+    fn cram_container_cache_coalesces_concurrent_decodes() {
+        use noodles::core::Position;
+        use noodles::sam::{
+            alignment::{
+                io::Write as _,
+                record::{
+                    cigar::{op::Kind, Op},
+                    Flags, MappingQuality,
+                },
+                record_buf::{Cigar, QualityScores as BufQual, RecordBuf, Sequence as BufSeq},
+            },
+            header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+            Header,
+        };
+        use std::sync::{Arc, Barrier, Mutex};
+
+        let dir = tempfile::tempdir().unwrap();
+        let ref_fa = dir.path().join("sf_ref.fa");
+        let ref_fai = dir.path().join("sf_ref.fa.fai");
+        let cram_a = dir.path().join("sf_a.cram");
+        let cram_b = dir.path().join("sf_b.cram");
+
+        let ref_len = 2048usize;
+        let ref_seq: Vec<u8> = (0..ref_len).map(|i| b"ACGT"[(i * 5 + 1) % 4]).collect();
+        let mut fa_bytes = b">chr1\n".to_vec();
+        fa_bytes.extend_from_slice(&ref_seq);
+        fa_bytes.push(b'\n');
+        std::fs::write(&ref_fa, &fa_bytes).unwrap();
+        std::fs::write(
+            &ref_fai,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .unwrap();
+
+        let write_test_cram = |cram_path: &Path, read_count: usize| -> u64 {
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(ref_len.try_into().unwrap())
+                .build()
+                .unwrap();
+            let header = Header::builder().add_reference_sequence("chr1", rs).build();
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(std::fs::File::open(&ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(&ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(cram_path)
+                .unwrap();
+            writer.write_alignment_header(&header).unwrap();
+            for i in 0..read_count {
+                let start_1 = 10 + (i * 7) % 1000;
+                let rec = RecordBuf::builder()
+                    .set_name(format!("sf_r{i}"))
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+                    .set_cigar([Op::new(Kind::Match, 100)].into_iter().collect::<Cigar>())
+                    .set_sequence(BufSeq::from(
+                        ref_seq[start_1 - 1..start_1 - 1 + 100].to_vec(),
+                    ))
+                    .set_quality_scores(BufQual::from(vec![35u8; 100]))
+                    .build();
+                writer.write_alignment_record(&header, &rec).unwrap();
+            }
+            writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(cram_path).unwrap();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+            crai[0].offset()
+        };
+
+        let container_offset = write_test_cram(&cram_a, 128);
+        let _ = write_test_cram(&cram_b, 8);
+
+        let cfg = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        clear_bam_caches();
+
+        // 1. Verify 2-slot `CRAM_META_TLS` retains both paired somatic CRAM handles (`T -> N -> T -> N`).
+        let meta_a = acquire_cram_meta(&cram_a, &cfg).unwrap();
+        let meta_b = acquire_cram_meta(&cram_b, &cfg).unwrap();
+        let cur_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+        assert!(Arc::ptr_eq(
+            &lookup_cram_meta_tls(&cram_a, &ref_fa, cur_epoch).expect("slot hit A"),
+            &meta_a
+        ));
+        assert!(Arc::ptr_eq(
+            &lookup_cram_meta_tls(&cram_b, &ref_fa, cur_epoch).expect("slot hit B"),
+            &meta_b
+        ));
+        assert!(Arc::ptr_eq(
+            &lookup_cram_meta_tls(&cram_a, &ref_fa, cur_epoch).expect("slot hit A again"),
+            &meta_a
+        ));
+
+        // 2. Verify RAII `InflightCramGuard::drop` (`Failed` state) wakes blocked waiters cleanly,
+        //    allowing a waiter to retry and decode once without hanging or caching errors.
+        let retry_cache: Arc<[Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS]> =
+            Arc::new(std::array::from_fn(|_| {
+                Mutex::new(CramContainerCacheShard::default())
+            }));
+        let shard_idx =
+            cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta_a.id, container_offset);
+        let key = (meta_a.id, container_offset);
+        let fake_inflight = Arc::new(InflightCramDecode::new());
+        retry_cache[shard_idx]
+            .lock()
+            .unwrap()
+            .inflight
+            .push((key, Arc::clone(&fake_inflight)));
+        let cram_a_retry = cram_a.clone();
+        let meta_a_retry = Arc::clone(&meta_a);
+        let retry_cache_w = Arc::clone(&retry_cache);
+        let entered = Arc::new(Barrier::new(2));
+        let entered_w = Arc::clone(&entered);
+        let waiter_handle = std::thread::spawn(move || {
+            entered_w.wait();
+            fetch_cram_container_in(
+                &cram_a_retry,
+                &meta_a_retry,
+                container_offset,
+                b"chr1",
+                None,
+                &retry_cache_w,
+                MAX_CACHED_CRAM_CONTAINER_BYTES,
+            )
+            .unwrap()
+            .expect("decoded after Failed wakeup")
+        });
+        entered.wait();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        drop(InflightCramGuard {
+            shard_mutex: &retry_cache[shard_idx],
+            key,
+            entry: fake_inflight,
+            completed: false,
+        });
+        let recovered = waiter_handle.join().unwrap();
+        assert_eq!(recovered.len(), 128);
+
+        // 3. Spawn 8 concurrent worker threads synced on an `Arc<Barrier>` hitting the same
+        //    uncached `(meta_a, container_offset)`: all 8 receive `Arc::ptr_eq` blocks with 1 decode.
+        let shared_cache: Arc<[Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS]> =
+            Arc::new(std::array::from_fn(|_| {
+                Mutex::new(CramContainerCacheShard::default())
+            }));
+        let pinned_slot = meta_a.fasta_repo.warm_contig_slot(b"chr1");
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::with_capacity(8);
+        for _ in 0..8 {
+            let b = Arc::clone(&barrier);
+            let cache_cl = Arc::clone(&shared_cache);
+            let meta_cl = Arc::clone(&meta_a);
+            let path_cl = cram_a.clone();
+            let slot_cl = pinned_slot.clone();
+            handles.push(std::thread::spawn(move || {
+                b.wait();
+                fetch_cram_container_in(
+                    &path_cl,
+                    &meta_cl,
+                    container_offset,
+                    b"chr1",
+                    Some(&slot_cl),
+                    &cache_cl,
+                    MAX_CACHED_CRAM_CONTAINER_BYTES,
+                )
+                .unwrap()
+                .expect("concurrent CRAM container decode")
+            }));
+        }
+        let results: Vec<CachedCramBlock> =
+            handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.len(), 8);
+        assert_eq!(results[0].len(), 128);
+        for block in &results[1..] {
+            assert!(
+                Arc::ptr_eq(&results[0], block),
+                "all 8 concurrent threads must share the exact singleflight CachedCramBlock Arc"
+            );
+        }
+        let total_decodes: usize = shared_cache.iter().map(|s| s.lock().unwrap().decodes).sum();
+        assert_eq!(
+            total_decodes, 1,
+            "8 concurrent fetches on the same uncached CRAM container must perform exactly 1 decode"
         );
     }
 }

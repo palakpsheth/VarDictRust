@@ -1,7 +1,7 @@
 {
   "suite": "multimodal_multislice_parity_suite",
-  "timestamp": "2026-11-16T09:49:20Z",
-  "fingerprint": "68308cfcd2303ad1",
+  "timestamp": "2026-11-18T20:18:08Z",
+  "fingerprint": "2d82664ff81000f7",
   "mode": "tier-2-live-oracle-strict-bytes",
   "inputs": [
     {
@@ -299,7 +299,7 @@
       },
       {
         "event": "HIT",
-        "key": "b2c71421d85b9c9c",
+        "key": "0ae17b8184968786",
         "kind": "java",
         "label": "compare"
       },
@@ -311,7 +311,7 @@
       },
       {
         "event": "HIT",
-        "key": "77b3d5accf02e324",
+        "key": "5e84c74b6606596a",
         "kind": "java",
         "label": "compare"
       },
@@ -323,7 +323,7 @@
       },
       {
         "event": "HIT",
-        "key": "9c08b0d17aab00f3",
+        "key": "a6a7486808b03406",
         "kind": "java",
         "label": "compare"
       },
@@ -335,7 +335,7 @@
       },
       {
         "event": "HIT",
-        "key": "2dc8f17a06fda974",
+        "key": "172462168e4f9798",
         "kind": "java",
         "label": "compare"
       },
@@ -347,7 +347,7 @@
       },
       {
         "event": "HIT",
-        "key": "2a9c7af8462c4419",
+        "key": "d34f602375b1a716",
         "kind": "java",
         "label": "compare"
       },
@@ -359,57 +359,21 @@
       },
       {
         "event": "HIT",
-        "key": "7cc4d107c26574ea",
+        "key": "aadc088e3279a6ad",
         "kind": "cpp",
         "label": "cram-twin-bam"
       },
       {
         "event": "HIT",
-        "key": "6be32d4c46b655b3",
+        "key": "60151d7bbf43abec",
         "kind": "cpp",
         "label": "cram-twin-cram"
       },
       {
         "event": "HIT",
-        "key": "fbdfeb2324c1c065",
+        "key": "723a701245b6809a",
         "kind": "java",
         "label": "ext-m5"
-      },
-      {
-        "event": "HIT",
-        "key": "2e9ebdb1b2e50b8d",
-        "kind": "java",
-        "label": "ext-m2"
-      },
-      {
-        "event": "HIT",
-        "key": "5c57f782fb6b8ac0",
-        "kind": "java",
-        "label": "ext-m6"
-      },
-      {
-        "event": "HIT",
-        "key": "666b6c9bf0ba0177",
-        "kind": "java",
-        "label": "ext-m3"
-      },
-      {
-        "event": "HIT",
-        "key": "bbe0844e0598a746",
-        "kind": "java",
-        "label": "ext-m8"
-      },
-      {
-        "event": "HIT",
-        "key": "2ac4193ae0929b3c",
-        "kind": "java",
-        "label": "ext-m7"
-      },
-      {
-        "event": "HIT",
-        "key": "df91776f384d0091",
-        "kind": "java",
-        "label": "ext-m1"
       },
       {
         "event": "HIT",
@@ -419,21 +383,51 @@
       },
       {
         "event": "HIT",
+        "key": "0f6334cd397d5978",
+        "kind": "java",
+        "label": "ext-m8"
+      },
+      {
+        "event": "HIT",
+        "key": "85ba2b2a7f6b8c38",
+        "kind": "java",
+        "label": "ext-m6"
+      },
+      {
+        "event": "HIT",
+        "key": "df91776f384d0091",
+        "kind": "java",
+        "label": "ext-m1"
+      },
+      {
+        "event": "HIT",
+        "key": "8e3efc2fd21710b8",
+        "kind": "java",
+        "label": "ext-m7"
+      },
+      {
+        "event": "HIT",
+        "key": "db77f1dab86ccc6f",
+        "kind": "java",
+        "label": "ext-m3"
+      },
+      {
+        "event": "HIT",
+        "key": "6e5a27881dc6c949",
+        "kind": "java",
+        "label": "ext-m2"
+      },
+      {
+        "event": "HIT",
         "key": "b60e929ae70e8b5e",
         "kind": "cpp",
         "label": "ext-m4"
       },
       {
         "event": "HIT",
-        "key": "408979473793402f",
+        "key": "c029b34f59ae2faf",
         "kind": "java",
         "label": "ext-m9"
-      },
-      {
-        "event": "HIT",
-        "key": "45fcb4b843126775",
-        "kind": "cpp",
-        "label": "ext-m3"
       },
       {
         "event": "HIT",
@@ -443,19 +437,25 @@
       },
       {
         "event": "HIT",
-        "key": "267a57bb8f593c8b",
+        "key": "45fcb4b843126775",
+        "kind": "cpp",
+        "label": "ext-m3"
+      },
+      {
+        "event": "HIT",
+        "key": "519593eca4bcfb5a",
         "kind": "java",
         "label": "ext-m10"
       },
       {
         "event": "HIT",
-        "key": "d0a209688d24dc80",
+        "key": "f690205489791e00",
         "kind": "java",
         "label": "ext-m12"
       },
       {
         "event": "HIT",
-        "key": "9008baadeebec811",
+        "key": "bc241656ab9e3e1e",
         "kind": "java",
         "label": "ext-m11"
       },
@@ -467,21 +467,21 @@
       },
       {
         "event": "HIT",
+        "key": "e414dc335d4277f8",
+        "kind": "cpp",
+        "label": "ext-m11"
+      },
+      {
+        "event": "HIT",
         "key": "a02ae53f65514324",
         "kind": "cpp",
         "label": "ext-m12"
       },
       {
         "event": "HIT",
-        "key": "312088d6b643c1df",
+        "key": "81664c2cf8960840",
         "kind": "java",
         "label": "ext-m13"
-      },
-      {
-        "event": "HIT",
-        "key": "e414dc335d4277f8",
-        "kind": "cpp",
-        "label": "ext-m11"
       },
       {
         "event": "HIT",
@@ -491,33 +491,9 @@
       },
       {
         "event": "HIT",
-        "key": "39872ce1b700f278",
-        "kind": "java",
-        "label": "ext-m14"
-      },
-      {
-        "event": "HIT",
-        "key": "e6d056242d746c8f",
-        "kind": "cpp",
-        "label": "ext-m13"
-      },
-      {
-        "event": "HIT",
         "key": "7b1a057921ca1362",
         "kind": "cpp",
         "label": "ext-m7"
-      },
-      {
-        "event": "HIT",
-        "key": "6617037b3520c037",
-        "kind": "java",
-        "label": "ext-m15"
-      },
-      {
-        "event": "HIT",
-        "key": "b1ef0bb96fe1d246",
-        "kind": "cpp",
-        "label": "ext-m6"
       },
       {
         "event": "HIT",
@@ -527,15 +503,39 @@
       },
       {
         "event": "HIT",
+        "key": "b1ef0bb96fe1d246",
+        "kind": "cpp",
+        "label": "ext-m6"
+      },
+      {
+        "event": "HIT",
+        "key": "8af6eeb1bdf5e618",
+        "kind": "java",
+        "label": "ext-m15"
+      },
+      {
+        "event": "HIT",
+        "key": "e6d056242d746c8f",
+        "kind": "cpp",
+        "label": "ext-m13"
+      },
+      {
+        "event": "HIT",
+        "key": "4c2b8764d97e6ace",
+        "kind": "java",
+        "label": "ext-m14"
+      },
+      {
+        "event": "HIT",
         "key": "ef6daf521dc99568",
         "kind": "cpp",
         "label": "ext-m9"
       },
       {
         "event": "HIT",
-        "key": "784fbc45493c392c",
-        "kind": "java",
-        "label": "ext-m16"
+        "key": "20f3214d292b7dbf",
+        "kind": "cpp",
+        "label": "ext-m15"
       },
       {
         "event": "HIT",
@@ -545,9 +545,9 @@
       },
       {
         "event": "HIT",
-        "key": "20f3214d292b7dbf",
-        "kind": "cpp",
-        "label": "ext-m15"
+        "key": "a8664306d617cf31",
+        "kind": "java",
+        "label": "ext-m16"
       },
       {
         "event": "HIT",
@@ -569,63 +569,51 @@
       },
       {
         "event": "HIT",
-        "key": "b6db456c513b2bb9",
-        "kind": "java",
-        "label": "mm-HG005_1A"
-      },
-      {
-        "event": "HIT",
-        "key": "a0e105d08df6c045",
-        "kind": "java",
-        "label": "mm-HG005_1B"
-      },
-      {
-        "event": "HIT",
-        "key": "516969b628dbf098",
-        "kind": "java",
-        "label": "mm-SEQC2_2A"
-      },
-      {
-        "event": "HIT",
-        "key": "d3d73aeb4d7430ba",
-        "kind": "java",
-        "label": "mm-HG005_1C"
-      },
-      {
-        "event": "HIT",
-        "key": "17c291db303da38d",
-        "kind": "java",
-        "label": "mm-SEQC2_2C"
-      },
-      {
-        "event": "HIT",
-        "key": "5f3419e5ef3e85b5",
+        "key": "bc1527d8d4ab573e",
         "kind": "java",
         "label": "mm-SEQC2_2B"
       },
       {
         "event": "HIT",
-        "key": "ec2dceebe33921f7",
+        "key": "969bd284d5ddeb24",
         "kind": "java",
         "label": "mm-HG002_3B"
       },
       {
         "event": "HIT",
-        "key": "0d636ec5f08d2b5e",
+        "key": "d4986e92f1b6cca9",
+        "kind": "java",
+        "label": "mm-HG005_1A"
+      },
+      {
+        "event": "HIT",
+        "key": "cb6820b9a7123093",
+        "kind": "java",
+        "label": "mm-SEQC2_2A"
+      },
+      {
+        "event": "HIT",
+        "key": "9702f7e749437eb5",
         "kind": "java",
         "label": "mm-HG002_3A"
       },
       {
         "event": "HIT",
-        "key": "7ef8197a186b955b",
-        "kind": "cpp",
-        "label": "mm-SEQC2_2A"
+        "key": "62b979e49dfc8c35",
+        "kind": "java",
+        "label": "mm-HG005_1B"
       },
       {
         "event": "HIT",
-        "key": "a0e440474b6b584d",
-        "kind": "cpp",
-        "label": "mm-HG002_3B"
+        "key": "cd400f605a212b4e",
+        "kind": "java",
+        "label": "mm-SEQC2_2C"
+      },
+      {
+        "event": "HIT",
+        "key": "6df3b3ae48168c08",
+        "kind": "java",
+        "label": "mm-HG005_1C"
       },
       {
         "event": "HIT",
@@ -635,51 +623,9 @@
       },
       {
         "event": "HIT",
-        "key": "d8106001ae1a7f3f",
+        "key": "7ef8197a186b955b",
         "kind": "cpp",
-        "label": "mm-HG002_3A"
-      },
-      {
-        "event": "HIT",
-        "key": "3a71c8fe21ec7c05",
-        "kind": "java",
-        "label": "mm-HG002_3C"
-      },
-      {
-        "event": "HIT",
-        "key": "8537b9391efcc675",
-        "kind": "java",
-        "label": "mm-HG008_4A"
-      },
-      {
-        "event": "HIT",
-        "key": "b4a2d07eebbea383",
-        "kind": "cpp",
-        "label": "mm-HG005_1A"
-      },
-      {
-        "event": "HIT",
-        "key": "2fa8c5bd97777328",
-        "kind": "cpp",
-        "label": "mm-HG005_1C"
-      },
-      {
-        "event": "HIT",
-        "key": "35a412be247bffce",
-        "kind": "java",
-        "label": "mm-HG008_4B"
-      },
-      {
-        "event": "HIT",
-        "key": "69184dce1421de14",
-        "kind": "cpp",
-        "label": "mm-HG005_1B"
-      },
-      {
-        "event": "HIT",
-        "key": "113910bc99c0be49",
-        "kind": "java",
-        "label": "mm-HG008_4C"
+        "label": "mm-SEQC2_2A"
       },
       {
         "event": "HIT",
@@ -689,39 +635,75 @@
       },
       {
         "event": "HIT",
-        "key": "6fdbc3f8d0082d47",
+        "key": "d8106001ae1a7f3f",
         "kind": "cpp",
+        "label": "mm-HG002_3A"
+      },
+      {
+        "event": "HIT",
+        "key": "a0e440474b6b584d",
+        "kind": "cpp",
+        "label": "mm-HG002_3B"
+      },
+      {
+        "event": "HIT",
+        "key": "5cf1e0db19f5d9e4",
+        "kind": "java",
         "label": "mm-HG002_3C"
       },
       {
         "event": "HIT",
-        "key": "695f49f571e9ebc4",
+        "key": "69184dce1421de14",
         "kind": "cpp",
-        "label": "mm-HG008_4A"
+        "label": "mm-HG005_1B"
       },
       {
         "event": "HIT",
-        "key": "adf643d5eb8a423e",
+        "key": "1960f48d6def5374",
+        "kind": "java",
+        "label": "mm-HG008_4B"
+      },
+      {
+        "event": "HIT",
+        "key": "162fbcc115d6dab3",
         "kind": "java",
         "label": "mm-NA24385_5A"
       },
       {
         "event": "HIT",
-        "key": "04805ad4193b718f",
+        "key": "bbb4ce5e55e54576",
+        "kind": "java",
+        "label": "mm-HG008_4C"
+      },
+      {
+        "event": "HIT",
+        "key": "2fa8c5bd97777328",
+        "kind": "cpp",
+        "label": "mm-HG005_1C"
+      },
+      {
+        "event": "HIT",
+        "key": "db2b361e9ec5d3a9",
+        "kind": "java",
+        "label": "mm-HG008_4A"
+      },
+      {
+        "event": "HIT",
+        "key": "db5624c364189eba",
         "kind": "java",
         "label": "mm-NA24385_5B"
       },
       {
         "event": "HIT",
-        "key": "210ee0863dd2ee5b",
-        "kind": "java",
-        "label": "mm-NA24385_5C"
+        "key": "b4a2d07eebbea383",
+        "kind": "cpp",
+        "label": "mm-HG005_1A"
       },
       {
         "event": "HIT",
-        "key": "40b56592fc45c393",
-        "kind": "java",
-        "label": "mm-RNA_6B"
+        "key": "6fdbc3f8d0082d47",
+        "kind": "cpp",
+        "label": "mm-HG002_3C"
       },
       {
         "event": "HIT",
@@ -731,15 +713,9 @@
       },
       {
         "event": "HIT",
-        "key": "75e945b554003c7a",
+        "key": "40b56592fc45c393",
         "kind": "java",
-        "label": "mm-RNA_6C"
-      },
-      {
-        "event": "HIT",
-        "key": "b500555e47194316",
-        "kind": "cpp",
-        "label": "mm-HG008_4C"
+        "label": "mm-RNA_6B"
       },
       {
         "event": "HIT",
@@ -749,8 +725,8 @@
       },
       {
         "event": "HIT",
-        "key": "050caf8a85d4547b",
-        "kind": "cpp",
+        "key": "4b5d3b02d29607d4",
+        "kind": "java",
         "label": "mm-NA24385_5C"
       },
       {
@@ -761,6 +737,30 @@
       },
       {
         "event": "HIT",
+        "key": "695f49f571e9ebc4",
+        "kind": "cpp",
+        "label": "mm-HG008_4A"
+      },
+      {
+        "event": "HIT",
+        "key": "b500555e47194316",
+        "kind": "cpp",
+        "label": "mm-HG008_4C"
+      },
+      {
+        "event": "HIT",
+        "key": "75e945b554003c7a",
+        "kind": "java",
+        "label": "mm-RNA_6C"
+      },
+      {
+        "event": "HIT",
+        "key": "050caf8a85d4547b",
+        "kind": "cpp",
+        "label": "mm-NA24385_5C"
+      },
+      {
+        "event": "HIT",
         "key": "a7c10ff4ea42dd55",
         "kind": "cpp",
         "label": "mm-NA24385_5A"
@@ -768,7 +768,7 @@
     ],
     "hit": 86,
     "live": 0,
-    "run": "recertify-1794819236"
+    "run": "recertify-1795031026"
   },
   "result": "MATCH",
   "slices": [
@@ -778,7 +778,7 @@
       "region": "chr3 40000000 40010000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 567
+      "time_ms": 608
     },
     {
       "slice_id": "HG005_1B",
@@ -786,7 +786,7 @@
       "region": "chr6 30000000 30010000",
       "variants": 10,
       "status": "MATCH",
-      "time_ms": 592
+      "time_ms": 442
     },
     {
       "slice_id": "HG005_1C",
@@ -794,7 +794,7 @@
       "region": "chr21 20000000 20010000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 565
+      "time_ms": 586
     },
     {
       "slice_id": "SEQC2_2A",
@@ -802,7 +802,7 @@
       "region": "chr7 140400000 140420000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 379
+      "time_ms": 359
     },
     {
       "slice_id": "SEQC2_2B",
@@ -810,7 +810,7 @@
       "region": "chr11 530000 550000",
       "variants": 16,
       "status": "MATCH",
-      "time_ms": 395
+      "time_ms": 308
     },
     {
       "slice_id": "SEQC2_2C",
@@ -818,7 +818,7 @@
       "region": "chr12 25200000 25250000",
       "variants": 55,
       "status": "MATCH",
-      "time_ms": 579
+      "time_ms": 417
     },
     {
       "slice_id": "HG002_3A",
@@ -826,7 +826,7 @@
       "region": "chr20 10000000 10020000",
       "variants": 337,
       "status": "MATCH",
-      "time_ms": 423
+      "time_ms": 374
     },
     {
       "slice_id": "HG002_3B",
@@ -834,7 +834,7 @@
       "region": "chr20 20000000 20020000",
       "variants": 273,
       "status": "MATCH",
-      "time_ms": 390
+      "time_ms": 430
     },
     {
       "slice_id": "HG002_3C",
@@ -842,7 +842,7 @@
       "region": "chr20 30000000 30020000",
       "variants": 4,
       "status": "MATCH",
-      "time_ms": 83
+      "time_ms": 126
     },
     {
       "slice_id": "HG008_4A",
@@ -850,7 +850,7 @@
       "region": "chr1 1743056 1744086 slice_1_6",
       "variants": 23,
       "status": "MATCH",
-      "time_ms": 116
+      "time_ms": 239
     },
     {
       "slice_id": "HG008_4B",
@@ -858,7 +858,7 @@
       "region": "chr1 6170843 6182754 slice_2_3",
       "variants": 50,
       "status": "MATCH",
-      "time_ms": 515
+      "time_ms": 214
     },
     {
       "slice_id": "HG008_4C",
@@ -866,7 +866,7 @@
       "region": "chr1 56757190 56764123 slice_3_4",
       "variants": 42,
       "status": "MATCH",
-      "time_ms": 285
+      "time_ms": 258
     },
     {
       "slice_id": "NA24385_5A",
@@ -874,7 +874,7 @@
       "region": "1 246981051 246981611",
       "variants": 25,
       "status": "MATCH",
-      "time_ms": 469
+      "time_ms": 482
     },
     {
       "slice_id": "NA24385_5B",
@@ -882,7 +882,7 @@
       "region": "19 58559581 58567861",
       "variants": 20,
       "status": "MATCH",
-      "time_ms": 135
+      "time_ms": 225
     },
     {
       "slice_id": "NA24385_5C",
@@ -890,7 +890,7 @@
       "region": "20 36018823 36039513",
       "variants": 181,
       "status": "MATCH",
-      "time_ms": 286
+      "time_ms": 176
     },
     {
       "slice_id": "RNA_6A",
@@ -898,7 +898,7 @@
       "region": "chr8:90534611-90550000",
       "variants": 3,
       "status": "MATCH",
-      "time_ms": 105
+      "time_ms": 92
     },
     {
       "slice_id": "RNA_6B",
@@ -906,7 +906,7 @@
       "region": "chr8:90550000-90580000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 120
+      "time_ms": 90
     },
     {
       "slice_id": "RNA_6C",
@@ -914,7 +914,7 @@
       "region": "chr8:90580000-90620070",
       "variants": 12,
       "status": "MATCH",
-      "time_ms": 125
+      "time_ms": 75
     }
   ]
 }
