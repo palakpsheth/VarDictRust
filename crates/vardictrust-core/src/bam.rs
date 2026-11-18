@@ -1231,8 +1231,13 @@ const TEST_META_ID_BASE: u64 = 1u64 << 63;
 static NEXT_PROD_TEST_META_ID: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1u64 << 32);
 #[cfg(test)]
+type OneShotTestHook = Box<dyn FnOnce()>;
+
+#[cfg(test)]
 thread_local! {
     static FORCE_PRODUCTION_META_ID: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_MID_CLEAR_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
+    static TEST_MID_COLD_OPEN_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
 }
 
 #[inline]
@@ -1617,6 +1622,14 @@ thread_local! {
 /// RAII drop guard (`F-5`).
 pub fn clear_bam_caches() {
     BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
+    #[cfg(test)]
+    if let Some(hook) = TEST_MID_CLEAR_HOOK
+        .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
+        .ok()
+        .flatten()
+    {
+        hook();
+    }
     if let Some(cache) = META_CACHE.get() {
         let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
         #[cfg(test)]
@@ -1681,6 +1694,7 @@ pub fn clear_bam_caches() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
     crate::reference::clear_fasta_reader_cache();
+    BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
 type ReaderPoolMap<M, R> = HashMap<PathBuf, Vec<(std::sync::Arc<M>, R)>>;
@@ -1798,7 +1812,9 @@ fn acquire_bam_meta_and_reader(
         match slot_guard.as_ref() {
             Some(meta) => {
                 let meta_clone = std::sync::Arc::clone(meta);
-                insert_bam_meta_tls(cur_epoch, &meta_clone);
+                if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
+                    insert_bam_meta_tls(cur_epoch, &meta_clone);
+                }
                 meta_clone
             }
             None => {
@@ -1826,8 +1842,18 @@ fn acquire_bam_meta_and_reader(
                     contig_names,
                     index,
                 });
-                *slot_guard = Some(std::sync::Arc::clone(&meta));
-                insert_bam_meta_tls(cur_epoch, &meta);
+                #[cfg(test)]
+                if let Some(hook) = TEST_MID_COLD_OPEN_HOOK
+                    .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
+                    .ok()
+                    .flatten()
+                {
+                    hook();
+                }
+                if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
+                    *slot_guard = Some(std::sync::Arc::clone(&meta));
+                    insert_bam_meta_tls(cur_epoch, &meta);
+                }
                 return Ok((meta, reader));
             }
         }
@@ -2934,16 +2960,18 @@ fn acquire_cram_meta(
     if let Some(meta) = slot_guard.as_ref() {
         if std::sync::Arc::ptr_eq(&meta.fasta_repo, &fasta_repo) {
             let meta_clone = std::sync::Arc::clone(meta);
-            let _ = CRAM_META_TLS.try_with(|tls| {
-                if let Ok(mut guard) = tls.try_borrow_mut() {
-                    *guard = Some((
-                        cur_epoch,
-                        path.to_path_buf(),
-                        fasta_path.to_path_buf(),
-                        std::sync::Arc::clone(&meta_clone),
-                    ));
-                }
-            });
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
+                let _ = CRAM_META_TLS.try_with(|tls| {
+                    if let Ok(mut guard) = tls.try_borrow_mut() {
+                        *guard = Some((
+                            cur_epoch,
+                            path.to_path_buf(),
+                            fasta_path.to_path_buf(),
+                            std::sync::Arc::clone(&meta_clone),
+                        ));
+                    }
+                });
+            }
             return Ok(meta_clone);
         }
     }
@@ -2989,18 +3017,28 @@ fn acquire_cram_meta(
         spans_by_offset,
         fasta_repo,
     });
-    *slot_guard = Some(std::sync::Arc::clone(&meta));
-    return_pooled_cram_reader(path, std::sync::Arc::clone(&meta), reader);
-    let _ = CRAM_META_TLS.try_with(|tls| {
-        if let Ok(mut guard) = tls.try_borrow_mut() {
-            *guard = Some((
-                cur_epoch,
-                path.to_path_buf(),
-                fasta_path.to_path_buf(),
-                std::sync::Arc::clone(&meta),
-            ));
-        }
-    });
+    #[cfg(test)]
+    if let Some(hook) = TEST_MID_COLD_OPEN_HOOK
+        .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
+        .ok()
+        .flatten()
+    {
+        hook();
+    }
+    if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
+        *slot_guard = Some(std::sync::Arc::clone(&meta));
+        return_pooled_cram_reader(path, std::sync::Arc::clone(&meta), reader);
+        let _ = CRAM_META_TLS.try_with(|tls| {
+            if let Ok(mut guard) = tls.try_borrow_mut() {
+                *guard = Some((
+                    cur_epoch,
+                    path.to_path_buf(),
+                    fasta_path.to_path_buf(),
+                    std::sync::Arc::clone(&meta),
+                ));
+            }
+        });
+    }
     Ok(meta)
 }
 
@@ -10840,5 +10878,206 @@ mod tests {
             ..SamRecord::default()
         };
         assert_eq!(compute_cram_nm(&rec_overhang, short_ref), Some(2));
+    }
+
+    #[test]
+    fn test_bam_cache_epoch_post_clear_release_and_cold_miss_guard() {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::{
+            index::reference_sequence::{bin::Chunk, index::LinearIndex},
+            Indexer,
+        };
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::{Flags, MappingQuality};
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+        use std::fs::File;
+        use std::sync::atomic::Ordering;
+
+        fn write_indexed_bam(bam_path: &Path, chr_len: usize, read_names: &[&str]) {
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(chr_len.try_into().unwrap())
+                .build()
+                .unwrap();
+            let header = Header::builder().add_reference_sequence("chr1", rs).build();
+            let tmp_bam = bam_path.with_extension("bam.tmp");
+            let tmp_bai = bam_path.with_extension("bam.bai.tmp");
+            let bgzf = noodles::bgzf::io::Writer::new(File::create(&tmp_bam).unwrap());
+            let mut writer = noodles::bam::io::Writer::from(bgzf);
+            writer.write_alignment_header(&header).unwrap();
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            let read_len = 20usize;
+            let cigar: Cigar = [Op::new(Kind::Match, read_len)].into_iter().collect();
+            for (idx, &qname) in read_names.iter().enumerate() {
+                let start_1 = 10 + idx * 30;
+                let rec = RecordBuf::builder()
+                    .set_name(qname)
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(MappingQuality::new(60).unwrap())
+                    .set_cigar(cigar.clone())
+                    .set_sequence(b"ACGTACGTACGTACGTACGT".to_vec().into())
+                    .set_quality_scores(vec![35u8; read_len].into())
+                    .build();
+                let s_vp = writer.get_ref().virtual_position();
+                writer.write_alignment_record(&header, &rec).unwrap();
+                let e_vp = writer.get_ref().virtual_position();
+                let s = Position::try_from(start_1).unwrap();
+                let e = Position::try_from(start_1 + read_len - 1).unwrap();
+                indexer
+                    .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
+                    .unwrap();
+            }
+            writer.try_finish().unwrap();
+            bai::io::Writer::new(File::create(&tmp_bai).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+            std::fs::rename(&tmp_bam, bam_path).unwrap();
+            std::fs::rename(&tmp_bai, bam_path.with_extension("bam.bai")).unwrap();
+        }
+
+        struct ForceProdIdGuard;
+        impl Drop for ForceProdIdGuard {
+            fn drop(&mut self) {
+                FORCE_PRODUCTION_META_ID.with(|c| c.set(false));
+            }
+        }
+        FORCE_PRODUCTION_META_ID.with(|c| c.set(true));
+        let _prod_guard = ForceProdIdGuard;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bam_race = dir.path().join("toctou_race.bam");
+        let cfg = Config::default();
+
+        // 1. TOCTOU mid-clear race: populate `META_CACHE` with v1 (`LN = 1000`), overwrite
+        //    `bam_race` on disk with v2 (`LN = 3000`), then have a worker thread query `bam_race`
+        //    mid-`clear_bam_caches()` BEFORE `META_CACHE` is cleared. Once `clear_bam_caches()`
+        //    completes, its post-clear `Release` epoch bump must invalidate the worker's TLS.
+        write_indexed_bam(&bam_race, 1000, &["v1_only"]);
+        assert_eq!(
+            read_reference_lengths(&bam_race, &cfg).unwrap().get("chr1"),
+            Some(&1000)
+        );
+        write_indexed_bam(&bam_race, 3000, &["v2_r1", "v2_r2"]);
+
+        let (tx_continue, rx_continue) = std::sync::mpsc::channel::<()>();
+        let (tx_done, rx_done) = std::sync::mpsc::channel::<(usize, Vec<Vec<u8>>)>();
+        let bam_for_hook = bam_race.clone();
+        TEST_MID_CLEAR_HOOK.with(|h| {
+            let (tx_warmed, rx_warmed) = std::sync::mpsc::channel::<()>();
+            *h.borrow_mut() = Some(Box::new(move || {
+                std::thread::spawn(move || {
+                    FORCE_PRODUCTION_META_ID.with(|c| c.set(true));
+                    let wcfg = Config::default();
+                    // Reads stale `v1` from `META_CACHE` mid-sweep and populates worker TLS.
+                    let _ = read_reference_lengths(&bam_for_hook, &wcfg).unwrap();
+                    let _ = query_region(&bam_for_hook, "chr1", Pos0(0), Pos0(500), &wcfg).unwrap();
+                    tx_warmed.send(()).unwrap();
+
+                    rx_continue.recv().unwrap();
+                    let post_len = read_reference_lengths(&bam_for_hook, &wcfg).unwrap()["chr1"];
+                    let post_names: Vec<Vec<u8>> =
+                        query_region(&bam_for_hook, "chr1", Pos0(0), Pos0(500), &wcfg)
+                            .unwrap()
+                            .into_iter()
+                            .map(|r| r.name)
+                            .collect();
+                    tx_done.send((post_len, post_names)).unwrap();
+                });
+                rx_warmed.recv().unwrap();
+            }));
+        });
+
+        clear_bam_caches();
+        tx_continue.send(()).unwrap();
+        let (post_clear_len, post_clear_names) = rx_done.recv().unwrap();
+        assert_eq!(
+            post_clear_len, 3000,
+            "post-clear Release bump must invalidate worker TLS populated mid-clear"
+        );
+        assert_eq!(post_clear_names, vec![b"v2_r1".to_vec(), b"v2_r2".to_vec()]);
+
+        // 2. Cold-miss epoch mismatch guard (BAM + CRAM): if `BAM_CACHE_EPOCH` advances while
+        //    a cold miss has already opened pre-clear disk files, neither `META_CACHE` /
+        //    `CRAM_META_CACHE` nor TLS may cache the pre-clear metadata.
+        let bam_cold = dir.path().join("cold_race.bam");
+        write_indexed_bam(&bam_cold, 1100, &["cold_v1"]);
+        let bam_cold_hook = bam_cold.clone();
+        TEST_MID_COLD_OPEN_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                write_indexed_bam(&bam_cold_hook, 4200, &["cold_v2_a", "cold_v2_b"]);
+                BAM_CACHE_EPOCH.fetch_add(1, Ordering::Release);
+            }));
+        });
+        let first_cold_len = read_reference_lengths(&bam_cold, &cfg).unwrap()["chr1"];
+        assert_eq!(first_cold_len, 1100);
+        // Next query must NOT hit stale 1100 metadata in `META_CACHE` or `BAM_META_TLS`:
+        let second_cold_len = read_reference_lengths(&bam_cold, &cfg).unwrap()["chr1"];
+        assert_eq!(
+            second_cold_len, 4200,
+            "cold-miss BAM open spanning epoch bump must not cache stale SharedBamMeta"
+        );
+
+        // Same cold-miss epoch mismatch guard on CRAM:
+        let ref_fa = dir.path().join("cold_ref.fa");
+        let ref_fai = dir.path().join("cold_ref.fa.fai");
+        std::fs::write(&ref_fa, b">chr1\nACGTACGTACGTACGTACGTACGTACGTACGT\n").unwrap();
+        std::fs::write(&ref_fai, b"chr1\t32\t6\t32\t33\n").unwrap();
+        let cram_cold = dir.path().join("cold_race.cram");
+        fn write_cram(cram_path: &Path, ref_fa: &Path, ref_fai: &Path, sq_len: usize) {
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(sq_len.try_into().unwrap())
+                .build()
+                .unwrap();
+            let header = Header::builder().add_reference_sequence("chr1", rs).build();
+            let tmp_cram = cram_path.with_extension("cram.tmp");
+            let tmp_crai = cram_path.with_extension("cram.crai.tmp");
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(File::open(ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut cram_writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&tmp_cram)
+                .unwrap();
+            cram_writer.write_alignment_header(&header).unwrap();
+            cram_writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(&tmp_cram).unwrap();
+            noodles::cram::crai::fs::write(&tmp_crai, &crai).unwrap();
+            std::fs::rename(&tmp_cram, cram_path).unwrap();
+            std::fs::rename(&tmp_crai, cram_path.with_extension("cram.crai")).unwrap();
+        }
+        write_cram(&cram_cold, &ref_fa, &ref_fai, 32);
+        let cram_cfg = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let cram_cold_hook = cram_cold.clone();
+        let ref_fa_hook = ref_fa.clone();
+        let ref_fai_hook = ref_fai.clone();
+        TEST_MID_COLD_OPEN_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move || {
+                write_cram(&cram_cold_hook, &ref_fa_hook, &ref_fai_hook, 64);
+                BAM_CACHE_EPOCH.fetch_add(1, Ordering::Release);
+            }));
+        });
+        assert_eq!(
+            read_reference_lengths(&cram_cold, &cram_cfg).unwrap()["chr1"],
+            32
+        );
+        assert_eq!(
+            read_reference_lengths(&cram_cold, &cram_cfg).unwrap()["chr1"],
+            64,
+            "cold-miss CRAM open spanning epoch bump must not cache stale SharedCramMeta"
+        );
     }
 }
