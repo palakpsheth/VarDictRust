@@ -246,17 +246,17 @@ class TestReleaseAndCiWorkflows(unittest.TestCase):
 
         nf_main_text = (ROOT_DIR / "packaging" / "nf-core" / "modules" / "vardictrust" / "main.nf").read_text(encoding="utf-8")
         self.assertEqual(
-            nf_main_text.count("prefix ==~ /^[A-Za-z0-9._-]+$/"),
+            nf_main_text.count("prefix ==~ /^[A-Za-z0-9._:+-]+$/"),
             2,
             "main.nf must validate task.ext.prefix in both script: and stub:",
         )
         self.assertEqual(
-            nf_main_text.count('if (!("${meta.id}" ==~ /^[A-Za-z0-9._|-]+$/)) { error "Unsafe meta.id: ${meta.id}" }'),
+            nf_main_text.count('if (!("${meta.id}" ==~ /^[A-Za-z0-9._|:+-]+$/)) { error "Unsafe meta.id: ${meta.id}" }'),
             2,
             "main.nf must validate meta.id independently in both script: and stub:",
         )
         self.assertIn("def shQuote =", nf_main_text)
-        self.assertIn("def fasta_arg = shQuote(fasta)", nf_main_text)
+        self.assertIn("def fasta_arg = shQuote.call(fasta)", nf_main_text)
         self.assertIn("-G ${fasta_arg}", nf_main_text)
         self.assertEqual(
             nf_main_text.count('> "${prefix}.vcf.gz"'),
