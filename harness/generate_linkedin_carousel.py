@@ -236,11 +236,12 @@ class SlideCanvas:
         self.text(60, 160, title, size=title_size, weight="bold", color=TEXT_DARK)
         self.text(60, 202, subtitle, size=20.5, color=TEXT_MUTED)
 
-    def legend_3way(self, y: float = 246.0) -> None:
+    def legend_3way(self, y: float = 246.0, rust_ver: str | None = None) -> None:
+        ver_lbl = rust_ver if rust_ver else read_workspace_version()
         items = [
             ("VarDictJava v1.8.3 (Oracle)", COL_JAVA),
             ("vardictcpp (Bioconda C++17)", COL_CPP),
-            ("VarDictRust v1.0.6 (Ours)", COL_RUST),
+            (f"VarDictRust {ver_lbl} (Ours)", COL_RUST),
         ]
         cx = 60.0
         for label, col in items:
@@ -332,11 +333,21 @@ def read_workspace_version(cargo_toml_path: Path | None = None) -> str:
     return f"v{ver}"
 
 
+def read_workspace_license(cargo_toml_path: Path | None = None) -> str:
+    path = cargo_toml_path if cargo_toml_path is not None else ROOT / "Cargo.toml"
+    data = toml_lite.load_path(path)
+    lic = ((data.get("workspace") or {}).get("package") or {}).get("license")
+    if not isinstance(lic, str) or not lic.strip():
+        return "MIT AND GPL-2.0-or-later"
+    return lic.strip()
+
+
 def build_slides(
     docs: dict[str, dict], rustc_ver: str, gcp_doc: dict | None = None
 ) -> tuple[list[SlideCanvas], str]:
     fp = docs["hg002-tier2.json"]["fingerprint"]
     ver = read_workspace_version()
+    spdx_lic = read_workspace_license()
     gcp_ver = f"v{gcp_doc['meta']['version']}" if gcp_doc else ver
     gcp_fp = gcp_doc["meta"]["fingerprint"] if gcp_doc else fp
     cpp_ver = docs["hg002-tier2.json"]["extra"]["cpp_version"]
@@ -681,7 +692,7 @@ def build_slides(
         "Wall-Clock Runtime Across Flagship Cohorts",
         "Normalized to longest engine per cohort = 100% (lower is faster; exact wall time labeled).",
     )
-    s2.legend_3way(246)
+    s2.legend_3way(246, gcp_ver)
     y_row = 285
     for title, sub, jw, cw, rw, _jr, _cr, _rr, c_status in cohorts_data:
         max_w = max(jw, cw, rw)
@@ -726,7 +737,7 @@ def build_slides(
         "Peak Memory (RSS) Across Flagship Cohorts",
         "Measured via /usr/bin/time -v (max_rss_kb; 1 MB = 10^3 KB, 1 GB = 10^6 KB).",
     )
-    s3.legend_3way(246)
+    s3.legend_3way(246, gcp_ver)
     y_row = 285
     for title, sub, _jw, _cw, _rw, jr, cr, rr, _c_status in cohorts_data:
         max_r = max(jr, cr, rr)
@@ -779,7 +790,7 @@ def build_slides(
     ]
     s4.rect(60, 250, W - 120, 620, fill=BG_CARD, stroke=BORDER, stroke_width=1.5, rx=14)
     s4_th_lbl = "-th 8" if gcp_doc else "-th 4"
-    s4.text(96, 304, f"VarDictRust {ver} Peak RSS by Contiguous Region Span (HCC1395.bam, {s4_th_lbl})", size=22, weight="bold")
+    s4.text(96, 304, f"VarDictRust {gcp_ver} Peak RSS by Contiguous Region Span (HCC1395.bam, {s4_th_lbl})", size=22, weight="bold")
     max_span_rss = 2_000_000.0
     sy = 355
     for label, coords, rss_kb in spans:
@@ -1212,7 +1223,7 @@ def build_slides(
         ("Platforms", platforms_row),
         ("Full WGS", full_wgs_row),
         ("Titration", "HG008 in silico dilution series (20% -> 1% purity / 10% -> 0.5% VAF at -f 0.002)"),
-        ("Repository", "https://github.com/palakpsheth/VarDictRust  (MIT | Bioconda & Crates.io)"),
+        ("Repository", f"https://github.com/palakpsheth/VarDictRust ({spdx_lic} | Bioconda)"),
     ]
     s10.rect(60, 250, W - 120, 960, fill=BG_CARD, stroke=BORDER, stroke_width=1.5, rx=14)
     py = 304

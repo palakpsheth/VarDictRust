@@ -1108,108 +1108,151 @@ pub fn parse_region_flag(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<Vec<Vec<Region>>, VardictError> {
-    let split: Vec<&str> = region_str.split(':').collect();
-    let Some(&first_seg) = split.first() else {
-        return Err(VardictError::Parse(format!(
-            "Empty region string: '{}'",
-            region_str
-        )));
-    };
-
-    if split.len() < 2 {
-        return Err(VardictError::Parse(format!(
+    let missing_coords = || {
+        VardictError::Parse(format!(
             "Invalid region format (missing coordinates): '{}'",
             region_str
-        )));
-    }
+        ))
+    };
 
-    if split.len() > 2 {
+    let Some((first_colon, _)) = region_str.match_indices(':').next() else {
+        return Err(missing_coords());
+    };
+    let (Some(first_seg), Some(after_first)) = (
+        region_str.get(..first_colon),
+        region_str.get(first_colon + 1..),
+    ) else {
+        return Err(missing_coords());
+    };
+
+    let (range_str, third_seg) = if let Some(second_colon_rel) = after_first.find(':') {
         if !chromosomes_lengths.is_empty() {
-            for k in (2..split.len()).rev() {
-                let Some(prefix) = split.get(..k) else {
+            let max_chr_len = chromosomes_lengths
+                .keys()
+                .map(|k| k.len().saturating_add(3))
+                .max()
+                .unwrap_or(0);
+            let scan_prefix = (max_chr_len.saturating_add(1)..=max_chr_len.saturating_add(4))
+                .find_map(|end| region_str.get(..end))
+                .unwrap_or(region_str);
+            for (byte_idx, _) in scan_prefix.match_indices(':').rev() {
+                if byte_idx <= first_colon {
+                    break;
+                }
+                if byte_idx > max_chr_len {
+                    continue;
+                }
+                let Some(candidate) = region_str.get(..byte_idx) else {
                     continue;
                 };
-                let candidate = prefix.join(":");
-                if chromosome_in_header(chromosomes_lengths, &candidate) {
-                    let Some(&coord_str) = split.get(k) else {
+                if chromosome_in_header(chromosomes_lengths, candidate) {
+                    let Some(rest) = region_str.get(byte_idx + 1..) else {
+                        continue;
+                    };
+                    let (coord_opt, tail_opt) = match rest.find(':') {
+                        Some(next_colon) => (rest.get(..next_colon), rest.get(next_colon + 1..)),
+                        None => (Some(rest), None),
+                    };
+                    let Some(coord_str) = coord_opt else {
                         continue;
                     };
                     let (start, end) = parse_coord_segment(coord_str)?;
-                    let chr = correct_chromosome(chromosomes_lengths, &candidate);
-                    let gene = match split.get(k + 1..) {
-                        Some(tail) if !tail.is_empty() => tail.join(":"),
-                        _ => chr.clone(),
+                    let chr = correct_chromosome(chromosomes_lengths, candidate);
+                    let gene = match tail_opt {
+                        Some(tail) => tail.to_string(),
+                        None => chr.clone(),
                     };
                     return finalize_single_region(chr, start, end, gene, config);
                 }
             }
         } else {
-            let min_k = split.len().saturating_sub(2).max(1);
-            let mut last_coord_err: Option<VardictError> = None;
-            for k in (min_k..split.len()).rev() {
-                let Some(&coord_str) = split.get(k) else {
-                    continue;
-                };
-                if !coord_str.contains('-')
-                    && k > min_k
-                    && split.get(k - 1).is_some_and(|p| {
-                        (p.contains('-') || split.len() == 3) && parse_coord_segment(p).is_ok()
-                    })
-                {
-                    continue;
-                }
-                match parse_coord_segment(coord_str) {
-                    Ok((start, end)) => {
-                        let Some(prefix) = split.get(..k) else {
-                            continue;
-                        };
-                        let chr = if k == 1 {
-                            correct_chromosome(chromosomes_lengths, first_seg)
-                        } else {
-                            prefix.join(":")
-                        };
-                        let gene = match split.get(k + 1) {
-                            Some(&g) => g.to_string(),
-                            None => chr.clone(),
-                        };
-                        return finalize_single_region(chr, start, end, gene, config);
-                    }
-                    Err(err) => {
-                        if is_numeric_coord_token(coord_str) {
-                            return Err(err);
+            let mut rev_colons = region_str.match_indices(':').rev();
+            if let (Some((last_colon, _)), Some((prev_colon, _))) =
+                (rev_colons.next(), rev_colons.next())
+            {
+                if let (Some(seg_last), Some(seg_prev)) = (
+                    region_str.get(last_colon + 1..),
+                    region_str.get(prev_colon + 1..last_colon),
+                ) {
+                    let is_three_segs = prev_colon == first_colon;
+                    let mut last_coord_err: Option<VardictError> = None;
+
+                    let skip_last = !seg_last.contains('-')
+                        && (seg_prev.contains('-') || is_three_segs)
+                        && parse_coord_segment(seg_prev).is_ok();
+                    if !skip_last {
+                        match parse_coord_segment(seg_last) {
+                            Ok((start, end)) => {
+                                if let Some(prefix) = region_str.get(..last_colon) {
+                                    let chr = prefix.to_string();
+                                    let gene = chr.clone();
+                                    return finalize_single_region(chr, start, end, gene, config);
+                                }
+                            }
+                            Err(err) => {
+                                if is_numeric_coord_token(seg_last) {
+                                    return Err(err);
+                                }
+                                last_coord_err = Some(err);
+                            }
                         }
-                        last_coord_err = Some(err);
+                    }
+
+                    match parse_coord_segment(seg_prev) {
+                        Ok((start, end)) => {
+                            if let Some(prefix) = region_str.get(..prev_colon) {
+                                let chr = if is_three_segs {
+                                    correct_chromosome(chromosomes_lengths, first_seg)
+                                } else {
+                                    prefix.to_string()
+                                };
+                                let gene = seg_last.to_string();
+                                return finalize_single_region(chr, start, end, gene, config);
+                            }
+                        }
+                        Err(err) => {
+                            if is_numeric_coord_token(seg_prev) {
+                                return Err(err);
+                            }
+                            last_coord_err = Some(err);
+                        }
+                    }
+
+                    if let Some(err) = last_coord_err {
+                        return Err(err);
                     }
                 }
-            }
-            if let Some(err) = last_coord_err {
-                return Err(err);
             }
         }
-    }
+
+        let (Some(second_seg), Some(after_second)) = (
+            after_first.get(..second_colon_rel),
+            after_first.get(second_colon_rel + 1..),
+        ) else {
+            return Err(missing_coords());
+        };
+        let third = match after_second.find(':') {
+            Some(third_colon_rel) => after_second.get(..third_colon_rel),
+            None => Some(after_second),
+        };
+        (second_seg, third)
+    } else {
+        (after_first, None)
+    };
 
     let chr = correct_chromosome(chromosomes_lengths, first_seg);
-    let Some(&range_str) = split.get(1) else {
-        return Err(VardictError::Parse(format!(
-            "Invalid region format (missing coordinates): '{}'",
-            region_str
-        )));
-    };
-    let gene = match split.get(2) {
-        Some(&g) => g.to_string(),
+    let gene = match third_seg {
+        Some(g) => g.to_string(),
         None => chr.clone(),
     };
 
-    let range: Vec<&str> = range_str.split('-').collect();
-    let Some(&start_str) = range.first() else {
-        return Err(VardictError::Parse(format!(
-            "Invalid region format (missing coordinates): '{}'",
-            region_str
-        )));
+    let mut range_parts = range_str.split('-');
+    let Some(start_str) = range_parts.next() else {
+        return Err(missing_coords());
     };
     let start = parse_int_with_commas(start_str)? as i32;
-    let end = match range.get(1) {
-        Some(&end_str) => parse_int_with_commas(end_str)? as i32,
+    let end = match range_parts.next() {
+        Some(end_str) => parse_int_with_commas(end_str)? as i32,
         None => start,
     };
 
@@ -2058,6 +2101,31 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
         assert_eq!(r_empty_hla_single[0][0].start, Pos1(150));
         assert_eq!(r_empty_hla_single[0][0].end, Pos1(150));
         assert_eq!(r_empty_hla_single[0][0].gene, "HLA-A*01:01:01:01");
+
+        // 11. Pathological 32,768-colon inputs reject/resolve without quadratic prefix joining,
+        //     including multi-byte UTF-8 near the `max_chr_len` scan boundary.
+        let many_colons = ":".repeat(32_768);
+        let t0 = std::time::Instant::now();
+        assert!(parse_region_flag(&many_colons, &config, &chr_lengths).is_err());
+        assert!(parse_region_flag(&many_colons, &config, &empty).is_err());
+        let hla_long_tail = format!("HLA-A*01:01:01:01:100-200:{many_colons}");
+        let r_long_tail = parse_region_flag(&hla_long_tail, &config, &chr_lengths).unwrap();
+        assert_eq!(r_long_tail[0][0].chr, "HLA-A*01:01:01:01");
+        assert_eq!(r_long_tail[0][0].start, Pos1(100));
+        assert_eq!(r_long_tail[0][0].end, Pos1(200));
+        assert_eq!(r_long_tail[0][0].gene.len(), 32_768);
+        let elapsed = t0.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "32,768-colon parse_region_flag regression took {elapsed:?} (expected < 500ms)"
+        );
+
+        let utf8_boundary =
+            parse_region_flag("HLA-A*01:01:100-200:µµµ:tail", &config, &chr_lengths).unwrap();
+        assert_eq!(utf8_boundary[0][0].chr, "HLA-A*01:01");
+        assert_eq!(utf8_boundary[0][0].start, Pos1(100));
+        assert_eq!(utf8_boundary[0][0].end, Pos1(200));
+        assert_eq!(utf8_boundary[0][0].gene, "µµµ:tail");
     }
 
     #[test]

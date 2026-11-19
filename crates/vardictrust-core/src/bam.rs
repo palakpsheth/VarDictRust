@@ -850,10 +850,58 @@ impl IndexedSamReader {
     {
         match self {
             IndexedSamReader::Bam(reader) => {
-                let query = reader.query(header, region)?;
-                let iter = query.records().map(|record| {
-                    let rec = record?;
-                    SamRecord::from_alignment_record(&rec, header)
+                let reference_sequence_id = header
+                    .reference_sequences()
+                    .get_index_of(region.name())
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "region reference sequence does not exist in reference sequences: {region:?}"
+                            ),
+                        )
+                    })?;
+                let interval = region.interval();
+                let chunks = reader.index().query(reference_sequence_id, interval)?;
+                let mut csi_query = noodles::csi::io::Query::new(reader.get_mut(), chunks);
+                let mut record = noodles::bam::Record::default();
+                let mut cigar_scratch = Vec::new();
+                let mut finished = false;
+                let iter = std::iter::from_fn(move || {
+                    if finished {
+                        return None;
+                    }
+                    loop {
+                        match read_bounded_bam_record(&mut csi_query, &mut record) {
+                            Ok(0) => {
+                                finished = true;
+                                return None;
+                            }
+                            Ok(_) => {
+                                match intersects_record(
+                                    &record,
+                                    reference_sequence_id,
+                                    interval,
+                                    &mut cigar_scratch,
+                                ) {
+                                    Ok(Some(_)) => {
+                                        return Some(SamRecord::from_alignment_record(
+                                            &record, header,
+                                        ));
+                                    }
+                                    Ok(None) => continue,
+                                    Err(e) => {
+                                        finished = true;
+                                        return Some(Err(e));
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                finished = true;
+                                return Some(Err(e));
+                            }
+                        }
+                    }
                 });
                 Ok(Box::new(iter))
             }
@@ -938,7 +986,208 @@ fn is_absent_index_candidate(cand: &Path, err: &std::io::Error) -> bool {
 const MAX_BAI_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_CSI_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_CSI_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
-const BAI_METADATA_BIN_ID: u32 = 37_450;
+const BAI_DEPTH: u8 = 5;
+const BAI_MAX_BIN_ID: u32 =
+    match noodles::csi::binning_index::index::reference_sequence::Bin::max_id(BAI_DEPTH) {
+        Some(id) => id as u32,
+        None => 0,
+    };
+const BAI_METADATA_BIN_ID: u32 =
+    match noodles::csi::binning_index::index::reference_sequence::Bin::metadata_id(BAI_DEPTH) {
+        Some(id) => id as u32,
+        None => 0,
+    };
+const MAX_BAM_INDEX_REFS: usize = 16_777_216;
+const MAX_CSI_TOTAL_BINS: usize = 4_194_304;
+const MAX_BAM_HEADER_BYTES: usize = 128 * 1024 * 1024;
+const MAX_BAM_REF_NAME_BYTES: usize = 65_536;
+const MAX_BAM_RECORD_BYTES: usize = 64 * 1024 * 1024;
+const BAM_RECORD_FAST_PATH_BYTES: usize = 65_536;
+const MAX_CRAM_HEADER_BYTES: usize = 128 * 1024 * 1024;
+
+fn read_validated_bam_header<R: std::io::Read>(
+    r: &mut R,
+    path: &Path,
+) -> std::io::Result<noodles::sam::Header> {
+    use std::io::Read as _;
+
+    let mut magic = [0_u8; 4];
+    r.read_exact(&mut magic)?;
+    if magic != *b"BAM\x01" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid BAM magic header in '{}'", path.display()),
+        ));
+    }
+
+    let mut l_text_buf = [0_u8; 4];
+    r.read_exact(&mut l_text_buf)?;
+    let raw_l_text = u32::from_le_bytes(l_text_buf);
+    let l_text = usize::try_from(raw_l_text)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if l_text > MAX_BAM_HEADER_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "BAM header l_text ({raw_l_text}) in '{}' exceeds maximum allowed ({MAX_BAM_HEADER_BYTES} bytes)",
+                path.display()
+            ),
+        ));
+    }
+
+    let mut budget_used = l_text;
+    let mut raw = Vec::with_capacity(12usize.saturating_add(l_text.min(65_536)));
+    raw.extend_from_slice(&magic);
+    raw.extend_from_slice(&l_text_buf);
+    let text_read = r.take(l_text as u64).read_to_end(&mut raw)?;
+    if text_read < l_text {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!(
+                "truncated BAM header text in '{}': expected {l_text} bytes, got {text_read}",
+                path.display()
+            ),
+        ));
+    }
+
+    let mut n_ref_buf = [0_u8; 4];
+    r.read_exact(&mut n_ref_buf)?;
+    let raw_n_ref = u32::from_le_bytes(n_ref_buf);
+    let n_ref = usize::try_from(raw_n_ref)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if n_ref > MAX_BAM_INDEX_REFS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "BAM header n_ref ({raw_n_ref}) in '{}' exceeds maximum allowed ({MAX_BAM_INDEX_REFS})",
+                path.display()
+            ),
+        ));
+    }
+    raw.extend_from_slice(&n_ref_buf);
+
+    for _ in 0..n_ref {
+        let mut l_name_buf = [0_u8; 4];
+        r.read_exact(&mut l_name_buf)?;
+        let raw_l_name = u32::from_le_bytes(l_name_buf);
+        let l_name = usize::try_from(raw_l_name)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if l_name == 0 || l_name > MAX_BAM_REF_NAME_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "BAM reference l_name ({raw_l_name}) in '{}' outside allowed range 1..={MAX_BAM_REF_NAME_BYTES}",
+                    path.display()
+                ),
+            ));
+        }
+        let entry_bytes = 8usize.saturating_add(l_name);
+        budget_used = budget_used
+            .checked_add(entry_bytes)
+            .filter(|&b| b <= MAX_BAM_HEADER_BYTES)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "BAM header size in '{}' exceeds maximum allowed ({MAX_BAM_HEADER_BYTES} bytes)",
+                        path.display()
+                    ),
+                )
+            })?;
+        raw.extend_from_slice(&l_name_buf);
+        raw.reserve(l_name.saturating_add(4));
+        let name_read = r.take(l_name as u64).read_to_end(&mut raw)?;
+        if name_read < l_name {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("truncated BAM reference name in '{}'", path.display()),
+            ));
+        }
+        if raw.last().copied() != Some(0) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "BAM reference name in '{}' missing NUL terminator",
+                    path.display()
+                ),
+            ));
+        }
+
+        let mut l_ref_buf = [0_u8; 4];
+        r.read_exact(&mut l_ref_buf)?;
+        let raw_l_ref = i32::from_le_bytes(l_ref_buf);
+        if raw_l_ref < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "negative BAM reference length ({raw_l_ref}) in '{}'",
+                    path.display()
+                ),
+            ));
+        }
+        raw.extend_from_slice(&l_ref_buf);
+    }
+
+    noodles::bam::io::Reader::from(raw.as_slice()).read_header()
+}
+
+fn read_bounded_bam_record<R: std::io::Read>(
+    r: &mut R,
+    record: &mut noodles::bam::Record,
+) -> std::io::Result<usize> {
+    use std::io::Read as _;
+
+    let mut size_buf = [0_u8; 4];
+    let mut prefix_read = 0_usize;
+    while let Some(rem) = size_buf.get_mut(prefix_read..) {
+        if rem.is_empty() {
+            break;
+        }
+        match r.read(rem) {
+            Ok(0) => break,
+            Ok(n) => prefix_read = prefix_read.saturating_add(n),
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    if prefix_read == 0 {
+        return Ok(0);
+    }
+    if prefix_read < 4 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "truncated BAM record block_size prefix",
+        ));
+    }
+
+    let raw_block_size = u32::from_le_bytes(size_buf);
+    let block_size = usize::try_from(raw_block_size)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if block_size > MAX_BAM_RECORD_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "BAM record block_size ({raw_block_size}) exceeds maximum allowed ({MAX_BAM_RECORD_BYTES} bytes)"
+            ),
+        ));
+    }
+
+    if block_size <= BAM_RECORD_FAST_PATH_BYTES {
+        let chained = std::io::Read::chain(&size_buf[..], r);
+        noodles::bam::io::Reader::from(chained).read_record(record)
+    } else {
+        let mut raw = Vec::with_capacity(4 + BAM_RECORD_FAST_PATH_BYTES);
+        raw.extend_from_slice(&size_buf);
+        let payload_read = r.take(block_size as u64).read_to_end(&mut raw)?;
+        if payload_read < block_size {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("truncated BAM record: expected {block_size} bytes, got {payload_read}"),
+            ));
+        }
+        noodles::bam::io::Reader::from(raw.as_slice()).read_record(record)
+    }
+}
 
 fn take_bai_rem(rem: &mut u64, n: u64, path: &Path) -> std::io::Result<()> {
     *rem = rem.checked_sub(n).ok_or_else(|| {
@@ -1001,6 +1250,15 @@ fn read_validated_bai_index(path: &Path) -> std::io::Result<noodles::bam::bai::I
     }
 
     let n_ref = read_bai_u32_le(&mut reader, &mut rem, path)?;
+    if (n_ref as usize) > MAX_BAM_INDEX_REFS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "BAI n_ref ({n_ref}) in '{}' exceeds maximum allowed ({MAX_BAM_INDEX_REFS})",
+                path.display()
+            ),
+        ));
+    }
     let min_refs_bytes = u64::from(n_ref).checked_mul(8).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -1019,6 +1277,15 @@ fn read_validated_bai_index(path: &Path) -> std::io::Result<noodles::bam::bai::I
 
     for _ in 0..n_ref {
         let n_bin = read_bai_u32_le(&mut reader, &mut rem, path)?;
+        if n_bin > BAI_METADATA_BIN_ID {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "BAI n_bin ({n_bin}) in '{}' exceeds maximum allowed ({BAI_METADATA_BIN_ID})",
+                    path.display()
+                ),
+            ));
+        }
         let min_bins_bytes = u64::from(n_bin).checked_mul(8).ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1035,8 +1302,33 @@ fn read_validated_bai_index(path: &Path) -> std::io::Result<noodles::bam::bai::I
             ));
         }
 
+        let mut seen_bins = [0u64; (BAI_METADATA_BIN_ID as usize / 64) + 1];
         for _ in 0..n_bin {
             let bin_id = read_bai_u32_le(&mut reader, &mut rem, path)?;
+            if bin_id > BAI_MAX_BIN_ID && bin_id != BAI_METADATA_BIN_ID {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "invalid BAI bin_id ({bin_id}) in '{}' (max={BAI_MAX_BIN_ID}, metadata={BAI_METADATA_BIN_ID})",
+                        path.display()
+                    ),
+                ));
+            }
+            let bin_idx = bin_id as usize;
+            let mask = 1u64 << (bin_idx % 64);
+            let Some(word) = seen_bins.get_mut(bin_idx / 64) else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("BAI bin_id ({bin_id}) out of range in '{}'", path.display()),
+                ));
+            };
+            if (*word & mask) != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("duplicate BAI bin_id ({bin_id}) in '{}'", path.display()),
+                ));
+            }
+            *word |= mask;
             if bin_id == BAI_METADATA_BIN_ID {
                 if rem < 36 {
                     return Err(std::io::Error::new(
@@ -1158,7 +1450,7 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
     }
 
     let min_shift = read_csi_i32_le(&mut slice, path)?;
-    if u8::try_from(min_shift).is_err() {
+    let Ok(min_shift_u8) = u8::try_from(min_shift) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
@@ -1166,7 +1458,7 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
                 path.display()
             ),
         ));
-    }
+    };
 
     let depth = read_csi_i32_le(&mut slice, path)?;
     let depth_u8 = u8::try_from(depth)
@@ -1178,7 +1470,22 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
                 format!("invalid CSI depth ({depth}) in '{}'", path.display()),
             )
         })?;
-    let metadata_id = Bin::metadata_id(depth_u8);
+    if u32::from(min_shift_u8) + u32::from(depth_u8) * 3 >= usize::BITS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "CSI coordinate shift ({min_shift} + 3 * {depth}) overflows usize::BITS in '{}'",
+                path.display()
+            ),
+        ));
+    }
+    let (Some(max_bin_id), Some(metadata_id)) = (Bin::max_id(depth_u8), Bin::metadata_id(depth_u8))
+    else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("invalid CSI depth ({depth}) in '{}'", path.display()),
+        ));
+    };
 
     let l_aux = read_csi_i32_le(&mut slice, path)?;
     let l_aux_usize = usize::try_from(l_aux).map_err(|_| {
@@ -1225,6 +1532,15 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
             format!("negative CSI n_ref ({n_ref}) in '{}'", path.display()),
         )
     })?;
+    if n_ref_usize > MAX_BAM_INDEX_REFS {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "CSI n_ref ({n_ref}) in '{}' exceeds maximum allowed ({MAX_BAM_INDEX_REFS})",
+                path.display()
+            ),
+        ));
+    }
     if n_ref_usize.checked_mul(4).is_none_or(|b| b > slice.len()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -1236,6 +1552,7 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
         ));
     }
 
+    let mut total_bins = 0usize;
     for _ in 0..n_ref_usize {
         let n_bin = read_csi_i32_le(&mut slice, path)?;
         let n_bin_usize = usize::try_from(n_bin).map_err(|_| {
@@ -1244,6 +1561,15 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
                 format!("negative CSI n_bin ({n_bin}) in '{}'", path.display()),
             )
         })?;
+        if n_bin_usize > metadata_id {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CSI n_bin ({n_bin}) in '{}' exceeds maximum allowed ({metadata_id})",
+                    path.display()
+                ),
+            ));
+        }
         if n_bin_usize.checked_mul(16).is_none_or(|b| b > slice.len()) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1254,11 +1580,48 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
                 ),
             ));
         }
+        total_bins = total_bins
+            .checked_add(n_bin_usize)
+            .filter(|&tot| tot <= MAX_CSI_TOTAL_BINS)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CSI total bin count in '{}' exceeds maximum allowed ({MAX_CSI_TOTAL_BINS})",
+                        path.display()
+                    ),
+                )
+            })?;
 
+        let mut seen_bins = rustc_hash::FxHashSet::with_capacity_and_hasher(
+            n_bin_usize.min(4_096),
+            Default::default(),
+        );
         for _ in 0..n_bin_usize {
             let bin_id = read_csi_u32_le(&mut slice, path)?;
+            let bin_id_usize = usize::try_from(bin_id).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid CSI bin_id ({bin_id}) in '{}'", path.display()),
+                )
+            })?;
+            if bin_id_usize != metadata_id && bin_id_usize > max_bin_id {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "invalid CSI bin_id ({bin_id}) in '{}' (max={max_bin_id}, metadata={metadata_id})",
+                        path.display()
+                    ),
+                ));
+            }
+            if !seen_bins.insert(bin_id_usize) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("duplicate CSI bin_id ({bin_id}) in '{}'", path.display()),
+                ));
+            }
             let _loffset = take_csi_slice(&mut slice, 8, path)?;
-            if usize::try_from(bin_id).ok() == metadata_id {
+            if bin_id_usize == metadata_id {
                 let _metadata = take_csi_slice(&mut slice, 36, path)?;
             } else {
                 let n_chunk = read_csi_i32_le(&mut slice, path)?;
@@ -1590,8 +1953,7 @@ pub fn open_reader(
             .set_index(index)
             .build_from_path(path)
             .map_err(crate::types::VardictError::Io)?;
-        let header = reader
-            .read_header()
+        let header = read_validated_bam_header(reader.get_mut(), path)
             .map_err(crate::types::VardictError::Io)?;
         Ok(CachedReader {
             reader: IndexedSamReader::Bam(reader),
@@ -1627,6 +1989,7 @@ thread_local! {
     static FORCE_PRODUCTION_META_ID: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_MID_CLEAR_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
     static TEST_MID_COLD_OPEN_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
+    static TEST_MID_CRAM_DECODE_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
 }
 
 #[inline]
@@ -2216,8 +2579,7 @@ fn acquire_bam_meta_and_reader(
                 let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
                 let id = next_bam_meta_id();
                 let mut reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, id));
-                let header = reader
-                    .read_header()
+                let header = read_validated_bam_header(reader.get_mut(), path)
                     .map_err(crate::types::VardictError::Io)?;
                 let contig_names: Vec<Box<str>> = header
                     .reference_sequences()
@@ -2466,7 +2828,7 @@ impl BamFeedInner {
                 }
                 Some(end) => {
                     if reader.get_mut().virtual_position() < end {
-                        let n = match reader.read_record(&mut self.record) {
+                        let n = match read_bounded_bam_record(reader.get_mut(), &mut self.record) {
                             Ok(n) => n,
                             Err(e) => {
                                 self.tainted = true;
@@ -3377,6 +3739,182 @@ fn return_pooled_cram_reader(
     return_to_pool(&CRAM_READER_POOL, path, meta, reader);
 }
 
+fn prevalidate_cram_file_header(path: &Path, file: &mut std::fs::File) -> std::io::Result<()> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    const MAX_HEADER_CONTAINER_HDR_BYTES: u64 = 65_536;
+    const MAX_HEADER_LANDMARKS: usize = 4096;
+    const FILE_HEADER_CONTENT_TYPE: u8 = 0;
+
+    {
+        let mut buf_reader = std::io::BufReader::new(&mut *file);
+        let mut file_def = [0_u8; 26];
+        buf_reader.read_exact(&mut file_def)?;
+        if file_def.get(..4) != Some(b"CRAM") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid CRAM magic header in '{}'", path.display()),
+            ));
+        }
+
+        let mut len_buf = [0_u8; 4];
+        buf_reader.read_exact(&mut len_buf)?;
+        let raw_container_len = i32::from_le_bytes(len_buf);
+        let Ok(container_len) = usize::try_from(raw_container_len) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "negative CRAM header container length ({raw_container_len}) in '{}'",
+                    path.display()
+                ),
+            ));
+        };
+        if container_len > MAX_CRAM_HEADER_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CRAM header container length ({container_len}) in '{}' exceeds maximum allowed ({MAX_CRAM_HEADER_BYTES} bytes)",
+                    path.display()
+                ),
+            ));
+        }
+
+        {
+            let mut hdr_take = (&mut buf_reader).take(MAX_HEADER_CONTAINER_HDR_BYTES);
+            let _ref_seq_id = read_cram_itf8(&mut hdr_take)?;
+            let _align_start = read_cram_itf8(&mut hdr_take)?;
+            let _align_span = read_cram_itf8(&mut hdr_take)?;
+            let _record_count = read_cram_itf8(&mut hdr_take)?;
+            let _record_counter = read_cram_ltf8(&mut hdr_take)?;
+            let _base_count = read_cram_ltf8(&mut hdr_take)?;
+            let _block_count = read_cram_itf8(&mut hdr_take)?;
+            let raw_landmarks_len = read_cram_itf8(&mut hdr_take)?;
+            let landmarks_len = usize::try_from(raw_landmarks_len)
+                .ok()
+                .filter(|&n| n <= MAX_HEADER_LANDMARKS)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "CRAM header container landmarks count ({raw_landmarks_len}) in '{}' exceeds allowed range 0..={MAX_HEADER_LANDMARKS}",
+                            path.display()
+                        ),
+                    )
+                })?;
+            for _ in 0..landmarks_len {
+                let _ = read_cram_itf8(&mut hdr_take)?;
+            }
+            let mut crc_buf = [0_u8; 4];
+            hdr_take.read_exact(&mut crc_buf)?;
+        }
+
+        let mut body_take = (&mut buf_reader).take(container_len as u64);
+        let mut blk_prefix = [0_u8; 2];
+        body_take.read_exact(&mut blk_prefix)?;
+        let [raw_method, content_type] = blk_prefix;
+        if raw_method > 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "invalid CRAM FileHeader compression method ({raw_method}) in '{}'",
+                    path.display()
+                ),
+            ));
+        }
+        if content_type != FILE_HEADER_CONTENT_TYPE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "invalid CRAM FileHeader block content type ({content_type}) in '{}'",
+                    path.display()
+                ),
+            ));
+        }
+        let _content_id = read_cram_itf8(&mut body_take)?;
+        let comp = usize::try_from(read_cram_itf8(&mut body_take)?)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let uncomp = usize::try_from(read_cram_itf8(&mut body_take)?)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if comp > MAX_CRAM_HEADER_BYTES || uncomp > MAX_CRAM_HEADER_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CRAM FileHeader block size (compressed={comp}, uncompressed={uncomp}) in '{}' exceeds maximum allowed ({MAX_CRAM_HEADER_BYTES} bytes)",
+                    path.display()
+                ),
+            ));
+        }
+        let rem_body = body_take.limit();
+        if (comp as u64) > rem_body || (raw_method == 0 && (uncomp as u64) > rem_body) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "CRAM FileHeader block size (compressed={comp}, uncompressed={uncomp}) in '{}' exceeds container payload ({container_len} bytes)",
+                    path.display()
+                ),
+            ));
+        }
+
+        if raw_method == 0 {
+            if uncomp >= 4 {
+                let mut sam_len_buf = [0_u8; 4];
+                body_take.read_exact(&mut sam_len_buf)?;
+                let raw_sam_len = i32::from_le_bytes(sam_len_buf);
+                let sam_len = usize::try_from(raw_sam_len)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+                if sam_len > MAX_CRAM_HEADER_BYTES || sam_len > uncomp.saturating_sub(4) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "CRAM FileHeader SAM text length ({sam_len}) in '{}' exceeds uncompressed block bounds ({uncomp} bytes)",
+                            path.display()
+                        ),
+                    ));
+                }
+            }
+        } else {
+            let gz_src = (&mut body_take).take(comp as u64);
+            let mut gz =
+                flate2::read::GzDecoder::new(gz_src).take((MAX_CRAM_HEADER_BYTES as u64) + 5);
+            let mut sam_len_buf = [0_u8; 4];
+            gz.read_exact(&mut sam_len_buf)?;
+            let raw_sam_len = i32::from_le_bytes(sam_len_buf);
+            let sam_len = usize::try_from(raw_sam_len)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            if sam_len > MAX_CRAM_HEADER_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM FileHeader SAM text length ({sam_len}) in '{}' exceeds maximum allowed ({MAX_CRAM_HEADER_BYTES} bytes)",
+                        path.display()
+                    ),
+                ));
+            }
+            let decomp_rem = std::io::copy(&mut gz, &mut std::io::sink())?;
+            if decomp_rem > MAX_CRAM_HEADER_BYTES as u64 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM FileHeader decompressed payload in '{}' exceeds maximum allowed ({MAX_CRAM_HEADER_BYTES} bytes)",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok(())
+}
+
+fn read_validated_cram_header(
+    path: &Path,
+    mut file: std::fs::File,
+) -> std::io::Result<(RawCramReader, noodles::sam::Header)> {
+    prevalidate_cram_file_header(path, &mut file)?;
+    let mut reader = noodles::cram::io::Reader::new(file);
+    let header = reader.read_header()?;
+    Ok((reader, header))
+}
+
 fn acquire_cram_meta(
     path: &Path,
     config: &crate::config::Config,
@@ -3433,8 +3971,7 @@ fn acquire_cram_meta(
         .ok()
         .filter(|m| m.is_file())
         .map(|m| m.len());
-    let mut reader = noodles::cram::io::Reader::new(file);
-    let header = reader.read_header()?;
+    let (reader, header) = read_validated_cram_header(path, file)?;
     let contig_names: Vec<std::sync::Arc<str>> = header
         .reference_sequences()
         .iter()
@@ -3619,7 +4156,7 @@ impl InflightCramGuard<'_> {
         mut self,
         result: Option<CachedCramBlock>,
         max_cached_bytes: usize,
-        start_epoch: u64,
+        start_epoch: Option<u64>,
     ) {
         self.completed = true;
         {
@@ -3629,7 +4166,9 @@ impl InflightCramGuard<'_> {
                 .retain(|(k, w)| !(*k == self.key && std::sync::Arc::ptr_eq(w, &self.entry)));
             if let Some(ref arc_records) = result {
                 if should_cache_cram_container(arc_records, max_cached_bytes)
-                    && BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == start_epoch
+                    && start_epoch.is_none_or(|ep| {
+                        BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == ep
+                    })
                 {
                     shard
                         .lru
@@ -4822,6 +5361,7 @@ fn prevalidate_cram_container_slices(
     body_offset: u64,
     bytes_read: usize,
     landmarks: &[usize],
+    meta: Option<&SharedCramMeta>,
 ) -> std::io::Result<()> {
     use std::io::{Read as _, SeekFrom};
     const MAX_SLICE_HEADER_UNCOMPRESSED_BYTES: usize = 1024 * 1024;
@@ -4940,48 +5480,113 @@ fn prevalidate_cram_container_slices(
             method = 0;
         }
         file.seek(SeekFrom::Start(sh_payload_offset))?;
+        type RawSliceHdrFields = (i32, i32, i32, i32, i64, i32, i32);
         let read_slice_hdr_fields =
-            |r: &mut dyn std::io::Read| -> std::io::Result<(i32, i64, i32, i32)> {
-                let _ref_seq_id = read_cram_itf8(r)?;
-                let _align_start = read_cram_itf8(r)?;
-                let _align_span = read_cram_itf8(r)?;
+            |r: &mut dyn std::io::Read| -> std::io::Result<RawSliceHdrFields> {
+                let ref_seq_id = read_cram_itf8(r)?;
+                let align_start = read_cram_itf8(r)?;
+                let align_span = read_cram_itf8(r)?;
                 let rc = read_cram_itf8(r)?;
                 let rcounter = read_cram_ltf8(r)?;
                 let bcount = read_cram_itf8(r)?;
                 let cids_len = read_cram_itf8(r)?;
-                Ok((rc, rcounter, bcount, cids_len))
+                Ok((
+                    ref_seq_id,
+                    align_start,
+                    align_span,
+                    rc,
+                    rcounter,
+                    bcount,
+                    cids_len,
+                ))
             };
-        let (raw_record_count, raw_record_counter, raw_block_count, raw_content_ids_len) =
-            match method {
-                0 => {
-                    if uncompressed_size > 0 && compressed_size != uncompressed_size {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!(
-                                "CRAM raw slice header block in '{}' has compressed_size ({compressed_size}) != uncompressed_size ({uncompressed_size})",
-                                path.display()
-                            ),
-                        ));
-                    }
-                    let mut bounded = (&mut *file).take(compressed_size as u64);
-                    read_slice_hdr_fields(&mut bounded)?
-                }
-                1 => {
-                    let bounded = (&mut *file).take(compressed_size as u64);
-                    let mut gz = flate2::read::GzDecoder::new(bounded)
-                        .take(MAX_SLICE_HEADER_UNCOMPRESSED_BYTES as u64);
-                    read_slice_hdr_fields(&mut gz)?
-                }
-                _ => {
+        let (
+            raw_ref_seq_id,
+            raw_align_start,
+            raw_align_span,
+            raw_record_count,
+            raw_record_counter,
+            raw_block_count,
+            raw_content_ids_len,
+        ) = match method {
+            0 => {
+                if uncompressed_size > 0 && compressed_size != uncompressed_size {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         format!(
-                            "unsupported compression method ({method}) on CRAM slice header block in '{}'",
+                            "CRAM raw slice header block in '{}' has compressed_size ({compressed_size}) != uncompressed_size ({uncompressed_size})",
                             path.display()
                         ),
                     ));
                 }
+                let mut bounded = (&mut *file).take(compressed_size as u64);
+                read_slice_hdr_fields(&mut bounded)?
+            }
+            1 => {
+                let bounded = (&mut *file).take(compressed_size as u64);
+                let mut gz = flate2::read::GzDecoder::new(bounded)
+                    .take(MAX_SLICE_HEADER_UNCOMPRESSED_BYTES as u64);
+                read_slice_hdr_fields(&mut gz)?
+            }
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "unsupported compression method ({method}) on CRAM slice header block in '{}'",
+                        path.display()
+                    ),
+                ));
+            }
+        };
+        if raw_ref_seq_id < -2 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "invalid CRAM slice reference_sequence_id ({raw_ref_seq_id}) in '{}'",
+                    path.display()
+                ),
+            ));
+        }
+        if raw_ref_seq_id >= 0 {
+            if raw_align_start < 1 || raw_align_span < 1 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "invalid CRAM slice alignment bounds (start={raw_align_start}, span={raw_align_span}) in '{}'",
+                        path.display()
+                    ),
+                ));
+            }
+            let (Ok(ref_id), Ok(start_pos), Ok(span_len)) = (
+                usize::try_from(raw_ref_seq_id),
+                usize::try_from(raw_align_start),
+                usize::try_from(raw_align_span),
+            ) else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid CRAM slice coordinates in '{}'", path.display()),
+                ));
             };
+            let Some(end_pos) = start_pos.checked_add(span_len - 1) else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM slice alignment span overflow (start={start_pos}, span={span_len}) in '{}'",
+                        path.display()
+                    ),
+                ));
+            };
+            if let Some(m) = meta {
+                validate_cram_span(path, m, ref_id, start_pos, end_pos, None).map_err(|err| {
+                    match err {
+                        crate::types::VardictError::Io(io_err) => io_err,
+                        other => {
+                            std::io::Error::new(std::io::ErrorKind::InvalidData, other.to_string())
+                        }
+                    }
+                })?;
+            }
+        }
         let slice_records = usize::try_from(raw_record_count).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -5103,7 +5708,11 @@ fn fetch_cram_container_in(
 
     let key = (meta.id, container_offset);
     let shard_idx = cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta.id, container_offset);
-    let start_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+    let is_global_cache = CRAM_CONTAINER_CACHE
+        .get()
+        .is_some_and(|global| std::ptr::eq(cache, global));
+    let start_epoch =
+        is_global_cache.then(|| BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire));
 
     let inflight_guard = if let Some(shard_mutex) = cache.get(shard_idx) {
         loop {
@@ -5201,6 +5810,7 @@ fn fetch_cram_container_in(
             body_offset,
             bytes_read,
             container.header().landmarks(),
+            Some(meta.as_ref()),
         )?;
     }
     reader.get_mut().seek(SeekFrom::Start(post_container_pos))?;
@@ -5235,10 +5845,7 @@ fn fetch_cram_container_in(
 
     crate::count!(CramContainerDecodes);
     #[cfg(test)]
-    if CRAM_CONTAINER_CACHE
-        .get()
-        .is_some_and(|global| std::ptr::eq(cache, global))
-    {
+    if is_global_cache {
         CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     #[cfg(test)]
@@ -5326,6 +5933,14 @@ fn fetch_cram_container_in(
     out_records.shrink_to_fit();
 
     let arc_records: CachedCramBlock = std::sync::Arc::new(out_records);
+    #[cfg(test)]
+    if let Some(hook) = TEST_MID_CRAM_DECODE_HOOK
+        .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
+        .ok()
+        .flatten()
+    {
+        hook();
+    }
     if let Some(g) = inflight_guard {
         g.complete(
             Some(std::sync::Arc::clone(&arc_records)),
@@ -11162,9 +11777,15 @@ mod tests {
         let meta = acquire_cram_meta(&cram_path, &config).unwrap();
         let pinned_slot = meta.fasta_repo.warm_contig_slot(b"chr1");
 
-        // (i) Cache-eligible cap inserts into isolated shard and serves repeat call via Arc::ptr_eq
+        // (i) Cache-eligible cap inserts into isolated shard (even when global BAM_CACHE_EPOCH
+        //     advances mid-decode) and serves repeat call via Arc::ptr_eq
         let hit_cache: [std::sync::Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS] =
             std::array::from_fn(|_| std::sync::Mutex::new(CramContainerCacheShard::default()));
+        TEST_MID_CRAM_DECODE_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(|| {
+                BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
+            }));
+        });
         let block_1 = fetch_cram_container_in(
             &cram_path,
             &meta,
@@ -11181,7 +11802,10 @@ mod tests {
             .iter()
             .map(|s| s.lock().unwrap().lru.entries.len())
             .sum();
-        assert_eq!(hit_entries, 1, "eligible container must be cached");
+        assert_eq!(
+            hit_entries, 1,
+            "eligible container must be cached in isolated shard despite global epoch bump"
+        );
 
         let block_2 = fetch_cram_container_in(
             &cram_path,
@@ -11221,6 +11845,85 @@ mod tests {
         assert_eq!(bypassed.len(), block_1.len());
         for (a, b) in block_1.iter().zip(bypassed.iter()) {
             assert_eq!(a.sam, b.sam);
+        }
+
+        // (iii) Global `CRAM_CONTAINER_CACHE` remains epoch-protected when `BAM_CACHE_EPOCH`
+        //       advances mid-decode, and caches normally when `BAM_CACHE_EPOCH` is unchanged.
+        //       Uses isolated `meta_global.id >= TEST_META_ID_BASE` so concurrent sibling
+        //       `clear_bam_caches()` (`LruCacheShard::clear_production`) cannot evict `global_key`.
+        {
+            NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
+            let global_cram = temp_dir.path().join("global_epoch_guard.cram");
+            std::fs::copy(&cram_path, &global_cram).unwrap();
+            std::fs::copy(
+                cram_path.with_extension("cram.crai"),
+                global_cram.with_extension("cram.crai"),
+            )
+            .unwrap();
+            let meta_global = acquire_cram_meta(&global_cram, &config).unwrap();
+            assert!(meta_global.id >= TEST_META_ID_BASE);
+            let global_key = (meta_global.id, container_offset);
+            let global_shard_idx =
+                cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta_global.id, container_offset);
+
+            TEST_MID_CRAM_DECODE_HOOK.with(|h| {
+                *h.borrow_mut() = Some(Box::new(|| {
+                    BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
+                }));
+            });
+            let uncached_on_race = fetch_cram_container(
+                &global_cram,
+                &meta_global,
+                container_offset,
+                b"chr1",
+                Some(&pinned_slot),
+            )
+            .unwrap()
+            .expect("decoded CRAM container across global epoch bump");
+            assert_eq!(uncached_on_race.len(), read_count);
+            let cached_after_race = cram_container_cache_shards()[global_shard_idx]
+                .lock()
+                .unwrap()
+                .lru
+                .get(global_key)
+                .is_some();
+            assert!(
+                !cached_after_race,
+                "global CRAM_CONTAINER_CACHE must skip insertion when BAM_CACHE_EPOCH advances mid-decode"
+            );
+
+            loop {
+                let ep0 = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+                let clean_global = fetch_cram_container(
+                    &global_cram,
+                    &meta_global,
+                    container_offset,
+                    b"chr1",
+                    Some(&pinned_slot),
+                )
+                .unwrap()
+                .expect("clean global CRAM container decode");
+                if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                    continue;
+                }
+                assert_eq!(clean_global.len(), read_count);
+                let hit = cram_container_cache_shards()[global_shard_idx]
+                    .lock()
+                    .unwrap()
+                    .lru
+                    .get(global_key);
+                assert!(
+                    hit.is_some_and(|b| std::sync::Arc::ptr_eq(&b, &clean_global)),
+                    "global CRAM_CONTAINER_CACHE must insert when BAM_CACHE_EPOCH is stable"
+                );
+                break;
+            }
+            cram_container_cache_shards()[global_shard_idx]
+                .lock()
+                .unwrap()
+                .lru
+                .entries
+                .retain(|(k, _)| *k != global_key);
         }
     }
 
@@ -11743,11 +12446,16 @@ mod tests {
 
         fn bgzf_wrap(raw: &[u8]) -> Vec<u8> {
             let mut out = Vec::new();
-            let mut w = noodles::bgzf::io::Writer::new(&mut out);
+            let mut w = noodles_bgzf::io::Writer::new(&mut out);
             w.write_all(raw).unwrap();
             w.finish().unwrap();
             out
         }
+
+        assert_eq!(BAI_DEPTH, 5);
+        assert_eq!(BAI_MAX_BIN_ID, 37_448);
+        assert_eq!(BAI_METADATA_BIN_ID, 37_450);
+        assert_eq!(MAX_CSI_TOTAL_BINS, 4_194_304);
 
         let dir = tempfile::tempdir().unwrap();
         let bam_path = dir.path().join("hostile_idx.bam");
@@ -11773,7 +12481,7 @@ mod tests {
         let mut bai_indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
         let mut csi_indexer = Indexer::<BinnedIndex>::new(14, 5).unwrap();
         let mut csi_hdr_indexer = Indexer::<BinnedIndex>::new(14, 5).unwrap();
-        {
+        let (s_vp, e_vp) = {
             let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
             let mut w = noodles::bam::io::Writer::from(bgzf);
             w.write_alignment_header(&header).unwrap();
@@ -11793,32 +12501,98 @@ mod tests {
                 .add_record(Some((0, s, e, true)), chunk)
                 .unwrap();
             w.try_finish().unwrap();
-        }
+            (s_vp, e_vp)
+        };
 
         let cfg = Config::default();
+        let clone_bam_case = |stem: &str| -> PathBuf {
+            let dst = dir.path().join(format!("{stem}.bam"));
+            std::fs::copy(&bam_path, &dst).unwrap();
+            dst
+        };
 
-        // 1. Valid `.bai` loads and queries cleanly.
-        bai::fs::write(&bai_path, &bai_indexer.build(1)).unwrap();
-        clear_bam_caches();
+        // 1. Valid `.bai` loads and queries cleanly (including max valid normal bin `37_448`).
+        let ok_bai_bam = clone_bam_case("ok_bai");
+        bai::fs::write(ok_bai_bam.with_extension("bam.bai"), &bai_indexer.build(1)).unwrap();
+        let valid_bai_bytes = std::fs::read(ok_bai_bam.with_extension("bam.bai")).unwrap();
         let bai_reads: Vec<SamRecord> =
-            query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
+            query_region_iter(&ok_bai_bam, "chr1", Pos0(0), Pos0(200), &cfg)
                 .unwrap()
                 .map(|r| r.unwrap())
                 .collect();
         assert_eq!(bai_reads.len(), 1);
         assert_eq!(bai_reads[0].name, b"read1");
 
-        // 2. Valid `.csi` (both headerless BAM `.csi` and headered `.csi`) loads identically.
-        std::fs::remove_file(&bai_path).unwrap();
-        noodles::csi::fs::write(&csi_path, &csi_indexer.build(1)).unwrap();
-        clear_bam_caches();
+        let max_bin_bam = clone_bam_case("max_bin_37448");
+        let mut bai_max_valid_bin = b"BAI\x01".to_vec();
+        bai_max_valid_bin.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bai_max_valid_bin.extend_from_slice(&1u32.to_le_bytes()); // n_bin = 1
+        bai_max_valid_bin.extend_from_slice(&37_448u32.to_le_bytes()); // bin_id = 37_448
+        bai_max_valid_bin.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+        bai_max_valid_bin.extend_from_slice(&0u32.to_le_bytes()); // n_intv = 0
+        std::fs::write(max_bin_bam.with_extension("bam.bai"), &bai_max_valid_bin).unwrap();
+        assert!(read_bam_index_with_fallbacks(&max_bin_bam).is_ok());
+        let empty_max_bin_reads: Vec<SamRecord> =
+            query_region_iter(&max_bin_bam, "chr1", Pos0(0), Pos0(200), &cfg)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+        assert!(empty_max_bin_reads.is_empty());
+
+        // 2. Valid `.csi` (headerless, headered, `min_shift = 0`, and `min_shift = 4`) loads identically.
+        let ok_csi_bam = clone_bam_case("ok_csi");
+        noodles::csi::fs::write(ok_csi_bam.with_extension("bam.csi"), &csi_indexer.build(1))
+            .unwrap();
         let csi_reads: Vec<SamRecord> =
-            query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
+            query_region_iter(&ok_csi_bam, "chr1", Pos0(0), Pos0(200), &cfg)
                 .unwrap()
                 .map(|r| r.unwrap())
                 .collect();
         assert_eq!(csi_reads, bai_reads);
 
+        for valid_min_shift in [0u8, 4u8] {
+            let shift_bam = clone_bam_case(&format!("ok_csi_shift_{valid_min_shift}"));
+            let mut shift_indexer = Indexer::<BinnedIndex>::new(valid_min_shift, 5).unwrap();
+            let s = Position::try_from(50usize).unwrap();
+            let e = Position::try_from(59usize).unwrap();
+            shift_indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
+                .unwrap();
+            noodles::csi::fs::write(shift_bam.with_extension("bam.csi"), &shift_indexer.build(1))
+                .unwrap();
+            let shift_reads: Vec<SamRecord> =
+                query_region_iter(&shift_bam, "chr1", Pos0(0), Pos0(200), &cfg)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            assert_eq!(
+                shift_reads, bai_reads,
+                "valid CSI min_shift={valid_min_shift} depth=5 must load and query cleanly"
+            );
+        }
+
+        {
+            let d9_bam = clone_bam_case("ok_csi_depth_9");
+            let mut d9_indexer = Indexer::<BinnedIndex>::new(14, 9).unwrap();
+            let s = Position::try_from(50usize).unwrap();
+            let e = Position::try_from(59usize).unwrap();
+            d9_indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
+                .unwrap();
+            noodles::csi::fs::write(d9_bam.with_extension("bam.csi"), &d9_indexer.build(1))
+                .unwrap();
+            let d9_reads: Vec<SamRecord> =
+                query_region_iter(&d9_bam, "chr1", Pos0(0), Pos0(200), &cfg)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            assert_eq!(
+                d9_reads, bai_reads,
+                "valid CSI min_shift=14 depth=9 must load and query cleanly"
+            );
+        }
+
+        let hdr_csi_bam = clone_bam_case("ok_csi_hdr");
         let mut names = noodles::csi::binning_index::index::header::ReferenceSequenceNames::new();
         names.insert(b"chr1".as_slice().into());
         csi_hdr_indexer = csi_hdr_indexer.set_header(
@@ -11826,25 +12600,69 @@ mod tests {
                 .set_reference_sequence_names(names)
                 .build(),
         );
-        noodles::csi::fs::write(&csi_path, &csi_hdr_indexer.build(1)).unwrap();
-        clear_bam_caches();
+        noodles::csi::fs::write(
+            hdr_csi_bam.with_extension("bam.csi"),
+            &csi_hdr_indexer.build(1),
+        )
+        .unwrap();
         let headered_csi_reads: Vec<SamRecord> =
-            query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
+            query_region_iter(&hdr_csi_bam, "chr1", Pos0(0), Pos0(200), &cfg)
                 .unwrap()
                 .map(|r| r.unwrap())
                 .collect();
         assert_eq!(headered_csi_reads, bai_reads);
-        std::fs::remove_file(&csi_path).unwrap();
 
-        // Missing index still preserves `ErrorKind::NotFound`.
-        clear_bam_caches();
+        // Missing index still preserves `ErrorKind::NotFound` (`bam_path` has no index on disk).
         assert_eq!(
             read_bam_index_with_fallbacks(&bam_path).unwrap_err().kind(),
             std::io::ErrorKind::NotFound
         );
 
-        // 3. Corrupt `.bai` cases: fuzzer `n_ref = 0x6573776f`, oversized `n_bin`,
-        //    oversized/negative `n_chunk`, truncated metadata bin, oversized `n_intv`.
+        let assert_io_invalid_data = |err: crate::types::VardictError, label: &str| match err {
+            crate::types::VardictError::Io(io_err) => assert_eq!(
+                io_err.kind(),
+                std::io::ErrorKind::InvalidData,
+                "{label}: expected InvalidData, got {io_err:?}"
+            ),
+            other => panic!("{label}: expected VardictError::Io(InvalidData), got {other:?}"),
+        };
+
+        // 3. Corrupt `.bai` cases (with complete trailing fields so truncation never masks validation):
+        //    `bin_id = 37_449`, `bin_id = 50_000`, `n_bin = 37_451`, decoded fuzz seed `gprBLSgoLSgoCg==`,
+        //    fuzzer `n_ref = 0x6573776f`, oversized `n_bin`, oversized/negative `n_chunk`,
+        //    truncated metadata bin, oversized `n_intv`.
+        let build_single_bin_bai = |bin_id: u32| -> Vec<u8> {
+            let mut v = b"BAI\x01".to_vec();
+            v.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+            v.extend_from_slice(&1u32.to_le_bytes()); // n_bin = 1
+            v.extend_from_slice(&bin_id.to_le_bytes());
+            v.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+            v.extend_from_slice(&0u32.to_le_bytes()); // n_intv = 0
+            v
+        };
+        let bai_bin_37449 = build_single_bin_bai(37_449);
+        let bai_bin_50000 = build_single_bin_bai(50_000);
+
+        let mut bai_nbin_37451 = Vec::with_capacity(4 + 8 + 37_451 * 8 + 36);
+        bai_nbin_37451.extend_from_slice(b"BAI\x01");
+        bai_nbin_37451.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bai_nbin_37451.extend_from_slice(&37_451u32.to_le_bytes()); // n_bin = 37_451 (> 37_450)
+        for bid in 0..37_450u32 {
+            bai_nbin_37451.extend_from_slice(&bid.to_le_bytes());
+            bai_nbin_37451.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+        }
+        bai_nbin_37451.extend_from_slice(&37_450u32.to_le_bytes()); // metadata bin
+        bai_nbin_37451.extend_from_slice(&2u32.to_le_bytes()); // metadata n_chunk = 2
+        bai_nbin_37451.extend_from_slice(&[0u8; 32]); // ref_beg, ref_end, n_mapped, n_unmapped
+        bai_nbin_37451.extend_from_slice(&0u32.to_le_bytes()); // n_intv = 0
+
+        // Decoded base64 fuzz seed `gprBLSgoLSgoCg==` (`[130, 154, 193, 45, 40, 40, 45, 40, 40, 10]`)
+        // both raw and applied via `fuzz_cram_and_fai`'s XOR mutation past `BAI\x01`.
+        const FUZZ_SEED_GPR: &[u8] = b"\x82\x9a\xc1-((-((\n";
+        let mut bai_fuzz_gpr_mutated = valid_bai_bytes.clone();
+        let gpr_off = 4 + (usize::from(FUZZ_SEED_GPR[9]) % (bai_fuzz_gpr_mutated.len() - 4));
+        bai_fuzz_gpr_mutated[gpr_off] ^= 0xff;
+
         let mut bai_oversized_nbin = b"BAI\x01".to_vec();
         bai_oversized_nbin.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
         bai_oversized_nbin.extend_from_slice(&0x4000_0000u32.to_le_bytes()); // n_bin
@@ -11875,30 +12693,140 @@ mod tests {
         bai_oversized_nintv.extend_from_slice(&0u32.to_le_bytes()); // n_bin = 0
         bai_oversized_nintv.extend_from_slice(&0x4000_0000u32.to_le_bytes()); // n_intv
 
-        for bad_bai in [
-            b"BAI\x01owser-".to_vec(),
-            bai_oversized_nbin,
-            bai_oversized_nchunk,
-            bai_neg_nchunk,
-            bai_trunc_meta,
-            bai_oversized_nintv,
+        let mut bai_dup_bin_4681 = b"BAI\x01".to_vec();
+        bai_dup_bin_4681.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bai_dup_bin_4681.extend_from_slice(&2u32.to_le_bytes()); // n_bin = 2
+        for _ in 0..2 {
+            bai_dup_bin_4681.extend_from_slice(&4681u32.to_le_bytes());
+            bai_dup_bin_4681.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+        }
+        bai_dup_bin_4681.extend_from_slice(&0u32.to_le_bytes()); // n_intv = 0
+
+        for (label, bad_bai) in [
+            ("bai_bin_37449", bai_bin_37449),
+            ("bai_bin_50000", bai_bin_50000),
+            ("bai_nbin_37451", bai_nbin_37451),
+            ("bai_dup_bin_4681", bai_dup_bin_4681),
+            ("bai_fuzz_seed_gpr_raw", FUZZ_SEED_GPR.to_vec()),
+            ("bai_fuzz_seed_gpr_mutated", bai_fuzz_gpr_mutated),
+            ("bai_owser_nref", b"BAI\x01owser-".to_vec()),
+            ("bai_oversized_nbin", bai_oversized_nbin),
+            ("bai_oversized_nchunk", bai_oversized_nchunk),
+            ("bai_neg_nchunk", bai_neg_nchunk),
+            ("bai_trunc_meta", bai_trunc_meta),
+            ("bai_oversized_nintv", bai_oversized_nintv),
         ] {
             std::fs::write(&bai_path, &bad_bai).unwrap();
-            clear_bam_caches();
-            assert!(read_bam_index_with_fallbacks(&bam_path).is_err());
-            assert!(query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg).is_err());
+            let idx_err = read_bam_index_with_fallbacks(&bam_path)
+                .expect_err(&format!("{label}: expected BAI index error"));
+            assert_eq!(
+                idx_err.kind(),
+                std::io::ErrorKind::InvalidData,
+                "{label}: expected InvalidData, got {idx_err:?}"
+            );
+            if label == "bai_dup_bin_4681" {
+                assert!(
+                    idx_err.to_string().contains("duplicate BAI bin_id"),
+                    "{label}: expected prevalidator duplicate BAI bin_id error, got {idx_err}"
+                );
+            }
+            let q_err = query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
+                .expect_err(&format!("{label}: expected query_region_iter error"));
+            assert_io_invalid_data(q_err, label);
         }
         std::fs::remove_file(&bai_path).unwrap();
 
-        // 4. Corrupt BGZF `.csi` cases: oversized `n_ref`, `n_bin`, `n_chunk`, `l_aux`,
-        //    and misaligned `l_aux != 28 + l_nm`.
-        let csi_hdr = |l_aux: i32| -> Vec<u8> {
+        // 4. Corrupt BGZF `.csi` cases (with complete trailing fields):
+        //    `bin_id = 37_449` (`depth = 5`), `n_bin = 37_451`, duplicate `bin_id` at `depth = 9`,
+        //    total bins > `MAX_CSI_TOTAL_BINS` (`4_194_304`) with complete payload bytes,
+        //    `(min_shift = 64, depth = 0)`, `(min_shift = 50, depth = 5)`, oversized `n_ref`,
+        //    `n_bin`, `n_chunk`, `l_aux`, and misaligned `l_aux != 28 + l_nm`.
+        let csi_hdr_custom = |min_shift: i32, depth: i32, l_aux: i32| -> Vec<u8> {
             let mut v = b"CSI\x01".to_vec();
-            v.extend_from_slice(&14i32.to_le_bytes()); // min_shift
-            v.extend_from_slice(&5i32.to_le_bytes()); // depth
+            v.extend_from_slice(&min_shift.to_le_bytes());
+            v.extend_from_slice(&depth.to_le_bytes());
             v.extend_from_slice(&l_aux.to_le_bytes());
             v
         };
+        let csi_hdr = |l_aux: i32| -> Vec<u8> { csi_hdr_custom(14, 5, l_aux) };
+
+        let mut csi_bin_37449 = csi_hdr(0);
+        csi_bin_37449.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_bin_37449.extend_from_slice(&1i32.to_le_bytes()); // n_bin = 1
+        csi_bin_37449.extend_from_slice(&37_449u32.to_le_bytes()); // bin_id = 37_449
+        csi_bin_37449.extend_from_slice(&0u64.to_le_bytes()); // loffset = 0
+        csi_bin_37449.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+
+        let mut csi_nbin_37451 = Vec::with_capacity(24 + 37_451 * 16 + 36);
+        csi_nbin_37451.extend_from_slice(&csi_hdr(0));
+        csi_nbin_37451.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_nbin_37451.extend_from_slice(&37_451i32.to_le_bytes()); // n_bin = 37_451
+        for bid in 0..37_450u32 {
+            csi_nbin_37451.extend_from_slice(&bid.to_le_bytes());
+            csi_nbin_37451.extend_from_slice(&0u64.to_le_bytes()); // loffset
+            csi_nbin_37451.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+        }
+        csi_nbin_37451.extend_from_slice(&37_450u32.to_le_bytes()); // metadata bin
+        csi_nbin_37451.extend_from_slice(&0u64.to_le_bytes()); // loffset
+        csi_nbin_37451.extend_from_slice(&2u32.to_le_bytes()); // metadata n_chunk = 2
+        csi_nbin_37451.extend_from_slice(&[0u8; 32]);
+
+        let mut csi_d9_dup_bin = csi_hdr_custom(14, 9, 0);
+        csi_d9_dup_bin.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_d9_dup_bin.extend_from_slice(&2i32.to_le_bytes()); // n_bin = 2
+        for _ in 0..2 {
+            csi_d9_dup_bin.extend_from_slice(&0u32.to_le_bytes()); // repeated bin_id = 0
+            csi_d9_dup_bin.extend_from_slice(&0u64.to_le_bytes()); // loffset = 0
+            csi_d9_dup_bin.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+        }
+        let dup_pre_err = validate_csi_payload(&csi_d9_dup_bin, Path::new("csi_d9_dup_bin.csi"))
+            .expect_err(
+                "validate_csi_payload must reject duplicate CSI bin_id before noodles allocates",
+            );
+        assert_eq!(dup_pre_err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(dup_pre_err.to_string().contains("duplicate CSI bin_id"));
+
+        const OVER_TOTAL_CSI_BINS: usize = MAX_CSI_TOTAL_BINS + 1;
+        let mut csi_d9_over_total_bins = vec![0u8; 24 + OVER_TOTAL_CSI_BINS * 16];
+        csi_d9_over_total_bins[..16].copy_from_slice(&csi_hdr_custom(14, 9, 0));
+        csi_d9_over_total_bins[16..20].copy_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_d9_over_total_bins[20..24].copy_from_slice(&(OVER_TOTAL_CSI_BINS as i32).to_le_bytes());
+        for (bid, slot) in csi_d9_over_total_bins[24..]
+            .chunks_exact_mut(16)
+            .enumerate()
+        {
+            slot[..4].copy_from_slice(&(bid as u32).to_le_bytes());
+        }
+
+        let mut csi_d7_multiref_over_total_bins = vec![0u8; 20 + 8 + OVER_TOTAL_CSI_BINS * 16];
+        csi_d7_multiref_over_total_bins[..16].copy_from_slice(&csi_hdr_custom(14, 7, 0));
+        csi_d7_multiref_over_total_bins[16..20].copy_from_slice(&2i32.to_le_bytes()); // n_ref = 2
+        let ref0_bins = 2_097_153usize;
+        let ref1_bins = OVER_TOTAL_CSI_BINS - ref0_bins; // 2_097_152 (both <= metadata_id(7) == 2_396_746)
+        csi_d7_multiref_over_total_bins[20..24].copy_from_slice(&(ref0_bins as i32).to_le_bytes());
+        let ref0_end = 24 + ref0_bins * 16;
+        for (bid, slot) in csi_d7_multiref_over_total_bins[24..ref0_end]
+            .chunks_exact_mut(16)
+            .enumerate()
+        {
+            slot[..4].copy_from_slice(&(bid as u32).to_le_bytes());
+        }
+        csi_d7_multiref_over_total_bins[ref0_end..ref0_end + 4]
+            .copy_from_slice(&(ref1_bins as i32).to_le_bytes());
+        for (bid, slot) in csi_d7_multiref_over_total_bins[ref0_end + 4..]
+            .chunks_exact_mut(16)
+            .enumerate()
+        {
+            slot[..4].copy_from_slice(&(bid as u32).to_le_bytes());
+        }
+
+        let mut csi_shift_64_d0 = csi_hdr_custom(64, 0, 0);
+        csi_shift_64_d0.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_shift_64_d0.extend_from_slice(&0i32.to_le_bytes()); // n_bin = 0
+
+        let mut csi_shift_50_d5 = csi_hdr_custom(50, 5, 0);
+        csi_shift_50_d5.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_shift_50_d5.extend_from_slice(&0i32.to_le_bytes()); // n_bin = 0
 
         let mut csi_bad_nref = csi_hdr(0);
         csi_bad_nref.extend_from_slice(&0x4000_0000i32.to_le_bytes());
@@ -11928,17 +12856,393 @@ mod tests {
         csi_desync_laux.extend_from_slice(&[0u8; 8]);
         csi_desync_laux.extend_from_slice(&0i32.to_le_bytes());
 
-        for bad_csi in [
-            csi_bad_nref,
-            csi_bad_nbin,
-            csi_bad_nchunk,
-            csi_bad_laux,
-            csi_desync_laux,
+        for (label, bad_csi) in [
+            ("csi_bin_37449", csi_bin_37449),
+            ("csi_nbin_37451", csi_nbin_37451),
+            ("csi_d9_dup_bin", csi_d9_dup_bin),
+            ("csi_d9_over_total_bins", csi_d9_over_total_bins),
+            (
+                "csi_d7_multiref_over_total_bins",
+                csi_d7_multiref_over_total_bins,
+            ),
+            ("csi_shift_64_d0", csi_shift_64_d0),
+            ("csi_shift_50_d5", csi_shift_50_d5),
+            ("csi_bad_nref", csi_bad_nref),
+            ("csi_bad_nbin", csi_bad_nbin),
+            ("csi_bad_nchunk", csi_bad_nchunk),
+            ("csi_bad_laux", csi_bad_laux),
+            ("csi_desync_laux", csi_desync_laux),
         ] {
             std::fs::write(&csi_path, bgzf_wrap(&bad_csi)).unwrap();
-            clear_bam_caches();
-            assert!(read_bam_index_with_fallbacks(&bam_path).is_err());
-            assert!(query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg).is_err());
+            let idx_err = read_bam_index_with_fallbacks(&bam_path)
+                .expect_err(&format!("{label}: expected CSI index error"));
+            assert_eq!(
+                idx_err.kind(),
+                std::io::ErrorKind::InvalidData,
+                "{label}: expected InvalidData, got {idx_err:?}"
+            );
+            if label == "csi_d9_dup_bin" {
+                assert!(
+                    idx_err.to_string().contains("duplicate CSI bin_id"),
+                    "{label}: expected prevalidator duplicate CSI bin_id error, got {idx_err}"
+                );
+            }
+            if matches!(
+                label,
+                "csi_d9_over_total_bins" | "csi_d7_multiref_over_total_bins"
+            ) {
+                assert!(
+                    idx_err.to_string().contains("total bin count"),
+                    "{label}: expected total bin count error, got {idx_err}"
+                );
+            }
+            let q_err = query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
+                .expect_err(&format!("{label}: expected query_region_iter error"));
+            assert_io_invalid_data(q_err, label);
+        }
+        std::fs::remove_file(&csi_path).unwrap();
+
+        // 5. Hostile BAM header (`l_name`, `l_text`) & record (`block_size`) bounds:
+        //    4 GiB (`u32::MAX`), oversized `l_name = 65_537` (with complete trailing fields),
+        //    oversized `block_size > 64 MiB`, and truncated `block_size` payloads/prefixes.
+        let mut bam_lname_65537 = b"BAM\x01".to_vec();
+        bam_lname_65537.extend_from_slice(&0u32.to_le_bytes()); // l_text = 0
+        bam_lname_65537.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bam_lname_65537.extend_from_slice(&65_537u32.to_le_bytes()); // l_name = 65_537 (> 65_536)
+        bam_lname_65537.extend(std::iter::repeat_n(b'c', 65_536));
+        bam_lname_65537.push(0); // NUL terminator
+        bam_lname_65537.extend_from_slice(&1000u32.to_le_bytes()); // l_ref = 1000
+
+        let mut bam_lname_4gib = b"BAM\x01".to_vec();
+        bam_lname_4gib.extend_from_slice(&0u32.to_le_bytes()); // l_text = 0
+        bam_lname_4gib.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bam_lname_4gib.extend_from_slice(&u32::MAX.to_le_bytes()); // l_name = 4 GiB
+
+        let mut bam_ltext_4gib = b"BAM\x01".to_vec();
+        bam_ltext_4gib.extend_from_slice(&u32::MAX.to_le_bytes()); // l_text = 4 GiB
+
+        for (label, raw_hdr) in [
+            ("bam_lname_65537", bam_lname_65537),
+            ("bam_lname_4gib", bam_lname_4gib),
+            ("bam_ltext_4gib", bam_ltext_4gib),
+        ] {
+            let hdr_bam = dir.path().join(format!("{label}.bam"));
+            std::fs::write(hdr_bam.with_extension("bam.bai"), &valid_bai_bytes).unwrap();
+            std::fs::write(&hdr_bam, bgzf_wrap(&raw_hdr)).unwrap();
+            let q_err = query_region_iter(&hdr_bam, "chr1", Pos0(0), Pos0(200), &cfg)
+                .expect_err(&format!("{label}: expected BAM header rejection"));
+            assert_io_invalid_data(q_err, label);
+            #[expect(deprecated, reason = "verify open_reader BAM header hardening")]
+            {
+                let open_err = open_reader(&hdr_bam, &cfg)
+                    .err()
+                    .unwrap_or_else(|| panic!("{label}: expected open_reader rejection"));
+                assert_io_invalid_data(open_err, label);
+            }
+        }
+
+        // Valid tiny BAM header (`chr1`, LN=1000) + hostile record `block_size` cases.
+        let valid_raw_bam_hdr = {
+            let mut h = b"BAM\x01".to_vec();
+            let sam_txt = b"@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\n";
+            h.extend_from_slice(&(sam_txt.len() as u32).to_le_bytes());
+            h.extend_from_slice(sam_txt);
+            h.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+            h.extend_from_slice(&5u32.to_le_bytes()); // l_name = 5
+            h.extend_from_slice(b"chr1\0");
+            h.extend_from_slice(&1000u32.to_le_bytes()); // l_ref = 1000
+            h
+        };
+        let write_single_block_bam_and_bai = |stem: &str, rec_payload: &[u8]| -> PathBuf {
+            let case_bam = dir.path().join(format!("{stem}.bam"));
+            let mut raw = valid_raw_bam_hdr.clone();
+            let rec_upos = raw.len() as u16;
+            raw.extend_from_slice(rec_payload);
+            let end_upos = raw.len().min(65_535) as u16;
+            std::fs::write(&case_bam, bgzf_wrap(&raw)).unwrap();
+            let c_start = noodles::bgzf::VirtualPosition::try_from((0u64, rec_upos)).unwrap();
+            let c_end = if raw.len() <= 65_535 {
+                noodles::bgzf::VirtualPosition::try_from((0u64, end_upos)).unwrap()
+            } else {
+                noodles::bgzf::VirtualPosition::try_from((1u64 << 20, 0u16)).unwrap()
+            };
+            let mut idxr = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            idxr.add_record(
+                Some((
+                    0,
+                    Position::try_from(50usize).unwrap(),
+                    Position::try_from(59usize).unwrap(),
+                    true,
+                )),
+                Chunk::new(c_start, c_end),
+            )
+            .unwrap();
+            bai::fs::write(case_bam.with_extension("bam.bai"), &idxr.build(1)).unwrap();
+            case_bam
+        };
+
+        // Positive check for valid `65_536 < block_size <= 64 MiB` slow-path in `read_bounded_bam_record`.
+        {
+            let long_bam = dir.path().join("long_70k.bam");
+            let long_bai = dir.path().join("long_70k.bam.bai");
+            let long_len = 50_000usize; // 4-bit seq (25 KB) + qual (50 KB) => block_size > 75 KB > 65_536
+            let long_rec = RecordBuf::builder()
+                .set_name("long_read_70k")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(50usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+                .set_cigar(
+                    [
+                        Op::new(Kind::SoftClip, long_len - 10),
+                        Op::new(Kind::Match, 10),
+                    ]
+                    .into_iter()
+                    .collect::<Cigar>(),
+                )
+                .set_sequence(BufSeq::from(vec![b'A'; long_len]))
+                .set_quality_scores(BufQual::from(vec![35u8; long_len]))
+                .build();
+            let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&long_bam).unwrap());
+            let mut w = noodles::bam::io::Writer::from(bgzf);
+            w.write_alignment_header(&header).unwrap();
+            let ls_vp = w.get_ref().virtual_position();
+            w.write_alignment_record(&header, &long_rec).unwrap();
+            let le_vp = w.get_ref().virtual_position();
+            w.try_finish().unwrap();
+            let mut lidx = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            lidx.add_record(
+                Some((
+                    0,
+                    Position::try_from(50usize).unwrap(),
+                    Position::try_from(59usize).unwrap(),
+                    true,
+                )),
+                Chunk::new(ls_vp, le_vp),
+            )
+            .unwrap();
+            bai::fs::write(&long_bai, &lidx.build(1)).unwrap();
+            let long_reads: Vec<SamRecord> =
+                query_region_iter(&long_bam, "chr1", Pos0(0), Pos0(200), &cfg)
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+            assert_eq!(long_reads.len(), 1);
+            assert_eq!(long_reads[0].sequence.len(), long_len);
+        }
+
+        for (label, bad_bs) in [
+            ("bam_block_size_4gib", u32::MAX),
+            ("bam_block_size_over_64mib", (64 * 1024 * 1024 + 1) as u32),
+        ] {
+            let mut payload = bad_bs.to_le_bytes().to_vec();
+            payload.extend_from_slice(&[0u8; 64]);
+            let case_bam = write_single_block_bam_and_bai(label, &payload);
+            let feed_err = query_region_iter(&case_bam, "chr1", Pos0(0), Pos0(200), &cfg)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .expect_err(&format!("{label}: expected BamFeed block_size rejection"));
+            assert_io_invalid_data(feed_err, label);
+            #[expect(deprecated, reason = "verify IndexedSamReader::query block_size bound")]
+            {
+                let mut cached = open_reader(&case_bam, &cfg).unwrap();
+                let reg = build_noodles_region("chr1", 1, 200).unwrap();
+                let q_err = cached
+                    .reader
+                    .query(&cached.header, &reg)
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect_err(&format!("{label}: expected IndexedSamReader rejection"));
+                assert_eq!(
+                    q_err.kind(),
+                    std::io::ErrorKind::InvalidData,
+                    "{label}: expected InvalidData, got {q_err:?}"
+                );
+            }
+        }
+
+        // Truncated 64 MiB `block_size` record (16 trailing bytes) + 2-byte truncated prefix -> UnexpectedEof.
+        for (label, trunc_payload) in [
+            ("bam_trunc_prefix_2b", vec![0x24u8, 0x00]),
+            ("bam_trunc_64mib_record", {
+                let mut p = (64u32 * 1024 * 1024).to_le_bytes().to_vec();
+                p.extend_from_slice(&[0u8; 16]);
+                p
+            }),
+        ] {
+            let case_bam = write_single_block_bam_and_bai(label, &trunc_payload);
+            let feed_err = query_region_iter(&case_bam, "chr1", Pos0(0), Pos0(200), &cfg)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .expect_err(&format!("{label}: expected UnexpectedEof"));
+            match feed_err {
+                crate::types::VardictError::Io(io_err) => assert_eq!(
+                    io_err.kind(),
+                    std::io::ErrorKind::UnexpectedEof,
+                    "{label}: expected UnexpectedEof, got {io_err:?}"
+                ),
+                other => panic!("{label}: expected Io(UnexpectedEof), got {other:?}"),
+            }
+        }
+
+        // 6. Hostile CRAM `FileHeader` container (> 128 MiB) & `SliceHeader` coordinate bounds.
+        let cram_ref_fa = dir.path().join("cram_bounds.fa");
+        let cram_ref_fai = dir.path().join("cram_bounds.fa.fai");
+        let cram_ref_seq = b"ACGT".repeat(250); // 1000 bp
+        std::fs::write(
+            &cram_ref_fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&cram_ref_seq).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(&cram_ref_fai, "chr1\t1000\t6\t1000\t1001\n").unwrap();
+        let base_cram = dir.path().join("base_bounds.cram");
+        {
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(std::fs::File::open(&cram_ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(&cram_ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut cw = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(&base_cram)
+                .unwrap();
+            cw.write_alignment_header(&header).unwrap();
+            cw.write_alignment_record(&header, &rec).unwrap();
+            cw.try_finish(&header).unwrap();
+        }
+        let base_cram_bytes = std::fs::read(&base_cram).unwrap();
+        let base_crai = noodles::cram::fs::index(&base_cram).unwrap();
+        let cram_cfg = Config {
+            reference: cram_ref_fa.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        // Spoof initial CRAM header container `length = 128 MiB + 1` at offset 26..30 (recomputing header CRC32).
+        let huge_hdr_cram = dir.path().join("huge_hdr.cram");
+        {
+            let mut rdr = noodles::cram::io::Reader::new(std::io::Cursor::new(&base_cram_bytes));
+            rdr.read_file_definition().unwrap();
+            let mut hc_rdr = rdr.header_reader();
+            let _ = hc_rdr.container_reader().unwrap();
+            let hdr_end = rdr.get_ref().position() as usize; // right after 4-byte container header CRC32
+            let mut crafted = base_cram_bytes.clone();
+            crafted[26..30].copy_from_slice(&((128 * 1024 * 1024 + 1) as i32).to_le_bytes());
+            let mut crc = flate2::Crc::new();
+            crc.update(&crafted[26..hdr_end - 4]);
+            crafted[hdr_end - 4..hdr_end].copy_from_slice(&crc.sum().to_le_bytes());
+            std::fs::write(&huge_hdr_cram, &crafted).unwrap();
+            noodles::cram::crai::fs::write(huge_hdr_cram.with_extension("cram.crai"), &base_crai)
+                .unwrap();
+        }
+        assert_io_invalid_data(
+            acquire_cram_meta(&huge_hdr_cram, &cram_cfg)
+                .expect_err("CRAM FileHeader container > 128 MiB must error"),
+            "cram_huge_file_header",
+        );
+
+        // Spoof `SliceHeader` coordinates (`ref_seq_id = -3`, `align_start = 0`, `align_span = 0`,
+        // and out-of-FASTA `align_start = 2000, align_span = 10`) on a 0-record slice while `.crai` claims `50..=59`.
+        {
+            let mut rdr = noodles::cram::io::Reader::new(std::fs::File::open(&base_cram).unwrap());
+            let _ = rdr.read_header().unwrap();
+            let c_pos = rdr.position().unwrap() as usize;
+            let mut orig_cont = noodles::cram::io::reader::Container::default();
+            let c_len = rdr.read_container(&mut orig_cont).unwrap();
+            let body_start =
+                std::io::Seek::stream_position(rdr.get_mut()).unwrap() as usize - c_len;
+            let lm0 = orig_cont.header().landmarks()[0];
+            let comp_hdr_bytes = &base_cram_bytes[body_start..body_start + lm0];
+
+            let encode_itf8 = |v: i32, out: &mut Vec<u8>| {
+                let u = v as u32;
+                if (0..0x80).contains(&v) {
+                    out.push(u as u8);
+                } else if (0..0x4000).contains(&v) {
+                    out.push(0x80 | ((u >> 8) as u8));
+                    out.push((u & 0xff) as u8);
+                } else {
+                    out.push(0xf0 | ((u >> 28) as u8));
+                    out.push(((u >> 20) & 0xff) as u8);
+                    out.push(((u >> 12) & 0xff) as u8);
+                    out.push(((u >> 4) & 0xff) as u8);
+                    out.push((u & 0x0f) as u8);
+                }
+            };
+
+            for (label, raw_ref_id, raw_start, raw_span) in [
+                ("cram_slice_ref_neg3", -3i32, 1i32, 10i32),
+                ("cram_slice_start_zero", 0, 0, 10),
+                ("cram_slice_span_zero", 0, 1, 0),
+                ("cram_slice_past_fasta", 0, 2000, 10),
+            ] {
+                let bad_cram = dir.path().join(format!("{label}.cram"));
+                let mut sh_payload = Vec::new();
+                encode_itf8(raw_ref_id, &mut sh_payload);
+                encode_itf8(raw_start, &mut sh_payload);
+                encode_itf8(raw_span, &mut sh_payload);
+                sh_payload.extend_from_slice(&[
+                    0x00, // record_count = 0
+                    0x00, // record_counter = 0
+                    0x01, // block_count = 1
+                    0x00, // block_content_ids len = 0
+                    0xff, 0xff, 0xff, 0xff, 0x0f, // embedded_ref = -1
+                ]);
+                sh_payload.extend_from_slice(&[0u8; 16]);
+
+                let mut sh_block = vec![
+                    0x00,
+                    0x02,
+                    0x00,
+                    sh_payload.len() as u8,
+                    sh_payload.len() as u8,
+                ];
+                sh_block.extend_from_slice(&sh_payload);
+                let mut sh_crc = flate2::Crc::new();
+                sh_crc.update(&sh_block);
+                sh_block.extend_from_slice(&sh_crc.sum().to_le_bytes());
+
+                let mut core_blk = vec![0x00, 0x05, 0x00, 0x00, 0x00];
+                let mut c_crc = flate2::Crc::new();
+                c_crc.update(&core_blk);
+                core_blk.extend_from_slice(&c_crc.sum().to_le_bytes());
+
+                let mut cont_body = Vec::new();
+                cont_body.extend_from_slice(comp_hdr_bytes);
+                let new_lm0 = cont_body.len();
+                cont_body.extend_from_slice(&sh_block);
+                cont_body.extend_from_slice(&core_blk);
+
+                let mut hdr_body = Vec::new();
+                hdr_body.extend_from_slice(&(cont_body.len() as i32).to_le_bytes());
+                hdr_body.extend_from_slice(&[0x00, 0x32, 0x0a, 0x00, 0x00, 0x00, 0x03, 0x01]);
+                encode_itf8(new_lm0 as i32, &mut hdr_body);
+                let mut h_crc = flate2::Crc::new();
+                h_crc.update(&hdr_body);
+                hdr_body.extend_from_slice(&h_crc.sum().to_le_bytes());
+
+                let mut crafted = base_cram_bytes[..c_pos].to_vec();
+                crafted.extend_from_slice(&hdr_body);
+                crafted.extend_from_slice(&cont_body);
+                std::fs::write(&bad_cram, &crafted).unwrap();
+                let crai_rec = vec![noodles::cram::crai::Record::new(
+                    Some(0),
+                    Position::try_from(50usize).ok(),
+                    10,
+                    c_pos as u64,
+                    new_lm0 as u64,
+                    (sh_block.len() + core_blk.len()) as u64,
+                )];
+                noodles::cram::crai::fs::write(bad_cram.with_extension("cram.crai"), &crai_rec)
+                    .unwrap();
+
+                let slice_err = query_region_iter(&bad_cram, "chr1", Pos0(0), Pos0(200), &cram_cfg)
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect_err(&format!("{label}: expected CRAM SliceHeader rejection"));
+                assert_io_invalid_data(slice_err, label);
+            }
         }
     }
 
@@ -12025,11 +13329,19 @@ mod tests {
             ..Default::default()
         };
         clear_bam_caches();
+        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
 
-        // 1. Verify 2-slot `CRAM_META_TLS` retains both paired somatic CRAM handles (`T -> N -> T -> N`).
-        let meta_a = acquire_cram_meta(&cram_a, &cfg).unwrap();
-        let meta_b = acquire_cram_meta(&cram_b, &cfg).unwrap();
-        let cur_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+        // 1. Verify 2-slot `CRAM_META_TLS` retains both paired somatic CRAM handles (`T -> N -> T -> N`),
+        //    retrying if a sibling parallel test bumps `BAM_CACHE_EPOCH` mid-cold-open.
+        let (meta_a, meta_b, cur_epoch) = loop {
+            let epoch_start = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+            let ma = acquire_cram_meta(&cram_a, &cfg).unwrap();
+            let mb = acquire_cram_meta(&cram_b, &cfg).unwrap();
+            let cur = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+            if cur == epoch_start {
+                break (ma, mb, cur);
+            }
+        };
         assert!(Arc::ptr_eq(
             &lookup_cram_meta_tls(&cram_a, &ref_fa, cur_epoch).expect("slot hit A"),
             &meta_a

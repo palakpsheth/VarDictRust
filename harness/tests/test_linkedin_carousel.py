@@ -274,6 +274,11 @@ class TestLinkedinCarousel(unittest.TestCase):
             self.assertIn("v1.0.8", rendered_svgs)
             self.assertNotIn("v1.0.7", post_md)
             self.assertNotIn("v1.0.7", rendered_svgs)
+            self.assertIn("VarDictRust v1.0.6", slides[1].to_svg())
+            self.assertIn("VarDictRust v1.0.6", slides[2].to_svg())
+            self.assertIn("VarDictRust v1.0.6", slides[3].to_svg())
+            self.assertIn("v1.0.8", slides[0].to_svg())
+            self.assertIn("v1.0.8", slides[9].to_svg())
 
         # 2. Verify Ghostscript-less fallback executes fail-closed JSON checks and emits clear skip note
         orig_which = shutil.which

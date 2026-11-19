@@ -9,9 +9,12 @@ idempotency/reproducibility verification mode.
 from __future__ import annotations
 
 import argparse
+import ast
+import importlib.util
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +104,162 @@ def clopper_pearson_ci(k: int, n: int, alpha: float = 0.05) -> tuple[float, floa
         else float(stats.beta.ppf(1.0 - alpha / 2.0, k + 1, n - k)) * 100.0
     )
     return (lo, hi)
+
+
+def _eval_rust_const_int(expr_str: str, const_name: str) -> int:
+    """Safely evaluate an integer Rust constant expression (e.g. '16 * 1024 * 1024') via stdlib ast."""
+    cleaned = re.sub(r"_", "", expr_str.strip())
+    cleaned = re.sub(r"\b(\d+)(?:usize|u64|u32|i64|i32)\b", r"\1", cleaned)
+    tree = ast.parse(cleaned, mode="eval")
+
+    def _eval_node(node: ast.AST) -> int:
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, int) and not isinstance(node.value, bool):
+            return int(node.value)
+        if isinstance(node, ast.BinOp):
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.FloorDiv):
+                return left // right
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.LShift):
+                return left << right
+        raise ValueError(f"Unsupported AST expression for {const_name}: {expr_str!r}")
+
+    return _eval_node(tree)
+
+
+def _extract_mib_const(rust_src: str, const_name: str, rel_path: str) -> str:
+    match = re.search(
+        rf"\bconst\s+{re.escape(const_name)}\s*:\s*(?:usize|u64|u32)\s*=\s*([^;]+);",
+        rust_src,
+    )
+    if not match:
+        raise ValueError(f"Could not extract constant {const_name} from {rel_path}")
+    raw_bytes = _eval_rust_const_int(match.group(1), const_name)
+    mib_unit = 1024 * 1024
+    if raw_bytes <= 0 or raw_bytes % mib_unit != 0:
+        raise ValueError(
+            f"Constant {const_name} in {rel_path} ({raw_bytes} B) is not a positive exact multiple of MiB"
+        )
+    return str(raw_bytes // mib_unit)
+
+
+def _load_repo_release_and_engine_macros(repo_root: Path) -> dict[str, str]:
+    """Load live release metadata, test/CLI counts, and engine constants without hardcoded numbers."""
+    out: dict[str, str] = {}
+
+    cargo_toml_path = repo_root / "Cargo.toml"
+    cargo_data = tomllib.loads(cargo_toml_path.read_text(encoding="utf-8"))
+    ws_pkg = (cargo_data.get("workspace") or {}).get("package") or {}
+    cur_ver = ws_pkg.get("version")
+    spdx_lic = ws_pkg.get("license")
+    if not isinstance(cur_ver, str) or not cur_ver:
+        raise ValueError(f"Missing [workspace.package].version in {cargo_toml_path}")
+    if not isinstance(spdx_lic, str) or not spdx_lic:
+        raise ValueError(f"Missing [workspace.package].license in {cargo_toml_path}")
+    out["current_release_version"] = cur_ver
+    out["spdx_license"] = spdx_lic
+
+    consistency_path = (
+        repo_root
+        / ".agents"
+        / "skills"
+        / "vardictrust-release"
+        / "scripts"
+        / "check_release_consistency.py"
+    )
+    spec = importlib.util.spec_from_file_location("check_release_consistency", consistency_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load spec from {consistency_path}")
+    consistency_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(consistency_mod)
+
+    tc = consistency_mod.EXPECTED_TEST_COUNTS
+    out["workspace_test_count"] = f"{int(tc['total_workspace']):,}"
+    out["core_lib_test_count"] = f"{int(tc['core_lib']):,}"
+    out["harness_self_test_count"] = f"{int(tc['harness_self_tests']):,}"
+    out["cli_flag_count"] = f"{int(consistency_mod.EXPECTED_CLI_FLAG_COUNT):,}"
+    out["cli_group_count"] = str(len(consistency_mod.EXPECTED_CLI_HEADINGS))
+
+    lib_rs = (repo_root / "crates" / "vardictrust-core" / "src" / "lib.rs").read_text(encoding="utf-8")
+    bam_rs = (repo_root / "crates" / "vardictrust-core" / "src" / "bam.rs").read_text(encoding="utf-8")
+    cfg_rs = (repo_root / "crates" / "vardictrust-core" / "src" / "config.rs").read_text(encoding="utf-8")
+    fisher_rs = (
+        repo_root / "crates" / "vardictrust-core" / "src" / "stats" / "fisher.rs"
+    ).read_text(encoding="utf-8")
+
+    out["vcf_spill_cap_mib"] = _extract_mib_const(
+        lib_rs, "DEFAULT_VCF_SPILL_BYTES", "crates/vardictrust-core/src/lib.rs"
+    )
+    out["cram_container_cap_mib"] = _extract_mib_const(
+        bam_rs, "MAX_CACHED_CRAM_CONTAINER_BYTES", "crates/vardictrust-core/src/bam.rs"
+    )
+    out["max_bai_cap_mib"] = _extract_mib_const(
+        bam_rs, "MAX_BAI_BYTES", "crates/vardictrust-core/src/bam.rs"
+    )
+    out["max_csi_cap_mib"] = _extract_mib_const(
+        bam_rs, "MAX_CSI_BYTES", "crates/vardictrust-core/src/bam.rs"
+    )
+
+    fisher_sup_m = re.search(
+        r"\bconst\s+MAX_DENSE_FISHER_SUPPORT\s*:\s*usize\s*=\s*([^;]+);",
+        fisher_rs,
+    )
+    if not fisher_sup_m:
+        raise ValueError(
+            "Could not extract MAX_DENSE_FISHER_SUPPORT from crates/vardictrust-core/src/stats/fisher.rs"
+        )
+    fisher_sup_val = _eval_rust_const_int(
+        fisher_sup_m.group(1), "MAX_DENSE_FISHER_SUPPORT"
+    )
+    fisher_bytes = fisher_sup_val * 8
+    mib_unit = 1024 * 1024
+    if fisher_bytes <= 0 or fisher_bytes % mib_unit != 0:
+        raise ValueError(
+            f"MAX_DENSE_FISHER_SUPPORT * 8 ({fisher_bytes} B) is not an exact positive multiple of MiB"
+        )
+    out["max_dense_fisher_mib"] = str(fisher_bytes // mib_unit)
+
+    default_impl_m = re.search(
+        r"impl\s+Default\s+for\s+Config\s*\{([\s\S]*?)\n\}",
+        cfg_rs,
+    )
+    if not default_impl_m:
+        raise ValueError("Could not locate 'impl Default for Config' in crates/vardictrust-core/src/config.rs")
+    default_body = default_impl_m.group(1)
+
+    mm_m = re.search(r"\bmax_mismatches\s*:\s*(\d+)\s*,", default_body)
+    indel_m = re.search(r"\bindel_size\s*:\s*(\d+)\s*,", default_body)
+    if not mm_m:
+        raise ValueError("Could not extract default max_mismatches from Config::default()")
+    if not indel_m:
+        raise ValueError("Could not extract default indel_size from Config::default()")
+    out["default_max_mm"] = mm_m.group(1)
+    out["default_indel_size_bp"] = indel_m.group(1)
+
+    hg008_ev_path = repo_root / "benchmarks" / "evidence" / "hg008-tier2.json"
+    scale_ev_path = repo_root / "benchmarks" / "evidence" / "scale.json"
+    if not hg008_ev_path.is_file() or not scale_ev_path.is_file():
+        raise FileNotFoundError("Missing benchmarks/evidence/{hg008-tier2,scale}.json")
+    hg008_ev = json.loads(hg008_ev_path.read_text(encoding="utf-8"))
+    scale_ev = json.loads(scale_ev_path.read_text(encoding="utf-8"))
+    cur_fp = hg008_ev.get("fingerprint")
+    cur_perf_fp = (scale_ev.get("extra") or {}).get("perf_fingerprint")
+    if not isinstance(cur_fp, str) or not cur_fp:
+        raise ValueError("Missing fingerprint in benchmarks/evidence/hg008-tier2.json")
+    if not isinstance(cur_perf_fp, str) or not cur_perf_fp:
+        raise ValueError("Missing extra.perf_fingerprint in benchmarks/evidence/scale.json")
+    out["current_release_fingerprint"] = cur_fp
+    out["current_perf_fingerprint"] = cur_perf_fp
+
+    return out
 
 
 def fmt_cp_ci(k: int, n: int) -> str:
@@ -732,6 +891,10 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     # Stage 6 GA4GH v3.5 summary
     ga_snv_f1 = [r["snv_f1"] for r in ga_rows]
     m["s6_ga4gh_mean_snv_f1"] = f"{sum(ga_snv_f1) / len(ga_snv_f1):.4f}"
+
+    # Live repository release metadata, test/CLI counts, and Rust engine constants
+    # (keeps m["version"] == "1.0.6" and all 60-cell GCP study provenance untouched)
+    m.update(_load_repo_release_and_engine_macros(ROOT))
 
     return m
 

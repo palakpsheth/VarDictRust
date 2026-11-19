@@ -4,8 +4,8 @@ process VARDICTRUST {
 
     conda "${moduleDir}/environment.yml"
     container "${ workflow.containerEngine in ['singularity', 'apptainer'] && !task.ext.singularity_pull_docker_container
-?         'https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/12/1235da44581a255a1c14bfb295838e7806045c142766f7ed78da4222a2a624ae/data'
-:         'community.wave.seqera.io/library/htslib_vardictrust:b705f1632518b05e' }"
+?         'https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/33/33ba32a84ffa98e9001a1079218cc9deb09a41939afe85fa189a090665aad393/data'
+:         'community.wave.seqera.io/library/htslib_vardictrust:8e6fd2fa9924d063' }"
 
     input:
     tuple val(meta), path(bams), path(bais), path(bed)
@@ -24,17 +24,12 @@ process VARDICTRUST {
     def args = task.ext.args ?: '-c 1 -S 2 -E 3 -z'
     def args2 = task.ext.args2 ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
-    if (!(prefix ==~ /^[A-Za-z0-9._-]+$/)) { error "Unsafe task.ext.prefix: ${prefix}" }
-    if (!("${meta.id}" ==~ /^[A-Za-z0-9._|-]+$/)) { error "Unsafe meta.id: ${meta.id}" }
 
-    def shQuote = { s -> "'" + s.toString().replace("'", "'\"'\"'") + "'" }
     // A lone BAM may arrive as a 1-element List; unwrap it so it never mis-dispatches as somatic
     def bam_input = bams instanceof List && bams.size() == 1 ? bams[0] : bams
     def somatic = bam_input instanceof List && bam_input.size() == 2
-    // Single-quote staged paths so |, $, `, and " in filenames are never expanded by Bash
-    def input = somatic ? '-b ' + shQuote(bam_input[0].toString() + '|' + bam_input[1].toString()) : '-b ' + shQuote(bam_input)
-    def fasta_arg = shQuote(fasta)
-    def bed_arg = bed ? shQuote(bed) : ""
+    // Single-quoted Groovy: the emitted shell keeps -b "tumor|normal" double-quoted so | is never a pipe
+    def input = somatic ? '-b "' + bam_input[0] + '|' + bam_input[1] + '"' : "-b ${bam_input}"
     """
     set -o pipefail
 
@@ -43,17 +38,15 @@ process VARDICTRUST {
         ${input} \\
         -N "${meta.id}" \\
         --threads ${task.cpus} \\
-        -G ${fasta_arg} \\
-        ${bed_arg} \\
-        | bgzip ${args2} --threads ${task.cpus} > "${prefix}.vcf.gz"
+        -G ${fasta} \\
+        ${bed} \\
+        | bgzip ${args2} --threads ${task.cpus} > ${prefix}.vcf.gz
     """
 
     stub:
     def prefix = task.ext.prefix ?: "${meta.id}"
-    if (!(prefix ==~ /^[A-Za-z0-9._-]+$/)) { error "Unsafe task.ext.prefix: ${prefix}" }
-    if (!("${meta.id}" ==~ /^[A-Za-z0-9._|-]+$/)) { error "Unsafe meta.id: ${meta.id}" }
 
     """
-    echo "" | gzip > "${prefix}.vcf.gz"
+    echo "" | gzip > ${prefix}.vcf.gz
     """
 }

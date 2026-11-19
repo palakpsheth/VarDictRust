@@ -2353,10 +2353,14 @@ def build_all_tables(
     h8_v04 = h8_b["vcfeval_v04_rust"]["best"]
     h2_a_cpp_rss_ratio = h2_a["cpp"]["max_rss_kb"] / h2_a["rust"]["max_rss_kb"]
     h8_a_cpp_rss_ratio = h8_a["cpp"]["max_rss_kb"] / h8_a["rust"]["max_rss_kb"]
+    def _opt_wall_paren(wall_str: Any) -> str:
+        ws = str(wall_str or "").strip()
+        return f" ({ws})" if ws else ""
+
     t5_rows: list[list[Any]] = [
         [
             "GIAB HG002 [13, 18] 130.8 GB Germline WGS (22 Unchunked Chromosomes)<sup>a</sup>",
-            f"OOM Crash (rc=3, >200 GB Heap) at {h2_a['java']['max_rss_gb_dec']:.2f} GB RSS ({h2_a['java']['wall_str']})<sup>b</sup>",
+            f"OOM Crash (rc=3, >200 GB Heap) at {h2_a['java']['max_rss_gb_dec']:.2f} GB RSS{_opt_wall_paren(h2_a['java']['wall_str'])}<sup>b</sup>",
             f"{h2_a['cpp']['wall_str']} / {h2_a['cpp']['max_rss_gb_dec']:.2f} GB RSS ({h2_a['cpp']['variant_count']:,} variants; +{h2_a['cpp']['boundary_excess_variants']:,} chunk-boundary duplicates)<sup>c</sup>",
             f"{h2_a['rust']['wall_str']} ({h2_a['rust']['wall_s']:.2f} s) / {h2_a['rust']['max_rss_gb_dec']:.2f} GB ({h2_a['rust']['max_rss_gib']:.2f} GiB) RSS ({h2_a['rust']['variant_count']:,} variants)",
             f"Completes in bounded memory (Rust {h2_a_cpp_rss_ratio:.1f}x leaner than C++, {h2_a['rust'].get('boundary_excess_variants', 0)} chunk-boundary duplicates)<sup>c</sup>",
@@ -2370,15 +2374,15 @@ def build_all_tables(
         ],
         [
             "GIAB HG008 [19] 329.0 GB 364x T/N Somatic WGS (22 Unchunked Chromosomes, -U)<sup>a,d</sup>",
-            f"OOM Crash (rc=3, >200 GB Heap) at {h8_a['java']['max_rss_gb_dec']:.2f} GB RSS ({h8_a['java']['wall_str']})<sup>b</sup>",
-            f"Timeout (rc=124, >3 h) at {h8_a['cpp']['max_rss_gb_dec']:.2f} GB RSS ({h8_a['cpp']['wall_str']})<sup>b</sup>",
+            f"OOM Crash (rc=3, >200 GB Heap) at {h8_a['java']['max_rss_gb_dec']:.2f} GB RSS{_opt_wall_paren(h8_a['java']['wall_str'])}<sup>b</sup>",
+            f"Timeout (rc=124, >3 h) at {h8_a['cpp']['max_rss_gb_dec']:.2f} GB RSS{_opt_wall_paren(h8_a['cpp']['wall_str'])}<sup>b</sup>",
             f"{h8_a['rust']['wall_str']} ({h8_a['rust']['wall_s']:.2f} s) / {h8_a['rust']['max_rss_gb_dec']:.2f} GB ({h8_a['rust']['max_rss_gib']:.2f} GiB) RSS ({h8_a['rust']['variant_count']:,} variants)",
             f"Only VarDictRust completes (Rust {h8_a_cpp_rss_ratio:.1f}x leaner than C++)",
         ],
         [
             f"GIAB HG008 [19] 329.0 GB 364x T/N Somatic WGS (<={50000 // 1000} kbp GIAB Callable BED, -U)<sup>a,d</sup>",
             f"Timeout (rc=124, {h8_b['java']['wall_str']}) at {h8_b['java']['max_rss_gb_dec']:.2f} GB RSS<sup>b</sup>",
-            f"Timeout (rc=124, >3 h) at {h8_b['cpp']['max_rss_gb_dec']:.2f} GB RSS ({h8_b['cpp']['wall_str']})<sup>b</sup>",
+            f"Timeout (rc=124, >3 h) at {h8_b['cpp']['max_rss_gb_dec']:.2f} GB RSS{_opt_wall_paren(h8_b['cpp']['wall_str'])}<sup>b</sup>",
             f"{h8_b['rust']['wall_str']} ({h8_b['rust']['wall_s']:.2f} s) / {h8_b['rust']['max_rss_gb_dec']:.2f} GB ({h8_b['rust']['max_rss_gib']:.2f} GiB) RSS ({h8_b['rust']['variant_count']:,} variants)",
             f"Only VarDictRust completes; GIAB v0.3 F1={h8_v03['f_measure']:.4f}, v0.4 F1={h8_v04['f_measure']:.4f}",
         ],
@@ -2589,6 +2593,7 @@ def build_all_tables(
     # Table 8: Supply-Chain Security, Static musl Equivalence & Divergence Summary
     # ------------------------------------------------------------------
     h4 = s5["h4_maintenance_security_matrix"]
+    cpp_divergence_count = 12
     t8_headers = [
         "Engineering & Security Dimension",
         "VarDictJava v1.8.3 [1] (0886261)",
@@ -2599,8 +2604,8 @@ def build_all_tables(
         [
             "Upstream Repository Maintenance Status",
             "Archived Read-Only (EOL)<sup>a</sup>",
-            f"Preprint Prototype ({h4['cpp_divergences_cataloged']} Divergences)<sup>b</sup>",
-            "Actively Maintained (MIT, v1.0.6)<sup>a,e</sup>",
+            f"Preprint Prototype ({cpp_divergence_count} Divergences)<sup>b</sup>",
+            "Actively Maintained (MIT AND GPL-2.0-or-later, v1.0.6)<sup>a,e</sup>",
         ],
         [
             "Runtime Dependency & Binary Footprint",
@@ -2623,7 +2628,7 @@ def build_all_tables(
         [
             "Empirical Divergence Classes vs. Oracle",
             "Reference Oracle (Baseline)<sup>a</sup>",
-            f"{h4['cpp_divergences_cataloged']} Cataloged Divergence Classes (CPP-1 to CPP-12)<sup>b</sup>",
+            f"{cpp_divergence_count} Cataloged Divergence Classes (CPP-1 to CPP-12)<sup>b</sup>",
             "0 Divergences on Valid Inputs (#![forbid(unsafe_code)])<sup>a,e</sup>",
         ],
     ]
@@ -2689,11 +2694,11 @@ def build_all_tables(
         "PASS_SPAN_1M_TO_249M_N3": f"Bounded memory verified across 1–249 Mbp spans (<{1.5:.2f}x RSS ratio, n=3)",
         "MATCH_TRUTH_3_COHORTS_AND_QUAL_ROC": "100% Exact Match across HG002, SEQC2 & HG008 QUAL ROC sweeps",
         "PASS_4_GCP_SUITES": "100% Exact Match (17/17 extended modes, 18/18 slices, HG005 & NA24385)",
-        "MATCH_70_STRATIFICATION_CELLS": "100% Exact Match across all 70 GA4GH v3.5 stratification cells",
+        "MATCH_70_STRATIFICATION_CELLS": f"70/70 Rust truth evaluations completed (Java parity on {j_comp_cnt}/{j_comp_cnt} completing Chr20 runs)",
         "MATCH_V50Q_CMRG_MOSAIC_12_EVALS": "12/12 evaluations completed (100% Match on callable BED)",
         "PASS_27_CALLER_BENCHMARKS_V04": "27/27 caller-benchmark evaluations completed across 11 callers",
         "PASS_19_CALLER_COHORT_EVALS (VarDictRust==VarDictJava)": "19/19 caller-cohort evaluations completed (VarDictRust == VarDictJava)",
-        "PASS_H4_STATIC_MUSL_AND_CPP10_CATALOG": "Static musl equivalence verified & CPP-1..10 cataloged",
+        "PASS_H4_STATIC_MUSL_AND_CPP10_CATALOG": "Static musl equivalence verified & CPP-1..12 cataloged",
         f"OOM-vs-completed (java_rc=3, rust_vars={h2_a['rust']['variant_count']})": f"VarDictJava OOM (rc=3); VarDictRust completes ({h2_a['rust']['variant_count']:,} variants)",
         f"OOM-or-timeout-vs-completed (java_rc=3, rust_vars={h8_a['rust']['variant_count']})": f"VarDictJava OOM (rc=3) & C++ timeout; VarDictRust completes ({h8_a['rust']['variant_count']:,} variants)",
         f"OOM-or-timeout-vs-completed (java_rc=124, rust_vars={h8_b['rust']['variant_count']})": f"VarDictJava & C++ timeout (rc=124); VarDictRust completes ({h8_b['rust']['variant_count']:,} variants)",
@@ -2749,6 +2754,7 @@ def build_all_tables(
                 "HG002 germline, SEQC2 somatic exome, and HG008 somatic",
             )
             .replace("SRR15006376|SRR15006386", "SRR15006376 / SRR15006386")
+            .replace("CPP-1..10", "CPP-1..12")
         )
         return d
 
@@ -3426,14 +3432,14 @@ def build_all_tables(
         f"Supplementary Table S5. Complete {len(s5_rows)}-Cell GA4GH v3.5 [17] Genomic Stratification Matrix (7 Strata x 10 Sequencing Platforms)",
         s5_headers,
         s5_rows,
-        f"<sup>a</sup>Evaluates Chromosome 20 callsets at -f 0.01 across 4 GIAB HG002 [13, 18] germline platforms and 6 GIAB HG008 [19] somatic platforms; across all {len(s5_rows)}/{len(s5_rows)} stratification cells (Clopper-Pearson 95% CI {fmt_clopper_pearson_ci(len(s5_rows), len(s5_rows))}), VarDictRust v1.0.6 and VarDictJava v1.8.3 [1] exhibit 0 site differences. "
+        f"<sup>a</sup>Evaluates Chromosome 20 callsets at -f 0.01 across 4 GIAB HG002 [13, 18] germline platforms and 6 GIAB HG008 [19] somatic platforms; all {len(s5_rows)}/{len(s5_rows)} VarDictRust v1.0.6 truth evaluations completed (Clopper-Pearson 95% CI {fmt_clopper_pearson_ci(len(s5_rows), len(s5_rows))}), with 0 site differences against VarDictJava v1.8.3 [1] across all completing paired Chromosome 20 runs (see Table 6). "
         "<sup>b</sup>Genomic strata follow the NIST GIAB / GA4GH v3.5 [17] stratification BED definitions on GRCh38 (homopolymers of 4–6 bp, 7–11 bp, and >=12 bp, all tandem repeats, segmental duplications, low-mappability regions, and RefSeq coding sequences). "
         "<sup>c</sup>Within the Chromosome 20 RefSeq CDS stratum of GIAB HG008 v0.4 [19], the somatic truth set contains SNVs only and zero truth InDels. "
         "Source ledger: stratification values are generated from the stage6 TSVs via master_gcp_metrics.json; this table is the formatted view.",
     )
 
     # ------------------------------------------------------------------
-    # Supplementary Table S6: 13-Mode Functional Parity & CPP-1..10 Divergence Catalog
+    # Supplementary Table S6: 13-Mode Functional Parity & CPP-1..12 Divergence Catalog
     # ------------------------------------------------------------------
     s6_headers = [
         "Evaluation Category",
@@ -3513,7 +3519,7 @@ def build_all_tables(
             "CPP-4",
             "Concatenated CLI Flag Parsing",
             "Supported",
-            "Supported (60-flag CLI parity)",
+            "Supported (60-flag v1.0.6 CLI parity)",
             "Exits with code 120 on bundled CLI flags",
             "Breaks existing VarDict pipeline CLI wrappers",
         ),
@@ -3582,6 +3588,10 @@ def build_all_tables(
             "Verified on 51.8 GiB GIAB HG002 GM24385 STAR BAM [13]",
         ),
     ]
+    if len(cpp_catalog) != cpp_divergence_count:
+        raise ValueError(
+            f"cpp_catalog length ({len(cpp_catalog)}) != cpp_divergence_count ({cpp_divergence_count})"
+        )
     for cid_code, desc, j_b, r_b, c_b, note in cpp_catalog:
         s6_rows.append(
             [
