@@ -200,6 +200,7 @@ impl<'a> AmpliconCoverSweep<'a> {
 
     /// Covering amplicon references at `pos`, in segment order, without cloning
     /// `Region` per base. Positions MUST arrive in ascending (non-decreasing) order.
+    #[cfg(test)]
     pub(crate) fn covering_refs_at(&mut self, pos: i32) -> Vec<(usize, &'a Region)> {
         self.advance_to(pos);
         let mut covering = Vec::with_capacity(self.active.len());
@@ -1733,5 +1734,81 @@ mod tests {
             amplicon_post_process(&config, &region, &vars_per_amplicon, &owned_map, &splice)
                 .unwrap();
         assert_eq!(format!("{batch_ref:?}"), format!("{batch_owned:?}"));
+
+        // Verify non-`-p` streaming `covering_arc_at` + `amplicon_post_process_streaming`
+        // (+ `amplicon_select_vcf_rows` in VCF mode) matches `amplicon_post_process` field-for-field
+        // across overlapping multi-amplicon `.var` and VCF modes (including out-of-insert keys and
+        // multi-allelic same-start AF contests).
+        let mut rich_vars = vars_per_amplicon.clone();
+        // Out-of-insert position 95 (uncovered by every amplicon insert -> cov.is_empty())
+        let mut v_uncov = Vars::new();
+        v_uncov.variants.push(make_good_variant(95, "C", "A", 0.50));
+        rich_vars[0].insert(95, v_uncov);
+        // Adjacent covered position 153 (shares cached Arc with 152 across amp 0, 1, 3) with
+        // multi-allelic AF contest and shifted start_pos = 152 colliding with pos 152 in VCF mode
+        let mut v_153_a0 = Vars::new();
+        let mut shifted_hi = make_good_variant(152, "AT", "A", 0.65);
+        shifted_hi.end_pos = 153;
+        v_153_a0.variants.push(shifted_hi.clone());
+        v_153_a0
+            .variants
+            .push(make_good_variant(153, "T", "G", 0.25));
+        rich_vars[0].insert(153, v_153_a0);
+        let mut v_153_a1 = Vars::new();
+        v_153_a1.variants.push(shifted_hi);
+        rich_vars[1].insert(153, v_153_a1);
+        // Covered position 182 (amp 0, 1, 5)
+        let mut v_182 = Vars::new();
+        v_182.variants.push(make_good_variant(182, "G", "C", 0.40));
+        rich_vars[5].insert(182, v_182);
+
+        for emit_intermediate in [true, false] {
+            for debug_mode in [false, true] {
+                let mut mode_cfg = make_test_config();
+                mode_cfg.emit_intermediate = emit_intermediate;
+                mode_cfg.debug = debug_mode;
+
+                let mut positions: BTreeSet<i32> = BTreeSet::new();
+                for vm in &rich_vars {
+                    positions.extend(vm.keys().copied());
+                }
+
+                let mut batch_sweep = AmpliconCoverSweep::new(&segment);
+                let mut batch_amps: BTreeMap<i32, Vec<(usize, &Region)>> = BTreeMap::new();
+                for &p in &positions {
+                    let cov = batch_sweep.covering_refs_at(p);
+                    if !cov.is_empty() {
+                        batch_amps.insert(p, cov);
+                    }
+                }
+                let expected =
+                    amplicon_post_process(&mode_cfg, &region, &rich_vars, &batch_amps, &splice)
+                        .unwrap();
+
+                let mut stream_sweep = AmpliconCoverSweep::new(&segment);
+                let mut streamed = Vec::new();
+                amplicon_post_process_streaming(
+                    &mode_cfg,
+                    &region,
+                    &rich_vars,
+                    positions.into_iter().filter_map(|p| {
+                        let cov = stream_sweep.covering_arc_at(p);
+                        (!cov.is_empty()).then_some((p, cov))
+                    }),
+                    &splice,
+                    &mut |av| {
+                        streamed.push(av);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                if !mode_cfg.emit_intermediate {
+                    streamed = amplicon_select_vcf_rows(streamed);
+                }
+
+                assert_eq!(streamed.len(), expected.len());
+                assert_eq!(format!("{streamed:?}"), format!("{expected:?}"));
+            }
+        }
     }
 }
