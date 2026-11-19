@@ -6,7 +6,14 @@ use libfuzzer_sys::fuzz_target;
 use vardictrust_core::bam::{RecordPreprocessor, SamRecord};
 use vardictrust_core::config::Config;
 
+/// Maximum accepted libFuzzer input payload (`8 KiB`) to bound per-iteration runtime.
+const MAX_FUZZ_INPUT_BYTES: usize = 8192;
+
 fuzz_target!(|data: &[u8]| {
+    if data.len() > MAX_FUZZ_INPUT_BYTES {
+        return;
+    }
+
     let header_src = b"@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000000\n";
     let mut sam_bytes = Vec::with_capacity(header_src.len() + data.len() + 1);
     sam_bytes.extend_from_slice(header_src);

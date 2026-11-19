@@ -7,8 +7,11 @@ use libfuzzer_sys::fuzz_target;
 use vardictrust_core::config::Config;
 use vardictrust_core::regions::{parse_bed_from_reader, parse_region_flag};
 
+/// Maximum accepted libFuzzer input payload (`8 KiB`) to bound per-iteration runtime.
+const MAX_FUZZ_INPUT_BYTES: usize = 8192;
+
 fuzz_target!(|data: &[u8]| {
-    if data.is_empty() {
+    if data.is_empty() || data.len() > MAX_FUZZ_INPUT_BYTES {
         return;
     }
 
