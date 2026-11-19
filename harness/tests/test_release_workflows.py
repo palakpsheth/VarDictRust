@@ -245,24 +245,13 @@ class TestReleaseAndCiWorkflows(unittest.TestCase):
         self.assertEqual(dependabot_text.count("default-days: 7"), 3, "dependabot.yml must set default-days: 7 on all 3 ecosystems")
 
         nf_main_text = (ROOT_DIR / "packaging" / "nf-core" / "modules" / "vardictrust" / "main.nf").read_text(encoding="utf-8")
-        self.assertEqual(
-            nf_main_text.count("prefix ==~ /^[A-Za-z0-9._:+-]+$/"),
-            2,
-            "main.nf must validate task.ext.prefix in both script: and stub:",
+        self.assertIn(
+            'def input = somatic ? \'-b "\' + bam_input[0] + \'|\' + bam_input[1] + \'"\' : "-b ${bam_input}"',
+            nf_main_text,
+            "main.nf must double-quote somatic -b tumor|normal so | is never parsed as a shell pipe",
         )
-        self.assertEqual(
-            nf_main_text.count('if (!("${meta.id}" ==~ /^[A-Za-z0-9._|:+-]+$/)) { error "Unsafe meta.id: ${meta.id}" }'),
-            2,
-            "main.nf must validate meta.id independently in both script: and stub:",
-        )
-        self.assertIn("def shQuote =", nf_main_text)
-        self.assertIn("def fasta_arg = shQuote.call(fasta)", nf_main_text)
-        self.assertIn("-G ${fasta_arg}", nf_main_text)
-        self.assertEqual(
-            nf_main_text.count('> "${prefix}.vcf.gz"'),
-            2,
-            'main.nf must quote > "${prefix}.vcf.gz" in both script: and stub:',
-        )
+        self.assertIn('-N "${meta.id}"', nf_main_text)
+        self.assertNotIn("def shQuote =", nf_main_text, "main.nf must follow standard nf-core module idiom without custom Groovy closures")
 
         cfg_text = (ROOT_DIR / "harness" / "configure_github_repo.py").read_text(encoding="utf-8")
         self.assertIn('"Accept": "application/vnd.github+json"', cfg_text)
