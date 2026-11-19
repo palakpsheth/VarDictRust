@@ -113,12 +113,12 @@ cargo install --git https://github.com/palakpsheth/VarDictRust.git --tag v1.0.10
 Multi-arch Seqera Wave containers bundle `vardictrust` and `htslib` (`bgzip`/`tabix`) from the published Bioconda package (pinned digests and exact package version tracked in [`packaging/nf-core/modules/vardictrust/meta.yml`](packaging/nf-core/modules/vardictrust/meta.yml) and [`environment.yml`](packaging/nf-core/modules/vardictrust/environment.yml)):
 
 ```bash
-# Docker / Podman (linux/amd64: b705f1632518b05e | linux/arm64: 7e30a277329c2b61)
-docker run --rm -v $(pwd):/data community.wave.seqera.io/library/htslib_vardictrust:b705f1632518b05e \
+# Docker / Podman (linux/amd64: 8e6fd2fa9924d063 | linux/arm64: ad558d83a9c24379)
+docker run --rm -v $(pwd):/data community.wave.seqera.io/library/htslib_vardictrust:8e6fd2fa9924d063 \
   vardictrust -G /data/ref.fa -b /data/sample.bam -R chr1:1000-2000 > output.vcf
 
-# Apptainer / Singularity ORAS (linux/amd64: ed3764cd0c476c11 | linux/arm64: 002fbca04179bda4)
-apptainer exec oras://community.wave.seqera.io/library/htslib_vardictrust:ed3764cd0c476c11 vardictrust --help
+# Apptainer / Singularity ORAS (linux/amd64: b603893bd98569d2 | linux/arm64: dcf7214823b2eb9c)
+apptainer exec oras://community.wave.seqera.io/library/htslib_vardictrust:b603893bd98569d2 vardictrust --help
 ```
 
 ### 4. Conda / Bioconda (`conda`, `mamba`, `pixi`)
