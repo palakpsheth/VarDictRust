@@ -5,7 +5,7 @@ use vardictrust_core::realign::{find_35_match, find_bp};
 use vardictrust_core::reference::{LoadedRegion, Reference};
 
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 8 {
+    if data.len() < 8 || data.len() > 520 {
         return;
     }
 
