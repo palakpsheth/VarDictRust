@@ -998,6 +998,7 @@ const BAI_METADATA_BIN_ID: u32 =
         None => 0,
     };
 const MAX_BAM_INDEX_REFS: usize = 16_777_216;
+const MAX_CSI_TOTAL_BINS: usize = 4_194_304;
 const MAX_BAM_HEADER_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BAM_REF_NAME_BYTES: usize = 65_536;
 const MAX_BAM_RECORD_BYTES: usize = 64 * 1024 * 1024;
@@ -1301,6 +1302,7 @@ fn read_validated_bai_index(path: &Path) -> std::io::Result<noodles::bam::bai::I
             ));
         }
 
+        let mut seen_bins = [0u64; (BAI_METADATA_BIN_ID as usize / 64) + 1];
         for _ in 0..n_bin {
             let bin_id = read_bai_u32_le(&mut reader, &mut rem, path)?;
             if bin_id > BAI_MAX_BIN_ID && bin_id != BAI_METADATA_BIN_ID {
@@ -1312,6 +1314,21 @@ fn read_validated_bai_index(path: &Path) -> std::io::Result<noodles::bam::bai::I
                     ),
                 ));
             }
+            let bin_idx = bin_id as usize;
+            let mask = 1u64 << (bin_idx % 64);
+            let Some(word) = seen_bins.get_mut(bin_idx / 64) else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("BAI bin_id ({bin_id}) out of range in '{}'", path.display()),
+                ));
+            };
+            if (*word & mask) != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("duplicate BAI bin_id ({bin_id}) in '{}'", path.display()),
+                ));
+            }
+            *word |= mask;
             if bin_id == BAI_METADATA_BIN_ID {
                 if rem < 36 {
                     return Err(std::io::Error::new(
@@ -1535,6 +1552,7 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
         ));
     }
 
+    let mut total_bins = 0usize;
     for _ in 0..n_ref_usize {
         let n_bin = read_csi_i32_le(&mut slice, path)?;
         let n_bin_usize = usize::try_from(n_bin).map_err(|_| {
@@ -1562,7 +1580,23 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
                 ),
             ));
         }
+        total_bins = total_bins
+            .checked_add(n_bin_usize)
+            .filter(|&tot| tot <= MAX_CSI_TOTAL_BINS)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CSI total bin count in '{}' exceeds maximum allowed ({MAX_CSI_TOTAL_BINS})",
+                        path.display()
+                    ),
+                )
+            })?;
 
+        let mut seen_bins = rustc_hash::FxHashSet::with_capacity_and_hasher(
+            n_bin_usize.min(4_096),
+            Default::default(),
+        );
         for _ in 0..n_bin_usize {
             let bin_id = read_csi_u32_le(&mut slice, path)?;
             let bin_id_usize = usize::try_from(bin_id).map_err(|_| {
@@ -1578,6 +1612,12 @@ fn validate_csi_payload(mut slice: &[u8], path: &Path) -> std::io::Result<()> {
                         "invalid CSI bin_id ({bin_id}) in '{}' (max={max_bin_id}, metadata={metadata_id})",
                         path.display()
                     ),
+                ));
+            }
+            if !seen_bins.insert(bin_id_usize) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("duplicate CSI bin_id ({bin_id}) in '{}'", path.display()),
                 ));
             }
             let _loffset = take_csi_slice(&mut slice, 8, path)?;
@@ -11809,8 +11849,10 @@ mod tests {
 
         // (iii) Global `CRAM_CONTAINER_CACHE` remains epoch-protected when `BAM_CACHE_EPOCH`
         //       advances mid-decode, and caches normally when `BAM_CACHE_EPOCH` is unchanged.
+        //       Uses isolated `meta_global.id >= TEST_META_ID_BASE` so concurrent sibling
+        //       `clear_bam_caches()` (`LruCacheShard::clear_production`) cannot evict `global_key`.
         {
-            let _prod_guard = ForceProdIdGuard::enter();
+            NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
             let global_cram = temp_dir.path().join("global_epoch_guard.cram");
             std::fs::copy(&cram_path, &global_cram).unwrap();
             std::fs::copy(
@@ -11819,6 +11861,7 @@ mod tests {
             )
             .unwrap();
             let meta_global = acquire_cram_meta(&global_cram, &config).unwrap();
+            assert!(meta_global.id >= TEST_META_ID_BASE);
             let global_key = (meta_global.id, container_offset);
             let global_shard_idx =
                 cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta_global.id, container_offset);
@@ -12403,7 +12446,7 @@ mod tests {
 
         fn bgzf_wrap(raw: &[u8]) -> Vec<u8> {
             let mut out = Vec::new();
-            let mut w = noodles::bgzf::io::Writer::new(&mut out);
+            let mut w = noodles_bgzf::io::Writer::new(&mut out);
             w.write_all(raw).unwrap();
             w.finish().unwrap();
             out
@@ -12412,6 +12455,7 @@ mod tests {
         assert_eq!(BAI_DEPTH, 5);
         assert_eq!(BAI_MAX_BIN_ID, 37_448);
         assert_eq!(BAI_METADATA_BIN_ID, 37_450);
+        assert_eq!(MAX_CSI_TOTAL_BINS, 4_194_304);
 
         let dir = tempfile::tempdir().unwrap();
         let bam_path = dir.path().join("hostile_idx.bam");
@@ -12527,6 +12571,27 @@ mod tests {
             );
         }
 
+        {
+            let d9_bam = clone_bam_case("ok_csi_depth_9");
+            let mut d9_indexer = Indexer::<BinnedIndex>::new(14, 9).unwrap();
+            let s = Position::try_from(50usize).unwrap();
+            let e = Position::try_from(59usize).unwrap();
+            d9_indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
+                .unwrap();
+            noodles::csi::fs::write(d9_bam.with_extension("bam.csi"), &d9_indexer.build(1))
+                .unwrap();
+            let d9_reads: Vec<SamRecord> =
+                query_region_iter(&d9_bam, "chr1", Pos0(0), Pos0(200), &cfg)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            assert_eq!(
+                d9_reads, bai_reads,
+                "valid CSI min_shift=14 depth=9 must load and query cleanly"
+            );
+        }
+
         let hdr_csi_bam = clone_bam_case("ok_csi_hdr");
         let mut names = noodles::csi::binning_index::index::header::ReferenceSequenceNames::new();
         names.insert(b"chr1".as_slice().into());
@@ -12628,10 +12693,20 @@ mod tests {
         bai_oversized_nintv.extend_from_slice(&0u32.to_le_bytes()); // n_bin = 0
         bai_oversized_nintv.extend_from_slice(&0x4000_0000u32.to_le_bytes()); // n_intv
 
+        let mut bai_dup_bin_4681 = b"BAI\x01".to_vec();
+        bai_dup_bin_4681.extend_from_slice(&1u32.to_le_bytes()); // n_ref = 1
+        bai_dup_bin_4681.extend_from_slice(&2u32.to_le_bytes()); // n_bin = 2
+        for _ in 0..2 {
+            bai_dup_bin_4681.extend_from_slice(&4681u32.to_le_bytes());
+            bai_dup_bin_4681.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+        }
+        bai_dup_bin_4681.extend_from_slice(&0u32.to_le_bytes()); // n_intv = 0
+
         for (label, bad_bai) in [
             ("bai_bin_37449", bai_bin_37449),
             ("bai_bin_50000", bai_bin_50000),
             ("bai_nbin_37451", bai_nbin_37451),
+            ("bai_dup_bin_4681", bai_dup_bin_4681),
             ("bai_fuzz_seed_gpr_raw", FUZZ_SEED_GPR.to_vec()),
             ("bai_fuzz_seed_gpr_mutated", bai_fuzz_gpr_mutated),
             ("bai_owser_nref", b"BAI\x01owser-".to_vec()),
@@ -12649,6 +12724,12 @@ mod tests {
                 std::io::ErrorKind::InvalidData,
                 "{label}: expected InvalidData, got {idx_err:?}"
             );
+            if label == "bai_dup_bin_4681" {
+                assert!(
+                    idx_err.to_string().contains("duplicate BAI bin_id"),
+                    "{label}: expected prevalidator duplicate BAI bin_id error, got {idx_err}"
+                );
+            }
             let q_err = query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
                 .expect_err(&format!("{label}: expected query_region_iter error"));
             assert_io_invalid_data(q_err, label);
@@ -12656,9 +12737,10 @@ mod tests {
         std::fs::remove_file(&bai_path).unwrap();
 
         // 4. Corrupt BGZF `.csi` cases (with complete trailing fields):
-        //    `bin_id = 37_449` (`depth = 5`), `n_bin = 37_451`, `(min_shift = 64, depth = 0)`,
-        //    `(min_shift = 50, depth = 5)`, oversized `n_ref`, `n_bin`, `n_chunk`, `l_aux`,
-        //    and misaligned `l_aux != 28 + l_nm`.
+        //    `bin_id = 37_449` (`depth = 5`), `n_bin = 37_451`, duplicate `bin_id` at `depth = 9`,
+        //    total bins > `MAX_CSI_TOTAL_BINS` (`4_194_304`) with complete payload bytes,
+        //    `(min_shift = 64, depth = 0)`, `(min_shift = 50, depth = 5)`, oversized `n_ref`,
+        //    `n_bin`, `n_chunk`, `l_aux`, and misaligned `l_aux != 28 + l_nm`.
         let csi_hdr_custom = |min_shift: i32, depth: i32, l_aux: i32| -> Vec<u8> {
             let mut v = b"CSI\x01".to_vec();
             v.extend_from_slice(&min_shift.to_le_bytes());
@@ -12688,6 +12770,55 @@ mod tests {
         csi_nbin_37451.extend_from_slice(&0u64.to_le_bytes()); // loffset
         csi_nbin_37451.extend_from_slice(&2u32.to_le_bytes()); // metadata n_chunk = 2
         csi_nbin_37451.extend_from_slice(&[0u8; 32]);
+
+        let mut csi_d9_dup_bin = csi_hdr_custom(14, 9, 0);
+        csi_d9_dup_bin.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_d9_dup_bin.extend_from_slice(&2i32.to_le_bytes()); // n_bin = 2
+        for _ in 0..2 {
+            csi_d9_dup_bin.extend_from_slice(&0u32.to_le_bytes()); // repeated bin_id = 0
+            csi_d9_dup_bin.extend_from_slice(&0u64.to_le_bytes()); // loffset = 0
+            csi_d9_dup_bin.extend_from_slice(&0i32.to_le_bytes()); // n_chunk = 0
+        }
+        let dup_pre_err = validate_csi_payload(&csi_d9_dup_bin, Path::new("csi_d9_dup_bin.csi"))
+            .expect_err(
+                "validate_csi_payload must reject duplicate CSI bin_id before noodles allocates",
+            );
+        assert_eq!(dup_pre_err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(dup_pre_err.to_string().contains("duplicate CSI bin_id"));
+
+        const OVER_TOTAL_CSI_BINS: usize = MAX_CSI_TOTAL_BINS + 1;
+        let mut csi_d9_over_total_bins = vec![0u8; 24 + OVER_TOTAL_CSI_BINS * 16];
+        csi_d9_over_total_bins[..16].copy_from_slice(&csi_hdr_custom(14, 9, 0));
+        csi_d9_over_total_bins[16..20].copy_from_slice(&1i32.to_le_bytes()); // n_ref = 1
+        csi_d9_over_total_bins[20..24].copy_from_slice(&(OVER_TOTAL_CSI_BINS as i32).to_le_bytes());
+        for (bid, slot) in csi_d9_over_total_bins[24..]
+            .chunks_exact_mut(16)
+            .enumerate()
+        {
+            slot[..4].copy_from_slice(&(bid as u32).to_le_bytes());
+        }
+
+        let mut csi_d7_multiref_over_total_bins = vec![0u8; 20 + 8 + OVER_TOTAL_CSI_BINS * 16];
+        csi_d7_multiref_over_total_bins[..16].copy_from_slice(&csi_hdr_custom(14, 7, 0));
+        csi_d7_multiref_over_total_bins[16..20].copy_from_slice(&2i32.to_le_bytes()); // n_ref = 2
+        let ref0_bins = 2_097_153usize;
+        let ref1_bins = OVER_TOTAL_CSI_BINS - ref0_bins; // 2_097_152 (both <= metadata_id(7) == 2_396_746)
+        csi_d7_multiref_over_total_bins[20..24].copy_from_slice(&(ref0_bins as i32).to_le_bytes());
+        let ref0_end = 24 + ref0_bins * 16;
+        for (bid, slot) in csi_d7_multiref_over_total_bins[24..ref0_end]
+            .chunks_exact_mut(16)
+            .enumerate()
+        {
+            slot[..4].copy_from_slice(&(bid as u32).to_le_bytes());
+        }
+        csi_d7_multiref_over_total_bins[ref0_end..ref0_end + 4]
+            .copy_from_slice(&(ref1_bins as i32).to_le_bytes());
+        for (bid, slot) in csi_d7_multiref_over_total_bins[ref0_end + 4..]
+            .chunks_exact_mut(16)
+            .enumerate()
+        {
+            slot[..4].copy_from_slice(&(bid as u32).to_le_bytes());
+        }
 
         let mut csi_shift_64_d0 = csi_hdr_custom(64, 0, 0);
         csi_shift_64_d0.extend_from_slice(&1i32.to_le_bytes()); // n_ref = 1
@@ -12728,6 +12859,12 @@ mod tests {
         for (label, bad_csi) in [
             ("csi_bin_37449", csi_bin_37449),
             ("csi_nbin_37451", csi_nbin_37451),
+            ("csi_d9_dup_bin", csi_d9_dup_bin),
+            ("csi_d9_over_total_bins", csi_d9_over_total_bins),
+            (
+                "csi_d7_multiref_over_total_bins",
+                csi_d7_multiref_over_total_bins,
+            ),
             ("csi_shift_64_d0", csi_shift_64_d0),
             ("csi_shift_50_d5", csi_shift_50_d5),
             ("csi_bad_nref", csi_bad_nref),
@@ -12744,6 +12881,21 @@ mod tests {
                 std::io::ErrorKind::InvalidData,
                 "{label}: expected InvalidData, got {idx_err:?}"
             );
+            if label == "csi_d9_dup_bin" {
+                assert!(
+                    idx_err.to_string().contains("duplicate CSI bin_id"),
+                    "{label}: expected prevalidator duplicate CSI bin_id error, got {idx_err}"
+                );
+            }
+            if matches!(
+                label,
+                "csi_d9_over_total_bins" | "csi_d7_multiref_over_total_bins"
+            ) {
+                assert!(
+                    idx_err.to_string().contains("total bin count"),
+                    "{label}: expected total bin count error, got {idx_err}"
+                );
+            }
             let q_err = query_region_iter(&bam_path, "chr1", Pos0(0), Pos0(200), &cfg)
                 .expect_err(&format!("{label}: expected query_region_iter error"));
             assert_io_invalid_data(q_err, label);
