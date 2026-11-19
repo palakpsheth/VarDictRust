@@ -71,3 +71,10 @@ path = "fuzz_targets/fuzz_cram_and_fai.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_somatic_fisher_and_amplicon"
+path = "fuzz_targets/fuzz_somatic_fisher_and_amplicon.rs"
+test = false
+doc = false
+bench = false

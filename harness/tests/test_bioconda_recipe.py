@@ -118,6 +118,81 @@ class TestBiocondaRecipe(unittest.TestCase):
             "crates/vardictrust-core/fuzz/Cargo.toml noodles version must match root Cargo.toml",
         )
 
+        expected_fuzz_bins = {
+            "fuzz_modify_cigar",
+            "fuzz_realign",
+            "fuzz_bed_parser",
+            "fuzz_sam_aux",
+            "fuzz_parse_and_realign",
+            "fuzz_vcf_streamer",
+            "fuzz_cram_and_fai",
+            "fuzz_somatic_fisher_and_amplicon",
+        }
+        bins = fuzz_cfg.get("bin") or []
+        self.assertEqual(len(bins), 8, f"Expected 8 [[bin]] targets in {fuzz_path}, got {len(bins)}")
+        actual_fuzz_bins = {entry.get("name") for entry in bins if isinstance(entry, dict)}
+        self.assertEqual(
+            actual_fuzz_bins,
+            expected_fuzz_bins,
+            f"Fuzz Cargo.toml [[bin]] targets mismatch: got {sorted(a for a in actual_fuzz_bins if a)}",
+        )
+        fuzz_dir = fuzz_path.parent
+        for entry in bins:
+            rel_target = entry.get("path")
+            self.assertTrue(rel_target, f"Missing path in fuzz [[bin]] entry: {entry}")
+            target_file = fuzz_dir / rel_target
+            self.assertTrue(target_file.is_file(), f"Missing fuzz target source on disk: {target_file}")
+
+        runner_path = ROOT_DIR / "harness" / "run_deep_fuzz.sh"
+        self.assertTrue(runner_path.is_file(), f"Missing deep fuzz runner: {runner_path}")
+        self.assertTrue(os.access(runner_path, os.X_OK), "harness/run_deep_fuzz.sh must be executable")
+        before_status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            probe_out_dir = pathlib.Path(tmp_dir) / "dry_run_out"
+            env = dict(os.environ)
+            env["FUZZ_OUT_DIR"] = str(probe_out_dir)
+            dry = subprocess.run(
+                ["bash", str(runner_path), "--dry-run"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                dry.returncode,
+                0,
+                f"run_deep_fuzz.sh --dry-run failed ({dry.returncode}):\n{dry.stderr}\n{dry.stdout}",
+            )
+            self.assertFalse(
+                probe_out_dir.exists(),
+                f"run_deep_fuzz.sh --dry-run must not create FUZZ_OUT_DIR: {probe_out_dir}",
+            )
+            for target_name in sorted(expected_fuzz_bins):
+                self.assertIn(
+                    target_name,
+                    dry.stdout,
+                    f"run_deep_fuzz.sh --dry-run schedule missing {target_name}",
+                )
+        after_status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertEqual(
+            before_status,
+            after_status,
+            f"run_deep_fuzz.sh --dry-run dirtied git working tree:\n{after_status}",
+        )
+
     def test_cargo_deny_license_allow_list(self):
         deny_path = ROOT_DIR / "deny.toml"
         content = deny_path.read_text(encoding="utf-8")
