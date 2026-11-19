@@ -1949,6 +1949,7 @@ thread_local! {
     static FORCE_PRODUCTION_META_ID: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TEST_MID_CLEAR_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
     static TEST_MID_COLD_OPEN_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
+    static TEST_MID_CRAM_DECODE_HOOK: RefCell<Option<OneShotTestHook>> = RefCell::new(None);
 }
 
 #[inline]
@@ -3704,7 +3705,7 @@ fn prevalidate_cram_file_header(path: &Path, file: &mut std::fs::File) -> std::i
     const MAX_HEADER_LANDMARKS: usize = 4096;
     const FILE_HEADER_CONTENT_TYPE: u8 = 0;
 
-    let (container_len, raw_method, compressed_size, uncompressed_size) = {
+    {
         let mut buf_reader = std::io::BufReader::new(&mut *file);
         let mut file_def = [0_u8; 26];
         buf_reader.read_exact(&mut file_def)?;
@@ -3859,15 +3860,7 @@ fn prevalidate_cram_file_header(path: &Path, file: &mut std::fs::File) -> std::i
                 ));
             }
         }
-
-        (container_len, raw_method, comp, uncomp)
-    };
-    let _ = (
-        container_len,
-        raw_method,
-        compressed_size,
-        uncompressed_size,
-    );
+    }
     file.seek(SeekFrom::Start(0))?;
     Ok(())
 }
@@ -4123,7 +4116,7 @@ impl InflightCramGuard<'_> {
         mut self,
         result: Option<CachedCramBlock>,
         max_cached_bytes: usize,
-        start_epoch: u64,
+        start_epoch: Option<u64>,
     ) {
         self.completed = true;
         {
@@ -4133,7 +4126,9 @@ impl InflightCramGuard<'_> {
                 .retain(|(k, w)| !(*k == self.key && std::sync::Arc::ptr_eq(w, &self.entry)));
             if let Some(ref arc_records) = result {
                 if should_cache_cram_container(arc_records, max_cached_bytes)
-                    && BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == start_epoch
+                    && start_epoch.is_none_or(|ep| {
+                        BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == ep
+                    })
                 {
                     shard
                         .lru
@@ -5673,7 +5668,11 @@ fn fetch_cram_container_in(
 
     let key = (meta.id, container_offset);
     let shard_idx = cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta.id, container_offset);
-    let start_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+    let is_global_cache = CRAM_CONTAINER_CACHE
+        .get()
+        .is_some_and(|global| std::ptr::eq(cache, global));
+    let start_epoch =
+        is_global_cache.then(|| BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire));
 
     let inflight_guard = if let Some(shard_mutex) = cache.get(shard_idx) {
         loop {
@@ -5806,10 +5805,7 @@ fn fetch_cram_container_in(
 
     crate::count!(CramContainerDecodes);
     #[cfg(test)]
-    if CRAM_CONTAINER_CACHE
-        .get()
-        .is_some_and(|global| std::ptr::eq(cache, global))
-    {
+    if is_global_cache {
         CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     #[cfg(test)]
@@ -5897,6 +5893,14 @@ fn fetch_cram_container_in(
     out_records.shrink_to_fit();
 
     let arc_records: CachedCramBlock = std::sync::Arc::new(out_records);
+    #[cfg(test)]
+    if let Some(hook) = TEST_MID_CRAM_DECODE_HOOK
+        .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
+        .ok()
+        .flatten()
+    {
+        hook();
+    }
     if let Some(g) = inflight_guard {
         g.complete(
             Some(std::sync::Arc::clone(&arc_records)),
@@ -11733,9 +11737,15 @@ mod tests {
         let meta = acquire_cram_meta(&cram_path, &config).unwrap();
         let pinned_slot = meta.fasta_repo.warm_contig_slot(b"chr1");
 
-        // (i) Cache-eligible cap inserts into isolated shard and serves repeat call via Arc::ptr_eq
+        // (i) Cache-eligible cap inserts into isolated shard (even when global BAM_CACHE_EPOCH
+        //     advances mid-decode) and serves repeat call via Arc::ptr_eq
         let hit_cache: [std::sync::Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS] =
             std::array::from_fn(|_| std::sync::Mutex::new(CramContainerCacheShard::default()));
+        TEST_MID_CRAM_DECODE_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(|| {
+                BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
+            }));
+        });
         let block_1 = fetch_cram_container_in(
             &cram_path,
             &meta,
@@ -11752,7 +11762,10 @@ mod tests {
             .iter()
             .map(|s| s.lock().unwrap().lru.entries.len())
             .sum();
-        assert_eq!(hit_entries, 1, "eligible container must be cached");
+        assert_eq!(
+            hit_entries, 1,
+            "eligible container must be cached in isolated shard despite global epoch bump"
+        );
 
         let block_2 = fetch_cram_container_in(
             &cram_path,
@@ -11792,6 +11805,82 @@ mod tests {
         assert_eq!(bypassed.len(), block_1.len());
         for (a, b) in block_1.iter().zip(bypassed.iter()) {
             assert_eq!(a.sam, b.sam);
+        }
+
+        // (iii) Global `CRAM_CONTAINER_CACHE` remains epoch-protected when `BAM_CACHE_EPOCH`
+        //       advances mid-decode, and caches normally when `BAM_CACHE_EPOCH` is unchanged.
+        {
+            let _prod_guard = ForceProdIdGuard::enter();
+            let global_cram = temp_dir.path().join("global_epoch_guard.cram");
+            std::fs::copy(&cram_path, &global_cram).unwrap();
+            std::fs::copy(
+                cram_path.with_extension("cram.crai"),
+                global_cram.with_extension("cram.crai"),
+            )
+            .unwrap();
+            let meta_global = acquire_cram_meta(&global_cram, &config).unwrap();
+            let global_key = (meta_global.id, container_offset);
+            let global_shard_idx =
+                cache_shard_index::<CRAM_CONTAINER_CACHE_SHARDS>(meta_global.id, container_offset);
+
+            TEST_MID_CRAM_DECODE_HOOK.with(|h| {
+                *h.borrow_mut() = Some(Box::new(|| {
+                    BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
+                }));
+            });
+            let uncached_on_race = fetch_cram_container(
+                &global_cram,
+                &meta_global,
+                container_offset,
+                b"chr1",
+                Some(&pinned_slot),
+            )
+            .unwrap()
+            .expect("decoded CRAM container across global epoch bump");
+            assert_eq!(uncached_on_race.len(), read_count);
+            let cached_after_race = cram_container_cache_shards()[global_shard_idx]
+                .lock()
+                .unwrap()
+                .lru
+                .get(global_key)
+                .is_some();
+            assert!(
+                !cached_after_race,
+                "global CRAM_CONTAINER_CACHE must skip insertion when BAM_CACHE_EPOCH advances mid-decode"
+            );
+
+            loop {
+                let ep0 = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+                let clean_global = fetch_cram_container(
+                    &global_cram,
+                    &meta_global,
+                    container_offset,
+                    b"chr1",
+                    Some(&pinned_slot),
+                )
+                .unwrap()
+                .expect("clean global CRAM container decode");
+                if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                    continue;
+                }
+                assert_eq!(clean_global.len(), read_count);
+                let hit = cram_container_cache_shards()[global_shard_idx]
+                    .lock()
+                    .unwrap()
+                    .lru
+                    .get(global_key);
+                assert!(
+                    hit.is_some_and(|b| std::sync::Arc::ptr_eq(&b, &clean_global)),
+                    "global CRAM_CONTAINER_CACHE must insert when BAM_CACHE_EPOCH is stable"
+                );
+                break;
+            }
+            cram_container_cache_shards()[global_shard_idx]
+                .lock()
+                .unwrap()
+                .lru
+                .entries
+                .retain(|(k, _)| *k != global_key);
         }
     }
 
@@ -13088,11 +13177,19 @@ mod tests {
             ..Default::default()
         };
         clear_bam_caches();
+        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
 
-        // 1. Verify 2-slot `CRAM_META_TLS` retains both paired somatic CRAM handles (`T -> N -> T -> N`).
-        let meta_a = acquire_cram_meta(&cram_a, &cfg).unwrap();
-        let meta_b = acquire_cram_meta(&cram_b, &cfg).unwrap();
-        let cur_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+        // 1. Verify 2-slot `CRAM_META_TLS` retains both paired somatic CRAM handles (`T -> N -> T -> N`),
+        //    retrying if a sibling parallel test bumps `BAM_CACHE_EPOCH` mid-cold-open.
+        let (meta_a, meta_b, cur_epoch) = loop {
+            let epoch_start = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+            let ma = acquire_cram_meta(&cram_a, &cfg).unwrap();
+            let mb = acquire_cram_meta(&cram_b, &cfg).unwrap();
+            let cur = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+            if cur == epoch_start {
+                break (ma, mb, cur);
+            }
+        };
         assert!(Arc::ptr_eq(
             &lookup_cram_meta_tls(&cram_a, &ref_fa, cur_epoch).expect("slot hit A"),
             &meta_a

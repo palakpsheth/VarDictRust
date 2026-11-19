@@ -4,8 +4,11 @@ use libfuzzer_sys::fuzz_target;
 use vardictrust_core::realign::{find_35_match, find_bp};
 use vardictrust_core::reference::{LoadedRegion, Reference};
 
+/// 4-byte header + 2 * 258 bp max overhang.
+const MAX_FUZZ_INPUT_BYTES: usize = 520;
+
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 8 || data.len() > 520 {
+    if data.len() < 8 || data.len() > MAX_FUZZ_INPUT_BYTES {
         return;
     }
 
