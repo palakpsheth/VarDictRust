@@ -200,10 +200,9 @@ pub fn is_match_ref(
             None => return false,
         };
 
-        let seq_ch = if dir == -1 {
-            sequence[sequence.len() - 1 - n]
-        } else {
-            sequence[n]
+        let seq_idx = if dir == -1 { sequence.len() - 1 - n } else { n };
+        let Some(&seq_ch) = sequence.get(seq_idx) else {
+            return false;
         };
 
         if seq_ch != ref_ch {
@@ -242,7 +241,7 @@ pub fn find_bp(
         let mut i = 0;
         let mut m = crate::cigar::modify::ByteSet::new();
 
-        while i < sequence.len() {
+        while let Some(&seq_ch) = sequence.get(i) {
             let Some(ref_pos) = i32::try_from(i)
                 .ok()
                 .and_then(|ii| direction.checked_mul(ii))
@@ -264,8 +263,8 @@ pub fn find_bp(
                 None => break,
             };
 
-            if sequence[i] == ref_ch {
-                m.insert(sequence[i]);
+            if seq_ch == ref_ch {
+                m.insert(seq_ch);
             } else {
                 mm += 1;
             }
@@ -332,7 +331,7 @@ pub fn find_bi(
         let mut i = 0;
         let mut m = crate::cigar::modify::ByteSet::new();
 
-        while i + n < seq.len() {
+        while let Some(&seq_ch) = seq.get(i + n) {
             let Some(ref_pos) = i32::try_from(i)
                 .ok()
                 .and_then(|ii| dir.checked_mul(ii))
@@ -350,10 +349,10 @@ pub fn find_bi(
                 None => break,
             };
 
-            if seq[i + n] != ref_ch {
+            if seq_ch != ref_ch {
                 mm += 1;
             } else {
-                m.insert(seq[i + n]);
+                m.insert(seq_ch);
             }
 
             if mm > maxmm {
@@ -371,11 +370,11 @@ pub fn find_bi(
         if (mnt >= 3 && (i + n) >= seq.len() - 1 && i >= 8 && ratio < 0.15)
             || (mnt >= 2 && mm == 0 && (i + n) == seq.len() && n >= 20 && i >= 8)
         {
-            let mut insert = seq[0..n].to_vec();
+            let mut insert = seq.get(..n).unwrap_or(&[]).to_vec();
             let mut extra = Vec::new();
             let mut ept = 0;
 
-            while n + ept + 1 < seq.len() {
+            while let (Some(&seq_ch1), Some(&seq_ch2)) = (seq.get(n + ept), seq.get(n + ept + 1)) {
                 let ref_ch1 = i32::try_from(ept)
                     .ok()
                     .and_then(|ei| ei.checked_mul(dir))
@@ -392,11 +391,11 @@ pub fn find_bi(
                     .and_then(|p| u32::try_from(p).ok())
                     .and_then(|p| reference.get_base(chr, p));
 
-                let matches1 = ref_ch1.map(|c| c == seq[n + ept]).unwrap_or(false);
-                let matches2 = ref_ch2.map(|c| c == seq[n + ept + 1]).unwrap_or(false);
+                let matches1 = ref_ch1 == Some(seq_ch1);
+                let matches2 = ref_ch2 == Some(seq_ch2);
 
                 if !matches1 || !matches2 {
-                    extra.push(seq[n + ept]);
+                    extra.push(seq_ch1);
                     ept += 1;
                 } else {
                     break;
@@ -479,10 +478,12 @@ pub fn find_bi(
                         let shift = -(s + 1);
                         if shift > 0 {
                             let len_ins = insert.len();
-                            let start_idx = len_ins - (shift as usize);
-                            let suffix = insert[start_idx..].to_vec();
-                            insert.truncate(start_idx);
-                            insert = [suffix, insert].concat();
+                            let start_idx = len_ins.saturating_sub(shift as usize);
+                            if let Some(suffix_slice) = insert.get(start_idx..) {
+                                let suffix = suffix_slice.to_vec();
+                                insert.truncate(start_idx);
+                                insert = [suffix, insert].concat();
+                            }
                         }
                     }
 
@@ -2182,10 +2183,8 @@ pub fn realigndel(
         }
     }
 
-    let tmp_size = tmp.len();
-    if tmp_size > 1 {
-        for i in (1..tmp_size).rev() {
-            let tpl = &tmp[i];
+    if let Some(tail) = tmp.get(1..) {
+        for tpl in tail.iter().rev() {
             let p = tpl.position;
             let vn = &tpl.description_string;
             if !non_insertion_variants.contains_key(&p) {
@@ -2685,10 +2684,10 @@ pub fn realignins(
                             let mut tvn = vn.clone();
                             let insert_bytes = insert.as_bytes();
 
-                            for seqi in 0..seq.len() {
-                                if seqi + offset < insert_bytes.len() {
-                                    let seq_char = seq[seqi] as char;
-                                    let ins_char = insert_bytes[seqi + offset] as char;
+                            for (seqi, &seq_b) in seq.iter().enumerate() {
+                                if let Some(&ins_b) = insert_bytes.get(seqi + offset) {
+                                    let seq_char = seq_b as char;
+                                    let ins_char = ins_b as char;
                                     if seq_char != ins_char {
                                         flag += 1;
                                         let shift = seqi + offset + 1;
@@ -2714,9 +2713,7 @@ pub fn realignins(
             }
         }
 
-        if !sc3p.is_empty() && !sc5p.is_empty() {
-            let first3 = sc3p[0];
-            let first5 = sc5p[0];
+        if let (Some(&first3), Some(&first5)) = (sc3p.first(), sc5p.first()) {
             let diff35 = i64::from(first3) - i64::from(first5);
             // ports VariationRealigner.java:921: the bound stays a double (no truncation).
             if first3 > first5.saturating_add(3)
@@ -2743,8 +2740,7 @@ pub fn realignins(
         }
     }
 
-    for i in (1..tmp.len()).rev() {
-        let tpl = &tmp[i];
+    for tpl in tmp.get(1..).unwrap_or(&[]).iter().rev() {
         let p = tpl.position;
         let vn = &tpl.description_string;
 
@@ -2961,6 +2957,7 @@ pub fn realignlgdel(
                     soft_clips_5_end,
                     soft_clips_3_end,
                     splice,
+                    max_read_length,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
@@ -2972,15 +2969,15 @@ pub fn realignlgdel(
         let gt;
 
         if extra_str.is_empty() {
-            while en < seq.len() {
+            while let Some(&seq_b) = seq.get(en) {
                 let ref_ch = i32::try_from(en)
                     .ok()
                     .and_then(|ei| bp.checked_sub(ei))
                     .and_then(|p| p.checked_sub(1))
                     .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
-                if ref_ch.is_some() && ref_ch != Some(seq[en]) {
-                    extra.push(seq[en]);
+                if ref_ch.is_some() && ref_ch != Some(seq_b) {
+                    extra.push(seq_b);
                     en += 1;
                 } else {
                     break;
@@ -3392,6 +3389,7 @@ pub fn realignlgdel(
                     soft_clips_5_end,
                     soft_clips_3_end,
                     splice,
+                    max_read_length,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
@@ -3403,14 +3401,14 @@ pub fn realignlgdel(
         if !extra_str.is_empty() {
             dellen = dellen.saturating_sub(extra_str.len() as i32);
         } else {
-            while en < seq.len() {
+            while let Some(&seq_b) = seq.get(en) {
                 let ref_ch = i32::try_from(en)
                     .ok()
                     .and_then(|ei| bp.checked_add(ei))
                     .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
-                if ref_ch.is_some() && ref_ch != Some(seq[en]) {
-                    extra.push(seq[en]);
+                if ref_ch.is_some() && ref_ch != Some(seq_b) {
+                    extra.push(seq_b);
                     en += 1;
                 } else {
                     break;
@@ -4178,6 +4176,7 @@ pub fn realignlgins(
                     soft_clips_5_end,
                     soft_clips_3_end,
                     splice,
+                    max_read_length,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
@@ -4480,6 +4479,7 @@ pub fn realignlgins(
                     soft_clips_5_end,
                     soft_clips_3_end,
                     splice,
+                    max_read_length,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
@@ -4915,24 +4915,26 @@ fn join_ref_for_5_lgins(
     seq: &[u8],
     extra: &[u8],
 ) -> Vec<u8> {
-    let mut sb = Vec::new();
-    let keep_len = seq.len().saturating_sub(extra.len());
-    if from <= to {
-        for pos64 in i64::from(from)..=i64::from(to) {
-            let diff64 = i64::from(to) - pos64;
-            if diff64 >= 0 && (diff64 as usize) < keep_len {
-                if let Some(&b) = (diff64 as usize)
-                    .checked_add(extra.len())
-                    .and_then(|idx| seq.get(idx))
-                {
-                    sb.push(b);
-                }
-            } else if pos64 >= 1 && pos64 <= i64::from(i32::MAX) {
-                if let Some(ch) = reference.get_base(chr, pos64 as u32) {
-                    sb.push(ch);
-                }
-            }
-        }
+    if from > to {
+        return Vec::new();
+    }
+    let keep = seq.get(extra.len()..).unwrap_or(&[]);
+    if keep.is_empty() {
+        return crate::util::ref_bases(reference, chr, from, to);
+    }
+    let f = i128::from(from);
+    let t = i128::from(to);
+    let keep_len = keep.len() as i128;
+    let ov_lo = f.max(t - (keep_len - 1));
+    let mut sb = if f < ov_lo {
+        crate::util::ref_bases(reference, chr, f as i32, (ov_lo - 1) as i32)
+    } else {
+        Vec::new()
+    };
+    let ov_count = (t - ov_lo + 1) as usize;
+    if let Some(ov_slice) = keep.get(..ov_count) {
+        sb.reserve(ov_slice.len());
+        sb.extend(ov_slice.iter().rev().copied());
     }
     sb
 }
@@ -4947,25 +4949,35 @@ fn join_ref_for_3_lgins(
     seq: &[u8],
     extra: &[u8],
 ) -> Vec<u8> {
-    let mut sb = Vec::new();
-    let keep_len = seq.len().saturating_sub(extra.len());
-    if from <= to {
-        for pos64 in i64::from(from)..=i64::from(to) {
-            let diff = pos64 - i64::from(from);
-            let idx64 = diff - i64::from(shift5);
-            if idx64 >= 0 && (idx64 as usize) < keep_len {
-                if let Some(&b) = (idx64 as usize)
-                    .checked_add(extra.len())
-                    .and_then(|idx| seq.get(idx))
-                {
-                    sb.push(b);
-                }
-            } else if pos64 >= 1 && pos64 <= i64::from(i32::MAX) {
-                if let Some(ch) = reference.get_base(chr, pos64 as u32) {
-                    sb.push(ch);
-                }
-            }
-        }
+    if from > to {
+        return Vec::new();
+    }
+    let keep = seq.get(extra.len()..).unwrap_or(&[]);
+    if keep.is_empty() {
+        return crate::util::ref_bases(reference, chr, from, to);
+    }
+    let f = i128::from(from);
+    let t = i128::from(to);
+    let raw_ov_lo = f + i128::from(shift5);
+    let raw_ov_hi = raw_ov_lo + (keep.len() as i128) - 1;
+    let ov_lo = f.max(raw_ov_lo);
+    let ov_hi = t.min(raw_ov_hi);
+    if ov_lo > ov_hi {
+        return crate::util::ref_bases(reference, chr, from, to);
+    }
+    let mut sb = if f < ov_lo {
+        crate::util::ref_bases(reference, chr, f as i32, (ov_lo - 1) as i32)
+    } else {
+        Vec::new()
+    };
+    let idx_start = (ov_lo - raw_ov_lo) as usize;
+    let idx_end_excl = (ov_hi - raw_ov_lo + 1) as usize;
+    if let Some(ov_slice) = keep.get(idx_start..idx_end_excl) {
+        sb.extend_from_slice(ov_slice);
+    }
+    if ov_hi < t {
+        let suffix = crate::util::ref_bases(reference, chr, (ov_hi + 1) as i32, t as i32);
+        sb.extend_from_slice(&suffix);
     }
     sb
 }
@@ -5411,6 +5423,7 @@ fn partial_pipeline(
     soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     splice: &mut rustc_hash::FxHashSet<String>,
+    max_read_length: i32,
 ) -> Result<(), crate::types::VardictError> {
     let bams = match bams {
         Some(b) => b,
@@ -5431,8 +5444,15 @@ fn partial_pipeline(
     // Streaming counterpart of the old query_region-Vec + pileup shape: one
     // lazy pass per BAM, BAM1-then-BAM2, through a single preprocessor into a
     // single parser. Peak memory stays flat in candidate-window depth.
-    let mut parser =
-        crate::cigar::parse::CigarParser::new(reference, &pileup_region, config, true, 0, 0, 0);
+    let mut parser = crate::cigar::parse::CigarParser::new(
+        reference,
+        &pileup_region,
+        config,
+        true,
+        0,
+        0,
+        max_read_length,
+    );
     for (idx, bam) in bams.iter().enumerate() {
         preprocessor.reset_for_next_bam();
         let bam_path = std::path::Path::new(bam);
@@ -7748,6 +7768,7 @@ mod tests {
             &mut sc5,
             &mut sc3,
             &mut splice,
+            100,
         )
         .unwrap();
 
@@ -7758,6 +7779,246 @@ mod tests {
             splice.contains("19-39"),
             "partial_pipeline must merge parser.splice into caller's splice set, got: {:?}",
             splice
+        );
+
+        // Ports VariationRealigner.java:1058, 1270, 1661, 1826: `realign::partial_pipeline`
+        // must seed `CigarParser` with `max_read_length` (120) without writing back longer
+        // candidate-window read lengths (200 bp in window 1) to subsequent breakpoints (window 2).
+        let seed_bam_dir = tempfile::TempDir::new().unwrap();
+        let seed_bam_path = seed_bam_dir.path().join("realign_partial_seed_mrl.bam");
+        let chr_len_seed = 900usize;
+        let mut seed_ref_seq: Vec<u8> = b"ATGCTAGCTAG"
+            .iter()
+            .copied()
+            .cycle()
+            .take(chr_len_seed)
+            .collect();
+        seed_ref_seq[178] = b'T'; // pos 179 != 'C' so 20S at pos 180 does not walk back
+        seed_ref_seq[498] = b'T'; // pos 499 != 'G' so 20S at pos 500 does not walk back
+        let seed_17_a = b"TTCGAAGGTTCCAAGGT";
+        let seed_17_b = b"CCTTGGAACCTTCGAAG";
+        seed_ref_seq[219..219 + 17].copy_from_slice(seed_17_a); // 1-based 220..=236
+        seed_ref_seq[519..519 + 17].copy_from_slice(seed_17_b); // 1-based 520..=536
+        {
+            use noodles::csi::binning_index::index::reference_sequence::{
+                bin::Chunk, index::LinearIndex,
+            };
+            use noodles::csi::binning_index::Indexer;
+            let hdr = noodles::sam::Header::builder()
+                .add_reference_sequence(
+                    "chr1",
+                    noodles::sam::header::record::value::map::Map::<
+                        noodles::sam::header::record::value::map::ReferenceSequence,
+                    >::new(NonZeroUsize::new(chr_len_seed).unwrap()),
+                )
+                .build();
+            let mut writer =
+                noodles::bam::io::Writer::new(std::fs::File::create(&seed_bam_path).unwrap());
+            writer.write_header(&hdr).unwrap();
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+
+            // Window 1 (101..=340):
+            //  - Read A at pos=180 (`20S25M`, 45 bp, clip >= 20) with SA at 400 (`|400-180|=220`):
+            //    chimeric when seeded with `max_read_length=120` (`2*120=240 > 220`),
+            //    NOT chimeric if mistakenly seeded with `0` (`2*45=90 <= 220`).
+            //  - Read B at pos=200 (`200M`, 200 bp): raises `parser.max_read_length` to 200
+            //    inside window 1's `partial_pipeline` (must NOT write back to caller's 120!).
+            let mut seq_a = vec![b'C'; 20];
+            seq_a.extend_from_slice(&seed_ref_seq[179..204]);
+            let r_a = RecordBuf::builder()
+                .set_name("chim_win1")
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(180usize).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::try_from(60).unwrap(),
+                )
+                .set_cigar(
+                    [Op::new(Kind::SoftClip, 20), Op::new(Kind::Match, 25)]
+                        .into_iter()
+                        .collect::<Cigar>(),
+                )
+                .set_sequence(Sequence::from(seq_a))
+                .set_quality_scores(QualityScores::from(vec![35u8; 45]))
+                .set_data(
+                    [
+                        (Tag::EDIT_DISTANCE, BufValue::from(0i32)),
+                        (
+                            Tag::OTHER_ALIGNMENTS,
+                            BufValue::from("chr1,400,-,20S25M,60,0;"),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect::<Data>(),
+                )
+                .build();
+            let svp = writer.get_ref().virtual_position();
+            writer.write_alignment_record(&hdr, &r_a).unwrap();
+            let evp = writer.get_ref().virtual_position();
+            indexer
+                .add_record(
+                    Some((
+                        0,
+                        Position::try_from(180usize).unwrap(),
+                        Position::try_from(204usize).unwrap(),
+                        true,
+                    )),
+                    Chunk::new(svp, evp),
+                )
+                .unwrap();
+
+            let r_b = RecordBuf::builder()
+                .set_name("long_200_win1")
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(200usize).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::try_from(60).unwrap(),
+                )
+                .set_cigar([Op::new(Kind::Match, 200)].into_iter().collect::<Cigar>())
+                .set_sequence(Sequence::from(seed_ref_seq[199..399].to_vec()))
+                .set_quality_scores(QualityScores::from(vec![35u8; 200]))
+                .set_data(
+                    [(Tag::EDIT_DISTANCE, BufValue::from(0i32))]
+                        .into_iter()
+                        .collect::<Data>(),
+                )
+                .build();
+            let svp = writer.get_ref().virtual_position();
+            writer.write_alignment_record(&hdr, &r_b).unwrap();
+            let evp = writer.get_ref().virtual_position();
+            indexer
+                .add_record(
+                    Some((
+                        0,
+                        Position::try_from(200usize).unwrap(),
+                        Position::try_from(399usize).unwrap(),
+                        true,
+                    )),
+                    Chunk::new(svp, evp),
+                )
+                .unwrap();
+
+            // Window 2 (400..=640):
+            //  - Read C at pos=500 (`20S25M`, 45 bp, clip >= 20) with SA at 800 (`|800-500|=300`):
+            //    kept when `max_read_length` stays 120 (`2*120=240 <= 300`), whereas
+            //    writeback of 200 from Window 1 would drop it (`2*200=400 > 300`).
+            let mut seq_c = vec![b'G'; 20];
+            seq_c.extend_from_slice(&seed_ref_seq[499..524]);
+            let r_c = RecordBuf::builder()
+                .set_name("nonchim_win2")
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(500usize).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::try_from(60).unwrap(),
+                )
+                .set_cigar(
+                    [Op::new(Kind::SoftClip, 20), Op::new(Kind::Match, 25)]
+                        .into_iter()
+                        .collect::<Cigar>(),
+                )
+                .set_sequence(Sequence::from(seq_c))
+                .set_quality_scores(QualityScores::from(vec![35u8; 45]))
+                .set_data(
+                    [
+                        (Tag::EDIT_DISTANCE, BufValue::from(0i32)),
+                        (
+                            Tag::OTHER_ALIGNMENTS,
+                            BufValue::from("chr1,800,-,20S25M,60,0;"),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect::<Data>(),
+                )
+                .build();
+            let svp = writer.get_ref().virtual_position();
+            writer.write_alignment_record(&hdr, &r_c).unwrap();
+            let evp = writer.get_ref().virtual_position();
+            indexer
+                .add_record(
+                    Some((
+                        0,
+                        Position::try_from(500usize).unwrap(),
+                        Position::try_from(524usize).unwrap(),
+                        true,
+                    )),
+                    Chunk::new(svp, evp),
+                )
+                .unwrap();
+
+            writer.try_finish().unwrap();
+            noodles::bam::bai::io::Writer::new(
+                std::fs::File::create(seed_bam_path.with_extension("bam.bai")).unwrap(),
+            )
+            .write_index(&indexer.build(1))
+            .unwrap();
+        }
+
+        let mut seed_ref = Reference::new();
+        seed_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: chr_len_seed as u32,
+            });
+        seed_ref.region_sequences.push(seed_ref_seq.clone());
+        seed_ref
+            .reference_sequences
+            .insert("chr1".to_string(), seed_ref_seq);
+        seed_ref.seed.insert(seed_17_a.to_vec(), vec![220]);
+        seed_ref.seed.insert(seed_17_b.to_vec(), vec![520]);
+
+        let mut sc3_seed = BTreeMap::new();
+        let mut sc3_w1 = Sclip::new();
+        sc3_w1.variation.cnt = 10;
+        sc3_w1.sequence = Some(seed_17_a.to_vec());
+        sc3_seed.insert(90, sc3_w1);
+        let mut sc3_w2 = Sclip::new();
+        sc3_w2.variation.cnt = 5;
+        sc3_w2.sequence = Some(seed_17_b.to_vec());
+        sc3_seed.insert(80, sc3_w2);
+
+        let mut sc5_seed = BTreeMap::new();
+        let mut non_ins_seed = crate::javamap::JavaHashMap::new();
+        let mut ins_seed = crate::javamap::JavaHashMap::new();
+        let mut cov_seed = rustc_hash::FxHashMap::default();
+        let mut svfdel_seed = Vec::new();
+        let mut svrdel_seed = Vec::new();
+        let mut splice_seed = rustc_hash::FxHashSet::default();
+        let seed_region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let seed_bams = vec![seed_bam_path.to_string_lossy().into_owned()];
+        realignlgdel(
+            Some(&seed_bams),
+            &mut seed_ref,
+            "chr1",
+            chr_len_seed as u32,
+            &seed_region,
+            &config,
+            &mut non_ins_seed,
+            &mut ins_seed,
+            &mut cov_seed,
+            &mut sc5_seed,
+            &mut sc3_seed,
+            120,
+            &mut svfdel_seed,
+            &mut svrdel_seed,
+            &mut splice_seed,
+        );
+        assert!(
+            !sc5_seed.contains_key(&180),
+            "realign::partial_pipeline must seed CigarParser with max_read_length=120 so |400-180|=220 < 240 is filtered as chimeric"
+        );
+        assert!(
+            sc5_seed.contains_key(&500),
+            "realign::partial_pipeline must not write back 200 bp from window 1 so |800-500|=300 >= 240 stays non-chimeric"
         );
     }
 
@@ -7832,6 +8093,185 @@ mod tests {
         assert_eq!(
             super::join_ref_for_5_lgins(&max_ref, "chr1", i32::MAX - 3, i32::MAX, b"G", b"TTTT"),
             b"CAAC"
+        );
+
+        // 4) Per-base oracle parity for `join_ref_for_5_lgins` (descending `seq[extra.len() + (to - pos)]`)
+        //    and `join_ref_for_3_lgins` (ascending, including `shift5 < 0`, asymmetric `keep_len >= 3` `b"ACG"`,
+        //    `from == i32::MIN`, `to == i32::MAX`, and a 2-chunk `10_000_000 bp` unloaded gap, `AR-07`).
+        let oracle_5 = |r: &crate::reference::Reference,
+                        c: &str,
+                        from: i32,
+                        to: i32,
+                        seq: &[u8],
+                        extra: &[u8]|
+         -> Vec<u8> {
+            let mut out = Vec::new();
+            let keep_len = seq.len().saturating_sub(extra.len());
+            if from <= to {
+                for pos64 in i64::from(from)..=i64::from(to) {
+                    let diff = i64::from(to) - pos64;
+                    if diff >= 0 && (diff as usize) < keep_len {
+                        out.push(seq[extra.len() + (diff as usize)]);
+                    } else if let Ok(p32) = u32::try_from(pos64) {
+                        if p32 >= 1 {
+                            if let Some(b) = r.get_base(c, p32) {
+                                out.push(b);
+                            }
+                        }
+                    }
+                }
+            }
+            out
+        };
+        let oracle_3 = |r: &crate::reference::Reference,
+                        c: &str,
+                        from: i32,
+                        to: i32,
+                        shift5: i32,
+                        seq: &[u8],
+                        extra: &[u8]|
+         -> Vec<u8> {
+            let mut out = Vec::new();
+            let keep_len = seq.len().saturating_sub(extra.len());
+            if from <= to {
+                for pos64 in i64::from(from)..=i64::from(to) {
+                    let idx64 = (pos64 - i64::from(from)) - i64::from(shift5);
+                    if idx64 >= 0 && (idx64 as usize) < keep_len {
+                        out.push(seq[extra.len() + (idx64 as usize)]);
+                    } else if let Ok(p32) = u32::try_from(pos64) {
+                        if p32 >= 1 {
+                            if let Some(b) = r.get_base(c, p32) {
+                                out.push(b);
+                            }
+                        }
+                    }
+                }
+            }
+            out
+        };
+
+        for &(seq, extra) in &[
+            (&b"TTACG"[..], &b"TT"[..]),
+            (&b"ACG"[..], &b""[..]),
+            (&b"GG"[..], &b"TTTT"[..]),
+        ] {
+            for &from in &[-4, 0, 1, 10, 12, 16] {
+                for &to in &[-2, 0, 1, 12, 16, 20] {
+                    assert_eq!(
+                        super::join_ref_for_5_lgins(&reference, "chr1", from, to, seq, extra),
+                        oracle_5(&reference, "chr1", from, to, seq, extra),
+                        "join_ref_for_5_lgins mismatch from={from} to={to}"
+                    );
+                    for &shift5 in &[-10, -3, -1, 0, 1, 2, 5, 25] {
+                        assert_eq!(
+                            super::join_ref_for_3_lgins(
+                                &reference, "chr1", from, to, shift5, seq, extra
+                            ),
+                            oracle_3(&reference, "chr1", from, to, shift5, seq, extra),
+                            "join_ref_for_3_lgins mismatch from={from} to={to} shift5={shift5}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                super::join_ref_for_5_lgins(&max_ref, "chr1", i32::MAX - 5, i32::MAX, seq, extra),
+                oracle_5(&max_ref, "chr1", i32::MAX - 5, i32::MAX, seq, extra),
+            );
+            for &shift5 in &[-2, -1, 0, 1, 2, 6, i32::MIN, i32::MAX] {
+                assert_eq!(
+                    super::join_ref_for_3_lgins(
+                        &max_ref,
+                        "chr1",
+                        i32::MAX - 5,
+                        i32::MAX,
+                        shift5,
+                        seq,
+                        extra,
+                    ),
+                    oracle_3(&max_ref, "chr1", i32::MAX - 5, i32::MAX, shift5, seq, extra),
+                );
+            }
+        }
+
+        // 2-chunk 10_000_000 bp unloaded gap + extreme [i32::MIN, i32::MAX] O(loaded_span) guard (AR-07)
+        let mut gap_ref = crate::reference::Reference::new();
+        let chunk_a: Vec<u8> = b"ACGTGA".iter().copied().cycle().take(50).collect();
+        let chunk_b: Vec<u8> = b"TGCATC".iter().copied().cycle().take(50).collect();
+        gap_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: 50,
+        });
+        gap_ref.region_sequences.push(chunk_a.clone());
+        gap_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 10_000_051,
+            sequence_end: 10_000_100,
+        });
+        gap_ref.region_sequences.push(chunk_b.clone());
+
+        crate::reference::reset_get_base_calls();
+        let t_gap = std::time::Instant::now();
+        let got_gap_5 =
+            super::join_ref_for_5_lgins(&gap_ref, "chr1", 1, 10_000_100, b"TTACG", b"TT");
+        let got_gap_3 =
+            super::join_ref_for_3_lgins(&gap_ref, "chr1", 1, 10_000_100, -1, b"TTACG", b"TT");
+        let gap_elapsed = t_gap.elapsed();
+        let gap_calls = crate::reference::get_base_calls();
+
+        let mut want_gap_5 = chunk_a.clone();
+        want_gap_5.extend_from_slice(&chunk_b[..47]);
+        want_gap_5.extend_from_slice(b"GCA"); // descending keep="ACG": seq[4]='G', seq[3]='C', seq[2]='A'
+        assert_eq!(got_gap_5, want_gap_5);
+
+        let mut want_gap_3 = b"CG".to_vec(); // shift5=-1 on keep="ACG" at pos=1,2 -> idx=1,2 ("CG")
+        want_gap_3.extend_from_slice(&chunk_a[2..]);
+        want_gap_3.extend_from_slice(&chunk_b);
+        assert_eq!(got_gap_3, want_gap_3);
+        assert!(
+            got_gap_5.capacity() <= 256 && got_gap_3.capacity() <= 256,
+            "join_ref_for_{{5,3}}_lgins across 10_000_000 bp unloaded gap must reserve loaded span, got capacities ({}, {})",
+            got_gap_5.capacity(),
+            got_gap_3.capacity()
+        );
+        assert!(
+            gap_calls <= 250,
+            "join_ref_for_{{5,3}}_lgins across 10_000_000 bp unloaded gap must visit <= 250 bases, got {gap_calls}"
+        );
+        assert!(
+            gap_elapsed < std::time::Duration::from_secs(10),
+            "join_ref_for_{{5,3}}_lgins across 10_000_000 bp unloaded gap hung: {gap_elapsed:?}"
+        );
+
+        crate::reference::reset_get_base_calls();
+        let t_minmax = std::time::Instant::now();
+        let got_minmax_5 =
+            super::join_ref_for_5_lgins(&gap_ref, "chr1", i32::MIN, i32::MAX, b"TTACG", b"TT");
+        let got_minmax_3 =
+            super::join_ref_for_3_lgins(&gap_ref, "chr1", i32::MIN, i32::MAX, -1, b"TTACG", b"TT");
+        let minmax_elapsed = t_minmax.elapsed();
+        let minmax_calls = crate::reference::get_base_calls();
+        let mut want_minmax_5 = chunk_a.clone();
+        want_minmax_5.extend_from_slice(&chunk_b);
+        want_minmax_5.extend_from_slice(b"GCA");
+        assert_eq!(got_minmax_5, want_minmax_5);
+        let mut want_minmax_3 = b"CG".to_vec();
+        want_minmax_3.extend_from_slice(&chunk_a);
+        want_minmax_3.extend_from_slice(&chunk_b);
+        assert_eq!(got_minmax_3, want_minmax_3);
+        assert!(
+            got_minmax_5.capacity() <= 256 && got_minmax_3.capacity() <= 256,
+            "join_ref_for_{{5,3}}_lgins across [i32::MIN, i32::MAX] must reserve loaded span, got capacities ({}, {})",
+            got_minmax_5.capacity(),
+            got_minmax_3.capacity()
+        );
+        assert!(
+            minmax_calls <= 250,
+            "join_ref_for_{{5,3}}_lgins across [i32::MIN, i32::MAX] must visit <= 250 bases, got {minmax_calls}"
+        );
+        assert!(
+            minmax_elapsed < std::time::Duration::from_secs(10),
+            "join_ref_for_{{5,3}}_lgins across [i32::MIN, i32::MAX] hung: {minmax_elapsed:?}"
         );
         let _ = super::find_bi(
             b"ACGTACGTACGTACGT",

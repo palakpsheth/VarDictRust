@@ -7,14 +7,20 @@ use crate::cigar::ModifiedCigar;
 use crate::config::Config;
 use crate::reference::SeedMap;
 use crate::util::{char_at, reverse_complement, reverse_complement_bytes, subseq};
+#[cfg(test)]
 use regex::Regex;
 use std::fmt::Write as _;
+#[cfg(test)]
 use std::sync::LazyLock;
 
-// Define all the regexes from Patterns.java
+// Define all the regexes from Patterns.java (retained solely for `#[cfg(test)]` legacy oracle parity)
+#[cfg(test)]
 static BEGIN_NUMBER_D: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)D"));
+#[cfg(test)]
 static END_NUMBER_D: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)D$"));
+#[cfg(test)]
 static BEGIN_NUMBER_I: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^(\d+)I"));
+#[cfg(test)]
 static END_NUMBER_I: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)I$"));
 
 #[cfg(test)]
@@ -24,50 +30,66 @@ static SA_CIGAR_D_S_5CLIP_GROUP: LazyLock<Regex> =
 static SA_CIGAR_D_S_3CLIP_GROUP: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d\d+)S$"));
 
+#[cfg(test)]
 static BEGIN_NUMBER_S_NUMBER_IOR_D: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"^(\d+)S(\d+)([ID])"));
+#[cfg(test)]
 static NUMBER_IOR_D_NUMBER_S_END: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d+)S$"));
+#[cfg(test)]
 static BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"^(\d+)S(\d+)M(\d+)([ID])"));
+#[cfg(test)]
 static NUMBER_IOR_D_NUMBER_M_NUMBER_S_END: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d+)M(\d+)S$"));
 
+#[cfg(test)]
 static BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"^(\d)M(\d+)([ID])(\d+)M"));
 #[cfg(test)]
 static BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M_OPT: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"^\dM\d+[ID]\d+M"));
+#[cfg(test)]
 static NUMBER_IOR_D_DIGIT_M_END: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d)M$"));
 #[cfg(test)]
 static NUMBER_IOR_D_NUMBER_M_END: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)([ID])(\d+)M$"));
 
+#[cfg(test)]
 static D_M_D_DD_M_D_I_D_M_D_DD: LazyLock<Regex> = LazyLock::new(|| {
     crate::util::static_regex(r"^(.*?)(\d+)M(\d+)D(\d+)M(\d+)I(\d+)M(\d+)D(\d+)M")
 });
+#[cfg(test)]
 static D_M_D_DD_M_D_I_D_M_D_DD_PRIM: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)M(\d+)D(\d+)M(\d+)I(\d+)M(\d+)D(\d+)M"));
 
+#[cfg(test)]
 static THREE_DELETIONS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     crate::util::static_regex(r"^(.*?)(\d+)M(\d+)D(\d+)M(\d+)D(\d+)M(\d+)D(\d+)M")
 });
+#[cfg(test)]
 static THREE_INDELS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     crate::util::static_regex(r"^(.*?)(\d+)M(\d+)([DI])(\d+)M(\d+)([DI])(\d+)M(\d+)([DI])(\d+)M")
 });
 
+#[cfg(test)]
 static DIGM_D_DI_DIGM_D_DI_DIGM_DI_DIGM: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"\d+M\d+[DI]\d+M\d+[DI]\d+M\d+[DI]\d+M"));
+#[cfg(test)]
 static DM_DD_DM_DD_DM_DD_DM: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"\d+M\d+D\d+M\d+D\d+M\d+D\d+M"));
 
+#[cfg(test)]
 static DIG_D_DIG_M_DIG_DI_DIGI: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)D(\d+)M(\d+)([DI])(\d+I)?"));
+#[cfg(test)]
 static NOTDIG_DIG_I_DIG_M_DIG_DI_DIGI: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\D)(\d+)I(\d+)M(\d+)([DI])(\d+I)?"));
 
+#[cfg(test)]
 static DIG_D_DIG_D: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)D(\d+)D"));
+#[cfg(test)]
 static DIG_I_DIG_I: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)I(\d+)I"));
 
 #[cfg(test)]
@@ -90,7 +112,9 @@ static ALIGNED_LENGTH_MND: LazyLock<Regex> =
     LazyLock::new(|| crate::util::static_regex(r"(\d+)[MND]"));
 #[cfg(test)]
 static SOFT_CLIPPED: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"(\d+)[MIS]"));
+#[cfg(test)]
 static RE_START_S: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"^\d+S"));
+#[cfg(test)]
 static RE_END_2S: LazyLock<Regex> = LazyLock::new(|| crate::util::static_regex(r"\d\d+S$"));
 #[cfg(test)]
 static CIGAR_ELEMENT_PATTERN: LazyLock<Regex> =
@@ -122,80 +146,585 @@ impl ByteSet {
 
     #[inline]
     pub(crate) const fn len(&self) -> usize {
-        (self.0[0].count_ones()
-            + self.0[1].count_ones()
-            + self.0[2].count_ones()
-            + self.0[3].count_ones()) as usize
+        let [w0, w1, w2, w3] = self.0;
+        (w0.count_ones() + w1.count_ones() + w2.count_ones() + w3.count_ones()) as usize
     }
 }
 
 /// Helper to parse matched group as integer with default 0.
+#[inline]
 fn to_int(s: &str) -> i32 {
     s.parse::<i32>().unwrap_or(0)
+}
+
+/// Matches `regex`'s Unicode `\d` (`\p{Decimal_Number}`, Unicode 16.0.0) so `\d` and `\D`
+/// cursor checks match `Patterns.java` / `regex::Regex` identically on all UTF-8 inputs.
+#[inline]
+fn is_regex_decimal_digit(ch: char) -> bool {
+    if ch.is_ascii() {
+        return ch.is_ascii_digit();
+    }
+    matches!(
+        ch,
+        '\u{0660}'..='\u{0669}'
+            | '\u{06F0}'..='\u{06F9}'
+            | '\u{07C0}'..='\u{07C9}'
+            | '\u{0966}'..='\u{096F}'
+            | '\u{09E6}'..='\u{09EF}'
+            | '\u{0A66}'..='\u{0A6F}'
+            | '\u{0AE6}'..='\u{0AEF}'
+            | '\u{0B66}'..='\u{0B6F}'
+            | '\u{0BE6}'..='\u{0BEF}'
+            | '\u{0C66}'..='\u{0C6F}'
+            | '\u{0CE6}'..='\u{0CEF}'
+            | '\u{0D66}'..='\u{0D6F}'
+            | '\u{0DE6}'..='\u{0DEF}'
+            | '\u{0E50}'..='\u{0E59}'
+            | '\u{0ED0}'..='\u{0ED9}'
+            | '\u{0F20}'..='\u{0F29}'
+            | '\u{1040}'..='\u{1049}'
+            | '\u{1090}'..='\u{1099}'
+            | '\u{17E0}'..='\u{17E9}'
+            | '\u{1810}'..='\u{1819}'
+            | '\u{1946}'..='\u{194F}'
+            | '\u{19D0}'..='\u{19D9}'
+            | '\u{1A80}'..='\u{1A89}'
+            | '\u{1A90}'..='\u{1A99}'
+            | '\u{1B50}'..='\u{1B59}'
+            | '\u{1BB0}'..='\u{1BB9}'
+            | '\u{1C40}'..='\u{1C49}'
+            | '\u{1C50}'..='\u{1C59}'
+            | '\u{A620}'..='\u{A629}'
+            | '\u{A8D0}'..='\u{A8D9}'
+            | '\u{A900}'..='\u{A909}'
+            | '\u{A9D0}'..='\u{A9D9}'
+            | '\u{A9F0}'..='\u{A9F9}'
+            | '\u{AA50}'..='\u{AA59}'
+            | '\u{ABF0}'..='\u{ABF9}'
+            | '\u{FF10}'..='\u{FF19}'
+            | '\u{104A0}'..='\u{104A9}'
+            | '\u{10D30}'..='\u{10D39}'
+            | '\u{10D40}'..='\u{10D49}'
+            | '\u{11066}'..='\u{1106F}'
+            | '\u{110F0}'..='\u{110F9}'
+            | '\u{11136}'..='\u{1113F}'
+            | '\u{111D0}'..='\u{111D9}'
+            | '\u{112F0}'..='\u{112F9}'
+            | '\u{11450}'..='\u{11459}'
+            | '\u{114D0}'..='\u{114D9}'
+            | '\u{11650}'..='\u{11659}'
+            | '\u{116C0}'..='\u{116C9}'
+            | '\u{116D0}'..='\u{116E3}'
+            | '\u{11730}'..='\u{11739}'
+            | '\u{118E0}'..='\u{118E9}'
+            | '\u{11950}'..='\u{11959}'
+            | '\u{11BF0}'..='\u{11BF9}'
+            | '\u{11C50}'..='\u{11C59}'
+            | '\u{11D50}'..='\u{11D59}'
+            | '\u{11DA0}'..='\u{11DA9}'
+            | '\u{11F50}'..='\u{11F59}'
+            | '\u{16130}'..='\u{16139}'
+            | '\u{16A60}'..='\u{16A69}'
+            | '\u{16AC0}'..='\u{16AC9}'
+            | '\u{16B50}'..='\u{16B59}'
+            | '\u{16D70}'..='\u{16D79}'
+            | '\u{1CCF0}'..='\u{1CCF9}'
+            | '\u{1D7CE}'..='\u{1D7FF}'
+            | '\u{1E140}'..='\u{1E149}'
+            | '\u{1E2F0}'..='\u{1E2F9}'
+            | '\u{1E4F0}'..='\u{1E4F9}'
+            | '\u{1E5F1}'..='\u{1E5FA}'
+            | '\u{1E950}'..='\u{1E959}'
+            | '\u{1FBF0}'..='\u{1FBF9}'
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    static SCAN_DIGITS_FWD_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_scan_digits_fwd_calls() {
+    SCAN_DIGITS_FWD_CALLS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+fn scan_digits_fwd_calls() -> u64 {
+    SCAN_DIGITS_FWD_CALLS.with(|c| c.get())
+}
+
+#[inline]
+fn scan_digits_fwd(s: &str, idx: usize) -> (usize, usize) {
+    #[cfg(test)]
+    SCAN_DIGITS_FWD_CALLS.with(|c| c.set(c.get().saturating_add(1)));
+    let bytes = s.as_bytes();
+    let mut end = idx;
+    let mut char_count = 0usize;
+    while let Some(&b) = bytes.get(end) {
+        if b.is_ascii_digit() {
+            end += 1;
+            char_count += 1;
+        } else if b >= 0x80 {
+            if let Some(ch) = s.get(end..).and_then(|tail| tail.chars().next()) {
+                if is_regex_decimal_digit(ch) {
+                    end += ch.len_utf8();
+                    char_count += 1;
+                    continue;
+                }
+            }
+            break;
+        } else {
+            break;
+        }
+    }
+    (end, char_count)
+}
+
+#[inline]
+fn scan_digits_rev(s: &str, end: usize) -> (usize, usize) {
+    let bytes = s.as_bytes();
+    let mut start = end;
+    let mut char_count = 0usize;
+    while start > 0 {
+        if let Some(&b) = bytes.get(start - 1) {
+            if b.is_ascii_digit() {
+                start -= 1;
+                char_count += 1;
+                continue;
+            } else if b >= 0x80 {
+                if let Some(ch) = s.get(..start).and_then(|head| head.chars().next_back()) {
+                    if is_regex_decimal_digit(ch) {
+                        start -= ch.len_utf8();
+                        char_count += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        break;
+    }
+    (start, char_count)
+}
+
+/// Forward cursor parsing `<digits><ascii_op>` starting at `idx`, returning `(val, op, digit_chars, next_idx)`.
+#[inline]
+fn next_cigar_op(s: &str, idx: usize) -> Option<(i32, u8, usize, usize)> {
+    let (d_end, digit_chars) = scan_digits_fwd(s, idx);
+    if digit_chars == 0 {
+        return None;
+    }
+    let &op = s.as_bytes().get(d_end)?;
+    if op >= 0x80 {
+        return None;
+    }
+    let val = to_int(s.get(idx..d_end)?);
+    Some((val, op, digit_chars, d_end + 1))
+}
+
+/// Reverse cursor parsing `<digits><ascii_op>` ending at `end`, returning `(op_start, val, op, digit_chars)`.
+#[inline]
+fn prev_cigar_op(s: &str, end: usize) -> Option<(usize, i32, u8, usize)> {
+    let op_pos = end.checked_sub(1)?;
+    let &op = s.as_bytes().get(op_pos)?;
+    if op >= 0x80 {
+        return None;
+    }
+    let (d_start, digit_chars) = scan_digits_rev(s, op_pos);
+    if digit_chars == 0 {
+        return None;
+    }
+    let val = to_int(s.get(d_start..op_pos)?);
+    Some((d_start, val, op, digit_chars))
+}
+
+/// Advances `idx` across a maximal digit run without an ASCII op or across contiguous `\D` characters
+/// so leftmost scanners stay strictly $O(N)$ on arbitrary / hostile digit runs (`AR-05`).
+#[inline]
+fn step_past_current_run(s: &str, idx: usize) -> usize {
+    let bytes = s.as_bytes();
+    let (d_end, digit_chars) = scan_digits_fwd(s, idx);
+    if digit_chars > 0 {
+        if bytes.get(d_end).is_some_and(|&b| b < 0x80) {
+            d_end + 1
+        } else {
+            d_end
+        }
+    } else {
+        let mut cur = idx;
+        while let Some(&b) = bytes.get(cur) {
+            if b < 0x80 {
+                if b.is_ascii_digit() {
+                    break;
+                }
+                cur += 1;
+            } else if let Some(ch) = s.get(cur..).and_then(|t| t.chars().next()) {
+                if is_regex_decimal_digit(ch) {
+                    break;
+                }
+                cur += ch.len_utf8();
+            } else {
+                cur += 1;
+            }
+        }
+        cur
+    }
 }
 
 /// Matches `SA_CIGAR_D_S_5CLIP_GROUP` (`^(\d\d+)S`), returning `to_int(group1) as usize`.
 #[inline]
 pub(crate) fn leading_2digit_s_len(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut s_pos = 0;
-    while bytes.get(s_pos).is_some_and(u8::is_ascii_digit) {
-        s_pos += 1;
-    }
-    if s_pos < 2 || bytes.get(s_pos).copied() != Some(b'S') {
+    let (val, op, digit_chars, _) = next_cigar_op(s, 0)?;
+    if op != b'S' || digit_chars < 2 {
         return None;
     }
-    Some(to_int(s.get(..s_pos)?) as usize)
+    Some(val as usize)
 }
 
 /// Matches `SA_CIGAR_D_S_3CLIP_GROUP` (`(\d\d+)S$`), returning `to_int(group1) as usize`.
 #[inline]
 pub(crate) fn trailing_2digit_s_len(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let s_pos = bytes.len().checked_sub(1)?;
-    if *bytes.get(s_pos)? != b'S' {
+    let (_, val, op, digit_chars) = prev_cigar_op(s, s.len())?;
+    if op != b'S' || digit_chars < 2 {
         return None;
     }
-    let mut d_start = s_pos;
-    while d_start > 0 && bytes.get(d_start - 1).is_some_and(u8::is_ascii_digit) {
-        d_start -= 1;
-    }
-    if s_pos - d_start < 2 {
+    Some(val as usize)
+}
+
+#[inline]
+fn match_begin_s_ior_d(s: &str) -> Option<(std::ops::Range<usize>, i32, i32, u8)> {
+    let (g1, b'S', _, idx1) = next_cigar_op(s, 0)? else {
+        return None;
+    };
+    let (g2, op, _, end) = next_cigar_op(s, idx1)?;
+    if !matches!(op, b'I' | b'D') {
         return None;
     }
-    Some(to_int(s.get(d_start..s_pos)?) as usize)
+    Some((0..end, g1, g2, op))
+}
+
+#[inline]
+fn match_ior_d_s_end(s: &str) -> Option<(std::ops::Range<usize>, i32, u8, i32)> {
+    let (s_start, g3, b'S', _) = prev_cigar_op(s, s.len())? else {
+        return None;
+    };
+    let (start, g1, op, _) = prev_cigar_op(s, s_start)?;
+    if !matches!(op, b'I' | b'D') {
+        return None;
+    }
+    Some((start..s.len(), g1, op, g3))
+}
+
+#[inline]
+fn match_begin_s_m_ior_d(s: &str) -> Option<(std::ops::Range<usize>, i32, i32, i32, u8)> {
+    let (g1, b'S', _, idx1) = next_cigar_op(s, 0)? else {
+        return None;
+    };
+    let (tmid, b'M', _, idx2) = next_cigar_op(s, idx1)? else {
+        return None;
+    };
+    let (g3, op, _, end) = next_cigar_op(s, idx2)?;
+    if !matches!(op, b'I' | b'D') {
+        return None;
+    }
+    Some((0..end, g1, tmid, g3, op))
+}
+
+#[inline]
+fn match_ior_d_m_s_end(s: &str) -> Option<(std::ops::Range<usize>, i32, u8, i32, i32)> {
+    let (s_start, g4, b'S', _) = prev_cigar_op(s, s.len())? else {
+        return None;
+    };
+    let (m_start, tmid, b'M', _) = prev_cigar_op(s, s_start)? else {
+        return None;
+    };
+    let (start, g1, op, _) = prev_cigar_op(s, m_start)?;
+    if !matches!(op, b'I' | b'D') {
+        return None;
+    }
+    Some((start..s.len(), g1, op, tmid, g4))
+}
+
+#[inline]
+fn match_begin_digit_m_ior_d_m(s: &str) -> Option<(std::ops::Range<usize>, i32, i32, u8, i32)> {
+    let (tmid, b'M', 1, idx1) = next_cigar_op(s, 0)? else {
+        return None;
+    };
+    let (g2, op, _, idx2) = next_cigar_op(s, idx1)?;
+    if !matches!(op, b'I' | b'D') {
+        return None;
+    }
+    let (mlen, b'M', _, end) = next_cigar_op(s, idx2)? else {
+        return None;
+    };
+    Some((0..end, tmid, g2, op, mlen))
+}
+
+#[inline]
+fn match_ior_d_digit_m_end(s: &str) -> Option<(std::ops::Range<usize>, i32, u8, i32)> {
+    let (m_start, tmid, b'M', 1) = prev_cigar_op(s, s.len())? else {
+        return None;
+    };
+    let (start, g1, op, _) = prev_cigar_op(s, m_start)?;
+    if !matches!(op, b'I' | b'D') {
+        return None;
+    }
+    Some((start..s.len(), g1, op, tmid))
+}
+
+#[inline]
+fn find_two_del_ins(s: &str) -> Option<(std::ops::Range<usize>, usize, [i32; 7])> {
+    let line = s.split('\n').next().unwrap_or("");
+    let mut idx = 0;
+    while idx < line.len() {
+        if let Some((g2, op1, _, i1)) = next_cigar_op(line, idx) {
+            if op1 == b'M' {
+                if let Some((g3, b'D', _, i2)) = next_cigar_op(line, i1) {
+                    if let Some((g4, b'M', _, i3)) = next_cigar_op(line, i2) {
+                        if let Some((g5, b'I', _, i4)) = next_cigar_op(line, i3) {
+                            if let Some((g6, b'M', _, i5)) = next_cigar_op(line, i4) {
+                                if let Some((g7, b'D', _, i6)) = next_cigar_op(line, i5) {
+                                    if let Some((g8, b'M', _, end)) = next_cigar_op(line, i6) {
+                                        return Some((idx..end, idx, [g2, g3, g4, g5, g6, g7, g8]));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            idx = i1;
+        } else {
+            idx = step_past_current_run(line, idx);
+        }
+    }
+    None
+}
+
+#[inline]
+fn find_three_deletions(s: &str) -> Option<(std::ops::Range<usize>, usize, [i32; 7])> {
+    let line = s.split('\n').next().unwrap_or("");
+    let mut idx = 0;
+    while idx < line.len() {
+        if let Some((g2, op1, _, i1)) = next_cigar_op(line, idx) {
+            if op1 == b'M' {
+                if let Some((g3, b'D', _, i2)) = next_cigar_op(line, i1) {
+                    if let Some((g4, b'M', _, i3)) = next_cigar_op(line, i2) {
+                        if let Some((g5, b'D', _, i4)) = next_cigar_op(line, i3) {
+                            if let Some((g6, b'M', _, i5)) = next_cigar_op(line, i4) {
+                                if let Some((g7, b'D', _, i6)) = next_cigar_op(line, i5) {
+                                    if let Some((g8, b'M', _, end)) = next_cigar_op(line, i6) {
+                                        return Some((idx..end, idx, [g2, g3, g4, g5, g6, g7, g8]));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            idx = i1;
+        } else {
+            idx = step_past_current_run(line, idx);
+        }
+    }
+    None
+}
+
+struct ThreeIndelsMatch {
+    range: std::ops::Range<usize>,
+    ov5_len: usize,
+    g2: i32,
+    g3: i32,
+    op1: u8,
+    g5: i32,
+    g6: i32,
+    op2: u8,
+    g8: i32,
+    g9: i32,
+    op3: u8,
+    g11: i32,
+}
+
+struct CloseIndelMatch {
+    range: std::ops::Range<usize>,
+    first_len: i32,
+    mid_len: i32,
+    second_len: i32,
+    second_op: u8,
+    trailing_i: Option<i32>,
+}
+
+struct PrefixedCloseIndelMatch {
+    prefix_ch: char,
+    range_after_prefix: std::ops::Range<usize>,
+    first_i_len: i32,
+    mid_len: i32,
+    second_len: i32,
+    second_op: u8,
+    trailing_i: Option<i32>,
+}
+
+#[inline]
+fn find_three_indels(s: &str) -> Option<ThreeIndelsMatch> {
+    let line = s.split('\n').next().unwrap_or("");
+    let mut idx = 0;
+    while idx < line.len() {
+        if let Some((g2, op_m1, _, i1)) = next_cigar_op(line, idx) {
+            if op_m1 == b'M' {
+                if let Some((g3, op1, _, i2)) = next_cigar_op(line, i1) {
+                    if matches!(op1, b'D' | b'I') {
+                        if let Some((g5, b'M', _, i3)) = next_cigar_op(line, i2) {
+                            if let Some((g6, op2, _, i4)) = next_cigar_op(line, i3) {
+                                if matches!(op2, b'D' | b'I') {
+                                    if let Some((g8, b'M', _, i5)) = next_cigar_op(line, i4) {
+                                        if let Some((g9, op3, _, i6)) = next_cigar_op(line, i5) {
+                                            if matches!(op3, b'D' | b'I') {
+                                                if let Some((g11, b'M', _, end)) =
+                                                    next_cigar_op(line, i6)
+                                                {
+                                                    return Some(ThreeIndelsMatch {
+                                                        range: idx..end,
+                                                        ov5_len: idx,
+                                                        g2,
+                                                        g3,
+                                                        op1,
+                                                        g5,
+                                                        g6,
+                                                        op2,
+                                                        g8,
+                                                        g9,
+                                                        op3,
+                                                        g11,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            idx = i1;
+        } else {
+            idx = step_past_current_run(line, idx);
+        }
+    }
+    None
+}
+
+#[inline]
+fn find_dig_d_dig_m_dig_di_digi(s: &str) -> Option<CloseIndelMatch> {
+    let mut idx = 0;
+    while idx < s.len() {
+        if let Some((g1, op1, _, i1)) = next_cigar_op(s, idx) {
+            if op1 == b'D' {
+                if let Some((g2, b'M', _, i2)) = next_cigar_op(s, i1) {
+                    if let Some((g3, op4, _, i3)) = next_cigar_op(s, i2) {
+                        if matches!(op4, b'D' | b'I') {
+                            let (end, trailing_i) = match next_cigar_op(s, i3) {
+                                Some((ti, b'I', _, i4)) => (i4, Some(ti)),
+                                _ => (i3, None),
+                            };
+                            return Some(CloseIndelMatch {
+                                range: idx..end,
+                                first_len: g1,
+                                mid_len: g2,
+                                second_len: g3,
+                                second_op: op4,
+                                trailing_i,
+                            });
+                        }
+                    }
+                }
+            }
+            idx = i1;
+        } else {
+            idx = step_past_current_run(s, idx);
+        }
+    }
+    None
+}
+
+#[inline]
+fn find_notdig_dig_i_dig_m_dig_di_digi(s: &str) -> Option<PrefixedCloseIndelMatch> {
+    let mut idx = 0;
+    while idx < s.len() {
+        if let Some((g2, op1, _, i1)) = next_cigar_op(s, idx) {
+            if op1 == b'I' && idx > 0 {
+                if let Some(prefix_ch) = s.get(..idx).and_then(|h| h.chars().next_back()) {
+                    if !is_regex_decimal_digit(prefix_ch) {
+                        if let Some((g3, b'M', _, i2)) = next_cigar_op(s, i1) {
+                            if let Some((g4, op5, _, i3)) = next_cigar_op(s, i2) {
+                                if matches!(op5, b'D' | b'I') {
+                                    let (end, trailing_i) = match next_cigar_op(s, i3) {
+                                        Some((ti, b'I', _, i4)) => (i4, Some(ti)),
+                                        _ => (i3, None),
+                                    };
+                                    return Some(PrefixedCloseIndelMatch {
+                                        prefix_ch,
+                                        range_after_prefix: idx..end,
+                                        first_i_len: g2,
+                                        mid_len: g3,
+                                        second_len: g4,
+                                        second_op: op5,
+                                        trailing_i,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            idx = i1;
+        } else {
+            idx = step_past_current_run(s, idx);
+        }
+    }
+    None
+}
+
+#[inline]
+fn find_adjacent_same_op(s: &str, target: u8) -> Option<(std::ops::Range<usize>, i32, i32)> {
+    let mut idx = 0;
+    while idx < s.len() {
+        if let Some((g1, op1, _, i1)) = next_cigar_op(s, idx) {
+            if op1 == target {
+                if let Some((g2, op2, _, end)) = next_cigar_op(s, i1) {
+                    if op2 == target {
+                        return Some((idx..end, g1, g2));
+                    }
+                }
+            }
+            idx = i1;
+        } else {
+            idx = step_past_current_run(s, idx);
+        }
+    }
+    None
 }
 
 /// Single-pass replacement for `(global_find_sum(&ALIGNED_LENGTH_MND, s), global_find_sum(&SOFT_CLIPPED, s))`,
 /// matching `(\d+)[MND]` and `(\d+)[MIS]` byte-for-byte without regex or heap allocation.
 #[inline]
 fn sum_mnd_and_mis_prefix(s: &str) -> (i32, i32) {
-    let bytes = s.as_bytes();
     let mut mnd: i32 = 0;
     let mut mis: i32 = 0;
     let mut idx = 0;
-    while idx < bytes.len() {
-        if bytes.get(idx).is_some_and(u8::is_ascii_digit) {
-            let start = idx;
-            while bytes.get(idx).is_some_and(u8::is_ascii_digit) {
-                idx += 1;
+    while idx < s.len() {
+        if let Some((val, op, _, next_idx)) = next_cigar_op(s, idx) {
+            let is_mnd = matches!(op, b'M' | b'N' | b'D');
+            let is_mis = matches!(op, b'M' | b'I' | b'S');
+            if is_mnd {
+                mnd = mnd.saturating_add(val);
             }
-            if let Some(&op) = bytes.get(idx) {
-                let is_mnd = matches!(op, b'M' | b'N' | b'D');
-                let is_mis = matches!(op, b'M' | b'I' | b'S');
-                if is_mnd || is_mis {
-                    let val = s.get(start..idx).map_or(0, to_int);
-                    if is_mnd {
-                        mnd = mnd.saturating_add(val);
-                    }
-                    if is_mis {
-                        mis = mis.saturating_add(val);
-                    }
-                    idx += 1;
-                }
+            if is_mis {
+                mis = mis.saturating_add(val);
             }
+            idx = next_idx;
         } else {
-            idx += 1;
+            idx = step_past_current_run(s, idx);
         }
     }
     (mnd, mis)
@@ -220,91 +749,51 @@ fn cigar_flags(s: &str) -> (bool, bool, bool) {
 /// Matches `ANY_NUMBER_M_NUMBER_S_END` (`^(.*?)(\d+)M(\d+)S$`) without regex or heap allocation.
 #[inline]
 fn match_any_number_m_number_s_end(s: &str) -> Option<(&str, i32, i32)> {
-    let bytes = s.as_bytes();
-    let s_pos = bytes.len().checked_sub(1)?;
-    if *bytes.get(s_pos)? != b'S' {
+    let (s_start, d2, b'S', _) = prev_cigar_op(s, s.len())? else {
         return None;
-    }
-    let mut d2_start = s_pos;
-    while d2_start > 0 && bytes.get(d2_start - 1).is_some_and(|b| b.is_ascii_digit()) {
-        d2_start -= 1;
-    }
-    if d2_start == s_pos {
+    };
+    let (d1_start, d1, b'M', _) = prev_cigar_op(s, s_start)? else {
         return None;
-    }
-    let m_pos = d2_start.checked_sub(1)?;
-    if *bytes.get(m_pos)? != b'M' {
-        return None;
-    }
-    let mut d1_start = m_pos;
-    while d1_start > 0 && bytes.get(d1_start - 1).is_some_and(|b| b.is_ascii_digit()) {
-        d1_start -= 1;
-    }
-    if d1_start == m_pos {
-        return None;
-    }
+    };
     let prefix = s.get(..d1_start)?;
-    let d1 = to_int(s.get(d1_start..m_pos)?);
-    let d2 = to_int(s.get(d2_start..s_pos)?);
+    if prefix.as_bytes().contains(&b'\n') {
+        return None;
+    }
     Some((prefix, d1, d2))
 }
 
 /// Matches `BEGIN_ANY_DIG_M_END` (`^(.*?)(\d+)M$`) without regex or heap allocation.
 #[inline]
 fn match_begin_any_dig_m_end(s: &str) -> Option<(&str, i32)> {
-    let bytes = s.as_bytes();
-    let m_pos = bytes.len().checked_sub(1)?;
-    if *bytes.get(m_pos)? != b'M' {
+    let (d1_start, d1, b'M', _) = prev_cigar_op(s, s.len())? else {
         return None;
-    }
-    let mut d1_start = m_pos;
-    while d1_start > 0 && bytes.get(d1_start - 1).is_some_and(|b| b.is_ascii_digit()) {
-        d1_start -= 1;
-    }
-    if d1_start == m_pos {
-        return None;
-    }
+    };
     let prefix = s.get(..d1_start)?;
-    let d1 = to_int(s.get(d1_start..m_pos)?);
+    if prefix.as_bytes().contains(&b'\n') {
+        return None;
+    }
     Some((prefix, d1))
 }
 
 /// Matches `DIG_S_DIG_M` (`^(\d+)S(\d+)M`) without regex or heap allocation.
 #[inline]
 fn match_dig_s_dig_m(s: &str) -> Option<(i32, i32)> {
-    let bytes = s.as_bytes();
-    let mut s_pos = 0;
-    while bytes.get(s_pos).is_some_and(|b| b.is_ascii_digit()) {
-        s_pos += 1;
-    }
-    if s_pos == 0 || bytes.get(s_pos).copied() != Some(b'S') {
+    let (d1, b'S', _, idx1) = next_cigar_op(s, 0)? else {
         return None;
-    }
-    let d2_start = s_pos + 1;
-    let mut m_pos = d2_start;
-    while bytes.get(m_pos).is_some_and(|b| b.is_ascii_digit()) {
-        m_pos += 1;
-    }
-    if m_pos == d2_start || bytes.get(m_pos).copied() != Some(b'M') {
+    };
+    let (d2, b'M', _, _) = next_cigar_op(s, idx1)? else {
         return None;
-    }
-    let d1 = to_int(s.get(..s_pos)?);
-    let d2 = to_int(s.get(d2_start..m_pos)?);
+    };
     Some((d1, d2))
 }
 
 /// Matches `BEGIN_DIG_M` (`^(\d+)M`) without regex or heap allocation.
 #[inline]
 fn match_begin_dig_m(s: &str) -> Option<i32> {
-    let bytes = s.as_bytes();
-    let mut m_pos = 0;
-    while bytes.get(m_pos).is_some_and(|b| b.is_ascii_digit()) {
-        m_pos += 1;
-    }
-    if m_pos == 0 || bytes.get(m_pos).copied() != Some(b'M') {
+    let (d1, b'M', _, _) = next_cigar_op(s, 0)? else {
         return None;
-    }
-    Some(to_int(s.get(..m_pos)?))
+    };
+    Some(d1)
 }
 
 /// Scans `(\-?\d+)[MIDNSHPX=]` across `s` and validates that all matched lengths are `> 0`.
@@ -314,20 +803,17 @@ fn validate_cigar_element_lengths(s: &str) -> Result<(), crate::types::VardictEr
     let mut idx = 0;
     while idx < bytes.len() {
         let start = idx;
-        if bytes.get(idx) == Some(&b'-') && bytes.get(idx + 1).is_some_and(|b| b.is_ascii_digit()) {
+        if bytes.get(idx) == Some(&b'-') {
             idx += 1;
         }
-        let dig_start = idx;
-        while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
-            idx += 1;
-        }
-        if idx > dig_start {
-            if let Some(&op) = bytes.get(idx) {
+        let (d_end, digit_chars) = scan_digits_fwd(s, idx);
+        if digit_chars > 0 {
+            if let Some(&op) = bytes.get(d_end) {
                 if matches!(
                     op,
                     b'M' | b'I' | b'D' | b'N' | b'S' | b'H' | b'P' | b'X' | b'='
                 ) {
-                    let num_str = s.get(start..idx).unwrap_or("");
+                    let num_str = s.get(start..d_end).unwrap_or("");
                     let len: i32 = num_str.parse().unwrap_or(0);
                     if len <= 0 {
                         return Err(crate::types::VardictError::JavaThrows(format!(
@@ -335,11 +821,19 @@ fn validate_cigar_element_lengths(s: &str) -> Result<(), crate::types::VardictEr
                             len, s
                         )));
                     }
-                    idx += 1;
+                    idx = d_end + 1;
+                    continue;
                 }
             }
-        } else {
-            idx += 1;
+            idx = d_end;
+        } else if start == idx {
+            idx += if bytes.get(idx).is_some_and(u8::is_ascii) {
+                1
+            } else {
+                s.get(idx..)
+                    .and_then(|t| t.chars().next())
+                    .map_or(1, char::len_utf8)
+            };
         }
     }
     Ok(())
@@ -748,10 +1242,7 @@ pub(crate) fn step_combine_dig_s_dig_m(
 
 #[inline]
 fn unique_seed_map_pos(seed: &SeedMap, rc_seed: &[u8]) -> Option<u32> {
-    match seed.get(rc_seed) {
-        Some([pos]) => Some(*pos),
-        _ => None,
-    }
+    seed.get_unique(rc_seed)
 }
 
 #[inline]
@@ -1077,20 +1568,18 @@ impl<'a> CigarModifier<'a> {
 
         if has_d {
             // 1. Strip leading deletion
-            if let Some(caps) = BEGIN_NUMBER_D.captures(&this.cigar_str) {
-                if let Some(m0) = caps.get(0) {
-                    let range = m0.range();
-                    let dlen = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                    this.position = this.position.saturating_add(dlen);
-                    this.cigar_str.replace_range(range, "");
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                }
+            if let Some((dlen, b'D', _, end)) = next_cigar_op(&this.cigar_str, 0) {
+                this.position = this.position.saturating_add(dlen);
+                this.cigar_str.replace_range(0..end, "");
+                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
             }
             // Strip trailing deletion
             if has_d {
-                if let Some(m0) = END_NUMBER_D.find(&this.cigar_str) {
-                    let range = m0.range();
-                    this.cigar_str.replace_range(range, "");
+                if let Some((start, _, b'D', _)) =
+                    prev_cigar_op(&this.cigar_str, this.cigar_str.len())
+                {
+                    let end = this.cigar_str.len();
+                    this.cigar_str.replace_range(start..end, "");
                     (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                 }
             }
@@ -1098,23 +1587,18 @@ impl<'a> CigarModifier<'a> {
 
         if has_i {
             // 2. Replace leading insertion with soft clip
-            if let Some(caps) = BEGIN_NUMBER_I.captures(&this.cigar_str) {
-                if let Some(m0) = caps.get(0) {
-                    let range = m0.range();
-                    let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                    replace_cigar_range(&mut this.cigar_str, range, format_args!("{ilen}S"));
-                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                }
+            if let Some((ilen, b'I', _, end)) = next_cigar_op(&this.cigar_str, 0) {
+                replace_cigar_range(&mut this.cigar_str, 0..end, format_args!("{ilen}S"));
+                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
             }
             // Replace trailing insertion with soft clip
             if has_i {
-                if let Some(caps) = END_NUMBER_I.captures(&this.cigar_str) {
-                    if let Some(m0) = caps.get(0) {
-                        let range = m0.range();
-                        let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{ilen}S"));
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                    }
+                if let Some((start, ilen, b'I', _)) =
+                    prev_cigar_op(&this.cigar_str, this.cigar_str.len())
+                {
+                    let end = this.cigar_str.len();
+                    replace_cigar_range(&mut this.cigar_str, start..end, format_args!("{ilen}S"));
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                 }
             }
         }
@@ -1138,9 +1622,8 @@ impl<'a> CigarModifier<'a> {
                             } else {
                                 None
                             };
-                            if let Some(m0) = RE_START_S.find(&this.cigar_str) {
-                                let range = m0.range();
-                                this.cigar_str.replace_range(range, "");
+                            if let Some((_, b'S', _, end)) = next_cigar_op(&this.cigar_str, 0) {
+                                this.cigar_str.replace_range(0..end, "");
                             }
                             (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                             if this.query_seq.len() >= cigar_element {
@@ -1178,9 +1661,13 @@ impl<'a> CigarModifier<'a> {
                                 } else {
                                     None
                                 };
-                                if let Some(m0) = RE_END_2S.find(&this.cigar_str) {
-                                    let range = m0.range();
-                                    this.cigar_str.replace_range(range, "");
+                                if let Some((start, _, b'S', dc)) =
+                                    prev_cigar_op(&this.cigar_str, this.cigar_str.len())
+                                {
+                                    if dc >= 2 {
+                                        let end = this.cigar_str.len();
+                                        this.cigar_str.replace_range(start..end, "");
+                                    }
                                 }
                                 (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                                 this.query_seq.truncate(start_idx);
@@ -1226,127 +1713,51 @@ impl<'a> CigarModifier<'a> {
 
             // S followed by I/D
             if has_s && (has_d || has_i) {
-                if let Some(caps) = BEGIN_NUMBER_S_NUMBER_IOR_D.captures(&this.cigar_str) {
-                    if let Some(m0) = caps.get(0) {
-                        let range = m0.range();
-                        let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                        let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                        let op = caps.get(3).map_or("", |m| m.as_str());
-                        let slen = g1.saturating_add(if op == "I" { g2 } else { 0 });
-                        this.position =
-                            this.position.saturating_add(if op == "D" { g2 } else { 0 });
-                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                        flag_loop = true;
-                    }
+                if let Some((range, g1, g2, op)) = match_begin_s_ior_d(&this.cigar_str) {
+                    let slen = g1.saturating_add(if op == b'I' { g2 } else { 0 });
+                    this.position = this
+                        .position
+                        .saturating_add(if op == b'D' { g2 } else { 0 });
+                    replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    flag_loop = true;
                 }
             }
 
             // I/D followed by S
             if has_s && (has_d || has_i) {
-                if let Some(caps) = NUMBER_IOR_D_NUMBER_S_END.captures(&this.cigar_str) {
-                    if let Some(m0) = caps.get(0) {
-                        let range = m0.range();
-                        let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                        let op = caps.get(2).map_or("", |m| m.as_str());
-                        let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                        let slen = g3.saturating_add(if op == "I" { g1 } else { 0 });
-                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                        flag_loop = true;
-                    }
+                if let Some((range, g1, op, g3)) = match_ior_d_s_end(&this.cigar_str) {
+                    let slen = g3.saturating_add(if op == b'I' { g1 } else { 0 });
+                    replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    flag_loop = true;
                 }
             }
 
             // S-M(<=10)-I/D
             if has_s && (has_d || has_i) {
-                if let Some(caps) = BEGIN_NUMBER_S_NUMBER_M_NUMBER_IOR_D.captures(&this.cigar_str) {
-                    let tmid = to_int(caps.get(2).map_or("", |m| m.as_str()));
+                if let Some((range, g1, tmid, g3, op)) = match_begin_s_m_ior_d(&this.cigar_str) {
                     if tmid <= 10 {
-                        if let Some(m0) = caps.get(0) {
-                            let range = m0.range();
-                            let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                            let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                            let op = caps.get(4).map_or("", |m| m.as_str());
-                            let slen = g1.saturating_add(tmid).saturating_add(if op == "I" {
-                                g3
-                            } else {
-                                0
-                            });
-                            this.position =
-                                this.position
-                                    .saturating_add(tmid.saturating_add(if op == "D" {
-                                        g3
-                                    } else {
-                                        0
-                                    }));
-                            replace_cigar_range(
-                                &mut this.cigar_str,
-                                range,
-                                format_args!("{slen}S"),
-                            );
-                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                            flag_loop = true;
-                        }
+                        let slen =
+                            g1.saturating_add(tmid)
+                                .saturating_add(if op == b'I' { g3 } else { 0 });
+                        this.position = this
+                            .position
+                            .saturating_add(tmid.saturating_add(if op == b'D' { g3 } else { 0 }));
+                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        flag_loop = true;
                     }
                 }
             }
 
             // I/D-M(<=10)-S
             if has_s && (has_d || has_i) {
-                if let Some(caps) = NUMBER_IOR_D_NUMBER_M_NUMBER_S_END.captures(&this.cigar_str) {
-                    let tmid = to_int(caps.get(3).map_or("", |m| m.as_str()));
+                if let Some((range, g1, op, tmid, g4)) = match_ior_d_m_s_end(&this.cigar_str) {
                     if tmid <= 10 {
-                        if let Some(m0) = caps.get(0) {
-                            let range = m0.range();
-                            let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                            let op = caps.get(2).map_or("", |m| m.as_str());
-                            let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                            let slen = g4.saturating_add(tmid).saturating_add(if op == "I" {
-                                g1
-                            } else {
-                                0
-                            });
-                            replace_cigar_range(
-                                &mut this.cigar_str,
-                                range,
-                                format_args!("{slen}S"),
-                            );
-                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                            flag_loop = true;
-                        }
-                    }
-                }
-            }
-
-            // Single-digit M at start with I/D
-            if has_d || has_i {
-                if let Some(caps) = BEGIN_DIGIT_M_NUMBER_IOR_D_NUMBER_M.captures(&this.cigar_str) {
-                    if let Some(m0) = caps.get(0) {
-                        let range = m0.range();
-                        let tmid = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                        let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                        let op_str = caps.get(3).map_or("", |m| m.as_str());
-                        let is_ins = op_str == "I";
-                        let is_del = op_str == "D";
-                        let mlen = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                        flag_loop = this.begin_digit_m_number_ior_d_number_m_range(
-                            range, tmid, mlen, is_ins, is_del, g2,
-                        );
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                    }
-                }
-            }
-
-            // Single-digit M at end with I/D
-            if has_d || has_i {
-                if let Some(caps) = NUMBER_IOR_D_DIGIT_M_END.captures(&this.cigar_str) {
-                    if let Some(m0) = caps.get(0) {
-                        let range = m0.range();
-                        let tmid = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                        let op = caps.get(2).map_or("", |m| m.as_str());
-                        let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                        let slen = tmid.saturating_add(if op == "I" { g1 } else { 0 });
+                        let slen =
+                            g4.saturating_add(tmid)
+                                .saturating_add(if op == b'I' { g1 } else { 0 });
                         replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
                         (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                         flag_loop = true;
@@ -1354,66 +1765,65 @@ impl<'a> CigarModifier<'a> {
                 }
             }
 
+            // Single-digit M at start with I/D
+            if has_d || has_i {
+                if let Some((range, tmid, g2, op, mlen)) =
+                    match_begin_digit_m_ior_d_m(&this.cigar_str)
+                {
+                    flag_loop = this.begin_digit_m_number_ior_d_number_m_range(
+                        range,
+                        tmid,
+                        mlen,
+                        op == b'I',
+                        op == b'D',
+                        g2,
+                    );
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                }
+            }
+
+            // Single-digit M at end with I/D
+            if has_d || has_i {
+                if let Some((range, g1, op, tmid)) = match_ior_d_digit_m_end(&this.cigar_str) {
+                    let slen = tmid.saturating_add(if op == b'I' { g1 } else { 0 });
+                    replace_cigar_range(&mut this.cigar_str, range, format_args!("{slen}S"));
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    flag_loop = true;
+                }
+            }
+
             // Combine close deletions/insertions into complex
-            // Keep outer if/else-if precedence intact while hoisting `mid <= MAX_MULTI_INDEL_MID_SPAN`
-            // before `.to_string()` capture extraction (`AR-07`).
-            let caps_d_m_d = if has_d && has_i {
-                D_M_D_DD_M_D_I_D_M_D_DD.captures(&this.cigar_str)
+            // Keep outer if/else-if precedence intact so a leftmost match with `mid > 15`
+            // still masks the `else` branches (`AR-05`, `AR-07`).
+            let two_del_ins = if has_d && has_i {
+                find_two_del_ins(&this.cigar_str)
             } else {
                 None
             };
-            if let Some(caps) = caps_d_m_d {
-                let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                let g6 = to_int(caps.get(6).map_or("", |m| m.as_str()));
+            if let Some((range, ov5_len, [g2, g3, g4, g5, g6, g7, g8])) = two_del_ins {
                 if g4.saturating_add(g6) <= MAX_MULTI_INDEL_MID_SPAN {
-                    let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                    let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                    let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                    let g5 = to_int(caps.get(5).map_or("", |m| m.as_str()));
-                    let g7 = to_int(caps.get(7).map_or("", |m| m.as_str()));
-                    let g8 = to_int(caps.get(8).map_or("", |m| m.as_str()));
-                    flag_loop = this.two_deletions_insertion_to_complex(
-                        &ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop,
+                    flag_loop = this.two_deletions_insertion_to_complex_range(
+                        range, ov5_len, g2, g3, g4, g5, g6, g7, g8, flag_loop,
                     );
                     (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                 }
             } else {
-                let caps_three_del = if has_d {
-                    THREE_DELETIONS_PATTERN.captures(&this.cigar_str)
+                let three_del = if has_d {
+                    find_three_deletions(&this.cigar_str)
                 } else {
                     None
                 };
-                if let Some(caps) = caps_three_del {
-                    let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                    let g6 = to_int(caps.get(6).map_or("", |m| m.as_str()));
+                if let Some((range, ov5_len, [g2, g3, g4, g5, g6, g7, g8])) = three_del {
                     if g4.saturating_add(g6) <= MAX_MULTI_INDEL_MID_SPAN {
-                        let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                        let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                        let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                        let g5 = to_int(caps.get(5).map_or("", |m| m.as_str()));
-                        let g7 = to_int(caps.get(7).map_or("", |m| m.as_str()));
-                        let g8 = to_int(caps.get(8).map_or("", |m| m.as_str()));
-                        flag_loop =
-                            this.three_deletions(&ov5, g2, g3, g4, g5, g6, g7, g8, flag_loop);
+                        flag_loop = this.three_deletions_range(
+                            range, ov5_len, g2, g3, g4, g5, g6, g7, g8, flag_loop,
+                        );
                         (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                     }
                 } else if has_d || has_i {
-                    if let Some(caps) = THREE_INDELS_PATTERN.captures(&this.cigar_str) {
-                        let g5 = to_int(caps.get(5).map_or("", |m| m.as_str()));
-                        let g8 = to_int(caps.get(8).map_or("", |m| m.as_str()));
-                        if g5.saturating_add(g8) <= MAX_MULTI_INDEL_MID_SPAN {
-                            let ov5 = caps.get(1).map_or("", |m| m.as_str()).to_string();
-                            let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                            let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                            let op1 = caps.get(4).map_or("", |m| m.as_str()).to_string();
-                            let g6 = to_int(caps.get(6).map_or("", |m| m.as_str()));
-                            let op2 = caps.get(7).map_or("", |m| m.as_str()).to_string();
-                            let g9 = to_int(caps.get(9).map_or("", |m| m.as_str()));
-                            let op3 = caps.get(10).map_or("", |m| m.as_str()).to_string();
-                            let g11 = to_int(caps.get(11).map_or("", |m| m.as_str()));
-                            flag_loop = this.three_indels(
-                                &ov5, g2, g3, &op1, g5, g6, &op2, g8, g9, &op3, g11, flag_loop,
-                            );
+                    if let Some(m) = find_three_indels(&this.cigar_str) {
+                        if m.g5.saturating_add(m.g8) <= MAX_MULTI_INDEL_MID_SPAN {
+                            flag_loop = this.three_indels_range(m, flag_loop);
                             (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                         }
                     }
@@ -1421,110 +1831,71 @@ impl<'a> CigarModifier<'a> {
             }
 
             if has_d {
-                if let Some(caps) = DIG_D_DIG_M_DIG_DI_DIGI.captures(&this.cigar_str) {
-                    let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                    if g2 <= MAX_MULTI_INDEL_MID_SPAN {
-                        if let Some(m0) = caps.get(0) {
-                            let range = m0.range();
-                            let g1 = to_int(caps.get(1).map_or("", |m| m.as_str()));
-                            let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                            let op = caps.get(4).map_or("", |m| m.as_str());
-                            let mut dlen = g1.saturating_add(g2);
-                            let mut ilen = g2;
-                            if op == "I" {
-                                ilen = ilen.saturating_add(g3);
-                            } else if op == "D" {
-                                dlen = dlen.saturating_add(g3);
-                                if let Some(istr_str) = caps.get(5).map(|m| m.as_str()) {
-                                    if let Some(prefix) = istr_str
-                                        .len()
-                                        .checked_sub(1)
-                                        .and_then(|n| istr_str.get(..n))
-                                    {
-                                        ilen = ilen.saturating_add(to_int(prefix));
-                                    }
-                                }
+                if let Some(m) = find_dig_d_dig_m_dig_di_digi(&this.cigar_str) {
+                    if m.mid_len <= MAX_MULTI_INDEL_MID_SPAN {
+                        let mut dlen = m.first_len.saturating_add(m.mid_len);
+                        let mut ilen = m.mid_len;
+                        if m.second_op == b'I' {
+                            ilen = ilen.saturating_add(m.second_len);
+                        } else if m.second_op == b'D' {
+                            dlen = dlen.saturating_add(m.second_len);
+                            if let Some(ti) = m.trailing_i {
+                                ilen = ilen.saturating_add(ti);
                             }
-                            replace_cigar_range(
-                                &mut this.cigar_str,
-                                range,
-                                format_args!("{dlen}D{ilen}I"),
-                            );
-                            (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                            flag_loop = true;
                         }
+                        replace_cigar_range(
+                            &mut this.cigar_str,
+                            m.range,
+                            format_args!("{dlen}D{ilen}I"),
+                        );
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        flag_loop = true;
                     }
                 }
             }
 
             if has_i {
-                if let Some(caps) = NOTDIG_DIG_I_DIG_M_DIG_DI_DIGI.captures(&this.cigar_str) {
-                    let op_prefix = caps.get(1).map_or("", |m| m.as_str());
-                    if op_prefix != "D" && op_prefix != "H" {
-                        let g3 = to_int(caps.get(3).map_or("", |m| m.as_str()));
-                        if g3 <= MAX_MULTI_INDEL_MID_SPAN {
-                            if let Some(m0) = caps.get(0) {
-                                let range = m0.range();
-                                let g2 = to_int(caps.get(2).map_or("", |m| m.as_str()));
-                                let g4 = to_int(caps.get(4).map_or("", |m| m.as_str()));
-                                let op = caps.get(5).map_or("", |m| m.as_str());
-                                let mut dlen = g3;
-                                let mut ilen = g2.saturating_add(g3);
-                                if op == "I" {
-                                    ilen = ilen.saturating_add(g4);
-                                } else if op == "D" {
-                                    dlen = dlen.saturating_add(g4);
-                                    if let Some(istr_str) = caps.get(6).map(|m| m.as_str()) {
-                                        if let Some(prefix) = istr_str
-                                            .len()
-                                            .checked_sub(1)
-                                            .and_then(|n| istr_str.get(..n))
-                                        {
-                                            ilen = ilen.saturating_add(to_int(prefix));
-                                        }
-                                    }
-                                }
-                                let mut buf = crate::types::StackBuf::<64>::new();
-                                let fallback = if write!(buf, "{op_prefix}{dlen}D{ilen}I").is_ok() {
-                                    None
-                                } else {
-                                    Some(format!("{op_prefix}{dlen}D{ilen}I"))
-                                };
-                                this.cigar_str.replace_range(
-                                    range,
-                                    fallback.as_deref().unwrap_or(buf.as_str()),
-                                );
-                                (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                                flag_loop = true;
+                if let Some(m) = find_notdig_dig_i_dig_m_dig_di_digi(&this.cigar_str) {
+                    if m.prefix_ch != 'D'
+                        && m.prefix_ch != 'H'
+                        && m.mid_len <= MAX_MULTI_INDEL_MID_SPAN
+                    {
+                        let mut dlen = m.mid_len;
+                        let mut ilen = m.first_i_len.saturating_add(m.mid_len);
+                        if m.second_op == b'I' {
+                            ilen = ilen.saturating_add(m.second_len);
+                        } else if m.second_op == b'D' {
+                            dlen = dlen.saturating_add(m.second_len);
+                            if let Some(ti) = m.trailing_i {
+                                ilen = ilen.saturating_add(ti);
                             }
                         }
+                        replace_cigar_range(
+                            &mut this.cigar_str,
+                            m.range_after_prefix,
+                            format_args!("{dlen}D{ilen}I"),
+                        );
+                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                        flag_loop = true;
                     }
                 }
             }
 
             if has_d {
-                if let Some(caps) = DIG_D_DIG_D.captures(&this.cigar_str) {
-                    if let Some(m0) = caps.get(0) {
-                        let range = m0.range();
-                        let dlen = to_int(caps.get(1).map_or("", |m| m.as_str()))
-                            .saturating_add(to_int(caps.get(2).map_or("", |m| m.as_str())));
-                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{dlen}D"));
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                        flag_loop = true;
-                    }
+                if let Some((range, d1, d2)) = find_adjacent_same_op(&this.cigar_str, b'D') {
+                    let dlen = d1.saturating_add(d2);
+                    replace_cigar_range(&mut this.cigar_str, range, format_args!("{dlen}D"));
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    flag_loop = true;
                 }
             }
 
             if has_i {
-                if let Some(caps) = DIG_I_DIG_I.captures(&this.cigar_str) {
-                    if let Some(m0) = caps.get(0) {
-                        let range = m0.range();
-                        let ilen = to_int(caps.get(1).map_or("", |m| m.as_str()))
-                            .saturating_add(to_int(caps.get(2).map_or("", |m| m.as_str())));
-                        replace_cigar_range(&mut this.cigar_str, range, format_args!("{ilen}I"));
-                        (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
-                        flag_loop = true;
-                    }
+                if let Some((range, i1, i2)) = find_adjacent_same_op(&this.cigar_str, b'I') {
+                    let ilen = i1.saturating_add(i2);
+                    replace_cigar_range(&mut this.cigar_str, range, format_args!("{ilen}I"));
+                    (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
+                    flag_loop = true;
                 }
             }
         }
@@ -1898,17 +2269,8 @@ impl<'a> CigarModifier<'a> {
         );
         if rn > 0 && rn <= 3 {
             mch = mch.saturating_sub(rn);
-            let bytes = self.cigar_str.as_bytes();
-            let mut m_pos = 0;
-            while bytes.get(m_pos).is_some_and(u8::is_ascii_digit) {
-                m_pos += 1;
-            }
-            if m_pos > 0 && bytes.get(m_pos) == Some(&b'M') {
-                replace_cigar_range(
-                    &mut self.cigar_str,
-                    0..(m_pos + 1),
-                    format_args!("{rn}S{mch}M"),
-                );
+            if let Some((_, b'M', _, end)) = next_cigar_op(&self.cigar_str, 0) {
+                replace_cigar_range(&mut self.cigar_str, 0..end, format_args!("{rn}S{mch}M"));
             }
             self.position = self.position.saturating_add(rn);
         }
@@ -1945,18 +2307,9 @@ impl<'a> CigarModifier<'a> {
         );
         self.position = new_pos;
         if changed {
-            let bytes = self.cigar_str.as_bytes();
-            let mut s_pos = 0;
-            while bytes.get(s_pos).is_some_and(u8::is_ascii_digit) {
-                s_pos += 1;
-            }
-            if s_pos > 0 && bytes.get(s_pos) == Some(&b'S') {
-                let mut m_pos = s_pos + 1;
-                while bytes.get(m_pos).is_some_and(u8::is_ascii_digit) {
-                    m_pos += 1;
-                }
-                if m_pos > s_pos + 1 && bytes.get(m_pos) == Some(&b'M') {
-                    let span = 0..(m_pos + 1);
+            if let Some((_, b'S', _, idx1)) = next_cigar_op(&self.cigar_str, 0) {
+                if let Some((_, b'M', _, end)) = next_cigar_op(&self.cigar_str, idx1) {
+                    let span = 0..end;
                     if cigar_soft > 0 {
                         replace_cigar_range(
                             &mut self.cigar_str,
@@ -2185,6 +2538,272 @@ impl<'a> CigarModifier<'a> {
         flag
     }
 
+    fn three_indels_range(&mut self, m: ThreeIndelsMatch, flag: bool) -> bool {
+        let ThreeIndelsMatch {
+            range,
+            ov5_len,
+            g2,
+            g3,
+            op1,
+            g5,
+            g6,
+            op2,
+            g8,
+            g9,
+            op3,
+            g11,
+        } = m;
+        let mid = g5.saturating_add(g8);
+        if mid > MAX_MULTI_INDEL_MID_SPAN {
+            return flag;
+        }
+        let mut tslen = mid;
+        if op1 == b'I' {
+            tslen = tslen.saturating_add(g3);
+        }
+        if op2 == b'I' {
+            tslen = tslen.saturating_add(g6);
+        }
+        if op3 == b'I' {
+            tslen = tslen.saturating_add(g9);
+        }
+
+        let mut dlen = mid;
+        if op1 == b'D' {
+            dlen = dlen.saturating_add(g3);
+        }
+        if op2 == b'D' {
+            dlen = dlen.saturating_add(g6);
+        }
+        if op3 == b'D' {
+            dlen = dlen.saturating_add(g9);
+        }
+
+        let mut refoff = self.position.saturating_add(g2);
+        let mut rdoff = g2;
+        let mut rdoff_corr = g2;
+        let mut rm = g11;
+
+        if ov5_len > 0 {
+            let (mnd, mis) = sum_mnd_and_mis_prefix(self.cigar_str.get(..ov5_len).unwrap_or(""));
+            refoff = refoff.saturating_add(mnd);
+            rdoff = rdoff.saturating_add(mis);
+        }
+
+        let mut rn = 0;
+        while rdoff.saturating_add(rn) < self.query_seq.len() as i32 {
+            if let Some(&q_base) = self.query_seq.get(rdoff.saturating_add(rn) as usize) {
+                if is_has_and_equals_char(
+                    q_base,
+                    self.reference,
+                    refoff.saturating_add(rn),
+                    self.ref_start,
+                ) {
+                    rn += 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        rdoff_corr = rdoff_corr.saturating_add(rn);
+        dlen = dlen.saturating_sub(rn);
+        tslen = tslen.saturating_sub(rn);
+
+        if tslen <= 0 {
+            dlen = dlen.saturating_sub(tslen);
+            rm = rm.saturating_add(tslen);
+            if dlen == 0 {
+                rdoff_corr = rdoff_corr.saturating_add(rm);
+                replace_cigar_range(&mut self.cigar_str, range, format_args!("{rdoff_corr}M"));
+            } else if dlen < 0 {
+                tslen = dlen.saturating_neg();
+                rm = rm.saturating_add(dlen);
+                if rm < 0 {
+                    rdoff_corr = rdoff_corr.saturating_add(rm);
+                    replace_cigar_range(
+                        &mut self.cigar_str,
+                        range,
+                        format_args!("{rdoff_corr}M{tslen}I"),
+                    );
+                } else {
+                    replace_cigar_range(
+                        &mut self.cigar_str,
+                        range,
+                        format_args!("{rdoff_corr}M{tslen}I{rm}M"),
+                    );
+                }
+            } else {
+                replace_cigar_range(
+                    &mut self.cigar_str,
+                    range,
+                    format_args!("{rdoff_corr}M{dlen}D{rm}M"),
+                );
+            }
+        } else if dlen == 0 {
+            replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{tslen}I{rm}M"),
+            );
+        } else if dlen < 0 {
+            rm = rm.saturating_add(dlen);
+            replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{tslen}I{rm}M"),
+            );
+        } else {
+            replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D{tslen}I{rm}M"),
+            );
+        }
+        true
+    }
+
+    fn three_deletions_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        ov5_len: usize,
+        g2: i32,
+        g3: i32,
+        g4: i32,
+        g5: i32,
+        g6: i32,
+        g7: i32,
+        g8: i32,
+        flag: bool,
+    ) -> bool {
+        let mid = g4.saturating_add(g6);
+        if mid > MAX_MULTI_INDEL_MID_SPAN {
+            return flag;
+        }
+        let mut tslen = mid;
+        let mut dlen = g3
+            .saturating_add(g4)
+            .saturating_add(g5)
+            .saturating_add(g6)
+            .saturating_add(g7);
+        let mut refoff = self.position.saturating_add(g2);
+        let mut rdoff = g2;
+        let mut rdoff_corr = g2;
+        let mut rm = g8;
+
+        if ov5_len > 0 {
+            let (mnd, mis) = sum_mnd_and_mis_prefix(self.cigar_str.get(..ov5_len).unwrap_or(""));
+            refoff = refoff.saturating_add(mnd);
+            rdoff = rdoff.saturating_add(mis);
+        }
+        let mut rn = 0;
+        while rdoff.saturating_add(rn) < self.query_seq.len() as i32 {
+            if let Some(&q_base) = self.query_seq.get(rdoff.saturating_add(rn) as usize) {
+                if is_has_and_equals_char(
+                    q_base,
+                    self.reference,
+                    refoff.saturating_add(rn),
+                    self.ref_start,
+                ) {
+                    rn += 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        rdoff_corr = rdoff_corr.saturating_add(rn);
+        dlen = dlen.saturating_sub(rn);
+        tslen = tslen.saturating_sub(rn);
+        if tslen <= 0 {
+            dlen = dlen.saturating_sub(tslen);
+            rm = rm.saturating_add(tslen);
+            replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D{rm}M"),
+            );
+        } else {
+            replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D{tslen}I{rm}M"),
+            );
+        }
+        true
+    }
+
+    fn two_deletions_insertion_to_complex_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        ov5_len: usize,
+        g2: i32,
+        g3: i32,
+        g4: i32,
+        g5: i32,
+        g6: i32,
+        g7: i32,
+        g8: i32,
+        flag: bool,
+    ) -> bool {
+        let mid = g4.saturating_add(g6);
+        if mid > MAX_MULTI_INDEL_MID_SPAN {
+            return flag;
+        }
+        let mut tslen = mid.saturating_add(g5);
+        let mut dlen = g3.saturating_add(mid).saturating_add(g7);
+        let mut refoff = self.position.saturating_add(g2);
+        let mut rdoff = g2;
+        let mut rdoff_corr = g2;
+        let mut rm = g8;
+
+        if ov5_len > 0 {
+            let (mnd, mis) = sum_mnd_and_mis_prefix(self.cigar_str.get(..ov5_len).unwrap_or(""));
+            refoff = refoff.saturating_add(mnd);
+            rdoff = rdoff.saturating_add(mis);
+        }
+
+        let mut rn = 0;
+        while rdoff.saturating_add(rn) < self.query_seq.len() as i32 {
+            if let Some(&q_base) = self.query_seq.get(rdoff.saturating_add(rn) as usize) {
+                if is_has_and_equals_char(
+                    q_base,
+                    self.reference,
+                    refoff.saturating_add(rn),
+                    self.ref_start,
+                ) {
+                    rn += 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        rdoff_corr = rdoff_corr.saturating_add(rn);
+        dlen = dlen.saturating_sub(rn);
+        tslen = tslen.saturating_sub(rn);
+        if tslen <= 0 {
+            dlen = dlen.saturating_sub(tslen);
+            rm = rm.saturating_add(tslen);
+            replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D{rm}M"),
+            );
+        } else {
+            replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D{tslen}I{rm}M"),
+            );
+        }
+        true
+    }
+
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn three_indels(
         &mut self,
@@ -2293,6 +2912,7 @@ impl<'a> CigarModifier<'a> {
         true
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn three_deletions(
         &mut self,
@@ -2361,6 +2981,7 @@ impl<'a> CigarModifier<'a> {
         true
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn two_deletions_insertion_to_complex(
         &mut self,
@@ -2946,8 +3567,39 @@ mod tests {
                 assert_byte_matchers_equal_regex(&format!("5S{neg}{op}10M2S"));
             }
         }
-        for special in ["", "-", "--5M", "-10-5M", "10M-5M", "10M-1M5S", "0S10M"] {
+        for special in [
+            "",
+            "-",
+            "--5M",
+            "-10-5M",
+            "10M-5M",
+            "10M-1M5S",
+            "0S10M",
+            "A-5M",
+            "5S\n-5M",
+            "10Z-5M",
+            "10ä-5M",
+            "5S\n10M",
+            "5S\n10M5S",
+            "10٠M",
+            "10٠S5M",
+            "10²5M",
+            "10½5M5S",
+        ] {
             assert_byte_matchers_equal_regex(special);
+        }
+
+        // Verify `is_regex_decimal_digit` matches `regex::Regex` `\d` across every Unicode scalar value.
+        let re_dig = crate::util::static_regex(r"^\d$");
+        let mut ch_buf = [0u8; 4];
+        for ch in (0..=0x10FFFFu32).filter_map(char::from_u32) {
+            let s = ch.encode_utf8(&mut ch_buf);
+            assert_eq!(
+                is_regex_decimal_digit(ch),
+                re_dig.is_match(s),
+                "is_regex_decimal_digit mismatch on {ch:?} (U+{:04X})",
+                ch as u32
+            );
         }
 
         // 2. Full CigarModifier::modify_cigar DIFF test against modify_cigar_legacy
@@ -4204,6 +4856,30 @@ mod tests {
             "20M2I6M5S",
             "4M2I20M",
             "20M2I4M",
+            "12M5D20M",
+            "9M5D20M",
+            "104M5D12M",
+            "104M5D2M",
+            "25D",
+            "25I",
+            "5S\n10M1D4M1I4M1D15M",
+            "5S\n10M1D4M1I4M1D15M5S",
+            "10²1I5M1D20M",
+            "10½1I5M1D20M",
+            "10٠1I5M1D20M",
+            "5S10٠1I5M1D20M",
+            "10\u{10D40}1I5M1D20M",
+            "A-5M",
+            "5S\n-5M",
+            "10Z-5M",
+            "10ä-5M",
+            "10H1I5M1D20M",
+            "10D1I5M1D20M",
+            "10H1I5M1I4M1D20M",
+            "10D1I5M1I4M1D20M",
+            "10M2D5M3D4I20M",
+            "10M2D5M3I4I20M",
+            "10M2I5M3I4I20M",
             "10M2D3D10M",
             "10M2I3I10M",
             "10ä1I5M1D20M",
@@ -4253,6 +4929,67 @@ mod tests {
                 }
                 (g, w) => panic!("result mismatch on {cigar_case}: {g:?} vs {w:?}"),
             }
+        }
+
+        // 4. O(N) maximal-digit-run guard (`AR-05`): 10,000-digit runs must match legacy in <= 64 scan_digits_fwd calls.
+        for long_cigar in [
+            format!("{}D1I", "9".repeat(10_000)),
+            format!("5M{}N1D20M", "9".repeat(10_000)),
+        ] {
+            let want_long = CigarModifier::new(
+                50,
+                long_cigar.as_str(),
+                q_long.clone(),
+                qual_long.clone(),
+                &reference,
+                ref_start,
+                &empty_seed,
+                3,
+                max_read_length,
+                &config,
+            )
+            .modify_cigar_legacy();
+
+            let cm_timed = CigarModifier::new(
+                50,
+                long_cigar.clone(),
+                q_long.clone(),
+                qual_long.clone(),
+                &reference,
+                ref_start,
+                &empty_seed,
+                3,
+                max_read_length,
+                &config,
+            );
+            super::reset_scan_digits_fwd_calls();
+            let t0 = std::time::Instant::now();
+            let got_long = cm_timed.modify_cigar();
+            let elapsed = t0.elapsed();
+            let calls = super::scan_digits_fwd_calls();
+            match (got_long, want_long) {
+                (Ok(g), Ok(w)) => {
+                    assert_eq!(g.position, w.position);
+                    assert_eq!(g.cigar, w.cigar);
+                    assert_eq!(g.query_seq, w.query_seq);
+                    assert_eq!(g.query_qual, w.query_qual);
+                }
+                (
+                    Err(crate::types::VardictError::JavaThrows(gm)),
+                    Err(crate::types::VardictError::JavaThrows(wm)),
+                ) => {
+                    assert_eq!(gm, wm);
+                }
+                (g, w) => panic!("long_cigar result mismatch: {g:?} vs {w:?}"),
+            }
+            assert!(
+                calls <= 64,
+                "10,000-digit CIGAR must scan maximal digit runs in <= 64 scan_digits_fwd calls, got {calls}"
+            );
+            assert!(
+                elapsed < std::time::Duration::from_secs(10),
+                "10,000-digit CIGAR hung: {elapsed:?}"
+            );
         }
     }
 }

@@ -3,15 +3,8 @@
 //! These replace Java's `String.charAt(i)` / `String.substring(i, j)` with
 //! safe alternatives that return `Option` instead of panicking on out-of-bounds.
 
-/// Compile a static regex literal once (`LazyLock` / `OnceLock` initializers).
-///
-/// Centralizes the single sanctioned `.unwrap()` on compile-time regex patterns
-/// so `vardictrust-core` enforces the no-panic lint ratchet across all runtime
-/// library code (`AGENTS.md` §9).
-#[allow(
-    clippy::unwrap_used,
-    reason = "static regex literal validated by unit tests"
-)]
+/// Compile a static regex literal once in `#[cfg(test)]` legacy / differential oracles.
+#[cfg(test)]
 #[inline]
 pub(crate) fn static_regex(pattern: &'static str) -> regex::Regex {
     regex::Regex::new(pattern).unwrap()
@@ -24,11 +17,9 @@ pub(crate) fn static_regex(pattern: &'static str) -> regex::Regex {
 pub fn char_at(seq: &[u8], idx: isize) -> Option<u8> {
     let len = seq.len() as isize;
     let resolved = if idx < 0 { len + idx } else { idx };
-    if resolved < 0 || resolved >= len {
-        None
-    } else {
-        Some(seq[resolved as usize])
-    }
+    usize::try_from(resolved)
+        .ok()
+        .and_then(|i| seq.get(i).copied())
 }
 
 /// Bounds-checked subsequence extraction.

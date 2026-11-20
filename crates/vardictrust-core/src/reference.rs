@@ -677,10 +677,63 @@ pub struct LoadedRegion {
 }
 
 const MAX_SEED_BYTES: usize = 17;
+const SEED2_BYTES: usize = 12;
 
-/// Word-packed k-mer key up to 17 bytes (`SEED_1`), storing `0..=17` payload bytes
-/// in bytes `0..17` and the explicit length discriminator in byte `23` for 3-word
-/// `[u64; 3]` comparison and `FxHasher` hashing without heap allocation.
+/// Compile-time lookup table mapping strictly uppercase `A/C/G/T` to `0..=3`
+/// and every other byte (`'N'`, lowercase, IUPAC ambiguity codes, NUL, etc.) to `0xFF`.
+const BASE_2BIT_LUT: [u8; 256] = {
+    let mut lut = [0xFFu8; 256];
+    let mut rem: &mut [u8] = &mut lut;
+    let mut b: usize = 0;
+    while let [slot, rest @ ..] = rem {
+        *slot = match b as u8 {
+            b'A' => 0,
+            b'C' => 1,
+            b'G' => 2,
+            b'T' => 3,
+            _ => 0xFF,
+        };
+        rem = rest;
+        b += 1;
+    }
+    lut
+};
+
+#[inline]
+fn base_2bit(b: u8) -> u8 {
+    BASE_2BIT_LUT.get(usize::from(b)).copied().unwrap_or(0xFF)
+}
+
+/// Encodes a pure uppercase `A/C/G/T` `12`-mer into the low `24` bits of a `u32`.
+#[inline]
+fn encode_acgt_12(win: &[u8; SEED2_BYTES]) -> Option<u32> {
+    let mut code = 0u32;
+    let mut invalid = 0u8;
+    for &b in win {
+        let bits = base_2bit(b);
+        invalid |= bits;
+        code = (code << 2) | u32::from(bits & 3);
+    }
+    (invalid < 4).then_some(code)
+}
+
+/// Encodes a pure uppercase `A/C/G/T` `17`-mer into the low `34` bits of a `u64`.
+#[inline]
+fn encode_acgt_17(win: &[u8; MAX_SEED_BYTES]) -> Option<u64> {
+    let mut code = 0u64;
+    let mut invalid = 0u8;
+    for &b in win {
+        let bits = base_2bit(b);
+        invalid |= bits;
+        code = (code << 2) | u64::from(bits & 3);
+    }
+    (invalid < 4).then_some(code)
+}
+
+/// Word-packed fallback k-mer key up to 17 bytes (`SEED_1`) for non-ACGT or
+/// synthetic non-12/non-17 keys, storing `0..=17` payload bytes in bytes `0..17`
+/// and the explicit length discriminator in byte `23` for 3-word `[u64; 3]`
+/// comparison and `FxHasher` hashing without heap allocation.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SeedKey([u64; 3]);
@@ -701,23 +754,6 @@ impl SeedKey {
             u64::from_ne_bytes([b16, b17, b18, b19, b20, b21, b22, key.len() as u8]),
         ]))
     }
-
-    #[inline]
-    fn pair_17_12(win: &[u8; 17]) -> (Self, Self) {
-        let &[b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, b12, b13, b14, b15, b16] = win;
-        let w0 = u64::from_ne_bytes([b0, b1, b2, b3, b4, b5, b6, b7]);
-        let k17 = Self([
-            w0,
-            u64::from_ne_bytes([b8, b9, b10, b11, b12, b13, b14, b15]),
-            u64::from_ne_bytes([b16, 0, 0, 0, 0, 0, 0, 17]),
-        ]);
-        let k12 = Self([
-            w0,
-            u64::from_ne_bytes([b8, b9, b10, b11, 0, 0, 0, 0]),
-            u64::from_ne_bytes([0, 0, 0, 0, 0, 0, 0, 12]),
-        ]);
-        (k17, k12)
-    }
 }
 
 impl std::hash::Hash for SeedKey {
@@ -730,11 +766,59 @@ impl std::hash::Hash for SeedKey {
     }
 }
 
-/// Inline single-position storage for unique k-mers, spilling to `Vec<u32>` only on repeats.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SeedMany(Vec<u32>);
+
+/// Compact 16-byte position storage: inline for 1 or 2 hits, spilling to thin-boxed `Vec<u32>` on >= 3 repeats.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SeedPositions {
     One(u32),
-    Many(Vec<u32>),
+    Two([u32; 2]),
+    Many(Box<SeedMany>),
+}
+
+const _: () = assert!(std::mem::size_of::<SeedPositions>() == 16);
+
+impl SeedPositions {
+    #[inline]
+    fn push(&mut self, pos: u32) {
+        match self {
+            Self::One(first) => {
+                *self = Self::Two([*first, pos]);
+            }
+            Self::Two([first, second]) => {
+                *self = Self::Many(Box::new(SeedMany(vec![*first, *second, pos])));
+            }
+            Self::Many(v) => v.0.push(pos),
+        }
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[u32] {
+        match self {
+            Self::One(p) => std::slice::from_ref(p),
+            Self::Two(pair) => pair.as_slice(),
+            Self::Many(v) => v.0.as_slice(),
+        }
+    }
+
+    #[inline]
+    fn unique(&self) -> Option<u32> {
+        match self {
+            Self::One(p) => Some(*p),
+            Self::Two(_) | Self::Many(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn from_vec(positions: Vec<u32>) -> Option<Self> {
+        match positions.as_slice() {
+            [] => None,
+            &[p0] => Some(Self::One(p0)),
+            &[p0, p1] => Some(Self::Two([p0, p1])),
+            _ => Some(Self::Many(Box::new(SeedMany(positions)))),
+        }
+    }
 }
 
 /// Deferred k-mer indexing chunk captured by [`get_reference`] so tiles that
@@ -748,30 +832,122 @@ struct PendingSeedChunk {
     prev_bounds: Vec<(u32, u32)>,
 }
 
-type RawSeedMap = rustc_hash::FxHashMap<SeedKey, SeedPositions>;
+#[derive(Clone, Debug, Default)]
+struct SeedTable12 {
+    acgt: rustc_hash::FxHashMap<u32, SeedPositions>,
+    other: rustc_hash::FxHashMap<SeedKey, SeedPositions>,
+}
+
+impl SeedTable12 {
+    #[inline]
+    fn len(&self) -> usize {
+        self.acgt.len() + self.other.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.acgt.is_empty() && self.other.is_empty()
+    }
+
+    #[inline]
+    fn lookup(&self, key: &[u8]) -> Option<&SeedPositions> {
+        if let Ok(win12) = <&[u8; SEED2_BYTES]>::try_from(key) {
+            if let Some(code) = encode_acgt_12(win12) {
+                return self.acgt.get(&code);
+            }
+        }
+        if self.other.is_empty() {
+            return None;
+        }
+        let sk = SeedKey::from_slice(key)?;
+        self.other.get(&sk)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct SeedTable17 {
+    acgt: rustc_hash::FxHashMap<u64, SeedPositions>,
+    other: rustc_hash::FxHashMap<SeedKey, SeedPositions>,
+}
+
+impl SeedTable17 {
+    #[inline]
+    fn len(&self) -> usize {
+        self.acgt.len() + self.other.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.acgt.is_empty() && self.other.is_empty()
+    }
+
+    #[inline]
+    fn lookup(&self, key: &[u8]) -> Option<&SeedPositions> {
+        if let Ok(win17) = <&[u8; MAX_SEED_BYTES]>::try_from(key) {
+            if let Some(code) = encode_acgt_17(win17) {
+                return self.acgt.get(&code);
+            }
+        }
+        if self.other.is_empty() {
+            return None;
+        }
+        let sk = SeedKey::from_slice(key)?;
+        self.other.get(&sk)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct PendingSeedState {
+    staged12: SeedTable12,
+    staged17: SeedTable17,
+    chunks: Vec<PendingSeedChunk>,
+    idx12: usize,
+    idx17: usize,
+}
+
+impl PendingSeedState {
+    #[inline]
+    fn maybe_compact_chunks(&mut self) {
+        if self.idx12 >= self.chunks.len() && self.idx17 >= self.chunks.len() {
+            self.chunks.clear();
+            self.idx12 = 0;
+            self.idx17 = 0;
+        }
+    }
+}
 
 /// Lookup-only k-mer seed table mapping 12-mer and 17-mer byte slices to 1-based positions.
 ///
-/// K-mer hashing is deferred until the first query (`get`, `len`, `is_empty`),
-/// using `OnceCell` so `get(&self)` returns `Option<&[u32]>` tied to `&self`
-/// without runtime borrow guards or `unsafe` (`M-UNSAFE`, `M-MEM-REUSE`).
+/// K-mer hashing is deferred independently for 12-mers (`table12`) and 17-mers (`table17`)
+/// until first query (`get`, `get_unique`, `len`, `is_empty`), using `OnceCell` so `get(&self)`
+/// returns `Option<&[u32]>` tied to `&self` without runtime borrow guards or `unsafe`
+/// (`M-UNSAFE`, `M-MEM-REUSE`).
 #[derive(Debug, Default)]
 pub struct SeedMap {
-    map: std::cell::OnceCell<RawSeedMap>,
-    pending: std::cell::RefCell<(RawSeedMap, Vec<PendingSeedChunk>)>,
+    table12: std::cell::OnceCell<SeedTable12>,
+    table17: std::cell::OnceCell<SeedTable17>,
+    pending: std::cell::RefCell<PendingSeedState>,
 }
 
 impl Clone for SeedMap {
     fn clone(&self) -> Self {
-        let map = std::cell::OnceCell::new();
-        if let Some(existing) = self.map.get() {
-            let _ = map.set(existing.clone());
+        let table12 = std::cell::OnceCell::new();
+        if let Some(existing12) = self.table12.get() {
+            let _ = table12.set(existing12.clone());
+        }
+        let table17 = std::cell::OnceCell::new();
+        if let Some(existing17) = self.table17.get() {
+            let _ = table17.set(existing17.clone());
         }
         let pending = match self.pending.try_borrow() {
             Ok(guard) => std::cell::RefCell::new(guard.clone()),
-            Err(_) => std::cell::RefCell::new((RawSeedMap::default(), Vec::new())),
+            Err(_) => std::cell::RefCell::new(PendingSeedState::default()),
         };
-        Self { map, pending }
+        Self {
+            table12,
+            table17,
+            pending,
+        }
     }
 }
 
@@ -780,40 +956,38 @@ impl SeedMap {
         Self::default()
     }
 
-    /// Returns `true` if the k-mer lookup table has been materialized.
+    /// Returns `true` if either the 12-mer or 17-mer lookup table has been materialized.
     #[inline]
     pub fn is_materialized(&self) -> bool {
-        self.map.get().is_some()
+        self.table12.get().is_some() || self.table17.get().is_some()
+    }
+
+    #[cfg(test)]
+    fn is_table17_materialized(&self) -> bool {
+        self.table17.get().is_some()
     }
 
     #[inline]
-    fn insert_seed_key(map: &mut RawSeedMap, sk: SeedKey, pos: u32) {
-        match map.entry(sk) {
-            std::collections::hash_map::Entry::Occupied(mut e) => match e.get_mut() {
-                SeedPositions::One(first) => {
-                    let first_val = *first;
-                    *e.into_mut() = SeedPositions::Many(vec![first_val, pos]);
-                }
-                SeedPositions::Many(v) => v.push(pos),
-            },
+    fn insert_entry<K: Eq + std::hash::Hash>(
+        map: &mut rustc_hash::FxHashMap<K, SeedPositions>,
+        key: K,
+        pos: u32,
+    ) {
+        match map.entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut e) => e.get_mut().push(pos),
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert(SeedPositions::One(pos));
             }
         }
     }
 
-    #[cfg(test)]
-    fn insert_into_raw(map: &mut RawSeedMap, key: &[u8], pos: u32) {
-        let Some(sk) = SeedKey::from_slice(key) else {
-            debug_assert!(key.len() <= MAX_SEED_BYTES, "seed key exceeds 17 bytes");
-            return;
-        };
-        Self::insert_seed_key(map, sk, pos);
-    }
-
-    /// Ports `ReferenceResource.java:106-125` k-mer indexing for one loaded chunk.
-    fn index_chunk(map: &mut RawSeedMap, chunk: &PendingSeedChunk) {
-        const SEED1_LEN: usize = 17;
+    /// Ports `ReferenceResource.java:106-125` window iteration for one loaded chunk.
+    #[inline]
+    fn for_each_chunk_window<F>(chunk: &PendingSeedChunk, mut f: F)
+    where
+        F: FnMut(usize, u32, &[u8; MAX_SEED_BYTES]),
+    {
+        const SEED1_LEN: usize = MAX_SEED_BYTES;
 
         let bases = chunk.bases.as_ref();
         let site_end = if chunk.chr_len == chunk.sequence_end {
@@ -849,12 +1023,57 @@ impl SeedMap {
                 .get(i..i.saturating_add(SEED1_LEN))
                 .and_then(|s| <&[u8; SEED1_LEN]>::try_from(s).ok())
             {
-                let (k17, k12) = SeedKey::pair_17_12(win);
-                Self::insert_seed_key(map, k17, pos);
-                Self::insert_seed_key(map, k12, pos);
+                f(i, pos, win);
             }
             i += 1;
         }
+    }
+
+    fn index_chunk_12(table: &mut SeedTable12, chunk: &PendingSeedChunk) {
+        const MASK_24: u32 = (1u32 << 24) - 1;
+        let mut prev_i: Option<usize> = None;
+        let mut prev_code: Option<u32> = None;
+        Self::for_each_chunk_window(chunk, |i, pos, win| {
+            let [ref win12 @ .., _, _, _, _, _] = *win;
+            let code_opt = match (prev_i, prev_code) {
+                (Some(pi), Some(c)) if pi.wrapping_add(1) == i => {
+                    let [.., last_b] = *win12;
+                    let bits = base_2bit(last_b);
+                    (bits < 4).then_some(((c << 2) | u32::from(bits)) & MASK_24)
+                }
+                _ => encode_acgt_12(win12),
+            };
+            prev_i = Some(i);
+            prev_code = code_opt;
+            if let Some(code) = code_opt {
+                Self::insert_entry(&mut table.acgt, code, pos);
+            } else if let Some(sk) = SeedKey::from_slice(win12) {
+                Self::insert_entry(&mut table.other, sk, pos);
+            }
+        });
+    }
+
+    fn index_chunk_17(table: &mut SeedTable17, chunk: &PendingSeedChunk) {
+        const MASK_34: u64 = (1u64 << 34) - 1;
+        let mut prev_i: Option<usize> = None;
+        let mut prev_code: Option<u64> = None;
+        Self::for_each_chunk_window(chunk, |i, pos, win| {
+            let code_opt = match (prev_i, prev_code) {
+                (Some(pi), Some(c)) if pi.wrapping_add(1) == i => {
+                    let [.., last_b] = *win;
+                    let bits = base_2bit(last_b);
+                    (bits < 4).then_some(((c << 2) | u64::from(bits)) & MASK_34)
+                }
+                _ => encode_acgt_17(win),
+            };
+            prev_i = Some(i);
+            prev_code = code_opt;
+            if let Some(code) = code_opt {
+                Self::insert_entry(&mut table.acgt, code, pos);
+            } else if let Some(sk) = SeedKey::from_slice(win) {
+                Self::insert_entry(&mut table.other, sk, pos);
+            }
+        });
     }
 
     const MAX_SEED_RESERVE: usize = 262_144;
@@ -863,49 +1082,90 @@ impl SeedMap {
     fn estimate_seed_reserve<I: IntoIterator<Item = usize>>(non_n_counts: I) -> usize {
         non_n_counts
             .into_iter()
-            .fold(0usize, |acc, non_n| {
-                acc.saturating_add(non_n.saturating_mul(2))
-            })
+            .fold(0usize, usize::saturating_add)
             .min(Self::MAX_SEED_RESERVE)
     }
 
     #[inline]
-    fn materialize(&self) -> &RawSeedMap {
-        self.map.get_or_init(|| {
-            let Ok(mut guard) = self.pending.try_borrow_mut() else {
-                return RawSeedMap::default();
+    fn materialize_12(&self) -> &SeedTable12 {
+        self.table12.get_or_init(|| {
+            let Ok(mut state) = self.pending.try_borrow_mut() else {
+                return SeedTable12::default();
             };
-            let (mut map, mut chunks) = std::mem::take(&mut *guard);
-            let est = Self::estimate_seed_reserve(chunks.iter().map(|chunk| {
-                chunk
-                    .bases
-                    .iter()
-                    .filter(|&&b| b != b'N' && b != b'n')
-                    .count()
-            }));
-            map.reserve(est);
-            for chunk in chunks.drain(..) {
-                Self::index_chunk(&mut map, &chunk);
+            let mut table = std::mem::take(&mut state.staged12);
+            if let Some(slice) = state.chunks.get(state.idx12..) {
+                if !slice.is_empty() {
+                    let est =
+                        Self::estimate_seed_reserve(slice.iter().map(|chunk| {
+                            chunk.bases.iter().filter(|&&b| base_2bit(b) < 4).count()
+                        }));
+                    table.acgt.reserve(est);
+                    for chunk in slice {
+                        Self::index_chunk_12(&mut table, chunk);
+                    }
+                }
             }
-            map
+            state.idx12 = state.chunks.len();
+            state.maybe_compact_chunks();
+            table
         })
     }
 
     #[inline]
-    pub fn get(&self, key: &[u8]) -> Option<&[u32]> {
-        let sk = SeedKey::from_slice(key)?;
-        match self.materialize().get(&sk)? {
-            SeedPositions::One(p) => Some(std::slice::from_ref(p)),
-            SeedPositions::Many(v) => Some(v.as_slice()),
+    fn materialize_17(&self) -> &SeedTable17 {
+        self.table17.get_or_init(|| {
+            let Ok(mut state) = self.pending.try_borrow_mut() else {
+                return SeedTable17::default();
+            };
+            let mut table = std::mem::take(&mut state.staged17);
+            if let Some(slice) = state.chunks.get(state.idx17..) {
+                if !slice.is_empty() {
+                    let est =
+                        Self::estimate_seed_reserve(slice.iter().map(|chunk| {
+                            chunk.bases.iter().filter(|&&b| base_2bit(b) < 4).count()
+                        }));
+                    table.acgt.reserve(est);
+                    for chunk in slice {
+                        Self::index_chunk_17(&mut table, chunk);
+                    }
+                }
+            }
+            state.idx17 = state.chunks.len();
+            state.maybe_compact_chunks();
+            table
+        })
+    }
+
+    #[inline]
+    fn lookup_positions(&self, key: &[u8]) -> Option<&SeedPositions> {
+        if key.len() > MAX_SEED_BYTES {
+            return None;
+        }
+        if key.len() <= SEED2_BYTES {
+            self.materialize_12().lookup(key)
+        } else {
+            self.materialize_17().lookup(key)
         }
     }
 
+    #[inline]
+    pub fn get(&self, key: &[u8]) -> Option<&[u32]> {
+        self.lookup_positions(key).map(SeedPositions::as_slice)
+    }
+
+    #[inline]
+    pub(crate) fn get_unique(&self, key: &[u8]) -> Option<u32> {
+        self.lookup_positions(key).and_then(SeedPositions::unique)
+    }
+
     pub fn len(&self) -> usize {
-        self.materialize().len()
+        self.materialize_12().len() + self.materialize_17().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.materialize().is_empty()
+        let e12 = self.materialize_12().is_empty();
+        let e17 = self.materialize_17().is_empty();
+        e12 && e17
     }
 
     /// Enqueues an in-memory uppercase reference sequence span (`[sequence_start..=sequence_end]`)
@@ -927,38 +1187,116 @@ impl SeedMap {
     }
 
     fn enqueue_chunk(&mut self, chunk: PendingSeedChunk) {
-        let staged = self.pending.get_mut();
-        if let Some(existing) = self.map.take() {
-            staged.0 = existing;
+        let state = self.pending.get_mut();
+        if let Some(existing12) = self.table12.take() {
+            state.staged12 = existing12;
         }
-        staged.1.push(chunk);
+        if let Some(existing17) = self.table17.take() {
+            state.staged17 = existing17;
+        }
+        state.chunks.push(chunk);
+    }
+
+    #[cfg(test)]
+    fn flush_all_pending(&mut self) -> &mut PendingSeedState {
+        let state = self.pending.get_mut();
+        if let Some(existing12) = self.table12.take() {
+            state.staged12 = existing12;
+        }
+        if let Some(existing17) = self.table17.take() {
+            state.staged17 = existing17;
+        }
+        if let Some(slice12) = state.chunks.get(state.idx12..) {
+            for chunk in slice12 {
+                Self::index_chunk_12(&mut state.staged12, chunk);
+            }
+        }
+        if let Some(slice17) = state.chunks.get(state.idx17..) {
+            for chunk in slice17 {
+                Self::index_chunk_17(&mut state.staged17, chunk);
+            }
+        }
+        state.chunks.clear();
+        state.idx12 = 0;
+        state.idx17 = 0;
+        state
     }
 
     #[cfg(test)]
     pub(crate) fn push_pos(&mut self, key: &[u8], pos: u32) {
-        let staged = self.pending.get_mut();
-        if let Some(existing) = self.map.take() {
-            staged.0 = existing;
+        let Some(sk) = SeedKey::from_slice(key) else {
+            debug_assert!(key.len() <= MAX_SEED_BYTES, "seed key exceeds 17 bytes");
+            return;
+        };
+        let state = self.flush_all_pending();
+        if key.len() <= SEED2_BYTES {
+            if let Ok(win12) = <&[u8; SEED2_BYTES]>::try_from(key) {
+                if let Some(code) = encode_acgt_12(win12) {
+                    Self::insert_entry(&mut state.staged12.acgt, code, pos);
+                    return;
+                }
+            }
+            Self::insert_entry(&mut state.staged12.other, sk, pos);
+        } else {
+            if let Ok(win17) = <&[u8; MAX_SEED_BYTES]>::try_from(key) {
+                if let Some(code) = encode_acgt_17(win17) {
+                    Self::insert_entry(&mut state.staged17.acgt, code, pos);
+                    return;
+                }
+            }
+            Self::insert_entry(&mut state.staged17.other, sk, pos);
         }
-        for chunk in staged.1.drain(..) {
-            Self::index_chunk(&mut staged.0, &chunk);
-        }
-        Self::insert_into_raw(&mut staged.0, key, pos);
     }
 
     #[cfg(test)]
     pub fn insert_for_test(&mut self, key: &[u8], positions: Vec<u32>) {
         let sk = SeedKey::from_slice(key).expect("test seed key exceeds 17 bytes");
-        let staged = self.pending.get_mut();
-        if let Some(existing) = self.map.take() {
-            staged.0 = existing;
-        }
-        for chunk in staged.1.drain(..) {
-            Self::index_chunk(&mut staged.0, &chunk);
-        }
-        staged.0.remove(&sk);
-        for p in positions {
-            self.push_pos(key, p);
+        let state = self.flush_all_pending();
+        let entry_opt = SeedPositions::from_vec(positions);
+        if key.len() <= SEED2_BYTES {
+            if let Ok(win12) = <&[u8; SEED2_BYTES]>::try_from(key) {
+                if let Some(code) = encode_acgt_12(win12) {
+                    match entry_opt {
+                        Some(sp) => {
+                            state.staged12.acgt.insert(code, sp);
+                        }
+                        None => {
+                            state.staged12.acgt.remove(&code);
+                        }
+                    }
+                    return;
+                }
+            }
+            match entry_opt {
+                Some(sp) => {
+                    state.staged12.other.insert(sk, sp);
+                }
+                None => {
+                    state.staged12.other.remove(&sk);
+                }
+            }
+        } else {
+            if let Ok(win17) = <&[u8; MAX_SEED_BYTES]>::try_from(key) {
+                if let Some(code) = encode_acgt_17(win17) {
+                    match entry_opt {
+                        Some(sp) => {
+                            state.staged17.acgt.insert(code, sp);
+                        }
+                        None => {
+                            state.staged17.acgt.remove(&code);
+                        }
+                    }
+                    return;
+                }
+            }
+            match entry_opt {
+                Some(sp) => {
+                    state.staged17.other.insert(sk, sp);
+                }
+                None => {
+                    state.staged17.other.remove(&sk);
+                }
+            }
         }
     }
 
@@ -1474,7 +1812,8 @@ mod tests {
 
     #[test]
     fn seed_map_and_get_reference_match_legacy() {
-        // 1. Direct SeedKey / SeedMap edge cases: word-packed [u64; 3], length discriminator & >17 bounds
+        // 1. Direct SeedPositions / SeedKey / SeedMap edge cases: 16 B SeedPositions, 2-bit u32/u64 + fallback, & >17 bounds
+        assert_eq!(std::mem::size_of::<SeedPositions>(), 16);
         assert_eq!(std::mem::size_of::<SeedKey>(), 24);
         for len in 0..=MAX_SEED_BYTES {
             let k = vec![b'G'; len];
@@ -1504,6 +1843,7 @@ mod tests {
         assert!(!sm.is_empty());
         assert_eq!(sm.len(), 1);
         assert_eq!(sm.get(b"AC"), Some(&[42u32][..]));
+        assert_eq!(sm.get_unique(b"AC"), Some(42));
         assert_eq!(sm.get(b"AC\0"), None);
         assert_ne!(sm.get(b"AC"), sm.get(b"AC\0"));
         sm.push_pos(b"AC\0", 99);
@@ -1515,15 +1855,65 @@ mod tests {
         assert_eq!(sm.get(b"ACGT\0"), Some(&[8u32][..]));
         sm.push_pos(&[b'T'; 17], 555);
         assert_eq!(sm.get(&[b'T'; 17]), Some(&[555u32][..]));
+        assert_eq!(sm.get_unique(&[b'T'; 17]), Some(555));
         assert_eq!(sm.get(b""), None);
         assert_eq!(sm.get(&[b'A'; 11]), None);
         assert_eq!(sm.get(&[b'A'; 13]), None);
         assert_eq!(sm.get(&[b'A'; 18]), None);
+        assert_eq!(sm.get_unique(&[b'A'; 18]), None);
+        assert_eq!(sm.get(&[b'C'; 64]), None);
+        assert_eq!(sm.get_unique(&[b'C'; 64]), None);
 
-        // One -> Many transition
+        // One -> Two -> Many transition across fallback, 12-mer ACGT, and 17-mer ACGT
         sm.push_pos(b"AC", 77);
+        assert_eq!(sm.get(b"AC"), Some(&[42u32, 77][..]));
+        assert_eq!(sm.get_unique(b"AC"), None);
         sm.push_pos(b"AC", 123);
         assert_eq!(sm.get(b"AC"), Some(&[42u32, 77, 123][..]));
+        assert_eq!(sm.get_unique(b"AC"), None);
+
+        for k in [
+            b"ACGTACGT".as_slice(),          // len 8
+            b"TGCATGCATGCA".as_slice(),      // len 12 pure ACGT
+            b"ACGTNACGTACG".as_slice(),      // len 12 'N'
+            b"acgtacgtacgt".as_slice(),      // len 12 lowercase
+            b"ACGTRYSWKMBD".as_slice(),      // len 12 IUPAC
+            b"TGCATGCATGCATGCAT".as_slice(), // len 17 pure ACGT
+            b"ACGTACGTNACGTACGT".as_slice(), // len 17 'N'
+            b"acgtacgtacgtacgta".as_slice(), // len 17 lowercase
+            b"ACGTRYSWKMBDHVACG".as_slice(), // len 17 IUPAC
+        ] {
+            let mut rt = SeedMap::new();
+            rt.insert(k.to_vec(), vec![11]);
+            assert_eq!(rt.get(k), Some(&[11u32][..]));
+            assert_eq!(rt.get_unique(k), Some(11));
+            rt.insert(k.to_vec(), vec![11, 22]);
+            assert_eq!(rt.get(k), Some(&[11u32, 22][..]));
+            assert_eq!(rt.get_unique(k), None);
+            rt.insert(k.to_vec(), vec![11, 22, 33]);
+            assert_eq!(rt.get(k), Some(&[11u32, 22, 33][..]));
+            assert_eq!(rt.get_unique(k), None);
+            assert_eq!(rt.len(), 1);
+            // Empty positions must remove key cleanly
+            rt.insert(k.to_vec(), Vec::new());
+            assert_eq!(rt.get(k), None);
+            assert_eq!(rt.get_unique(k), None);
+            assert_eq!(rt.len(), 0);
+            assert!(rt.is_empty());
+        }
+        // Lowercase must not alias uppercase 2-bit keys
+        {
+            let mut case_sm = SeedMap::new();
+            case_sm.insert(b"ACGTACGTACGT".to_vec(), vec![10]);
+            case_sm.insert(b"acgtacgtacgt".to_vec(), vec![20]);
+            case_sm.insert(b"ACGTACGTACGTACGTA".to_vec(), vec![30]);
+            case_sm.insert(b"acgtacgtacgtacgta".to_vec(), vec![40]);
+            assert_eq!(case_sm.get_unique(b"ACGTACGTACGT"), Some(10));
+            assert_eq!(case_sm.get_unique(b"acgtacgtacgt"), Some(20));
+            assert_eq!(case_sm.get_unique(b"ACGTACGTACGTACGTA"), Some(30));
+            assert_eq!(case_sm.get_unique(b"acgtacgtacgtacgta"), Some(40));
+            assert_eq!(case_sm.len(), 4);
+        }
 
         // 2. 5 kb seeded-random FASTA DIFF test vs ReferenceLegacy
         let temp_dir = std::env::temp_dir();
@@ -1652,14 +2042,21 @@ mod tests {
                     "seed mismatch for key {:?}",
                     String::from_utf8_lossy(k)
                 );
+                assert_eq!(
+                    new_ref.seed.get_unique(k.as_slice()),
+                    (leg_positions.len() == 1).then(|| leg_positions[0]),
+                    "get_unique mismatch for key {:?}",
+                    String::from_utf8_lossy(k)
+                );
             }
         }
 
         // Verify all 12-mers and 17-mers across the uppercased 5 kb sequence + negative probes
         let upper_seq: Vec<u8> = seq.iter().map(|b| b.to_ascii_uppercase()).collect();
-        for klen in [0usize, 11, 12, 13, 17, 18] {
+        for klen in [0usize, 8, 11, 12, 13, 17, 18] {
             if klen == 0 {
                 assert_eq!(new_ref.seed.get(b""), None);
+                assert_eq!(new_ref.seed.get_unique(b""), None);
                 continue;
             }
             for i in 0..=upper_seq.len().saturating_sub(klen) {
@@ -1668,6 +2065,14 @@ mod tests {
                     new_ref.seed.get(k),
                     leg_ref.seed.get(k).map(Vec::as_slice),
                     "probe mismatch at i={i}, klen={klen}"
+                );
+                assert_eq!(
+                    new_ref.seed.get_unique(k),
+                    leg_ref
+                        .seed
+                        .get(k)
+                        .and_then(|v| (v.len() == 1).then(|| v[0])),
+                    "get_unique probe mismatch at i={i}, klen={klen}"
                 );
             }
         }
@@ -1744,11 +2149,11 @@ mod tests {
         assert_eq!(span0_len, 13);
         {
             let pending_guard = reference.seed.pending.borrow();
-            assert_eq!(pending_guard.1.len(), 1);
+            assert_eq!(pending_guard.chunks.len(), 1);
             assert!(
                 std::ptr::eq(
                     std::sync::Arc::as_ptr(span0_arc),
-                    std::sync::Arc::as_ptr(&pending_guard.1[0].bases),
+                    std::sync::Arc::as_ptr(&pending_guard.chunks[0].bases),
                 ),
                 "Reference.shared_region_spans and PendingSeedChunk must share a single Arc<[u8]> allocation"
             );
@@ -2092,13 +2497,22 @@ mod tests {
         let cloned_unmaterialized = reference.clone();
         assert!(!cloned_unmaterialized.seed.is_materialized());
 
-        // First query triggers materialization and returns exact position.
+        // First 12-mer query materializes ONLY table12 (!is_table17_materialized() && is_materialized()).
+        assert!(!reference.seed.is_table17_materialized());
+        assert_eq!(reference.seed.get_unique(b"CGTACGTACGTN"), Some(22));
+        assert!(
+            reference.seed.is_materialized() && !reference.seed.is_table17_materialized(),
+            "12-mer lookup must materialize table12 without materializing table17"
+        );
+
+        // First 17-mer query triggers table17 materialization and returns exact position.
         // Note: r1 [1, 50] has sequence_end=50 < total_len=61, so its site_end is 50 - 17 = 33
         // (positions 1..=33), while 17-mer at position 34 ("NNNNNNNNNNNNNNNNT", inside r1's
         // truncated 17-bp lookahead [34..=50]) is NOT indexed until r2 [30, 61] is loaded.
         let unique_seed = b"NNNNNNNNNNNNNNNNN";
         let lookahead_seed = b"NNNNNNNNNNNNNNNNA";
         assert_eq!(reference.seed.get(unique_seed), Some(&[33u32][..]));
+        assert!(reference.seed.is_table17_materialized());
         assert_eq!(
             reference.seed.get(lookahead_seed),
             None,
@@ -2158,6 +2572,68 @@ mod tests {
                 reference.seed.get(k.as_slice()),
                 Some(leg_positions.as_slice())
             );
+        }
+
+        // Incremental watermark test: materializing 12-mers on chunk_0 then calling
+        // enqueue_chunk(chunk_1) must NOT re-index chunk_0 (keeping chunk_0 unique 12-mers
+        // unique), while table17 catches up across both chunks and compacts pending.chunks.
+        {
+            let mut wm = SeedMap::new();
+            let c0_bases = b"AAACCCGGGTTTACGTACGTACGTACGTA";
+            let c1_bases = b"TTTGGGCCCAAATGCATGCATGCATGCAT";
+            let c2_bases = b"CCCGGGTTTAAACGTACGTACGTACGTAC";
+            wm.enqueue_chunk(PendingSeedChunk {
+                bases: std::sync::Arc::from(c0_bases.as_slice()),
+                sequence_start: 1,
+                sequence_end: c0_bases.len() as u32,
+                chr_len: c0_bases.len() as u32,
+                prev_bounds: Vec::new(),
+            });
+            assert!(!wm.is_materialized() && !wm.is_table17_materialized());
+            assert_eq!(wm.get_unique(b"AAACCCGGGTTT"), Some(1));
+            assert!(wm.is_materialized() && !wm.is_table17_materialized());
+            assert_eq!(wm.pending.borrow().idx12, 1);
+            assert_eq!(wm.pending.borrow().idx17, 0);
+
+            wm.enqueue_chunk(PendingSeedChunk {
+                bases: std::sync::Arc::from(c1_bases.as_slice()),
+                sequence_start: 101,
+                sequence_end: 100 + c1_bases.len() as u32,
+                chr_len: 100 + c1_bases.len() as u32,
+                prev_bounds: Vec::new(),
+            });
+            assert!(!wm.is_materialized() && !wm.is_table17_materialized());
+            assert_eq!(wm.pending.borrow().idx12, 1);
+            assert_eq!(wm.pending.borrow().idx17, 0);
+
+            // Re-materializing 12-mer table must index ONLY chunk_1, keeping chunk_0 unique!
+            assert_eq!(wm.get_unique(b"AAACCCGGGTTT"), Some(1));
+            assert_eq!(wm.get(b"AAACCCGGGTTT"), Some(&[1u32][..]));
+            assert_eq!(wm.get_unique(b"TTTGGGCCCAAA"), Some(101));
+            assert!(wm.is_materialized() && !wm.is_table17_materialized());
+            assert_eq!(wm.pending.borrow().chunks.len(), 2);
+
+            // Materializing 17-mer table catches up from idx17=0..2 and clears chunks.
+            assert_eq!(wm.get_unique(b"AAACCCGGGTTTACGTA"), Some(1));
+            assert_eq!(wm.get_unique(b"TTTGGGCCCAAATGCAT"), Some(101));
+            assert!(wm.is_table17_materialized());
+            assert!(wm.pending.borrow().chunks.is_empty());
+            assert_eq!(wm.pending.borrow().idx12, 0);
+            assert_eq!(wm.pending.borrow().idx17, 0);
+
+            // Post-compaction enqueue_chunk(chunk_2) indexes chunk_2 cleanly without duplicating c0/c1.
+            wm.enqueue_chunk(PendingSeedChunk {
+                bases: std::sync::Arc::from(c2_bases.as_slice()),
+                sequence_start: 201,
+                sequence_end: 200 + c2_bases.len() as u32,
+                chr_len: 200 + c2_bases.len() as u32,
+                prev_bounds: Vec::new(),
+            });
+            assert_eq!(wm.get_unique(b"AAACCCGGGTTT"), Some(1));
+            assert_eq!(wm.get_unique(b"TTTGGGCCCAAA"), Some(101));
+            assert_eq!(wm.get_unique(b"CCCGGGTTTAAA"), Some(201));
+            assert_eq!(wm.get_unique(b"CCCGGGTTTAAACGTAC"), Some(201));
+            assert!(wm.pending.borrow().chunks.is_empty());
         }
 
         // Also verify that a non-terminal window of <= 17 bp with zero extensions
@@ -2291,10 +2767,10 @@ mod tests {
 
     #[test]
     fn seed_map_materialize_bounded_reserve_and_parity() {
-        // 1. Overflow-safe reserve estimator caps at 262_144 even for usize::MAX inputs
+        // 1. Overflow-safe per-table reserve estimator caps at 262_144 even for usize::MAX inputs
         assert_eq!(SeedMap::estimate_seed_reserve([0usize, 0]), 0);
-        assert_eq!(SeedMap::estimate_seed_reserve([500usize, 250]), 1_500);
-        assert_eq!(SeedMap::estimate_seed_reserve([200_000usize]), 262_144);
+        assert_eq!(SeedMap::estimate_seed_reserve([500usize, 250]), 750);
+        assert_eq!(SeedMap::estimate_seed_reserve([300_000usize]), 262_144);
         assert_eq!(
             SeedMap::estimate_seed_reserve([usize::MAX, usize::MAX / 2 + 17]),
             262_144
@@ -2315,11 +2791,15 @@ mod tests {
                 chr_len: n_len as u32,
                 prev_bounds: Vec::new(),
             });
-            let raw = sm_n.materialize();
+            let t12 = sm_n.materialize_12();
+            let t17 = sm_n.materialize_17();
+            assert_eq!(t12.acgt.capacity(), 0);
+            assert_eq!(t17.acgt.capacity(), 0);
             assert!(
-                raw.capacity() <= 64,
-                "all-'N'/'n' stretch must not over-reserve capacity (<= 64 <= 262_144, got {})",
-                raw.capacity()
+                t12.other.capacity() <= 64 && t17.other.capacity() <= 64,
+                "all-'N'/'n' stretch must not over-reserve capacity (<= 64, got {}/{})",
+                t12.other.capacity(),
+                t17.other.capacity()
             );
 
             // End-to-end uppercase 'N' stretch via get_reference vs ReferenceLegacy
@@ -2350,10 +2830,15 @@ mod tests {
             get_reference(&bed, 0, &chr_lengths, &cfg, &mut new_ref).unwrap();
             get_reference_legacy(&bed, 0, &chr_lengths, &cfg, &mut leg_ref).unwrap();
 
-            let cap = new_ref.seed.materialize().capacity();
+            let t12_fa = new_ref.seed.materialize_12();
+            let t17_fa = new_ref.seed.materialize_17();
+            assert_eq!(t12_fa.acgt.capacity(), 0);
+            assert_eq!(t17_fa.acgt.capacity(), 0);
             assert!(
-                cap <= 16,
-                "all-'N' FASTA capacity must remain tiny (<= 16 <= 262_144, got {cap})"
+                t12_fa.other.capacity() <= 16 && t17_fa.other.capacity() <= 16,
+                "all-'N' FASTA capacity must remain tiny (<= 16, got {}/{})",
+                t12_fa.other.capacity(),
+                t17_fa.other.capacity()
             );
             assert_eq!(new_ref.seed.len(), leg_ref.seed.len());
             for (k, leg_pos) in &leg_ref.seed {
@@ -2361,10 +2846,9 @@ mod tests {
             }
         }
 
-        // 3. Non-'N' stretches pre-reserve 2 * non_n up to the 262_144 cap:
-        //    - 1_000 'A's (only 2 distinct keys) must pre-reserve >= 2_000 and <= 262_144.
-        //    - Two 200_000 'A' chunks (2 * 400_000 = 800_000 uncapped) must cap reserve at 262_144
-        //      (hashbrown bucket table <= 524_288 -> capacity <= 458_752, vs 917_504 uncapped).
+        // 3. Pure ACGT stretches pre-reserve non_n.min(262_144) ONLY on .acgt (AR-13):
+        //    - 1_000 'A's pre-reserve [1_000, 262_144] on .acgt and 0 on .other.
+        //    - Two 200_000 'A'/'C' chunks (400_000 uncapped) cap .acgt reserve at 262_144 and 0 on .other.
         {
             let mut sm_small = SeedMap::new();
             sm_small.enqueue_chunk(PendingSeedChunk {
@@ -2374,11 +2858,20 @@ mod tests {
                 chr_len: 1_000,
                 prev_bounds: Vec::new(),
             });
-            let cap_small = sm_small.materialize().capacity();
+            let t12_small = sm_small.materialize_12();
+            let t17_small = sm_small.materialize_17();
             assert!(
-                (2_000..=262_144).contains(&cap_small),
-                "1000 non-'N' bases must pre-reserve [2000, 262144], got {cap_small}"
+                (1_000..=262_144).contains(&t12_small.acgt.capacity()),
+                "1000 ACGT bases must pre-reserve [1000, 262144] on table12.acgt, got {}",
+                t12_small.acgt.capacity()
             );
+            assert!(
+                (1_000..=262_144).contains(&t17_small.acgt.capacity()),
+                "1000 ACGT bases must pre-reserve [1000, 262144] on table17.acgt, got {}",
+                t17_small.acgt.capacity()
+            );
+            assert_eq!(t12_small.other.capacity(), 0);
+            assert_eq!(t17_small.other.capacity(), 0);
 
             let mut sm_capped = SeedMap::new();
             sm_capped.enqueue_chunk(PendingSeedChunk {
@@ -2395,14 +2888,24 @@ mod tests {
                 chr_len: 400_000,
                 prev_bounds: vec![(1, 200_000 - 17)],
             });
-            let mut baseline_262k = RawSeedMap::default();
-            baseline_262k.reserve(262_144);
-            let cap_capped = sm_capped.materialize().capacity();
+            let mut baseline_12 = rustc_hash::FxHashMap::<u32, SeedPositions>::default();
+            baseline_12.reserve(262_144);
+            let mut baseline_17 = rustc_hash::FxHashMap::<u64, SeedPositions>::default();
+            baseline_17.reserve(262_144);
+            let t12_capped = sm_capped.materialize_12();
+            let t17_capped = sm_capped.materialize_17();
             assert_eq!(
-                cap_capped,
-                baseline_262k.capacity(),
-                "reserve on >262_144 estimated k-mers must be capped at reserve(262_144)"
+                t12_capped.acgt.capacity(),
+                baseline_12.capacity(),
+                "table12.acgt reserve on >262_144 estimated k-mers must be capped at reserve(262_144)"
             );
+            assert_eq!(
+                t17_capped.acgt.capacity(),
+                baseline_17.capacity(),
+                "table17.acgt reserve on >262_144 estimated k-mers must be capped at reserve(262_144)"
+            );
+            assert_eq!(t12_capped.other.capacity(), 0);
+            assert_eq!(t17_capped.other.capacity(), 0);
         }
     }
 
@@ -2925,12 +3428,18 @@ mod tests {
         let mut seed = SeedMap::new();
         seed.index_sequence(bases, 100, 100 + len - 1, 100 + len - 1);
         assert!(
-            !seed.is_materialized(),
+            !seed.is_materialized() && !seed.is_table17_materialized(),
             "index_sequence must stay lazy until first lookup"
         );
         assert_eq!(seed.get(&bases[0..12]), Some(&[100u32][..]));
-        assert_eq!(seed.get(&bases[0..17]), Some(&[100u32][..]));
+        assert!(
+            seed.is_materialized() && !seed.is_table17_materialized(),
+            "12-mer query must not materialize 17-mer table"
+        );
         assert_eq!(seed.get(&bases[5..17]), Some(&[105u32][..]));
+        assert!(!seed.is_table17_materialized());
+        assert_eq!(seed.get(&bases[0..17]), Some(&[100u32][..]));
+        assert!(seed.is_table17_materialized());
         // Last 16 bp at chromosome end (i + 17 > bases.len()) are excluded per ReferenceResource.java:120
         assert_eq!(seed.get(&bases[bases.len() - 12..]), None);
     }
@@ -2943,6 +3452,18 @@ mod tests {
             let mut h = rustc_hash::FxHasher::default();
             k.hash(&mut h);
             h.finish()
+        }
+
+        // Verify BASE_2BIT_LUT accepts strictly uppercase A/C/G/T
+        for b in 0u8..=u8::MAX {
+            let expected = match b {
+                b'A' => 0,
+                b'C' => 1,
+                b'G' => 2,
+                b'T' => 3,
+                _ => 0xFF,
+            };
+            assert_eq!(base_2bit(b), expected, "BASE_2BIT_LUT mismatch at byte {b}");
         }
 
         let mut windows: Vec<[u8; 17]> = vec![
@@ -2961,26 +3482,59 @@ mod tests {
             windows.push(w2);
         }
         let mut state = 0x9E37_79B9_7F4A_7C15u64;
-        for _ in 0..256 {
+        for idx in 0..256 {
             let mut w = [0u8; 17];
             for slot in &mut w {
                 state = state
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
-                *slot = (state >> 32) as u8;
+                *slot = if idx < 128 {
+                    b"ACGT"[((state >> 32) as usize) & 3]
+                } else {
+                    (state >> 32) as u8
+                };
             }
             windows.push(w);
         }
 
+        const DEC: [u8; 4] = [b'A', b'C', b'G', b'T'];
         for win in windows {
-            let (k17, k12) = SeedKey::pair_17_12(&win);
-            let expected_17 = SeedKey::from_slice(&win).unwrap();
-            let expected_12 = SeedKey::from_slice(&win[..12]).unwrap();
-            assert_eq!(Some(k17), SeedKey::from_slice(&win));
-            assert_eq!(Some(k12), SeedKey::from_slice(&win[..12]));
-            assert_eq!(fx_hash(&k17), fx_hash(&expected_17));
-            assert_eq!(fx_hash(&k12), fx_hash(&expected_12));
-            assert_ne!(k17, k12);
+            let win12: &[u8; 12] = (&win[..12]).try_into().unwrap();
+            let all_acgt_17 = win.iter().all(|&b| matches!(b, b'A' | b'C' | b'G' | b'T'));
+            let all_acgt_12 = win12
+                .iter()
+                .all(|&b| matches!(b, b'A' | b'C' | b'G' | b'T'));
+
+            match encode_acgt_17(&win) {
+                Some(c17) => {
+                    assert!(all_acgt_17);
+                    assert!(c17 < (1u64 << 34));
+                    let mut decoded = [0u8; 17];
+                    for (j, slot) in decoded.iter_mut().enumerate() {
+                        *slot = DEC[((c17 >> ((16 - j) * 2)) & 3) as usize];
+                    }
+                    assert_eq!(decoded, win);
+                }
+                None => assert!(!all_acgt_17),
+            }
+
+            match encode_acgt_12(win12) {
+                Some(c12) => {
+                    assert!(all_acgt_12);
+                    assert!(c12 < (1u32 << 24));
+                    let mut decoded = [0u8; 12];
+                    for (j, slot) in decoded.iter_mut().enumerate() {
+                        *slot = DEC[((c12 >> ((11 - j) * 2)) & 3) as usize];
+                    }
+                    assert_eq!(&decoded, win12);
+                }
+                None => assert!(!all_acgt_12),
+            }
+
+            let sk17 = SeedKey::from_slice(&win).unwrap();
+            let sk12 = SeedKey::from_slice(win12).unwrap();
+            assert_ne!(sk17, sk12);
+            assert_ne!(fx_hash(&sk17), fx_hash(&sk12));
         }
     }
 }

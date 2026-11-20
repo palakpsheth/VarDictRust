@@ -792,9 +792,6 @@ lookup by iteration key + description map.
 
 ### Known simplifications (documented, not observed in corpus)
 
-- Java updates its `maxReadLength` field from each combined run's result
-  (:200/:311); Rust keeps the single seeded value. Only observable if read
-  lengths differ between the main and combined runs; corpus shows no case.
 - A pipeline callback error is treated as FALSE-skip. In Java the exception
   escapes combineAnalysis to accept()'s per-position try/catch
   (SomaticPostProcessModule.java:89-91): printExceptionAndContinue prints it

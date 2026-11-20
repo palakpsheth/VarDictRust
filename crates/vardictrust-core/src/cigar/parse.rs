@@ -904,6 +904,25 @@ impl<'a> CigarParser<'a> {
                                 }
                             }
                         }
+                        if !self.config.include_n
+                            && !has_overlap_gate
+                            && region_start <= region_end
+                            && start > region_end
+                            && i < indel_prox_start
+                        {
+                            let skip = ((indel_prox_start.min(cigar_element_len) - i) as usize)
+                                .min(query_seq.len().saturating_sub(read_pos_inc));
+                            if skip > 0 {
+                                i += skip as u32;
+                                start =
+                                    start.saturating_add(i32::try_from(skip).unwrap_or(i32::MAX));
+                                read_pos_inc += skip;
+                                read_pos_exc += skip;
+                                if i >= cigar_element_len {
+                                    break;
+                                }
+                            }
+                        }
                         let Some(&ch1) = query_seq.get(read_pos_inc) else {
                             break;
                         };
@@ -1559,16 +1578,27 @@ impl<'a> CigarParser<'a> {
     }
 
     fn is_next_matched(&self, cigar: &[(u32, CigarKind)], ci: usize) -> bool {
-        self.config.realign == 1 && cigar.len() > ci + 1 && cigar[ci + 1].1 == CigarKind::Match
+        self.config.realign == 1
+            && cigar
+                .get(ci + 1)
+                .is_some_and(|&(_, k)| k == CigarKind::Match)
     }
 
     fn is_next_insertion(&self, cigar: &[(u32, CigarKind)], ci: usize) -> bool {
-        self.config.realign == 1 && cigar.len() > ci + 1 && cigar[ci + 1].1 == CigarKind::Insertion
+        self.config.realign == 1
+            && cigar
+                .get(ci + 1)
+                .is_some_and(|&(_, k)| k == CigarKind::Insertion)
     }
 
     fn skip_indel_next_to_intron(&self, cigar: &[(u32, CigarKind)], ci: usize) -> bool {
-        (cigar.len() > ci + 1 && cigar[ci + 1].1 == CigarKind::Skip)
-            || (ci > 0 && cigar[ci - 1].1 == CigarKind::Skip)
+        cigar
+            .get(ci + 1)
+            .is_some_and(|&(_, k)| k == CigarKind::Skip)
+            || (ci > 0
+                && cigar
+                    .get(ci - 1)
+                    .is_some_and(|&(_, k)| k == CigarKind::Skip))
     }
 
     fn append_segments(
@@ -1592,7 +1622,9 @@ impl<'a> CigarParser<'a> {
         quality_segment.extend_from_slice(qual_m);
 
         desc_string.push('^');
-        let is_next_next_ins = cigar_elements[ci + 2].1 == CigarKind::Insertion;
+        let is_next_next_ins = cigar_elements
+            .get(ci + 2)
+            .is_some_and(|&(_, k)| k == CigarKind::Insertion);
         if is_next_next_ins {
             let sub_ins =
                 crate::util::subseq(query_sequence, begin + m_len, indel_len).unwrap_or(&[]);
@@ -1772,7 +1804,7 @@ impl<'a> CigarParser<'a> {
         read_pos_exc: &mut usize,
         offset: &mut u32,
     ) -> usize {
-        let cigar_element_len = cigar_elements[ci].0;
+        let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
         let cel_i32 = i32::try_from(cigar_element_len).unwrap_or(i32::MAX);
         if self.skip_indel_next_to_intron(cigar_elements, ci) {
             *read_pos_exc += cigar_element_len as usize;
@@ -1803,8 +1835,8 @@ impl<'a> CigarParser<'a> {
         let mut next_ci = ci;
 
         if self.is_insertion_or_deletion_with_next_matched(cigar_elements, ci) {
-            let m_len = cigar_elements[ci + 1].0 as usize;
-            let indel_len = cigar_elements[ci + 2].0 as usize;
+            let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
+            let indel_len = cigar_elements.get(ci + 2).map_or(0, |&(l, _)| l as usize);
             let begin = *read_pos_inc;
 
             quality_of_segment_sb.clear();
@@ -1822,7 +1854,9 @@ impl<'a> CigarParser<'a> {
             );
             quality_of_segment.extend_from_slice(&quality_of_segment_sb);
 
-            let is_next_next_del = cigar_elements[ci + 2].1 == CigarKind::Deletion;
+            let is_next_next_del = cigar_elements
+                .get(ci + 2)
+                .is_some_and(|&(_, k)| k == CigarKind::Deletion);
             multoffs += m_len + if is_next_next_del { indel_len } else { 0 };
             multoffp += m_len + if !is_next_next_del { indel_len } else { 0 };
 
@@ -2078,7 +2112,7 @@ impl<'a> CigarParser<'a> {
         offset: &mut u32,
         position: i32,
     ) -> usize {
-        let cigar_element_len = cigar_elements[ci].0;
+        let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
         if self.skip_indel_next_to_intron(cigar_elements, ci) {
             *read_pos_inc += cigar_element_len as usize;
             return ci;
@@ -2111,8 +2145,8 @@ impl<'a> CigarParser<'a> {
         let mut next_ci = ci;
 
         if self.is_insertion_or_deletion_with_next_matched(cigar_elements, ci) {
-            let m_len = cigar_elements[ci + 1].0 as usize;
-            let indel_len = cigar_elements[ci + 2].0 as usize;
+            let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
+            let indel_len = cigar_elements.get(ci + 2).map_or(0, |&(l, _)| l as usize);
             let begin = *read_pos_inc + cigar_element_len as usize;
 
             quality_segment_sb.clear();
@@ -2130,7 +2164,9 @@ impl<'a> CigarParser<'a> {
             );
             quality_string.extend_from_slice(&quality_segment_sb);
 
-            let is_next_next_del = cigar_elements[ci + 2].1 == CigarKind::Deletion;
+            let is_next_next_del = cigar_elements
+                .get(ci + 2)
+                .is_some_and(|&(_, k)| k == CigarKind::Deletion);
             multoffs += m_len + if is_next_next_del { indel_len } else { 0 };
             multoffp += m_len + if !is_next_next_del { indel_len } else { 0 };
 
@@ -2369,9 +2405,9 @@ impl<'a> CigarParser<'a> {
             }
 
             if ci == 1
-                && cigar_elements.len() > 0
-                && (cigar_elements[0].1 == CigarKind::SoftClip
-                    || cigar_elements[0].1 == CigarKind::HardClip)
+                && cigar_elements
+                    .first()
+                    .is_some_and(|&(_, k)| k == CigarKind::SoftClip || k == CigarKind::HardClip)
             {
                 if let Some(ref_base_char) = self.get_ref_base(insertion_position as u32) {
                     let mut buf = [0u8; 4];
@@ -2607,7 +2643,7 @@ impl<'a> CigarParser<'a> {
         offset: &mut u32,
         position: i32,
     ) {
-        let cigar_element_len = cigar_elements[ci].0;
+        let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
 
         if ci == 0 {
             if !self.config.chimeric {
@@ -2804,7 +2840,9 @@ impl<'a> CigarParser<'a> {
                 let Some(ref_base) = self.get_ref_base(*start as u32) else {
                     break;
                 };
-                let q_base = query_seq[*read_pos_inc];
+                let Some(&q_base) = query_seq.get(*read_pos_inc) else {
+                    break;
+                };
                 let base_qual = query_qual
                     .get(*read_pos_inc)
                     .copied()
@@ -2841,10 +2879,9 @@ impl<'a> CigarParser<'a> {
                 let mut si = 0i32;
                 while si < element_len {
                     let idx = *read_pos_inc + si as usize;
-                    if idx >= query_seq.len() {
+                    let Some(&q_char) = query_seq.get(idx) else {
                         break;
-                    }
-                    let q_char = query_seq[idx];
+                    };
                     if q_char == b'N' || q_char == b'n' {
                         break;
                     }
@@ -7625,5 +7662,299 @@ mod tests {
             Some(&1)
         );
         assert_eq!(sv_parser.sv_structures.svffus["*"][0].variation.cnt, 1);
+
+        // 6. Post-region `[region_start - 10, region_end + 80]` (`90..=260` on `100..=180`) Match skip parity
+        //    covering `indel_prox_start == u32::MAX`, trailing `Insertion`/`Deletion`/`SoftClip`,
+        //    truncated `query_seq`, `-K` (`include_n`), and `-u` (`unique_mode_alignment_enabled`) (`AR-01`).
+        let mut post_ref = Reference::new();
+        let post_ref_seq = vec![b'A'; 350];
+        post_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 350,
+            });
+        post_ref.region_sequences.push(post_ref_seq.clone());
+        post_ref
+            .reference_sequences
+            .insert("chr1".to_string(), post_ref_seq);
+
+        let assert_post_region_parity = |rec: &SamRecord, base_cfg: &Config, label: &str| {
+            let mut fast_cfg = base_cfg.clone();
+            fast_cfg.include_n = false;
+            let mut unskipped_cfg = base_cfg.clone();
+            unskipped_cfg.include_n = true; // disables pre/post-region skip; caller supplies non-'N' seq
+
+            let mut p_fast = CigarParser::new(&post_ref, &region, &fast_cfg, true, 0, 0, 200);
+            p_fast.parse_cigar(rec).unwrap();
+            let vd_f = p_fast.into_variation_data();
+
+            let mut p_slow = CigarParser::new(&post_ref, &region, &unskipped_cfg, true, 0, 0, 200);
+            p_slow.parse_cigar(rec).unwrap();
+            let vd_s = p_slow.into_variation_data();
+
+            assert_eq!(
+                vd_f.ref_coverage, vd_s.ref_coverage,
+                "{label}: ref_coverage"
+            );
+            assert_eq!(
+                vd_f.position_to_insertion_count, vd_s.position_to_insertion_count,
+                "{label}: ins_cnt"
+            );
+            assert_eq!(
+                vd_f.position_to_deletion_count, vd_s.position_to_deletion_count,
+                "{label}: del_cnt"
+            );
+            assert_eq!(
+                vd_f.non_insertion_variants.len(),
+                vd_s.non_insertion_variants.len(),
+                "{label}: non_ins len"
+            );
+            for (pos, vm_f) in vd_f.non_insertion_variants.iter() {
+                let vm_s = vd_s
+                    .non_insertion_variants
+                    .get(pos)
+                    .unwrap_or_else(|| panic!("{label}: missing non_ins pos {pos}"));
+                assert_eq!(
+                    vm_f.map.keys().collect::<Vec<_>>(),
+                    vm_s.map.keys().collect::<Vec<_>>(),
+                    "{label}: keys at {pos}"
+                );
+                for (k, hv_f) in &vm_f.map {
+                    let hv_s = &vm_s.map[k];
+                    assert_eq!(hv_f.cnt, hv_s.cnt, "{label}: cnt at {pos}:{k}");
+                    assert_eq!(hv_f.nm, hv_s.nm, "{label}: nm at {pos}:{k}");
+                    assert_eq!(hv_f.pmean, hv_s.pmean, "{label}: pmean at {pos}:{k}");
+                    assert_eq!(hv_f.qmean, hv_s.qmean, "{label}: qmean at {pos}:{k}");
+                }
+            }
+            assert_eq!(
+                vd_f.insertion_variants.len(),
+                vd_s.insertion_variants.len(),
+                "{label}: ins len"
+            );
+        };
+
+        // (a) `indel_prox_start == u32::MAX` (`171M` spanning `90..=260`, plus `-k 0` `realign == 0` with trailing indel)
+        let mut seq_171 = vec![b'A'; 171];
+        seq_171[130 - 90] = b'C'; // in-region SNV at 130
+        seq_171[180 - 90] = b'G'; // boundary SNV at region_end = 180
+        seq_171[181 - 90] = b'T'; // first post-region base at 181 (must NOT enter region variants)
+        seq_171[240 - 90] = b'C'; // deep post-region mismatch at 240
+        let rec_171m = SamRecord {
+            name: b"r_post_171m".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(260)),
+            mapping_quality: Some(60),
+            cigar: vec![(171, CigarKind::Match)],
+            sequence: seq_171.clone(),
+            quality_scores: vec![b'I'; 171],
+            nm: Some(4),
+            ..SamRecord::default()
+        };
+        assert_post_region_parity(&rec_171m, &cfg_fast, "post_171m_u32_max");
+
+        let mut cfg_norealign = Config::default();
+        cfg_norealign.realign = 0; // forces `indel_prox_start == u32::MAX` even before Insertion/Deletion
+        let mut seq_171_ins = seq_171.clone();
+        seq_171_ins.extend_from_slice(b"CCCC");
+        seq_171_ins.extend_from_slice(&[b'A'; 10]);
+        let rec_post_ins = SamRecord {
+            name: b"r_post_ins".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(270)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (171, CigarKind::Match),
+                (4, CigarKind::Insertion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq_171_ins,
+            quality_scores: vec![b'I'; 185],
+            nm: Some(8),
+            ..SamRecord::default()
+        };
+        assert_post_region_parity(&rec_post_ins, &cfg_norealign, "post_ins_realign0_u32_max");
+        // (b) Trailing `Insertion` with `realign == 1` (`indel_prox_start = 169 < 171`)
+        assert_post_region_parity(&rec_post_ins, &cfg_fast, "post_ins_realign1");
+
+        // (c) Trailing `Deletion` (`[(171, Match), (4, Deletion), (10, Match)]`) + trailing `SoftClip` (`[(171, Match), (15, SoftClip)]`)
+        let mut seq_171_del = seq_171.clone();
+        seq_171_del.extend_from_slice(&[b'A'; 10]);
+        let rec_post_del = SamRecord {
+            name: b"r_post_del".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(274)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (171, CigarKind::Match),
+                (4, CigarKind::Deletion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq_171_del,
+            quality_scores: vec![b'I'; 181],
+            nm: Some(8),
+            ..SamRecord::default()
+        };
+        assert_post_region_parity(&rec_post_del, &cfg_fast, "post_del_realign1");
+        assert_post_region_parity(&rec_post_del, &cfg_norealign, "post_del_realign0");
+
+        // Active post-region indel grafting at `i == indel_prox_start` (`i = 169`) + `find_offset` (`toffset = 2`):
+        let mut seq_171_del_graft = seq_171.clone();
+        seq_171_del_graft[169] = b'C'; // mismatch at `i == indel_prox_start` (`start = 259`) triggers `grafted = true`
+        let mut tail_10m = [b'A'; 10];
+        tail_10m[1] = b'G'; // mismatch at `vi = 1` (8 bp from 3' end) triggers `find_offset` `toffset == 2` -> `ref_coverage` at 265..=266
+        seq_171_del_graft.extend_from_slice(&tail_10m);
+        let rec_post_del_graft = SamRecord {
+            name: b"r_post_del_graft".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(274)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (171, CigarKind::Match),
+                (4, CigarKind::Deletion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq_171_del_graft,
+            quality_scores: vec![b'I'; 181],
+            nm: Some(10),
+            ..SamRecord::default()
+        };
+        assert_post_region_parity(&rec_post_del_graft, &cfg_fast, "post_del_graft_find_offset");
+        let mut p_graft_check = CigarParser::new(&post_ref, &region, &cfg_fast, true, 0, 0, 200);
+        p_graft_check.parse_cigar(&rec_post_del_graft).unwrap();
+        assert_eq!(
+            p_graft_check.ref_coverage.get(&265),
+            Some(&1),
+            "grafted post-region deletion + find_offset must record ref_coverage at 265"
+        );
+        assert_eq!(
+            p_graft_check.ref_coverage.get(&266),
+            Some(&1),
+            "grafted post-region deletion + find_offset must record ref_coverage at 266"
+        );
+
+        let mut seq_171_sc = seq_171.clone();
+        seq_171_sc.extend_from_slice(&[b'T'; 15]);
+        let rec_post_sc = SamRecord {
+            name: b"r_post_sc".to_vec(),
+            flags: 0x1,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(260)),
+            mapping_quality: Some(60),
+            cigar: vec![(171, CigarKind::Match), (15, CigarKind::SoftClip)],
+            sequence: seq_171_sc,
+            quality_scores: vec![b'I'; 186],
+            mate_reference_name: Some("chr2".to_string()),
+            mate_alignment_start: Some(Pos1(500)),
+            nm: Some(4),
+            ..SamRecord::default()
+        };
+        assert_post_region_parity(&rec_post_sc, &cfg_fast, "post_softclip");
+
+        // (d) Truncated / mid-post-region exhausted `query_seq` (`20P171M` with 130-byte sequence:
+        //     `20P` consumes 20 query bytes, leaving 110 bytes for `171M` so `query_seq` runs out at `start = 90 + 20 + 110 = 220 > 180`!)
+        //     plus raw `query_len_u64 > sequence.len()` early-drop guard (`171M` with 120-byte sequence).
+        let mut seq_pad_trunc = vec![b'A'; 130];
+        seq_pad_trunc[20 + (140 - 110)] = b'G'; // in-region SNV at 140
+        let rec_post_pad_trunc = SamRecord {
+            name: b"r_post_pad_trunc".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(280)),
+            mapping_quality: Some(60),
+            cigar: vec![(20, CigarKind::Pad), (171, CigarKind::Match)],
+            sequence: seq_pad_trunc,
+            quality_scores: vec![b'I'; 130],
+            nm: Some(1),
+            ..SamRecord::default()
+        };
+        assert_post_region_parity(
+            &rec_post_pad_trunc,
+            &cfg_nocigarmod(&cfg_fast),
+            "post_pad_trunc_mid_postregion",
+        );
+
+        let rec_raw_trunc = SamRecord {
+            name: b"r_raw_trunc".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(260)),
+            mapping_quality: Some(60),
+            cigar: vec![(171, CigarKind::Match)],
+            sequence: vec![b'A'; 120],
+            quality_scores: vec![b'I'; 120],
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+        assert_post_region_parity(&rec_raw_trunc, &cfg_fast, "post_raw_trunc_drop");
+
+        // (e) `-K` (`include_n = true`): post-region `'N'` bases at `200` and `250` MUST still increment `ref_coverage`
+        //     when `-K` is enabled, and MUST NOT increment `ref_coverage` when `-K` is disabled!
+        let mut seq_with_post_n = seq_171.clone();
+        seq_with_post_n[200 - 90] = b'N';
+        seq_with_post_n[250 - 90] = b'n';
+        let rec_post_n = SamRecord {
+            name: b"r_post_n".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(260)),
+            mapping_quality: Some(60),
+            cigar: vec![(171, CigarKind::Match)],
+            sequence: seq_with_post_n,
+            quality_scores: vec![b'I'; 171],
+            nm: Some(4),
+            ..SamRecord::default()
+        };
+        let mut p_inc_n = CigarParser::new(&post_ref, &region, &cfg_unskipped, false, 0, 0, 200);
+        p_inc_n.parse_cigar(&rec_post_n).unwrap();
+        assert_eq!(p_inc_n.ref_coverage.get(&200), Some(&1));
+        assert_eq!(p_inc_n.ref_coverage.get(&250), Some(&1));
+        let mut p_no_n = CigarParser::new(&post_ref, &region, &cfg_fast, false, 0, 0, 200);
+        p_no_n.parse_cigar(&rec_post_n).unwrap();
+        assert!(!p_no_n.ref_coverage.contains_key(&200));
+        assert!(!p_no_n.ref_coverage.contains_key(&250));
+
+        // (f) `-u` (`unique_mode_alignment_enabled = true`) on reverse-strand paired read overlapping mate
+        //     both inside region (`mate_start = 150`) and post-region (`mate_start = 200`).
+        let mut cfg_u = Config::default();
+        cfg_u.unique_mode_alignment_enabled = true;
+        for mate_pos in [150u32, 200u32] {
+            let rec_u = SamRecord {
+                name: b"r_post_u".to_vec(),
+                flags: 0x1 | 0x10,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(90)),
+                alignment_end: Some(Pos1(260)),
+                mapping_quality: Some(60),
+                cigar: vec![(171, CigarKind::Match)],
+                sequence: seq_171.clone(),
+                quality_scores: vec![b'I'; 171],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(mate_pos)),
+                nm: Some(4),
+                ..SamRecord::default()
+            };
+            assert_post_region_parity(&rec_u, &cfg_u, &format!("post_u_mate_{mate_pos}"));
+        }
+    }
+
+    fn cfg_nocigarmod(base: &Config) -> Config {
+        let mut c = base.clone();
+        c.realign = 0;
+        c
     }
 }

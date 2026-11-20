@@ -22,6 +22,7 @@
         clippy::unreachable,
         clippy::todo,
         clippy::string_slice,
+        clippy::indexing_slicing,
     )
 )]
 #![allow(
@@ -2877,8 +2878,8 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
             while run_paths.len() > max_fanin {
                 let mut next_gen = Vec::with_capacity(run_paths.len().div_ceil(max_fanin));
                 for chunk in run_paths.chunks(max_fanin) {
-                    if chunk.len() == 1 {
-                        next_gen.push(chunk[0].clone());
+                    if let [single] = chunk {
+                        next_gen.push(single.clone());
                         continue;
                     }
                     let dir = match &self.temp_dir {
@@ -6199,7 +6200,7 @@ fn run_somatic<W: EngineWriter>(
                                 sv.end_is_variant2,
                             );
                         }
-                        // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
+                        // ports SomaticOutputVariant.java:80, 193-194 (DEBUG = beginVariant.DEBUG)
                         if config_clone.debug {
                             block.push('\t');
                             block.push_str(&sv.variant1.debug);
@@ -6236,7 +6237,7 @@ fn run_somatic<W: EngineWriter>(
                                 sv.end_is_variant2,
                             );
                         }
-                        // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
+                        // ports SomaticOutputVariant.java:80, 193-194 (DEBUG = beginVariant.DEBUG)
                         if config_clone.debug {
                             line.push('\t');
                             line.push_str(&sv.variant1.debug);

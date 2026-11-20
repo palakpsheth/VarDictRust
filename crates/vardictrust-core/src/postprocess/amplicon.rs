@@ -14,6 +14,7 @@
 use crate::config::Config;
 use crate::regions::Region;
 use crate::variations::{Variant, Vars};
+use std::borrow::Borrow;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
@@ -383,14 +384,18 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
     // Per-amplicon cached `chr:start-end` strings formatted at most once per segment.
     let mut region_tags: Vec<String> = vec![String::new(); vars_per_amplicon.len()];
     // Scratch collections reused across positions to avoid per-base allocations.
-    // good variants: (variant, amplicon_index into region_tags)
-    let mut gvs: Vec<(Variant, usize)> = Vec::new();
-    // reference variants
-    let mut ref_vars: Vec<Variant> = Vec::new();
+    // good variants: (borrowed variant, amplicon_index into region_tags)
+    let mut gvs: Vec<(&Variant, usize)> = Vec::new();
+    // reference variants (only populated when config.pileup is active)
+    let mut ref_vars: Vec<&Variant> = Vec::new();
     // coverage per amplicon
     let mut vcovs: Vec<i32> = Vec::new();
-    // good variants on each amplicon: amplicon_index → list of good variants
-    let mut good_variants_on_amp: BTreeMap<usize, Vec<Variant>> = BTreeMap::new();
+    // good variants on each amplicon: amplicon_index → list of borrowed good variants
+    let mut good_variants_on_amp: BTreeMap<usize, Vec<&Variant>> = BTreeMap::new();
+    // deduplicated good/reference candidate list per position
+    let mut vref_list: Vec<&Variant> = Vec::new();
+    // re-checked top-allele good variants when AMPBIAS is active
+    let mut gcnt_buf: Vec<(&Variant, usize)> = Vec::new();
     // bad variants (-D debug column)
     let mut bad_vars: Vec<(Option<Variant>, String)> = Vec::new();
 
@@ -398,9 +403,12 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
     for (position, amplicon_regions) in positions {
         let amplicon_regions = amplicon_regions.as_ref();
         gvs.clear();
-        ref_vars.clear();
+        if config.pileup {
+            ref_vars.clear();
+        }
         vcovs.clear();
         good_variants_on_amp.clear();
+        vref_list.clear();
 
         let mut maxcov: i32 = 0;
         let mut maxaf: f64 = 0.0;
@@ -417,13 +425,13 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
 
             if let Some(variants) = variants_on_amplicon {
                 if !variants.is_empty() {
-                    let mut good_vars: Vec<Variant> = Vec::new();
+                    let mut good_vars: Vec<&Variant> = Vec::new();
                     for tv in variants {
                         vcovs.push(tv.total_pos_cov);
                         if tv.total_pos_cov > maxcov {
                             maxcov = tv.total_pos_cov;
                         }
-                        // Compute var_type
+                        // Compute var_type without allocating
                         let vtype = tv.var_type_cow();
                         if tv.is_good_var(ref_amplicon, &vtype, splice, config) {
                             let _ = get_or_init_region_tag(
@@ -431,13 +439,11 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                                 amplicon_number,
                                 amp_region,
                             );
-                            let mut tv_clone = tv.clone();
-                            tv_clone.var_type = vtype.into_owned();
-                            if tv_clone.frequency > maxaf {
-                                maxaf = tv_clone.frequency;
+                            if tv.frequency > maxaf {
+                                maxaf = tv.frequency;
                             }
-                            gvs.push((tv_clone.clone(), amplicon_number));
-                            good_vars.push(tv_clone);
+                            gvs.push((tv, amplicon_number));
+                            good_vars.push(tv);
                         }
                     }
                     if !good_vars.is_empty() {
@@ -454,8 +460,10 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                 vcovs.push(0);
             }
 
-            if let Some(ref_var) = ref_amplicon {
-                ref_vars.push(ref_var.clone());
+            if config.pileup {
+                if let Some(ref_var) = ref_amplicon {
+                    ref_vars.push(ref_var);
+                }
             }
         }
 
@@ -474,18 +482,17 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
             });
         }
 
-        // Sort ref variants by totalPosCoverage descending
-        if ref_vars.len() > 1 {
+        // Sort ref variants by totalPosCoverage descending (only when pileup is active)
+        if config.pileup && ref_vars.len() > 1 {
             ref_vars.sort_by_key(|v| std::cmp::Reverse(v.total_pos_cov));
         }
 
         // Build vref_list (deduplicated good variants)
-        let vref_list: Vec<Variant>;
         if gvs.is_empty() {
             // Only reference
             if config.pileup {
-                if !ref_vars.is_empty() {
-                    vref_list = vec![ref_vars[0].clone()];
+                if let Some(&top_ref) = ref_vars.first() {
+                    vref_list.push(top_ref);
                 } else {
                     // Output empty variant at this position (AmpliconPostProcessModule.java:105-106,
                     // AmpliconOutputVariant.java:25,27,54-60: new Variant() has genotype="", bias="0;0",
@@ -513,22 +520,21 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                 continue;
             }
         } else {
-            vref_list = fill_vref_list(&gvs);
+            fill_vref_list_into(&gvs, &mut vref_list);
         }
 
         // Detect amplicon bias (AmpliconPostProcessModule.java:135-137)
         let mut current_flag = is_amp_bias_flag(&good_variants_on_amp);
-        let mut good_variants: std::borrow::Cow<'_, [(Variant, usize)]> =
-            std::borrow::Cow::Borrowed(&gvs);
+        let mut use_gcnt = false;
 
         let total_amplicons = amplicon_regions.len() as i32;
 
-        for vref in &vref_list {
+        for &max_var in &vref_list {
             // If flag is set, re-check by looking at top variant's description across all amplicons
             if current_flag {
-                if let Some(top_gv) = gvs.first() {
-                    let gdnt = &top_gv.0.description;
-                    let mut gcnt: Vec<(Variant, usize)> = Vec::new();
+                if let Some(&(top_gv, _)) = gvs.first() {
+                    let gdnt = &top_gv.description;
+                    gcnt_buf.clear();
                     for (amp_num, amp_reg_item) in amplicon_regions {
                         let amp_num = *amp_num;
                         let amp_reg: &Region = amp_reg_item.borrow();
@@ -545,26 +551,28 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                                 ) {
                                     let _ =
                                         get_or_init_region_tag(&mut region_tags, amp_num, amp_reg);
-                                    gcnt.push((variant.clone(), amp_num));
+                                    gcnt_buf.push((variant, amp_num));
                                 }
                             }
                         }
                     }
-                    if gcnt.len() == gvs.len() {
+                    if gcnt_buf.len() == gvs.len() {
                         current_flag = false;
                     }
                     // Sort gcnt by frequency descending
-                    gcnt.sort_by(|a, b| {
+                    gcnt_buf.sort_by(|a, b| {
                         b.0.frequency
                             .partial_cmp(&a.0.frequency)
                             .unwrap_or(std::cmp::Ordering::Equal)
                     });
-                    good_variants = std::borrow::Cow::Owned(gcnt);
+                    use_gcnt = true;
                 }
             }
 
+            let good_variants: &[(&Variant, usize)] = if use_gcnt { &gcnt_buf } else { &gvs };
+
             // Count how many amplicons support this variant (initialGvscnt)
-            let initial_gvscnt = count_variant_on_amplicons(vref, &good_variants_on_amp);
+            let initial_gvscnt = count_variant_on_amplicons(max_var, &good_variants_on_amp);
             let mut current_gvscnt = initial_gvscnt;
 
             // Compute bad variants: amplicons where this variant is not good but falls
@@ -575,12 +583,13 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                 for (amp_num, amp_reg_item) in amplicon_regions {
                     let amp_num = *amp_num;
                     let amp_reg: &Region = amp_reg_item.borrow();
-                    if config.pileup && vref.ref_allele == vref.var_allele {
+                    if config.pileup && max_var.ref_allele == max_var.var_allele {
                         continue;
                     }
                     let is_in_goodmap = good_variants_on_amp.get(&amp_num).is_some_and(|vars| {
                         vars.iter().any(|tv| {
-                            tv.ref_allele == vref.ref_allele && tv.var_allele == vref.var_allele
+                            tv.ref_allele == max_var.ref_allele
+                                && tv.var_allele == max_var.var_allele
                         })
                     });
                     if is_in_goodmap {
@@ -589,7 +598,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                     if let Some(ref amp) = amp_reg.amplicon {
                         let insert_start = amp.insert_start.0 as i32;
                         let insert_end = amp.insert_end.0 as i32;
-                        if vref.start_pos >= insert_start && vref.end_pos <= insert_end {
+                        if max_var.start_pos >= insert_start && max_var.end_pos <= insert_end {
                             bad_count = bad_count.saturating_add(1);
                             // ports AmpliconPostProcessModule.java:170-179: record the
                             // amplicon's first variant, else its reference variant, else null
@@ -609,8 +618,8 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                                 };
                                 bad_vars.push((bad_var, reg_str));
                             }
-                        } else if (vref.start_pos < insert_end && insert_end < vref.end_pos)
-                            || (vref.start_pos < insert_start && insert_start < vref.end_pos)
+                        } else if (max_var.start_pos < insert_end && insert_end < max_var.end_pos)
+                            || (max_var.start_pos < insert_start && insert_start < max_var.end_pos)
                         {
                             // Variant overlaps the amplicon primer
                             if current_gvscnt > 1 {
@@ -626,8 +635,8 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
             let gdamp = current_gvscnt;
             let tlamp = current_gvscnt.saturating_add(bad_count);
 
-            // Apply complex variant adjustment
-            let mut out_variant = vref.clone();
+            // Apply complex variant adjustment — clone max_var once at emission
+            let mut out_variant = max_var.clone();
             out_variant.var_type = out_variant.var_type();
             if out_variant.var_type == "Complex" {
                 out_variant.adj_complex();
@@ -644,10 +653,12 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                 (
                     good_variants
                         .iter()
-                        .map(|(v, amp_idx)| {
+                        .map(|&(v, amp_idx)| {
+                            let mut gv = v.clone();
+                            gv.var_type = gv.var_type();
                             (
-                                Some(v.clone()),
-                                region_tags.get(*amp_idx).cloned().unwrap_or_default(),
+                                Some(gv),
+                                region_tags.get(amp_idx).cloned().unwrap_or_default(),
                             )
                         })
                         .collect(),
@@ -705,29 +716,44 @@ pub fn amplicon_select_vcf_rows(results: Vec<AmpliconVariant>) -> Vec<AmpliconVa
 /// The variant with the highest frequency is kept (gvs is already sorted by frequency desc).
 ///
 /// Ports `AmpliconPostProcessModule.fillVrefList()`.
-fn fill_vref_list<T>(gvs: &[(Variant, T)]) -> Vec<Variant> {
-    let mut vref_list: Vec<Variant> = Vec::new();
+#[cfg(test)]
+fn fill_vref_list<'a, V: Borrow<Variant>, T>(gvs: &'a [(V, T)]) -> Vec<&'a Variant> {
+    let mut vref_list: Vec<&'a Variant> = Vec::new();
     for (variant, _region_str) in gvs {
+        let variant = variant.borrow();
         let already_added = vref_list
             .iter()
             .any(|v| v.var_allele == variant.var_allele && v.ref_allele == variant.ref_allele);
         if !already_added {
-            vref_list.push(variant.clone());
+            vref_list.push(variant);
         }
     }
     vref_list
 }
 
+fn fill_vref_list_into<'v, T>(gvs: &[(&'v Variant, T)], vref_list: &mut Vec<&'v Variant>) {
+    vref_list.clear();
+    for &(variant, _) in gvs {
+        let already_added = vref_list
+            .iter()
+            .any(|v| v.var_allele == variant.var_allele && v.ref_allele == variant.ref_allele);
+        if !already_added {
+            vref_list.push(variant);
+        }
+    }
+}
+
 /// Count amplicons where a good variant with matching ref/var allele appears.
 ///
 /// Ports `AmpliconPostProcessModule.countVariantOnAmplicons()`.
-fn count_variant_on_amplicons(
+fn count_variant_on_amplicons<V: Borrow<Variant>>(
     vref: &Variant,
-    good_variants_on_amp: &BTreeMap<usize, Vec<Variant>>,
+    good_variants_on_amp: &BTreeMap<usize, Vec<V>>,
 ) -> i32 {
     let mut gvscnt: i32 = 0;
     for variants in good_variants_on_amp.values() {
         for variant in variants {
+            let variant = variant.borrow();
             if variant.ref_allele == vref.ref_allele && variant.var_allele == vref.var_allele {
                 gvscnt = gvscnt.saturating_add(1);
             }
@@ -743,36 +769,50 @@ fn count_variant_on_amplicons(
 /// string, returns true.
 ///
 /// Ports `AmpliconPostProcessModule.isAmpBiasFlag()`.
-fn is_amp_bias_flag(good_variants_on_amp: &BTreeMap<usize, Vec<Variant>>) -> bool {
-    if good_variants_on_amp.is_empty() {
+fn is_amp_bias_flag<V: Borrow<Variant>>(good_variants_on_amp: &BTreeMap<usize, Vec<V>>) -> bool {
+    if good_variants_on_amp.len() <= 1 {
         return false;
     }
 
-    let amplicon_list: Vec<usize> = good_variants_on_amp.keys().copied().collect();
-    // BTreeMap keys are already sorted
+    let mut current_sorted: Vec<&Variant> = Vec::new();
+    let mut next_sorted: Vec<&Variant> = Vec::new();
+    let mut values_iter = good_variants_on_amp.values();
+    let Some(mut prev_variants) = values_iter.next() else {
+        return false;
+    };
 
-    for i in 0..amplicon_list.len().saturating_sub(1) {
-        let current_amplicon = amplicon_list[i];
-        let next_amplicon = amplicon_list[i + 1];
-
-        let current_variants = &good_variants_on_amp[&current_amplicon];
-        let next_variants = &good_variants_on_amp[&next_amplicon];
-
-        if current_variants.len() != next_variants.len() {
+    // BTreeMap values are already ordered by ascending amplicon index.
+    for next_variants in values_iter {
+        if prev_variants.len() != next_variants.len() {
             return true;
         }
 
-        // Sort both by totalPosCoverage descending for comparison
-        let mut current_sorted: Vec<&Variant> = current_variants.iter().collect();
-        let mut next_sorted: Vec<&Variant> = next_variants.iter().collect();
-        current_sorted.sort_by_key(|v| std::cmp::Reverse(v.total_pos_cov));
-        next_sorted.sort_by_key(|v| std::cmp::Reverse(v.total_pos_cov));
-
-        for (var1, var2) in current_sorted.iter().zip(next_sorted.iter()) {
-            if var1.description != var2.description {
+        if let ([v1], [v2]) = (prev_variants.as_slice(), next_variants.as_slice()) {
+            if v1.borrow().description != v2.borrow().description {
                 return true;
             }
+            prev_variants = next_variants;
+            continue;
         }
+
+        if !prev_variants.is_empty() {
+            // Sort both by totalPosCoverage descending for comparison
+            current_sorted.clear();
+            current_sorted.extend(prev_variants.iter().map(Borrow::borrow));
+            current_sorted.sort_by_key(|v| Reverse(v.total_pos_cov));
+
+            next_sorted.clear();
+            next_sorted.extend(next_variants.iter().map(Borrow::borrow));
+            next_sorted.sort_by_key(|v| Reverse(v.total_pos_cov));
+
+            for (var1, var2) in current_sorted.iter().zip(next_sorted.iter()) {
+                if var1.description != var2.description {
+                    return true;
+                }
+            }
+        }
+
+        prev_variants = next_variants;
     }
     false
 }
@@ -1087,6 +1127,19 @@ mod tests {
     fn test_is_amp_bias_flag_empty() {
         let good_variants_on_amp: BTreeMap<usize, Vec<Variant>> = BTreeMap::new();
         assert!(!is_amp_bias_flag(&good_variants_on_amp));
+        let borrowed_empty: BTreeMap<usize, Vec<&Variant>> = BTreeMap::new();
+        assert!(!is_amp_bias_flag(&borrowed_empty));
+
+        // Single amplicon (len == 1) with 0, 1, and >= 2 good variants returns false immediately.
+        let v_g = make_good_variant(150, "A", "G", 0.10);
+        let v_t = make_good_variant(150, "A", "T", 0.08);
+        let mut single_amp0: BTreeMap<usize, Vec<&Variant>> = BTreeMap::new();
+        single_amp0.insert(3, vec![]);
+        assert!(!is_amp_bias_flag(&single_amp0));
+        single_amp0.insert(3, vec![&v_g]);
+        assert!(!is_amp_bias_flag(&single_amp0));
+        single_amp0.insert(3, vec![&v_g, &v_t]);
+        assert!(!is_amp_bias_flag(&single_amp0));
     }
 
     #[test]
@@ -1095,6 +1148,27 @@ mod tests {
         good_variants_on_amp.insert(0, vec![make_good_variant(150, "A", "G", 0.10)]);
         good_variants_on_amp.insert(1, vec![make_good_variant(150, "A", "G", 0.12)]);
         assert!(!is_amp_bias_flag(&good_variants_on_amp));
+
+        // Borrowed &Variant across 3 non-contiguous amplicon indices with 0, 1, and >= 2 good variants
+        let mut empty_multi: BTreeMap<usize, Vec<&Variant>> = BTreeMap::new();
+        empty_multi.insert(0, vec![]);
+        empty_multi.insert(4, vec![]);
+        assert!(!is_amp_bias_flag(&empty_multi));
+
+        let mut v0_a = make_good_variant(150, "A", "G", 0.10);
+        v0_a.total_pos_cov = 80;
+        let mut v0_b = make_good_variant(150, "A", "T", 0.06);
+        v0_b.total_pos_cov = 120;
+        let mut v2_b = make_good_variant(150, "A", "T", 0.09);
+        v2_b.total_pos_cov = 200;
+        let mut v2_a = make_good_variant(150, "A", "G", 0.14);
+        v2_a.total_pos_cov = 90;
+        let mut multi_borrowed: BTreeMap<usize, Vec<&Variant>> = BTreeMap::new();
+        // Unsorted insertion order within each Vec; after sorting by total_pos_cov desc both are [T, G]
+        multi_borrowed.insert(0, vec![&v0_a, &v0_b]);
+        multi_borrowed.insert(2, vec![&v2_b, &v2_a]);
+        multi_borrowed.insert(5, vec![&v0_b, &v0_a]);
+        assert!(!is_amp_bias_flag(&multi_borrowed));
     }
 
     #[test]
@@ -1103,6 +1177,18 @@ mod tests {
         good_variants_on_amp.insert(0, vec![make_good_variant(150, "A", "G", 0.10)]);
         good_variants_on_amp.insert(1, vec![make_good_variant(150, "A", "T", 0.12)]);
         assert!(is_amp_bias_flag(&good_variants_on_amp));
+
+        // >= 2 good variants per amplicon where total_pos_cov ordering exposes description mismatch
+        let mut v_g_hi = make_good_variant(150, "A", "G", 0.10);
+        v_g_hi.total_pos_cov = 150;
+        let mut v_t_lo = make_good_variant(150, "A", "T", 0.08);
+        v_t_lo.total_pos_cov = 90;
+        let mut v_c_lo = make_good_variant(150, "A", "C", 0.07);
+        v_c_lo.total_pos_cov = 90;
+        let mut borrowed_diff: BTreeMap<usize, Vec<&Variant>> = BTreeMap::new();
+        borrowed_diff.insert(1, vec![&v_t_lo, &v_g_hi]);
+        borrowed_diff.insert(4, vec![&v_g_hi, &v_c_lo]);
+        assert!(is_amp_bias_flag(&borrowed_diff));
     }
 
     #[test]
@@ -1140,6 +1226,19 @@ mod tests {
         assert_eq!(vref_list.len(), 2);
         assert_eq!(vref_list[0].var_allele, "G");
         assert_eq!(vref_list[1].var_allele, "T");
+
+        // Multi-allele borrowed (&Variant, usize) keeps top-AF representative per (ref, var) pair
+        let v_ag_hi = make_good_variant(150, "A", "G", 0.35);
+        let v_ag_lo = make_good_variant(150, "A", "G", 0.15);
+        let v_at = make_good_variant(150, "A", "T", 0.22);
+        let v_ins = make_good_variant(150, "A", "ACC", 0.11);
+        let borrowed_gvs = vec![(&v_ag_hi, 0usize), (&v_at, 1), (&v_ag_lo, 2), (&v_ins, 0)];
+        let borrowed_vrefs = fill_vref_list(&borrowed_gvs);
+        assert_eq!(borrowed_vrefs.len(), 3);
+        assert_eq!(borrowed_vrefs[0].var_allele, "G");
+        assert_eq!(borrowed_vrefs[0].frequency, 0.35);
+        assert_eq!(borrowed_vrefs[1].var_allele, "T");
+        assert_eq!(borrowed_vrefs[2].var_allele, "ACC");
     }
 
     #[test]
@@ -1157,6 +1256,12 @@ mod tests {
             count_variant_on_amplicons(&vref_t, &good_variants_on_amp),
             1
         );
+
+        let mut borrowed_on_amp: BTreeMap<usize, Vec<&Variant>> = BTreeMap::new();
+        borrowed_on_amp.insert(0, vec![&vref]);
+        borrowed_on_amp.insert(2, vec![&vref, &vref_t]);
+        assert_eq!(count_variant_on_amplicons(&vref, &borrowed_on_amp), 2);
+        assert_eq!(count_variant_on_amplicons(&vref_t, &borrowed_on_amp), 1);
     }
 
     #[test]
@@ -1808,6 +1913,138 @@ mod tests {
 
                 assert_eq!(streamed.len(), expected.len());
                 assert_eq!(format!("{streamed:?}"), format!("{expected:?}"));
+                if debug_mode {
+                    for av in &expected {
+                        assert!(
+                            !av.good_variants.is_empty(),
+                            "debug_good must be populated for good variant rows under -D"
+                        );
+                        for (gv_opt, reg_tag) in &av.good_variants {
+                            let gv = gv_opt.as_ref().expect("debug_good entry must be Some");
+                            assert_eq!(
+                                gv.var_type,
+                                gv.var_type(),
+                                "debug_good var_type must be populated even on AMPBIAS gcnt rows"
+                            );
+                            assert!(!gv.var_type.is_empty());
+                            assert!(!reg_tag.is_empty());
+                        }
+                    }
+                } else {
+                    for av in &expected {
+                        assert!(av.good_variants.is_empty());
+                        assert!(av.bad_variants.is_empty());
+                    }
+                }
+            }
+        }
+
+        // Verify pileup == false/true x debug == false/true across ref-only, null-row,
+        // Complex variant adjustment, and multi-allele vref_list emission.
+        let mut pileup_vars = rich_vars.clone();
+        // Add ref_variant on pos 151 across two amplicons with different total_pos_cov (90 vs 140)
+        let mut ref_lo = Variant::new();
+        ref_lo.ref_allele = "T".to_string();
+        ref_lo.var_allele = "T".to_string();
+        ref_lo.start_pos = 151;
+        ref_lo.end_pos = 151;
+        ref_lo.total_pos_cov = 90;
+        let mut v151_0 = Vars::new();
+        v151_0.ref_variant = Some(ref_lo);
+        pileup_vars[0].insert(151, v151_0);
+
+        let mut ref_hi = Variant::new();
+        ref_hi.ref_allele = "T".to_string();
+        ref_hi.var_allele = "T".to_string();
+        ref_hi.start_pos = 151;
+        ref_hi.end_pos = 151;
+        ref_hi.total_pos_cov = 140;
+        let mut v151_1 = Vars::new();
+        v151_1.ref_variant = Some(ref_hi);
+        pileup_vars[1].insert(151, v151_1);
+
+        // Add Complex variant at pos 154 ("AT" -> "GC" with shared prefix "C" -> adj_complex)
+        let mut v_complex = make_good_variant(154, "CAT", "CGC", 0.42);
+        v_complex.end_pos = 156;
+        v_complex.description = "C#GC^2".to_string();
+        let mut v154_0 = Vars::new();
+        v154_0.variants.push(v_complex);
+        pileup_vars[0].insert(154, v154_0);
+
+        for pileup_mode in [false, true] {
+            for debug_mode in [false, true] {
+                let mut pcfg = make_test_config();
+                pcfg.pileup = pileup_mode;
+                pcfg.debug = debug_mode;
+                pcfg.emit_intermediate = true;
+
+                let window_owned = amplicon_position_stream(&segment)
+                    .filter(|(p, _)| (150..=154).contains(p))
+                    .collect::<BTreeMap<_, _>>();
+                let batch_rows =
+                    amplicon_post_process(&pcfg, &region, &pileup_vars, &window_owned, &splice)
+                        .unwrap();
+
+                let mut stream_rows = Vec::new();
+                amplicon_post_process_streaming(
+                    &pcfg,
+                    &region,
+                    &pileup_vars,
+                    amplicon_position_ref_stream(&segment).filter(|(p, _)| (150..=154).contains(p)),
+                    &splice,
+                    &mut |av| {
+                        stream_rows.push(av);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+
+                assert_eq!(format!("{stream_rows:?}"), format!("{batch_rows:?}"));
+                let mut rendered_38 = String::new();
+                let mut rendered_40 = String::new();
+                for av in &stream_rows {
+                    crate::output::table::amplicon_38_append(
+                        &mut rendered_38,
+                        av,
+                        &region,
+                        "AMP_S1",
+                        debug_mode,
+                    );
+                    rendered_38.push('\n');
+                    crate::output::table::amplicon_40_append(
+                        &mut rendered_40,
+                        av,
+                        &region,
+                        "AMP_S1",
+                        debug_mode,
+                    );
+                    rendered_40.push('\n');
+                }
+                assert!(!rendered_38.is_empty());
+                assert!(!rendered_40.is_empty());
+
+                if pileup_mode {
+                    // Pos 150 is null row, pos 151 picks highest total_pos_cov (140),
+                    // pos 152 emits 2 alleles (G, T), pos 153 emits 2 alleles (A, G), pos 154 Complex (start shifted to 155).
+                    assert_eq!(stream_rows.len(), 7);
+                    assert!(stream_rows[0].variant.null_record);
+                    assert_eq!(stream_rows[1].variant.total_pos_cov, 140);
+                } else {
+                    // Only positions 152 (2 rows), 153 (2 rows), 154 (1 Complex row) emit.
+                    assert_eq!(stream_rows.len(), 5);
+                }
+                let complex_row = stream_rows.last().unwrap();
+                assert_eq!(complex_row.variant.var_type, "Complex");
+                assert_eq!(complex_row.variant.start_pos, 155);
+                if debug_mode {
+                    for av in &stream_rows {
+                        for (gv_opt, _) in &av.good_variants {
+                            let gv = gv_opt.as_ref().unwrap();
+                            assert_eq!(gv.var_type, gv.var_type());
+                            assert!(!gv.var_type.is_empty());
+                        }
+                    }
+                }
             }
         }
     }

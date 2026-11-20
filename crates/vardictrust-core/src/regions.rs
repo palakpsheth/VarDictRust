@@ -212,7 +212,12 @@ pub fn batch_tiles(
 /// Ports `RegionBuilder.java` (`Integer.parseInt(s.replaceAll(",", ""))`): rejects values
 /// above `i32::MAX` (`2_147_483_647`) instead of silently wrapping to negative `i32`.
 pub fn parse_int_with_commas(s: &str) -> Result<u32, VardictError> {
-    let clean = s.replace(',', "");
+    let trimmed = s.trim();
+    let clean: std::borrow::Cow<'_, str> = if !trimmed.contains(',') {
+        std::borrow::Cow::Borrowed(trimmed)
+    } else {
+        std::borrow::Cow::Owned(trimmed.replace(',', ""))
+    };
     let v = clean
         .trim()
         .parse::<u32>()
@@ -700,45 +705,46 @@ fn parse_non_amp_bed_from_source_with_limit<S: BedLineSource>(
 
         let active_zero_based = effective_override.unwrap_or(current_zero_based);
 
-        if cols.len() <= current_format.chr_column
-            || cols.len() <= current_format.start_column
-            || cols.len() <= current_format.end_column
-            || cols.len() <= current_format.thick_start_column
-            || cols.len() <= current_format.thick_end_column
-        {
+        let (
+            Some(&chr_col),
+            Some(&start_col),
+            Some(&end_col),
+            Some(&thick_start_col),
+            Some(&thick_end_col),
+        ) = (
+            cols.get(current_format.chr_column),
+            cols.get(current_format.start_column),
+            cols.get(current_format.end_column),
+            cols.get(current_format.thick_start_column),
+            cols.get(current_format.thick_end_column),
+        )
+        else {
             return Err(VardictError::Parse(format!(
                 "Region line has {} columns, expected at least {} (for 3-, 5-, or 6-column non-amplicon BED files, pass -c 1 -S 2 -E 3 -z for standard 0-based BED or -c 1 -S 2 -E 3 for 1-based regions)",
                 cols.len(),
                 current_format.thick_end_column.saturating_add(1)
             )));
-        }
+        };
 
-        let chr = correct_chromosome(chromosomes_lengths, cols[current_format.chr_column]);
-        let cds_start = parse_int_with_commas(cols[current_format.start_column])?;
-        let cds_end = parse_int_with_commas(cols[current_format.end_column])?;
+        let chr = correct_chromosome(chromosomes_lengths, chr_col);
+        let cds_start = parse_int_with_commas(start_col)?;
+        let cds_end = parse_int_with_commas(end_col)?;
 
-        let gene = if current_format.gene_column < cols.len() {
-            cols[current_format.gene_column].to_string()
-        } else {
-            chr.clone()
+        let gene = match cols.get(current_format.gene_column) {
+            Some(&g) => g.to_string(),
+            None => chr.clone(),
         };
         validate_region_chr_and_gene(&chr, &gene)?;
 
-        let thick_starts: Vec<&str> = cols[current_format.thick_start_column].split(',').collect();
-        let thick_ends: Vec<&str> = cols[current_format.thick_end_column].split(',').collect();
-
         let mut thick_regions = Vec::new();
 
-        for i in 0..thick_starts.len() {
-            if i >= thick_ends.len() {
-                break;
-            }
-            if thick_starts[i].trim().is_empty() || thick_ends[i].trim().is_empty() {
+        for (ts_str, te_str) in thick_start_col.split(',').zip(thick_end_col.split(',')) {
+            if ts_str.trim().is_empty() || te_str.trim().is_empty() {
                 continue;
             }
 
-            let thick_start_val = parse_int_with_commas(thick_starts[i])?;
-            let thick_end_val = parse_int_with_commas(thick_ends[i])?;
+            let thick_start_val = parse_int_with_commas(ts_str)?;
+            let thick_end_val = parse_int_with_commas(te_str)?;
 
             if cds_start > thick_end_val {
                 continue;
@@ -845,18 +851,33 @@ fn parse_amp_bed_from_source_with_limit<S: BedLineSource>(
 
         let cols = java_split(line, &config.delimiter)?;
 
-        if cols.len() <= 7 {
+        let (
+            Some(&chr_col),
+            Some(&start_col),
+            Some(&end_col),
+            Some(&gene_col),
+            Some(&thick_start_col),
+            Some(&thick_end_col),
+        ) = (
+            cols.get(AMP_BED_ROW_FORMAT.chr_column),
+            cols.get(AMP_BED_ROW_FORMAT.start_column),
+            cols.get(AMP_BED_ROW_FORMAT.end_column),
+            cols.get(AMP_BED_ROW_FORMAT.gene_column),
+            cols.get(AMP_BED_ROW_FORMAT.thick_start_column),
+            cols.get(AMP_BED_ROW_FORMAT.thick_end_column),
+        )
+        else {
             return Err(VardictError::Parse(format!(
                 "Amplicon BED line has fewer than 8 columns (got {}): '{}'",
                 cols.len(),
                 line.trim()
             )));
-        }
+        };
 
-        let chr = correct_chromosome(chromosomes_lengths, cols[AMP_BED_ROW_FORMAT.chr_column]);
-        let mut start = parse_int_with_commas(cols[AMP_BED_ROW_FORMAT.start_column])? as i32;
-        let end = parse_int_with_commas(cols[AMP_BED_ROW_FORMAT.end_column])? as i32;
-        let gene = cols[AMP_BED_ROW_FORMAT.gene_column].to_string();
+        let chr = correct_chromosome(chromosomes_lengths, chr_col);
+        let mut start = parse_int_with_commas(start_col)? as i32;
+        let end = parse_int_with_commas(end_col)? as i32;
+        let gene = gene_col.to_string();
         validate_region_chr_and_gene(&chr, &gene)?;
         if total_regions >= max_regions {
             return Err(VardictError::Parse(format!(
@@ -864,9 +885,8 @@ fn parse_amp_bed_from_source_with_limit<S: BedLineSource>(
             )));
         }
         total_regions += 1;
-        let mut insert_start =
-            parse_int_with_commas(cols[AMP_BED_ROW_FORMAT.thick_start_column])? as i32;
-        let insert_end = parse_int_with_commas(cols[AMP_BED_ROW_FORMAT.thick_end_column])? as i32;
+        let mut insert_start = parse_int_with_commas(thick_start_col)? as i32;
+        let insert_end = parse_int_with_commas(thick_end_col)? as i32;
 
         let active_zero_based = zero_based_override.unwrap_or(is_zero_based);
 

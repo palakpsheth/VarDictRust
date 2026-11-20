@@ -445,6 +445,49 @@ impl Variant {
         }
     }
 
+    /// Create an internal empty `Variant` without pre-allocating `"0"` in `bias`
+    /// for internal builders (`ToVarsBuilder`) that immediately overwrite `bias`.
+    pub(crate) fn empty_internal() -> Self {
+        Self {
+            description: String::new(),
+            pos_coverage: 0,
+            fwd: 0,
+            rev: 0,
+            bias: String::new(),
+            frequency: 0.0,
+            mean_position: 0.0,
+            pstd: false,
+            mean_quality: 0.0,
+            qstd: false,
+            mean_mapping_quality: 0.0,
+            hq_lq_ratio: 0.0,
+            hi_freq: 0.0,
+            extra_freq: 0.0,
+            shift3: 0,
+            msi: 0.0,
+            msint: 0,
+            nm: 0.0,
+            hicnt: 0,
+            hicov: 0,
+            left_seq: String::new(),
+            right_seq: String::new(),
+            start_pos: 0,
+            end_pos: 0,
+            ref_rev_cov: 0,
+            ref_fwd_cov: 0,
+            total_pos_cov: 0,
+            duprate: 0.0,
+            genotype: None,
+            var_allele: String::new(),
+            ref_allele: String::new(),
+            var_type: String::new(),
+            debug: String::new(),
+            crispr: 0,
+            sv: String::new(),
+            null_record: false,
+        }
+    }
+
     /// Per-read debug content string for -D output.
     /// Ports `Variant.debugVariantsContent` (Variant.java:268-282):
     /// `n:cnt:F-fwd:R-rev:freq:bias:meanPos:pstd:meanQual:qstd:hifreq:mapq:qratio`.

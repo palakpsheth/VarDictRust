@@ -21,23 +21,6 @@ fn make_null_record(position: i32) -> Variant {
     out
 }
 
-enum SimpleVarIter<'a> {
-    Borrowed(std::slice::Iter<'a, Variant>),
-    Owned(std::vec::IntoIter<Variant>),
-}
-
-impl<'a> Iterator for SimpleVarIter<'a> {
-    type Item = std::borrow::Cow<'a, Variant>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Borrowed(it) => it.next().map(std::borrow::Cow::Borrowed),
-            Self::Owned(it) => it.next().map(std::borrow::Cow::Owned),
-        }
-    }
-}
-
 /// Single sample mode variant filtering and postprocessing.
 ///
 /// Filters the aligned variants list using is_good_var and pileup rules,
@@ -93,33 +76,8 @@ fn simple_post_process_core<'a>(
             continue;
         }
 
-        let (mut ref_var_cow, vvar_len, vvar_iter, sv_cow): (
-            Option<std::borrow::Cow<'a, Variant>>,
-            usize,
-            SimpleVarIter<'a>,
-            std::borrow::Cow<'a, str>,
-        ) = match variants_on_position {
-            std::borrow::Cow::Borrowed(vars) => (
-                vars.ref_variant.as_ref().map(std::borrow::Cow::Borrowed),
-                vars.variants.len(),
-                SimpleVarIter::Borrowed(vars.variants.iter()),
-                std::borrow::Cow::Borrowed(vars.sv.as_str()),
-            ),
-            std::borrow::Cow::Owned(Vars {
-                ref_variant,
-                variants,
-                sv,
-                ..
-            }) => {
-                let len = variants.len();
-                (
-                    ref_variant.map(std::borrow::Cow::Owned),
-                    len,
-                    SimpleVarIter::Owned(variants.into_iter()),
-                    std::borrow::Cow::Owned(sv),
-                )
-            }
-        };
+        let (mut ref_var_cow, vvar_iter, sv_cow) = super::unpack_cow_vars(variants_on_position);
+        let vvar_len = vvar_iter.len();
 
         let pos_start = vrefs.len();
         if vvar_len == 0 {
