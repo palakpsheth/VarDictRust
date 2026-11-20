@@ -851,13 +851,6 @@ fn parse_amp_bed_from_source_with_limit<S: BedLineSource>(
 
         let cols = java_split(line, &config.delimiter)?;
 
-        if cols.len() <= 7 {
-            return Err(VardictError::Parse(format!(
-                "Amplicon BED line has fewer than 8 columns (got {}): '{}'",
-                cols.len(),
-                line.trim()
-            )));
-        }
         let (
             Some(&chr_col),
             Some(&start_col),

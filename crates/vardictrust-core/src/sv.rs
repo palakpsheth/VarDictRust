@@ -1059,7 +1059,7 @@ fn find_inv_sub_paths(
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
     let max_read_length = var_data.max_read_length;
     for idx in 0..n {
-        let (used, cnt, mstart, mend, start, end, mut softp) = {
+        let (cnt, mstart, mend, start, end, mut softp) = {
             let Some(inv) = (match svref_idx {
                 0 => var_data.sv_structures.svfinv5.get(idx),
                 1 => var_data.sv_structures.svrinv5.get(idx),
@@ -1077,7 +1077,6 @@ fn find_inv_sub_paths(
                 continue;
             }
             (
-                inv.used,
                 inv.variation.cnt,
                 inv.mstart,
                 inv.mend,
@@ -1086,9 +1085,6 @@ fn find_inv_sub_paths(
                 best_soft_pos(&inv.soft).unwrap_or(0),
             )
         };
-        if used || cnt < minr {
-            continue;
-        }
 
         // W3.3b: removed the `softp != 0 && is_best_sv_used(softp)` skip.
         // Java findINVsub has NO SOFTP2SV-style gate here — its only skip is

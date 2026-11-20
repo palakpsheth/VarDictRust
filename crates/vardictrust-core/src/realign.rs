@@ -8193,7 +8193,7 @@ mod tests {
             }
         }
 
-        // 2-chunk 10_000_000 bp unloaded gap + extreme [i32::MIN, i32::MAX] in < 5 ms (AR-07)
+        // 2-chunk 10_000_000 bp unloaded gap + extreme [i32::MIN, i32::MAX] O(loaded_span) guard (AR-07)
         let mut gap_ref = crate::reference::Reference::new();
         let chunk_a: Vec<u8> = b"ACGTGA".iter().copied().cycle().take(50).collect();
         let chunk_b: Vec<u8> = b"TGCATC".iter().copied().cycle().take(50).collect();
@@ -8210,12 +8210,14 @@ mod tests {
         });
         gap_ref.region_sequences.push(chunk_b.clone());
 
+        crate::reference::reset_get_base_calls();
         let t_gap = std::time::Instant::now();
         let got_gap_5 =
             super::join_ref_for_5_lgins(&gap_ref, "chr1", 1, 10_000_100, b"TTACG", b"TT");
         let got_gap_3 =
             super::join_ref_for_3_lgins(&gap_ref, "chr1", 1, 10_000_100, -1, b"TTACG", b"TT");
         let gap_elapsed = t_gap.elapsed();
+        let gap_calls = crate::reference::get_base_calls();
 
         let mut want_gap_5 = chunk_a.clone();
         want_gap_5.extend_from_slice(&chunk_b[..47]);
@@ -8227,16 +8229,28 @@ mod tests {
         want_gap_3.extend_from_slice(&chunk_b);
         assert_eq!(got_gap_3, want_gap_3);
         assert!(
-            gap_elapsed < std::time::Duration::from_millis(5),
-            "join_ref_for_{{5,3}}_lgins across 10_000_000 bp unloaded gap took {gap_elapsed:?} (>= 5 ms)"
+            got_gap_5.capacity() <= 256 && got_gap_3.capacity() <= 256,
+            "join_ref_for_{{5,3}}_lgins across 10_000_000 bp unloaded gap must reserve loaded span, got capacities ({}, {})",
+            got_gap_5.capacity(),
+            got_gap_3.capacity()
+        );
+        assert!(
+            gap_calls <= 250,
+            "join_ref_for_{{5,3}}_lgins across 10_000_000 bp unloaded gap must visit <= 250 bases, got {gap_calls}"
+        );
+        assert!(
+            gap_elapsed < std::time::Duration::from_secs(10),
+            "join_ref_for_{{5,3}}_lgins across 10_000_000 bp unloaded gap hung: {gap_elapsed:?}"
         );
 
+        crate::reference::reset_get_base_calls();
         let t_minmax = std::time::Instant::now();
         let got_minmax_5 =
             super::join_ref_for_5_lgins(&gap_ref, "chr1", i32::MIN, i32::MAX, b"TTACG", b"TT");
         let got_minmax_3 =
             super::join_ref_for_3_lgins(&gap_ref, "chr1", i32::MIN, i32::MAX, -1, b"TTACG", b"TT");
         let minmax_elapsed = t_minmax.elapsed();
+        let minmax_calls = crate::reference::get_base_calls();
         let mut want_minmax_5 = chunk_a.clone();
         want_minmax_5.extend_from_slice(&chunk_b);
         want_minmax_5.extend_from_slice(b"GCA");
@@ -8246,8 +8260,18 @@ mod tests {
         want_minmax_3.extend_from_slice(&chunk_b);
         assert_eq!(got_minmax_3, want_minmax_3);
         assert!(
-            minmax_elapsed < std::time::Duration::from_millis(5),
-            "join_ref_for_{{5,3}}_lgins across [i32::MIN, i32::MAX] took {minmax_elapsed:?} (>= 5 ms)"
+            got_minmax_5.capacity() <= 256 && got_minmax_3.capacity() <= 256,
+            "join_ref_for_{{5,3}}_lgins across [i32::MIN, i32::MAX] must reserve loaded span, got capacities ({}, {})",
+            got_minmax_5.capacity(),
+            got_minmax_3.capacity()
+        );
+        assert!(
+            minmax_calls <= 250,
+            "join_ref_for_{{5,3}}_lgins across [i32::MIN, i32::MAX] must visit <= 250 bases, got {minmax_calls}"
+        );
+        assert!(
+            minmax_elapsed < std::time::Duration::from_secs(10),
+            "join_ref_for_{{5,3}}_lgins across [i32::MIN, i32::MAX] hung: {minmax_elapsed:?}"
         );
         let _ = super::find_bi(
             b"ACGTACGTACGTACGT",

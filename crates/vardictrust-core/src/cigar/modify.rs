@@ -239,8 +239,25 @@ fn is_regex_decimal_digit(ch: char) -> bool {
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    static SCAN_DIGITS_FWD_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn reset_scan_digits_fwd_calls() {
+    SCAN_DIGITS_FWD_CALLS.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+fn scan_digits_fwd_calls() -> u64 {
+    SCAN_DIGITS_FWD_CALLS.with(|c| c.get())
+}
+
 #[inline]
 fn scan_digits_fwd(s: &str, idx: usize) -> (usize, usize) {
+    #[cfg(test)]
+    SCAN_DIGITS_FWD_CALLS.with(|c| c.set(c.get().saturating_add(1)));
     let bytes = s.as_bytes();
     let mut end = idx;
     let mut char_count = 0usize;
@@ -1806,10 +1823,7 @@ impl<'a> CigarModifier<'a> {
                 } else if has_d || has_i {
                     if let Some(m) = find_three_indels(&this.cigar_str) {
                         if m.g5.saturating_add(m.g8) <= MAX_MULTI_INDEL_MID_SPAN {
-                            flag_loop = this.three_indels_range(
-                                m.range, m.ov5_len, m.g2, m.g3, m.op1, m.g5, m.g6, m.op2, m.g8,
-                                m.g9, m.op3, m.g11, flag_loop,
-                            );
+                            flag_loop = this.three_indels_range(m, flag_loop);
                             (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                         }
                     }
@@ -2524,22 +2538,21 @@ impl<'a> CigarModifier<'a> {
         flag
     }
 
-    fn three_indels_range(
-        &mut self,
-        range: std::ops::Range<usize>,
-        ov5_len: usize,
-        g2: i32,
-        g3: i32,
-        op1: u8,
-        g5: i32,
-        g6: i32,
-        op2: u8,
-        g8: i32,
-        g9: i32,
-        op3: u8,
-        g11: i32,
-        flag: bool,
-    ) -> bool {
+    fn three_indels_range(&mut self, m: ThreeIndelsMatch, flag: bool) -> bool {
+        let ThreeIndelsMatch {
+            range,
+            ov5_len,
+            g2,
+            g3,
+            op1,
+            g5,
+            g6,
+            op2,
+            g8,
+            g9,
+            op3,
+            g11,
+        } = m;
         let mid = g5.saturating_add(g8);
         if mid > MAX_MULTI_INDEL_MID_SPAN {
             return flag;
@@ -4918,7 +4931,7 @@ mod tests {
             }
         }
 
-        // 4. O(N) maximal-digit-run guard (`AR-05`): 10,000-digit runs must match legacy and finish in < 10 ms.
+        // 4. O(N) maximal-digit-run guard (`AR-05`): 10,000-digit runs must match legacy in <= 64 scan_digits_fwd calls.
         for long_cigar in [
             format!("{}D1I", "9".repeat(10_000)),
             format!("5M{}N1D20M", "9".repeat(10_000)),
@@ -4949,9 +4962,11 @@ mod tests {
                 max_read_length,
                 &config,
             );
+            super::reset_scan_digits_fwd_calls();
             let t0 = std::time::Instant::now();
             let got_long = cm_timed.modify_cigar();
             let elapsed = t0.elapsed();
+            let calls = super::scan_digits_fwd_calls();
             match (got_long, want_long) {
                 (Ok(g), Ok(w)) => {
                     assert_eq!(g.position, w.position);
@@ -4968,8 +4983,12 @@ mod tests {
                 (g, w) => panic!("long_cigar result mismatch: {g:?} vs {w:?}"),
             }
             assert!(
-                elapsed < std::time::Duration::from_millis(10),
-                "10,000-digit CIGAR took {elapsed:?} (>= 10 ms)"
+                calls <= 64,
+                "10,000-digit CIGAR must scan maximal digit runs in <= 64 scan_digits_fwd calls, got {calls}"
+            );
+            assert!(
+                elapsed < std::time::Duration::from_secs(10),
+                "10,000-digit CIGAR hung: {elapsed:?}"
             );
         }
     }

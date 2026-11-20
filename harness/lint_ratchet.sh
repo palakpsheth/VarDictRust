@@ -277,6 +277,11 @@ def verify_lib_rs_header(raw_text: str) -> list[str]:
         if not re.match(r"#\s*!", attr_src):
             continue
         body = m.group("body")
+        if not (
+            re.match(r"^\s*deny\s*\(", body)
+            or re.match(r"^\s*cfg_attr\s*\(\s*not\s*\(\s*test\s*\)\s*,", body)
+        ):
+            continue
         for dm in DENY_KIND_RE.finditer(body):
             open_paren = dm.end() - 1
             close_paren = _skip_balanced(body, open_paren, "(", ")")
@@ -348,7 +353,7 @@ assert len(scan_source("synthetic_post.rs", POST_TEST_SNIPPET)) == 1, (
     "self-test failed: non-test code following #[cfg(test)] block must still be scanned"
 )
 
-# 4) Self-test header verifier against commented-out forbid/deny attributes
+# 4) Self-test header verifier against commented-out or inactive-cfg forbid/deny attributes
 assert verify_lib_rs_header(
     "// #![forbid(unsafe_code)]\n#![deny(clippy::unwrap_used)]\n"
 ), "self-test failed: commented-out forbid(unsafe_code) and missing deny lints must fail"
@@ -357,6 +362,10 @@ assert verify_lib_rs_header(
     "// clippy::indexing_slicing\n"
     "#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo, clippy::string_slice))]\n"
 ), "self-test failed: missing active deny(clippy::indexing_slicing) must fail"
+assert verify_lib_rs_header(
+    "#![forbid(unsafe_code)]\n"
+    "#![cfg_attr(test, deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo, clippy::string_slice, clippy::indexing_slicing))]\n"
+), "self-test failed: cfg_attr(test, deny(...)) must fail verify_lib_rs_header"
 
 # 5) Verify lib.rs active header attributes
 lib_path = pathlib.Path("crates/vardictrust-core/src/lib.rs")
