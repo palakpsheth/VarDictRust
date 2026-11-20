@@ -290,7 +290,11 @@ echo "[deep-fuzz] Pre-building all 8 fuzz binaries sequentially (CARGO_BUILD_JOB
 (
     cd "$FUZZ_CRATE_DIR"
     CARGO_BUILD_JOBS="$BUILD_JOBS" nice_idle cargo +nightly fuzz build
-)
+) &
+build_pid=$!
+ACTIVE_PIDS=("$build_pid")
+wait "$build_pid"
+ACTIVE_PIDS=()
 
 CAMPAIGN_T0_MS="$(now_ms)"
 OVERALL_FAIL=0

@@ -197,6 +197,10 @@ class TestBiocondaRecipe(unittest.TestCase):
                 "    print('cargo-fuzz 0.12.0')\n"
                 "    sys.exit(0)\n"
                 "if args[:3] == ['+nightly', 'fuzz', 'build']:\n"
+                "    bmarker = os.environ.get('MOCK_BUILD_MARKER', '')\n"
+                "    if bmarker:\n"
+                "        pathlib.Path(bmarker).write_text('building', encoding='utf-8')\n"
+                "        time.sleep(10)\n"
                 "    sys.exit(0)\n"
                 "if len(args) >= 4 and args[:3] == ['+nightly', 'fuzz', 'run']:\n"
                 "    tgt = args[3]\n"
@@ -317,6 +321,37 @@ class TestBiocondaRecipe(unittest.TestCase):
                     sig_proc.stdout.close()
                 if sig_proc.stderr:
                     sig_proc.stderr.close()
+
+            # 4) SIGTERM during sequential pre-build interrupts immediately (<5s) and exits 130
+            bmarker_file = pathlib.Path(tmp_dir) / "build_started"
+            bsig_env = dict(mock_env, MOCK_BUILD_MARKER=str(bmarker_file), FUZZ_OUT_DIR=str(pathlib.Path(tmp_dir) / "bsig_out"))
+            bsig_proc = subprocess.Popen(
+                ["bash", str(runner_path), "--fast-secs", "10", "--deep-secs", "10", "--jobs", "1"],
+                cwd=str(ROOT_DIR),
+                env=bsig_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 5.0
+                while not bmarker_file.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(bmarker_file.exists(), "Mock fuzz pre-build did not start within 5s")
+                time.sleep(0.05)
+                t_sig = time.monotonic()
+                bsig_proc.send_signal(signal.SIGTERM)
+                bsig_rc = bsig_proc.wait(timeout=4)
+                self.assertEqual(bsig_rc, 130, f"Expected exit 130 on SIGTERM during pre-build, got {bsig_rc}")
+                self.assertLess(time.monotonic() - t_sig, 4.0, "Pre-build ignored SIGTERM instead of interrupting wait")
+            finally:
+                if bsig_proc.poll() is None:
+                    bsig_proc.kill()
+                    bsig_proc.wait(timeout=5)
+                if bsig_proc.stdout:
+                    bsig_proc.stdout.close()
+                if bsig_proc.stderr:
+                    bsig_proc.stderr.close()
         after_status = subprocess.run(
             ["git", "status", "--porcelain", "--untracked-files=all"],
             cwd=str(ROOT_DIR),
