@@ -1578,16 +1578,27 @@ impl<'a> CigarParser<'a> {
     }
 
     fn is_next_matched(&self, cigar: &[(u32, CigarKind)], ci: usize) -> bool {
-        self.config.realign == 1 && cigar.len() > ci + 1 && cigar[ci + 1].1 == CigarKind::Match
+        self.config.realign == 1
+            && cigar
+                .get(ci + 1)
+                .is_some_and(|&(_, k)| k == CigarKind::Match)
     }
 
     fn is_next_insertion(&self, cigar: &[(u32, CigarKind)], ci: usize) -> bool {
-        self.config.realign == 1 && cigar.len() > ci + 1 && cigar[ci + 1].1 == CigarKind::Insertion
+        self.config.realign == 1
+            && cigar
+                .get(ci + 1)
+                .is_some_and(|&(_, k)| k == CigarKind::Insertion)
     }
 
     fn skip_indel_next_to_intron(&self, cigar: &[(u32, CigarKind)], ci: usize) -> bool {
-        (cigar.len() > ci + 1 && cigar[ci + 1].1 == CigarKind::Skip)
-            || (ci > 0 && cigar[ci - 1].1 == CigarKind::Skip)
+        cigar
+            .get(ci + 1)
+            .is_some_and(|&(_, k)| k == CigarKind::Skip)
+            || (ci > 0
+                && cigar
+                    .get(ci - 1)
+                    .is_some_and(|&(_, k)| k == CigarKind::Skip))
     }
 
     fn append_segments(
@@ -1611,7 +1622,9 @@ impl<'a> CigarParser<'a> {
         quality_segment.extend_from_slice(qual_m);
 
         desc_string.push('^');
-        let is_next_next_ins = cigar_elements[ci + 2].1 == CigarKind::Insertion;
+        let is_next_next_ins = cigar_elements
+            .get(ci + 2)
+            .is_some_and(|&(_, k)| k == CigarKind::Insertion);
         if is_next_next_ins {
             let sub_ins =
                 crate::util::subseq(query_sequence, begin + m_len, indel_len).unwrap_or(&[]);
@@ -1791,7 +1804,7 @@ impl<'a> CigarParser<'a> {
         read_pos_exc: &mut usize,
         offset: &mut u32,
     ) -> usize {
-        let cigar_element_len = cigar_elements[ci].0;
+        let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
         let cel_i32 = i32::try_from(cigar_element_len).unwrap_or(i32::MAX);
         if self.skip_indel_next_to_intron(cigar_elements, ci) {
             *read_pos_exc += cigar_element_len as usize;
@@ -1822,8 +1835,8 @@ impl<'a> CigarParser<'a> {
         let mut next_ci = ci;
 
         if self.is_insertion_or_deletion_with_next_matched(cigar_elements, ci) {
-            let m_len = cigar_elements[ci + 1].0 as usize;
-            let indel_len = cigar_elements[ci + 2].0 as usize;
+            let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
+            let indel_len = cigar_elements.get(ci + 2).map_or(0, |&(l, _)| l as usize);
             let begin = *read_pos_inc;
 
             quality_of_segment_sb.clear();
@@ -1841,7 +1854,9 @@ impl<'a> CigarParser<'a> {
             );
             quality_of_segment.extend_from_slice(&quality_of_segment_sb);
 
-            let is_next_next_del = cigar_elements[ci + 2].1 == CigarKind::Deletion;
+            let is_next_next_del = cigar_elements
+                .get(ci + 2)
+                .is_some_and(|&(_, k)| k == CigarKind::Deletion);
             multoffs += m_len + if is_next_next_del { indel_len } else { 0 };
             multoffp += m_len + if !is_next_next_del { indel_len } else { 0 };
 
@@ -2097,7 +2112,7 @@ impl<'a> CigarParser<'a> {
         offset: &mut u32,
         position: i32,
     ) -> usize {
-        let cigar_element_len = cigar_elements[ci].0;
+        let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
         if self.skip_indel_next_to_intron(cigar_elements, ci) {
             *read_pos_inc += cigar_element_len as usize;
             return ci;
@@ -2130,8 +2145,8 @@ impl<'a> CigarParser<'a> {
         let mut next_ci = ci;
 
         if self.is_insertion_or_deletion_with_next_matched(cigar_elements, ci) {
-            let m_len = cigar_elements[ci + 1].0 as usize;
-            let indel_len = cigar_elements[ci + 2].0 as usize;
+            let m_len = cigar_elements.get(ci + 1).map_or(0, |&(l, _)| l as usize);
+            let indel_len = cigar_elements.get(ci + 2).map_or(0, |&(l, _)| l as usize);
             let begin = *read_pos_inc + cigar_element_len as usize;
 
             quality_segment_sb.clear();
@@ -2149,7 +2164,9 @@ impl<'a> CigarParser<'a> {
             );
             quality_string.extend_from_slice(&quality_segment_sb);
 
-            let is_next_next_del = cigar_elements[ci + 2].1 == CigarKind::Deletion;
+            let is_next_next_del = cigar_elements
+                .get(ci + 2)
+                .is_some_and(|&(_, k)| k == CigarKind::Deletion);
             multoffs += m_len + if is_next_next_del { indel_len } else { 0 };
             multoffp += m_len + if !is_next_next_del { indel_len } else { 0 };
 
@@ -2388,9 +2405,9 @@ impl<'a> CigarParser<'a> {
             }
 
             if ci == 1
-                && cigar_elements.len() > 0
-                && (cigar_elements[0].1 == CigarKind::SoftClip
-                    || cigar_elements[0].1 == CigarKind::HardClip)
+                && cigar_elements
+                    .first()
+                    .is_some_and(|&(_, k)| k == CigarKind::SoftClip || k == CigarKind::HardClip)
             {
                 if let Some(ref_base_char) = self.get_ref_base(insertion_position as u32) {
                     let mut buf = [0u8; 4];
@@ -2626,7 +2643,7 @@ impl<'a> CigarParser<'a> {
         offset: &mut u32,
         position: i32,
     ) {
-        let cigar_element_len = cigar_elements[ci].0;
+        let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
 
         if ci == 0 {
             if !self.config.chimeric {
@@ -2823,7 +2840,9 @@ impl<'a> CigarParser<'a> {
                 let Some(ref_base) = self.get_ref_base(*start as u32) else {
                     break;
                 };
-                let q_base = query_seq[*read_pos_inc];
+                let Some(&q_base) = query_seq.get(*read_pos_inc) else {
+                    break;
+                };
                 let base_qual = query_qual
                     .get(*read_pos_inc)
                     .copied()
@@ -2860,10 +2879,9 @@ impl<'a> CigarParser<'a> {
                 let mut si = 0i32;
                 while si < element_len {
                     let idx = *read_pos_inc + si as usize;
-                    if idx >= query_seq.len() {
+                    let Some(&q_char) = query_seq.get(idx) else {
                         break;
-                    }
-                    let q_char = query_seq[idx];
+                    };
                     if q_char == b'N' || q_char == b'n' {
                         break;
                     }

@@ -200,10 +200,9 @@ pub fn is_match_ref(
             None => return false,
         };
 
-        let seq_ch = if dir == -1 {
-            sequence[sequence.len() - 1 - n]
-        } else {
-            sequence[n]
+        let seq_idx = if dir == -1 { sequence.len() - 1 - n } else { n };
+        let Some(&seq_ch) = sequence.get(seq_idx) else {
+            return false;
         };
 
         if seq_ch != ref_ch {
@@ -242,7 +241,7 @@ pub fn find_bp(
         let mut i = 0;
         let mut m = crate::cigar::modify::ByteSet::new();
 
-        while i < sequence.len() {
+        while let Some(&seq_ch) = sequence.get(i) {
             let Some(ref_pos) = i32::try_from(i)
                 .ok()
                 .and_then(|ii| direction.checked_mul(ii))
@@ -264,8 +263,8 @@ pub fn find_bp(
                 None => break,
             };
 
-            if sequence[i] == ref_ch {
-                m.insert(sequence[i]);
+            if seq_ch == ref_ch {
+                m.insert(seq_ch);
             } else {
                 mm += 1;
             }
@@ -332,7 +331,7 @@ pub fn find_bi(
         let mut i = 0;
         let mut m = crate::cigar::modify::ByteSet::new();
 
-        while i + n < seq.len() {
+        while let Some(&seq_ch) = seq.get(i + n) {
             let Some(ref_pos) = i32::try_from(i)
                 .ok()
                 .and_then(|ii| dir.checked_mul(ii))
@@ -350,10 +349,10 @@ pub fn find_bi(
                 None => break,
             };
 
-            if seq[i + n] != ref_ch {
+            if seq_ch != ref_ch {
                 mm += 1;
             } else {
-                m.insert(seq[i + n]);
+                m.insert(seq_ch);
             }
 
             if mm > maxmm {
@@ -371,11 +370,11 @@ pub fn find_bi(
         if (mnt >= 3 && (i + n) >= seq.len() - 1 && i >= 8 && ratio < 0.15)
             || (mnt >= 2 && mm == 0 && (i + n) == seq.len() && n >= 20 && i >= 8)
         {
-            let mut insert = seq[0..n].to_vec();
+            let mut insert = seq.get(..n).unwrap_or(&[]).to_vec();
             let mut extra = Vec::new();
             let mut ept = 0;
 
-            while n + ept + 1 < seq.len() {
+            while let (Some(&seq_ch1), Some(&seq_ch2)) = (seq.get(n + ept), seq.get(n + ept + 1)) {
                 let ref_ch1 = i32::try_from(ept)
                     .ok()
                     .and_then(|ei| ei.checked_mul(dir))
@@ -392,11 +391,11 @@ pub fn find_bi(
                     .and_then(|p| u32::try_from(p).ok())
                     .and_then(|p| reference.get_base(chr, p));
 
-                let matches1 = ref_ch1.map(|c| c == seq[n + ept]).unwrap_or(false);
-                let matches2 = ref_ch2.map(|c| c == seq[n + ept + 1]).unwrap_or(false);
+                let matches1 = ref_ch1 == Some(seq_ch1);
+                let matches2 = ref_ch2 == Some(seq_ch2);
 
                 if !matches1 || !matches2 {
-                    extra.push(seq[n + ept]);
+                    extra.push(seq_ch1);
                     ept += 1;
                 } else {
                     break;
@@ -479,10 +478,12 @@ pub fn find_bi(
                         let shift = -(s + 1);
                         if shift > 0 {
                             let len_ins = insert.len();
-                            let start_idx = len_ins - (shift as usize);
-                            let suffix = insert[start_idx..].to_vec();
-                            insert.truncate(start_idx);
-                            insert = [suffix, insert].concat();
+                            let start_idx = len_ins.saturating_sub(shift as usize);
+                            if let Some(suffix_slice) = insert.get(start_idx..) {
+                                let suffix = suffix_slice.to_vec();
+                                insert.truncate(start_idx);
+                                insert = [suffix, insert].concat();
+                            }
                         }
                     }
 
@@ -2182,10 +2183,8 @@ pub fn realigndel(
         }
     }
 
-    let tmp_size = tmp.len();
-    if tmp_size > 1 {
-        for i in (1..tmp_size).rev() {
-            let tpl = &tmp[i];
+    if let Some(tail) = tmp.get(1..) {
+        for tpl in tail.iter().rev() {
             let p = tpl.position;
             let vn = &tpl.description_string;
             if !non_insertion_variants.contains_key(&p) {
@@ -2685,10 +2684,10 @@ pub fn realignins(
                             let mut tvn = vn.clone();
                             let insert_bytes = insert.as_bytes();
 
-                            for seqi in 0..seq.len() {
-                                if seqi + offset < insert_bytes.len() {
-                                    let seq_char = seq[seqi] as char;
-                                    let ins_char = insert_bytes[seqi + offset] as char;
+                            for (seqi, &seq_b) in seq.iter().enumerate() {
+                                if let Some(&ins_b) = insert_bytes.get(seqi + offset) {
+                                    let seq_char = seq_b as char;
+                                    let ins_char = ins_b as char;
                                     if seq_char != ins_char {
                                         flag += 1;
                                         let shift = seqi + offset + 1;
@@ -2714,9 +2713,7 @@ pub fn realignins(
             }
         }
 
-        if !sc3p.is_empty() && !sc5p.is_empty() {
-            let first3 = sc3p[0];
-            let first5 = sc5p[0];
+        if let (Some(&first3), Some(&first5)) = (sc3p.first(), sc5p.first()) {
             let diff35 = i64::from(first3) - i64::from(first5);
             // ports VariationRealigner.java:921: the bound stays a double (no truncation).
             if first3 > first5.saturating_add(3)
@@ -2743,8 +2740,7 @@ pub fn realignins(
         }
     }
 
-    for i in (1..tmp.len()).rev() {
-        let tpl = &tmp[i];
+    for tpl in tmp.get(1..).unwrap_or(&[]).iter().rev() {
         let p = tpl.position;
         let vn = &tpl.description_string;
 
@@ -2973,15 +2969,15 @@ pub fn realignlgdel(
         let gt;
 
         if extra_str.is_empty() {
-            while en < seq.len() {
+            while let Some(&seq_b) = seq.get(en) {
                 let ref_ch = i32::try_from(en)
                     .ok()
                     .and_then(|ei| bp.checked_sub(ei))
                     .and_then(|p| p.checked_sub(1))
                     .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
-                if ref_ch.is_some() && ref_ch != Some(seq[en]) {
-                    extra.push(seq[en]);
+                if ref_ch.is_some() && ref_ch != Some(seq_b) {
+                    extra.push(seq_b);
                     en += 1;
                 } else {
                     break;
@@ -3405,14 +3401,14 @@ pub fn realignlgdel(
         if !extra_str.is_empty() {
             dellen = dellen.saturating_sub(extra_str.len() as i32);
         } else {
-            while en < seq.len() {
+            while let Some(&seq_b) = seq.get(en) {
                 let ref_ch = i32::try_from(en)
                     .ok()
                     .and_then(|ei| bp.checked_add(ei))
                     .and_then(|p| u32::try_from(p).ok())
                     .and_then(|pos| reference.get_base(chr, pos));
-                if ref_ch.is_some() && ref_ch != Some(seq[en]) {
-                    extra.push(seq[en]);
+                if ref_ch.is_some() && ref_ch != Some(seq_b) {
+                    extra.push(seq_b);
                     en += 1;
                 } else {
                     break;

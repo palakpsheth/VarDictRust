@@ -6441,8 +6441,7 @@ impl RecordPreprocessor {
         }
 
         // 3. Sequence is not stored check
-        if record.sequence.is_empty() || (record.sequence.len() == 1 && record.sequence[0] == b'*')
-        {
+        if record.sequence.is_empty() || record.sequence.as_slice() == b"*" {
             return false;
         }
 

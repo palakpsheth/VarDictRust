@@ -38,10 +38,9 @@ const STRONG_SOMATIC: &str = "StrongSomatic";
 
 /// Ports `Patterns.MINUS_NUM_NUM` = `-\d\d` (unanchored find).
 fn minus_num_num_find(desc: &str) -> bool {
-    let b = desc.as_bytes();
-    b.len() >= 3
-        && b.windows(3)
-            .any(|w| w[0] == b'-' && w[1].is_ascii_digit() && w[2].is_ascii_digit())
+    desc.as_bytes()
+        .windows(3)
+        .any(|w| matches!(w, [b'-', d1, d2] if d1.is_ascii_digit() && d2.is_ascii_digit()))
 }
 const SAMPLE_SPECIFIC: &str = "SampleSpecific";
 const DELETION: &str = "Deletion";

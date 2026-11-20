@@ -39,7 +39,9 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
     mates.sort_by_key(|mate| mate.mate_start);
 
     let mut clusters: Vec<Cluster> = Vec::new();
-    let first_mate = &mates[0];
+    let Some(first_mate) = mates.first() else {
+        return Cluster::default();
+    };
     clusters.push(Cluster::new(
         0,
         Mate {
@@ -60,7 +62,7 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
     let limit = (min_svc_dist * rlen as f64) as i32;
 
     for mate_m in mates.iter() {
-        let current_cluster_end = clusters[cur].mate.mate_end;
+        let current_cluster_end = clusters.get(cur).map_or(0, |c| c.mate.mate_end);
         if i64::from(mate_m.mate_start) - i64::from(current_cluster_end) > i64::from(limit) {
             cur += 1;
             clusters.push(Cluster::new(
@@ -79,7 +81,9 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
             ));
         }
 
-        let current_cluster = &mut clusters[cur];
+        let Some(current_cluster) = clusters.get_mut(cur) else {
+            continue;
+        };
         current_cluster.cnt = current_cluster.cnt.wrapping_add(1);
         // VariationRealigner.java:241 — Java 32-bit signed `int +=` wraps on overflow.
         current_cluster.mate.mate_len = current_cluster.mate.mate_len.wrapping_add(mate_m.mate_len);
@@ -101,7 +105,9 @@ pub fn check_cluster(mates: &mut [Mate], rlen: i32) -> Cluster {
 
     clusters.sort_by_key(|c| std::cmp::Reverse(c.cnt));
 
-    let first_cluster = &clusters[0];
+    let Some(first_cluster) = clusters.first() else {
+        return Cluster::default();
+    };
     if (first_cluster.cnt as f64) / (mates.len() as f64) >= 0.60 {
         Cluster::new(
             first_cluster.cnt,
@@ -1053,18 +1059,23 @@ fn find_inv_sub_paths(
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
     let max_read_length = var_data.max_read_length;
     for idx in 0..n {
-        let (used, cnt, mstart, mend, start, end) = {
-            let inv = match svref_idx {
-                0 => &var_data.sv_structures.svfinv5[idx],
-                1 => &var_data.sv_structures.svrinv5[idx],
-                2 => &var_data.sv_structures.svfinv3[idx],
-                3 => &var_data.sv_structures.svrinv3[idx],
+        let (used, cnt, mstart, mend, start, end, mut softp) = {
+            let Some(inv) = (match svref_idx {
+                0 => var_data.sv_structures.svfinv5.get(idx),
+                1 => var_data.sv_structures.svrinv5.get(idx),
+                2 => var_data.sv_structures.svfinv3.get(idx),
+                3 => var_data.sv_structures.svrinv3.get(idx),
                 _ => {
                     return Err(VardictError::Other(format!(
                         "internal error: invalid inversion candidate index {svref_idx}"
                     )));
                 }
+            }) else {
+                continue;
             };
+            if inv.used || inv.variation.cnt < minr {
+                continue;
+            }
             (
                 inv.used,
                 inv.variation.cnt,
@@ -1072,26 +1083,12 @@ fn find_inv_sub_paths(
                 inv.mend,
                 inv.start,
                 inv.end,
+                best_soft_pos(&inv.soft).unwrap_or(0),
             )
         };
         if used || cnt < minr {
             continue;
         }
-
-        let mut softp = {
-            let inv = match svref_idx {
-                0 => &var_data.sv_structures.svfinv5[idx],
-                1 => &var_data.sv_structures.svrinv5[idx],
-                2 => &var_data.sv_structures.svfinv3[idx],
-                3 => &var_data.sv_structures.svrinv3[idx],
-                _ => {
-                    return Err(VardictError::Other(format!(
-                        "internal error: invalid inversion candidate index {svref_idx}"
-                    )));
-                }
-            };
-            best_soft_pos(&inv.soft).unwrap_or(0)
-        };
 
         // W3.3b: removed the `softp != 0 && is_best_sv_used(softp)` skip.
         // Java findINVsub has NO SOFTP2SV-style gate here — its only skip is
@@ -1300,16 +1297,18 @@ fn find_inv_sub_paths(
         }
 
         let inv_mlen = {
-            let inv = match svref_idx {
-                0 => &var_data.sv_structures.svfinv5[idx],
-                1 => &var_data.sv_structures.svrinv5[idx],
-                2 => &var_data.sv_structures.svfinv3[idx],
-                3 => &var_data.sv_structures.svrinv3[idx],
+            let Some(inv) = (match svref_idx {
+                0 => var_data.sv_structures.svfinv5.get(idx),
+                1 => var_data.sv_structures.svrinv5.get(idx),
+                2 => var_data.sv_structures.svfinv3.get(idx),
+                3 => var_data.sv_structures.svrinv3.get(idx),
                 _ => {
                     return Err(VardictError::Other(format!(
                         "internal error: invalid inversion candidate index {svref_idx}"
                     )));
                 }
+            }) else {
+                continue;
             };
             inv.mlen
         };
@@ -1449,17 +1448,19 @@ fn find_inv_sub_paths(
             );
 
             // Update the used status of the processed candidate inversion
-            match svref_idx {
-                0 => var_data.sv_structures.svfinv5[idx].used = true,
-                1 => var_data.sv_structures.svrinv5[idx].used = true,
-                2 => var_data.sv_structures.svfinv3[idx].used = true,
-                3 => var_data.sv_structures.svrinv3[idx].used = true,
+            if let Some(inv_mut) = match svref_idx {
+                0 => var_data.sv_structures.svfinv5.get_mut(idx),
+                1 => var_data.sv_structures.svrinv5.get_mut(idx),
+                2 => var_data.sv_structures.svfinv3.get_mut(idx),
+                3 => var_data.sv_structures.svrinv3.get_mut(idx),
                 _ => {
                     return Err(VardictError::Other(format!(
                         "internal error: invalid inversion candidate index {svref_idx}"
                     )));
                 }
-            };
+            } {
+                inv_mut.used = true;
+            }
 
             // Java findINVsub's success block (StructuralVariantsProcessor.java
             // 643-675) performs exactly three mutations before `return vref;`:
@@ -1608,7 +1609,9 @@ fn find_del_paths(
     let n_svfdel = var_data.sv_structures.svfdel.len();
     for idx in 0..n_svfdel {
         let (used, vars_count, start, end, mstart, mend, softp_cand, del_variation) = {
-            let del = &var_data.sv_structures.svfdel[idx];
+            let Some(del) = var_data.sv_structures.svfdel.get(idx) else {
+                continue;
+            };
             if del.used || del.variation.cnt < minr {
                 continue;
             }
@@ -1792,7 +1795,9 @@ fn find_del_paths(
                 crate::variations::util::adj_cnt(variation_mut2, &tv, None);
             }
 
-            var_data.sv_structures.svfdel[idx].used = true;
+            if let Some(del_mut) = var_data.sv_structures.svfdel.get_mut(idx) {
+                del_mut.used = true;
+            }
 
             let mut svrdel_mut_refs = [&mut var_data.sv_structures.svrdel];
             mark_sv(
@@ -1922,7 +1927,9 @@ fn find_del_paths(
                     crate::variations::util::adj_cnt(variation_mut2, &tv, None);
                 }
 
-                var_data.sv_structures.svfdel[idx].used = true;
+                if let Some(del_mut) = var_data.sv_structures.svfdel.get_mut(idx) {
+                    del_mut.used = true;
+                }
 
                 let mut svrdel_mut_refs = [&mut var_data.sv_structures.svrdel];
                 mark_sv(
@@ -1940,7 +1947,9 @@ fn find_del_paths(
     let n_svrdel = var_data.sv_structures.svrdel.len();
     for idx in 0..n_svrdel {
         let (used, vars_count, start, end, mstart, mend, softp_cand, del_variation) = {
-            let del = &var_data.sv_structures.svrdel[idx];
+            let Some(del) = var_data.sv_structures.svrdel.get(idx) else {
+                continue;
+            };
             if del.used || del.variation.cnt < minr {
                 continue;
             }
@@ -2089,7 +2098,9 @@ fn find_del_paths(
                 crate::variations::util::adj_cnt(variation_mut2, &tv, None);
             }
 
-            var_data.sv_structures.svrdel[idx].used = true;
+            if let Some(del_mut) = var_data.sv_structures.svrdel.get_mut(idx) {
+                del_mut.used = true;
+            }
 
             let mut svfdel_mut_refs = [&mut var_data.sv_structures.svfdel];
             mark_sv(
@@ -2223,7 +2234,9 @@ fn find_del_paths(
                     crate::variations::util::adj_cnt(variation_mut2, &tv, None);
                 }
 
-                var_data.sv_structures.svrdel[idx].used = true;
+                if let Some(del_mut) = var_data.sv_structures.svrdel.get_mut(idx) {
+                    del_mut.used = true;
+                }
 
                 let mut svfdel_mut_refs = [&mut var_data.sv_structures.svfdel];
                 mark_sv(
@@ -2782,7 +2795,9 @@ pub fn find_del_disc(
     let n_svfdel = var_data.sv_structures.svfdel.len();
     for idx in 0..n_svfdel {
         let (used, vars_count, start, end, mstart, mend, softp) = {
-            let del = &var_data.sv_structures.svfdel[idx];
+            let Some(del) = var_data.sv_structures.svfdel.get(idx) else {
+                continue;
+            };
             if del.used || i64::from(del.variation.cnt) < min_reads_plus_5 {
                 continue;
             }
@@ -2877,8 +2892,7 @@ pub fn find_del_disc(
         tv.hicnt = twice_vars;
         tv.fwd = vars_count;
         tv.rev = vars_count;
-        {
-            let del = &var_data.sv_structures.svfdel[idx];
+        if let Some(del) = var_data.sv_structures.svfdel.get(idx) {
             tv.qmean = 2.0 * del.variation.qmean;
             tv.pmean = 2.0 * del.variation.pmean;
             tv.mqmean = 2.0 * del.variation.mqmean;
@@ -2891,7 +2905,9 @@ pub fn find_del_disc(
         if !var_data.ref_coverage.contains_key(&softp) {
             var_data.ref_coverage.insert(softp, twice_vars);
         }
-        var_data.sv_structures.svfdel[idx].used = true;
+        if let Some(del_mut) = var_data.sv_structures.svfdel.get_mut(idx) {
+            del_mut.used = true;
+        }
 
         let mut svrdel_mut_refs = [&mut var_data.sv_structures.svrdel];
         mark_sv(
@@ -2907,7 +2923,9 @@ pub fn find_del_disc(
     let n_svrdel = var_data.sv_structures.svrdel.len();
     for idx in 0..n_svrdel {
         let (used, vars_count, start, end, mstart, mend, softp, del_softp) = {
-            let del = &var_data.sv_structures.svrdel[idx];
+            let Some(del) = var_data.sv_structures.svrdel.get(idx) else {
+                continue;
+            };
             if del.used || i64::from(del.variation.cnt) < min_reads_plus_5 {
                 continue;
             }
@@ -3004,8 +3022,7 @@ pub fn find_del_disc(
         tv.hicnt = twice_vars;
         tv.fwd = vars_count;
         tv.rev = vars_count;
-        {
-            let del = &var_data.sv_structures.svrdel[idx];
+        if let Some(del) = var_data.sv_structures.svrdel.get(idx) {
             tv.qmean = 2.0 * del.variation.qmean;
             tv.pmean = 2.0 * del.variation.pmean;
             tv.mqmean = 2.0 * del.variation.mqmean;
@@ -3023,7 +3040,9 @@ pub fn find_del_disc(
         if start_cov > 0 && bp_cov < start_cov {
             var_data.ref_coverage.insert(softp, start_cov);
         }
-        var_data.sv_structures.svrdel[idx].used = true;
+        if let Some(del_mut) = var_data.sv_structures.svrdel.get_mut(idx) {
+            del_mut.used = true;
+        }
 
         let mod_region_mate = crate::regions::Region {
             chr: chr.to_string(),
@@ -3073,34 +3092,48 @@ pub fn find_inv_disc(
     let n_svfinv5 = var_data.sv_structures.svfinv5.len();
     let n_svrinv5 = var_data.sv_structures.svrinv5.len();
     for i in 0..n_svfinv5 {
-        if var_data.sv_structures.svfinv5[i].used {
-            continue;
-        }
-        let cnt = var_data.sv_structures.svfinv5[i].variation.cnt;
-        let me = var_data.sv_structures.svfinv5[i].mend;
-        let ms = var_data.sv_structures.svfinv5[i].mstart;
-        let end = var_data.sv_structures.svfinv5[i].end;
-        let start = var_data.sv_structures.svfinv5[i].start;
-        let nm = var_data.sv_structures.svfinv5[i].variation.nm;
-        let pmean = var_data.sv_structures.svfinv5[i].variation.pmean;
-        let qmean = var_data.sv_structures.svfinv5[i].variation.qmean;
-        let Qmean = var_data.sv_structures.svfinv5[i].variation.mqmean;
+        let (cnt, me, ms, end, start, nm, pmean, qmean, Qmean) = {
+            let Some(invf) = var_data.sv_structures.svfinv5.get(i) else {
+                continue;
+            };
+            if invf.used {
+                continue;
+            }
+            (
+                invf.variation.cnt,
+                invf.mend,
+                invf.mstart,
+                invf.end,
+                invf.start,
+                invf.variation.nm,
+                invf.variation.pmean,
+                invf.variation.qmean,
+                invf.variation.mqmean,
+            )
+        };
 
         if cnt <= 0 || !(Qmean / (cnt as f64) > 35.0) {
             continue;
         }
 
         for j in 0..n_svrinv5 {
-            if var_data.sv_structures.svrinv5[j].used {
-                continue;
-            }
-            let rcnt = var_data.sv_structures.svrinv5[j].variation.cnt;
-            let rstart = var_data.sv_structures.svrinv5[j].start;
-            let rms = var_data.sv_structures.svrinv5[j].mstart;
-            let rnm = var_data.sv_structures.svrinv5[j].variation.nm;
-            let rpmean = var_data.sv_structures.svrinv5[j].variation.pmean;
-            let rqmean = var_data.sv_structures.svrinv5[j].variation.qmean;
-            let rQmean = var_data.sv_structures.svrinv5[j].variation.mqmean;
+            let (rcnt, rstart, rms, rnm, rpmean, rqmean, rQmean) = {
+                let Some(invr) = var_data.sv_structures.svrinv5.get(j) else {
+                    continue;
+                };
+                if invr.used {
+                    continue;
+                }
+                (
+                    invr.variation.cnt,
+                    invr.start,
+                    invr.mstart,
+                    invr.variation.nm,
+                    invr.variation.pmean,
+                    invr.variation.qmean,
+                    invr.variation.mqmean,
+                )
+            };
 
             if rcnt <= 0 || !(rQmean / (rcnt as f64) > 35.0) {
                 continue;
@@ -3155,8 +3188,12 @@ pub fn find_inv_disc(
                     &format!("-{}^{}", len, ins),
                 );
 
-                var_data.sv_structures.svfinv5[i].used = true;
-                var_data.sv_structures.svrinv5[j].used = true;
+                if let Some(invf_mut) = var_data.sv_structures.svfinv5.get_mut(i) {
+                    invf_mut.used = true;
+                }
+                if let Some(invr_mut) = var_data.sv_structures.svrinv5.get_mut(j) {
+                    invr_mut.used = true;
+                }
                 vref.pstd = true;
                 vref.qstd = true;
 
@@ -3209,34 +3246,48 @@ pub fn find_inv_disc(
     let n_svfinv3 = var_data.sv_structures.svfinv3.len();
     let n_svrinv3 = var_data.sv_structures.svrinv3.len();
     for i in 0..n_svfinv3 {
-        if var_data.sv_structures.svfinv3[i].used {
-            continue;
-        }
-        let cnt = var_data.sv_structures.svfinv3[i].variation.cnt;
-        // Note: StructuralVariantsProcessor.java:1239-1246 does NOT gate invf3 on
-        // Qmean/cnt > DISCPAIRQUAL (only invr3 at :1259), so preserve exact valid-input
-        // parity (`cnt >= 1`) while rejecting corrupted `cnt <= 0`.
-        if cnt <= 0 {
-            continue;
-        }
-        let me = var_data.sv_structures.svfinv3[i].mend;
-        let end = var_data.sv_structures.svfinv3[i].end;
-        let nm = var_data.sv_structures.svfinv3[i].variation.nm;
-        let pmean = var_data.sv_structures.svfinv3[i].variation.pmean;
-        let qmean = var_data.sv_structures.svfinv3[i].variation.qmean;
-        let Qmean = var_data.sv_structures.svfinv3[i].variation.mqmean;
-
-        for j in 0..n_svrinv3 {
-            if var_data.sv_structures.svrinv3[j].used {
+        let (cnt, me, end, nm, pmean, qmean, Qmean) = {
+            let Some(invf) = var_data.sv_structures.svfinv3.get(i) else {
+                continue;
+            };
+            if invf.used {
                 continue;
             }
-            let rcnt = var_data.sv_structures.svrinv3[j].variation.cnt;
-            let rstart = var_data.sv_structures.svrinv3[j].start;
-            let rms = var_data.sv_structures.svrinv3[j].mstart;
-            let rnm = var_data.sv_structures.svrinv3[j].variation.nm;
-            let rpmean = var_data.sv_structures.svrinv3[j].variation.pmean;
-            let rqmean = var_data.sv_structures.svrinv3[j].variation.qmean;
-            let rQmean = var_data.sv_structures.svrinv3[j].variation.mqmean;
+            // Note: StructuralVariantsProcessor.java:1239-1246 does NOT gate invf3 on
+            // Qmean/cnt > DISCPAIRQUAL (only invr3 at :1259), so preserve exact valid-input
+            // parity (`cnt >= 1`) while rejecting corrupted `cnt <= 0`.
+            if invf.variation.cnt <= 0 {
+                continue;
+            }
+            (
+                invf.variation.cnt,
+                invf.mend,
+                invf.end,
+                invf.variation.nm,
+                invf.variation.pmean,
+                invf.variation.qmean,
+                invf.variation.mqmean,
+            )
+        };
+
+        for j in 0..n_svrinv3 {
+            let (rcnt, rstart, rms, rnm, rpmean, rqmean, rQmean) = {
+                let Some(invr) = var_data.sv_structures.svrinv3.get(j) else {
+                    continue;
+                };
+                if invr.used {
+                    continue;
+                }
+                (
+                    invr.variation.cnt,
+                    invr.start,
+                    invr.mstart,
+                    invr.variation.nm,
+                    invr.variation.pmean,
+                    invr.variation.qmean,
+                    invr.variation.mqmean,
+                )
+            };
 
             if rcnt <= 0 || !(rQmean / (rcnt as f64) > 35.0) {
                 continue;
@@ -3291,8 +3342,12 @@ pub fn find_inv_disc(
                     &format!("-{}^{}", len, ins),
                 );
 
-                var_data.sv_structures.svfinv3[i].used = true;
-                var_data.sv_structures.svrinv3[j].used = true;
+                if let Some(invf_mut) = var_data.sv_structures.svfinv3.get_mut(i) {
+                    invf_mut.used = true;
+                }
+                if let Some(invr_mut) = var_data.sv_structures.svrinv3.get_mut(j) {
+                    invr_mut.used = true;
+                }
                 vref.pstd = true;
                 vref.qstd = true;
 
@@ -3385,7 +3440,9 @@ fn find_dup_disc_paths(
     let n_svfdup = var_data.sv_structures.svfdup.len();
     for idx in 0..n_svfdup {
         let (used, vars_count, start, mut end, mstart, mend, qmean, Qmean, pmean, nm) = {
-            let dup = &var_data.sv_structures.svfdup[idx];
+            let Some(dup) = var_data.sv_structures.svfdup.get(idx) else {
+                continue;
+            };
             if dup.used || i64::from(dup.variation.cnt) < min_reads_plus_5 {
                 continue;
             }
@@ -3451,13 +3508,15 @@ fn find_dup_disc_paths(
         let mut nmf = nm;
         let mut nmr = nm;
 
-        let has_soft = {
-            let dup = &var_data.sv_structures.svfdup[idx];
-            !dup.soft.is_empty()
-        };
+        let best_soft = var_data
+            .sv_structures
+            .svfdup
+            .get(idx)
+            .filter(|dup| !dup.soft.is_empty())
+            .map(|dup| best_soft_pos(&dup.soft));
 
-        if has_soft {
-            if let Some(best_pe) = best_soft_pos(&var_data.sv_structures.svfdup[idx].soft) {
+        if let Some(best_pe_opt) = best_soft {
+            if let Some(best_pe) = best_pe_opt {
                 pe = best_pe;
             }
 
@@ -3536,7 +3595,11 @@ fn find_dup_disc_paths(
         let sv = crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
         sv.r#type = "DUP".to_string();
         sv.pairs = sv.pairs.saturating_add(vars_count);
-        let dup_softp = var_data.sv_structures.svfdup[idx].softp;
+        let dup_softp = var_data
+            .sv_structures
+            .svfdup
+            .get(idx)
+            .map_or(0, |d| d.softp);
         sv.splits = sv.splits.saturating_add(
             var_data
                 .soft_clips_3_end
@@ -3565,7 +3628,9 @@ fn find_dup_disc_paths(
         );
         crate::variations::util::adj_cnt(vref_mut, &tmp, None);
 
-        var_data.sv_structures.svfdup[idx].used = true;
+        if let Some(dup_mut) = var_data.sv_structures.svfdup.get_mut(idx) {
+            dup_mut.used = true;
+        }
 
         if !var_data.ref_coverage.contains_key(&bp) {
             var_data.ref_coverage.insert(bp, tcnt);
@@ -3595,7 +3660,9 @@ fn find_dup_disc_paths(
     let n_svrdup = var_data.sv_structures.svrdup.len();
     for idx in 0..n_svrdup {
         let (used, vars_count, start, end, mstart, mend) = {
-            let dup = &var_data.sv_structures.svrdup[idx];
+            let Some(dup) = var_data.sv_structures.svrdup.get(idx) else {
+                continue;
+            };
             if dup.used || i64::from(dup.variation.cnt) < min_reads_plus_5 {
                 continue;
             }
@@ -3650,34 +3717,26 @@ fn find_dup_disc_paths(
 
         let mut cntf = vars_count;
         let mut cntr = vars_count;
-        let mut qmeanf = {
-            let dup = &var_data.sv_structures.svrdup[idx];
-            dup.variation.qmean
+        let (mut qmeanf, mut Qmeanf, mut pmeanf, mut nmf, best_soft) = {
+            let Some(dup) = var_data.sv_structures.svrdup.get(idx) else {
+                continue;
+            };
+            let best = (!dup.soft.is_empty()).then(|| best_soft_pos(&dup.soft));
+            (
+                dup.variation.qmean,
+                dup.variation.mqmean,
+                dup.variation.pmean,
+                dup.variation.nm,
+                best,
+            )
         };
         let mut qmeanr = qmeanf;
-        let mut Qmeanf = {
-            let dup = &var_data.sv_structures.svrdup[idx];
-            dup.variation.mqmean
-        };
         let mut Qmeanr = Qmeanf;
-        let mut pmeanf = {
-            let dup = &var_data.sv_structures.svrdup[idx];
-            dup.variation.pmean
-        };
         let mut pmeanr = pmeanf;
-        let mut nmf = {
-            let dup = &var_data.sv_structures.svrdup[idx];
-            dup.variation.nm
-        };
         let mut nmr = nmf;
 
-        let has_soft = {
-            let dup = &var_data.sv_structures.svrdup[idx];
-            !dup.soft.is_empty()
-        };
-
-        if has_soft {
-            if let Some(best_bp) = best_soft_pos(&var_data.sv_structures.svrdup[idx].soft) {
+        if let Some(best_bp_opt) = best_soft {
+            if let Some(best_bp) = best_bp_opt {
                 bp = best_bp;
             }
 
@@ -3792,7 +3851,9 @@ fn find_dup_disc_paths(
         );
         crate::variations::util::adj_cnt(vref_mut, &tmp, None);
 
-        var_data.sv_structures.svrdup[idx].used = true;
+        if let Some(dup_mut) = var_data.sv_structures.svrdup.get_mut(idx) {
+            dup_mut.used = true;
+        }
 
         if !var_data.ref_coverage.contains_key(&bp) {
             var_data.ref_coverage.insert(bp, tcnt);

@@ -48,7 +48,7 @@ pub fn parse_cigar_into(s: &str, elements: &mut Vec<(u32, Kind)>) -> Option<()> 
             // No length prefix — invalid
             return None;
         }
-        let len_str = std::str::from_utf8(&bytes[num_start..i]).ok()?;
+        let len_str = std::str::from_utf8(bytes.get(num_start..i)?).ok()?;
         let len: u32 = len_str.parse().ok()?;
         elements.push((len, kind));
         num_start = i + 1;

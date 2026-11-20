@@ -716,6 +716,81 @@ class TestRepoAgentSkills(unittest.TestCase):
             pr_template_content,
         )
 
+    def test_lint_ratchet_indexing_slicing_and_zero_allow(self):
+        ratchet_script = ROOT_DIR / "harness" / "lint_ratchet.sh"
+        lib_rs = ROOT_DIR / "crates" / "vardictrust-core" / "src" / "lib.rs"
+        pr_check = ROOT_DIR / "harness" / "pr_check.sh"
+
+        self.assertTrue(ratchet_script.is_file(), f"Missing lint ratchet script: {ratchet_script}")
+        self.assertTrue(os.access(ratchet_script, os.X_OK), "harness/lint_ratchet.sh must be executable")
+
+        lib_content = lib_rs.read_text(encoding="utf-8")
+        self.assertIn("#![forbid(unsafe_code)]", lib_content)
+        self.assertIn("clippy::indexing_slicing", lib_content)
+
+        pr_check_content = pr_check.read_text(encoding="utf-8")
+        self.assertIn("bash harness/lint_ratchet.sh --scan-only", pr_check_content)
+
+        # 1) Live --scan-only check on workspace must exit 0 quickly
+        t0 = time.monotonic()
+        scan_res = subprocess.run(
+            ["bash", str(ratchet_script), "--scan-only"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        elapsed = time.monotonic() - t0
+        self.assertEqual(
+            scan_res.returncode,
+            0,
+            f"lint_ratchet.sh --scan-only failed ({scan_res.returncode}):\n{scan_res.stderr}\n{scan_res.stdout}",
+        )
+        self.assertLess(elapsed, 2.0, f"lint_ratchet.sh --scan-only took {elapsed:.3f}s (expected < 0.5s)")
+
+        # 2) Unknown flag must fail non-zero
+        bad_flag = subprocess.run(
+            ["bash", str(ratchet_script), "--unknown-flag"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(bad_flag.returncode, 0, "lint_ratchet.sh must reject unknown flags")
+
+        # 3) Synthetic violations in isolated temp tree must fail non-zero without touching git tree
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_src = pathlib.Path(tmp_dir) / "crates" / "vardictrust-core" / "src"
+            fake_src.mkdir(parents=True, exist_ok=True)
+            valid_header = (
+                "#![forbid(unsafe_code)]\n"
+                "#![cfg_attr(not(test), deny(\n"
+                "    clippy::unwrap_used, clippy::expect_used, clippy::panic,\n"
+                "    clippy::unreachable, clippy::todo, clippy::string_slice,\n"
+                "    clippy::indexing_slicing,\n"
+                "))]\n"
+            )
+            (fake_src / "lib.rs").write_text(valid_header, encoding="utf-8")
+            (fake_src / "sneaky.rs").write_text(
+                "#[allow(clippy::indexing_slicing)]\nfn bypass() {}\n",
+                encoding="utf-8",
+            )
+            env = dict(os.environ, LINT_RATCHET_ROOT=tmp_dir)
+            viol_res = subprocess.run(
+                ["bash", str(ratchet_script), "--scan-only"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(
+                viol_res.returncode,
+                0,
+                "Synthetic #[allow(clippy::indexing_slicing)] violation must fail --scan-only",
+            )
+            self.assertIn("sneaky.rs", viol_res.stderr)
+
     def test_release_consistency_script_passes_and_catches_drift(self):
         script = SKILLS_DIR / "vardictrust-release" / "scripts" / "check_release_consistency.py"
         self.assertTrue(script.is_file(), f"Missing validator script: {script}")

@@ -17,11 +17,9 @@ pub(crate) fn static_regex(pattern: &'static str) -> regex::Regex {
 pub fn char_at(seq: &[u8], idx: isize) -> Option<u8> {
     let len = seq.len() as isize;
     let resolved = if idx < 0 { len + idx } else { idx };
-    if resolved < 0 || resolved >= len {
-        None
-    } else {
-        Some(seq[resolved as usize])
-    }
+    usize::try_from(resolved)
+        .ok()
+        .and_then(|i| seq.get(i).copied())
 }
 
 /// Bounds-checked subsequence extraction.
