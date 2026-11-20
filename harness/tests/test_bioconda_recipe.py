@@ -772,7 +772,13 @@ class TestRepoAgentSkills(unittest.TestCase):
             )
             (fake_src / "lib.rs").write_text(valid_header, encoding="utf-8")
             (fake_src / "sneaky.rs").write_text(
-                "#[allow(clippy::indexing_slicing)]\nfn bypass() {}\n",
+                "#[allow(clippy::indexing_slicing)]\n"
+                "fn bypass() {}\n"
+                "mod tests {\n"
+                "    #![cfg(test)]\n"
+                "    #[allow(clippy::unwrap_used)]\n"
+                "    fn test_only() {}\n"
+                "}\n",
                 encoding="utf-8",
             )
             env = dict(os.environ, LINT_RATCHET_ROOT=tmp_dir)

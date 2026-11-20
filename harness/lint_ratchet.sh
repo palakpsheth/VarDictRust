@@ -155,9 +155,48 @@ def strip_comments_and_strings(text: str) -> str:
     return "".join(chunks)
 
 
+def _strip_inner_cfg_test_scopes(code: str) -> str:
+    inner_spans = [m.start() for m in _CFG_TEST_INNER_RE.finditer(code)]
+    if not inner_spans:
+        return code
+    chars = list(code)
+    brace_stack: list[int] = []
+    blank_ranges: list[tuple[int, int]] = []
+    span_idx = 0
+    i = 0
+    n = len(code)
+    while i < n and span_idx < len(inner_spans):
+        if i == inner_spans[span_idx]:
+            if not brace_stack:
+                return _blank_segment(code)
+            open_brace = brace_stack[-1]
+            block_end = _skip_balanced(code, open_brace, "{", "}")
+            closed = block_end > open_brace and code[block_end - 1] == "}"
+            inner_end = block_end - 1 if closed else block_end
+            blank_ranges.append((open_brace + 1, inner_end))
+            while span_idx < len(inner_spans) and inner_spans[span_idx] < block_end:
+                span_idx += 1
+            if closed:
+                brace_stack.pop()
+            else:
+                brace_stack.clear()
+            i = block_end
+            continue
+        ch = code[i]
+        if ch == "{":
+            brace_stack.append(i)
+        elif ch == "}" and brace_stack:
+            brace_stack.pop()
+        i += 1
+    for b_start, b_end in blank_ranges:
+        for k in range(b_start, b_end):
+            if chars[k] != "\n":
+                chars[k] = " "
+    return "".join(chars)
+
+
 def strip_cfg_test_blocks(code: str) -> str:
-    if _CFG_TEST_INNER_RE.search(code):
-        return _blank_segment(code)
+    code = _strip_inner_cfg_test_scopes(code)
     chunks: list[str] = []
     cursor = 0
     n = len(code)
@@ -342,15 +381,30 @@ mod tests {
     #[allow(warnings)]
     fn inside_test_mod() {}
 }
+
+mod inline_inner_cfg_tests {
+    #![cfg(test)]
+    #[allow(clippy::indexing_slicing)]
+    #[allow(clippy::unwrap_used)]
+    fn inside_inner_cfg_test_mod() {}
+}
 """
 assert scan_source("synthetic_clean.rs", NEGATIVE_SNIPPET) == [], (
     "self-test failed: comments, strings, raw strings, and #[cfg(test)] blocks must be ignored"
 )
+assert scan_source(
+    "synthetic_file_cfg_test.rs",
+    "#![cfg(test)]\n#[allow(clippy::indexing_slicing)]\nfn file_level_test_only() {}\n",
+) == [], "self-test failed: file-level #![cfg(test)] module must be ignored"
 
-# 3) Code AFTER a #[cfg(test)] item must still be scanned!
-POST_TEST_SNIPPET = NEGATIVE_SNIPPET + "\n#[allow(clippy::indexing_slicing)]\nfn after_test_mod() {}\n"
-assert len(scan_source("synthetic_post.rs", POST_TEST_SNIPPET)) == 1, (
-    "self-test failed: non-test code following #[cfg(test)] block must still be scanned"
+# 3) Code BEFORE and AFTER #[cfg(test)] / inline mod { #![cfg(test)] } must still be scanned!
+POST_TEST_SNIPPET = (
+    "#[allow(clippy::panic)]\nfn before_inner_cfg_mod() {}\n"
+    + NEGATIVE_SNIPPET
+    + "\n#[allow(clippy::indexing_slicing)]\nfn after_test_mod() {}\n"
+)
+assert len(scan_source("synthetic_post.rs", POST_TEST_SNIPPET)) == 2, (
+    "self-test failed: non-test code surrounding #[cfg(test)] and inline #![cfg(test)] scopes must still be scanned"
 )
 
 # 4) Self-test header verifier against commented-out or inactive-cfg forbid/deny attributes
