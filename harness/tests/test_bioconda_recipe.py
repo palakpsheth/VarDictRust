@@ -322,9 +322,13 @@ class TestBiocondaRecipe(unittest.TestCase):
                 if sig_proc.stderr:
                     sig_proc.stderr.close()
 
-            # 4) SIGTERM during sequential pre-build interrupts immediately (<5s) and exits 130
+            # 4) SIGTERM during sequential pre-build clears stale summary.json/logs, interrupts (<4s), and exits 130
+            bsig_out_dir = pathlib.Path(tmp_dir) / "bsig_out"
+            bsig_out_dir.mkdir(parents=True, exist_ok=True)
+            stale_summary = bsig_out_dir / "summary.json"
+            stale_summary.write_text('{"status": "PASS"}', encoding="utf-8")
             bmarker_file = pathlib.Path(tmp_dir) / "build_started"
-            bsig_env = dict(mock_env, MOCK_BUILD_MARKER=str(bmarker_file), FUZZ_OUT_DIR=str(pathlib.Path(tmp_dir) / "bsig_out"))
+            bsig_env = dict(mock_env, MOCK_BUILD_MARKER=str(bmarker_file), FUZZ_OUT_DIR=str(bsig_out_dir))
             bsig_proc = subprocess.Popen(
                 ["bash", str(runner_path), "--fast-secs", "10", "--deep-secs", "10", "--jobs", "1"],
                 cwd=str(ROOT_DIR),
@@ -344,6 +348,7 @@ class TestBiocondaRecipe(unittest.TestCase):
                 bsig_rc = bsig_proc.wait(timeout=4)
                 self.assertEqual(bsig_rc, 130, f"Expected exit 130 on SIGTERM during pre-build, got {bsig_rc}")
                 self.assertLess(time.monotonic() - t_sig, 4.0, "Pre-build ignored SIGTERM instead of interrupting wait")
+                self.assertFalse(stale_summary.exists(), "Stale PASS summary.json must be cleared before pre-build")
             finally:
                 if bsig_proc.poll() is None:
                     bsig_proc.kill()

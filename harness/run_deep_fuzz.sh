@@ -184,7 +184,7 @@ HAD_IN_TREE_ARTIFACTS=0
 [ -d "$FUZZ_DIR/corpus" ] && HAD_IN_TREE_CORPUS=1
 [ -d "$FUZZ_DIR/artifacts" ] && HAD_IN_TREE_ARTIFACTS=1
 
-rm -rf "$ART_OUT_DIR"
+rm -rf "$ART_OUT_DIR" "$LOG_OUT_DIR" "$SUMMARY_JSON"
 mkdir -p "$ART_OUT_DIR" "$LOG_OUT_DIR"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vdr-deep-fuzz.XXXXXX")"
 mkdir -p "$TMP_ROOT/corpus" "$TMP_ROOT/artifacts" "$TMP_ROOT/meta"
