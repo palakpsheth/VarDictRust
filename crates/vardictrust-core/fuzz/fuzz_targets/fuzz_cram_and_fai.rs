@@ -41,9 +41,13 @@ impl Drop for CacheClearGuard {
 }
 
 fn create_fuzz_tempdir() -> Option<tempfile::TempDir> {
+    let shm_root = std::env::var_os("VDR_FUZZ_SHM_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/dev/shm"));
     tempfile::Builder::new()
         .prefix("vdr-fuzz-")
-        .tempdir_in("/dev/shm")
+        .tempdir_in(&shm_root)
         .or_else(|_| tempfile::tempdir())
         .ok()
 }

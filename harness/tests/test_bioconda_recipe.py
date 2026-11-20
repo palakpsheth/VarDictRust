@@ -200,6 +200,14 @@ class TestBiocondaRecipe(unittest.TestCase):
                 "    sys.exit(0)\n"
                 "if len(args) >= 4 and args[:3] == ['+nightly', 'fuzz', 'run']:\n"
                 "    tgt = args[3]\n"
+                "    shm_dir = os.environ.get('VDR_FUZZ_SHM_DIR', '')\n"
+                "    if not shm_dir or not pathlib.Path(shm_dir).is_dir():\n"
+                "        sys.stderr.write('missing VDR_FUZZ_SHM_DIR\\n')\n"
+                "        sys.exit(99)\n"
+                "    (pathlib.Path(shm_dir) / f'vdr-fuzz-{tgt}-leak').mkdir(exist_ok=True)\n"
+                "    shm_rec = os.environ.get('MOCK_SHM_RECORD', '')\n"
+                "    if shm_rec:\n"
+                "        pathlib.Path(shm_rec).write_text(shm_dir, encoding='utf-8')\n"
                 "    marker = os.environ.get('MOCK_WORKER_MARKER', '')\n"
                 "    if marker:\n"
                 "        pathlib.Path(marker).write_text(tgt, encoding='utf-8')\n"
@@ -247,20 +255,34 @@ class TestBiocondaRecipe(unittest.TestCase):
             self.assertEqual(crash_summary["total_artifacts"], 1)
             self.assertEqual(crash_summary["artifacts"], ["fuzz_realign__crash-mock123"])
 
-            # 2) Clean re-run into same FUZZ_OUT_DIR clears stale artifacts and reports PASS / 0 artifacts
-            clean_res = subprocess.run(
-                ["bash", str(runner_path), "--fast-secs", "1", "--deep-secs", "1", "--jobs", "2"],
-                cwd=str(ROOT_DIR),
-                env=mock_env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertEqual(
-                clean_res.returncode,
-                0,
-                f"Clean re-run failed ({clean_res.returncode}):\n{clean_res.stderr}\n{clean_res.stdout}",
-            )
+            # 2) Clean re-run into same FUZZ_OUT_DIR clears stale artifacts, scopes /dev/shm cleanup
+            # strictly to campaign VDR_FUZZ_SHM_DIR (preserving external /dev/shm/vdr-fuzz-*), and reports PASS
+            shm_record_file = pathlib.Path(tmp_dir) / "recorded_shm_dir.txt"
+            shm_base = pathlib.Path("/dev/shm") if os.access("/dev/shm", os.W_OK | os.X_OK) else pathlib.Path(tmp_dir)
+            with tempfile.TemporaryDirectory(prefix="vdr-fuzz-external-", dir=str(shm_base)) as ext_shm:
+                clean_env = dict(mock_env, MOCK_SHM_RECORD=str(shm_record_file))
+                clean_res = subprocess.run(
+                    ["bash", str(runner_path), "--fast-secs", "1", "--deep-secs", "1", "--jobs", "2"],
+                    cwd=str(ROOT_DIR),
+                    env=clean_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    clean_res.returncode,
+                    0,
+                    f"Clean re-run failed ({clean_res.returncode}):\n{clean_res.stderr}\n{clean_res.stdout}",
+                )
+                self.assertTrue(
+                    pathlib.Path(ext_shm).is_dir(),
+                    "External same-user /dev/shm/vdr-fuzz-* directory must not be deleted by run_deep_fuzz.sh",
+                )
+                recorded_shm = pathlib.Path(shm_record_file.read_text(encoding="utf-8").strip())
+                self.assertFalse(
+                    recorded_shm.exists(),
+                    f"Campaign-scoped VDR_FUZZ_SHM_DIR must be removed on exit: {recorded_shm}",
+                )
             self.assertFalse(staged_crash.exists(), "Stale crash artifact must be removed on live re-run")
             clean_summary = json.loads((live_out_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(clean_summary["status"], "PASS")
@@ -305,7 +327,7 @@ class TestBiocondaRecipe(unittest.TestCase):
         self.assertEqual(
             before_status,
             after_status,
-            f"run_deep_fuzz.sh --dry-run dirtied git working tree:\n{after_status}",
+            f"run_deep_fuzz.sh tests dirtied git working tree:\n{after_status}",
         )
 
     def test_cargo_deny_license_allow_list(self):

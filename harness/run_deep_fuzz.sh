@@ -188,6 +188,12 @@ rm -rf "$ART_OUT_DIR"
 mkdir -p "$ART_OUT_DIR" "$LOG_OUT_DIR"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vdr-deep-fuzz.XXXXXX")"
 mkdir -p "$TMP_ROOT/corpus" "$TMP_ROOT/artifacts" "$TMP_ROOT/meta"
+if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+    SHM_CAMPAIGN_DIR="$(mktemp -d /dev/shm/vdr-fuzz-campaign.XXXXXX)"
+else
+    SHM_CAMPAIGN_DIR="$TMP_ROOT/shm"
+    mkdir -p "$SHM_CAMPAIGN_DIR"
+fi
 
 ACTIVE_PIDS=()
 CLEANED_UP=0
@@ -263,11 +269,12 @@ for p in reversed(order):
         rm -rf "$FUZZ_DIR/artifacts"
     fi
 
+    if [ -n "${SHM_CAMPAIGN_DIR:-}" ] && [ -d "$SHM_CAMPAIGN_DIR" ]; then
+        rm -rf "$SHM_CAMPAIGN_DIR"
+    fi
     if [ -n "${TMP_ROOT:-}" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT"
     fi
-
-    [ -d /dev/shm ] && find /dev/shm -maxdepth 1 -user "$(id -un)" -name 'vdr-fuzz-*' -exec rm -rf {} + 2>/dev/null || true
     return "$exit_rc"
 }
 
@@ -319,7 +326,7 @@ while [ "$idx" -lt "$total_targets" ]; do
             t0_ms="$(now_ms)"
             (
                 cd "$FUZZ_CRATE_DIR"
-                CARGO_BUILD_JOBS="$BUILD_JOBS" nice_idle cargo +nightly fuzz run "$target" "$corp_dir" -- \
+                VDR_FUZZ_SHM_DIR="$SHM_CAMPAIGN_DIR" CARGO_BUILD_JOBS="$BUILD_JOBS" nice_idle cargo +nightly fuzz run "$target" "$corp_dir" -- \
                     -max_total_time="$secs" \
                     -timeout=10 \
                     -rss_limit_mb=2048 \
@@ -357,8 +364,14 @@ while [ "$idx" -lt "$total_targets" ]; do
     done
     ACTIVE_PIDS=()
 
-    # Reclaim any stray /dev/shm/vdr-fuzz-* directories between batches as well.
-    [ -d /dev/shm ] && find /dev/shm -maxdepth 1 -user "$(id -un)" -name 'vdr-fuzz-*' -exec rm -rf {} + 2>/dev/null || true
+    # Reclaim any stray tempdir entries inside this campaign's isolated /dev/shm root between batches
+    # while keeping $SHM_CAMPAIGN_DIR's 0700 inode intact and leaving external /dev/shm/vdr-fuzz-* untouched.
+    if [ -n "${SHM_CAMPAIGN_DIR:-}" ] && [ -d "$SHM_CAMPAIGN_DIR" ]; then
+        for shm_entry in "$SHM_CAMPAIGN_DIR"/* "$SHM_CAMPAIGN_DIR"/.[!.]* "$SHM_CAMPAIGN_DIR"/..?*; do
+            [ -e "$shm_entry" ] || [ -L "$shm_entry" ] || continue
+            rm -rf "$shm_entry" 2>/dev/null || true
+        done
+    fi
 
     batch_num=$(( batch_num + 1 ))
     idx="$b_end"
