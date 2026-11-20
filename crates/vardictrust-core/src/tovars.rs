@@ -482,28 +482,51 @@ impl<'a> ToVarsBuilder<'a> {
                 hicov,
             );
 
-            self.sort_variants(&mut var);
+            let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
+            let mut ref_buf = [0u8; 4];
+            let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ref_buf);
 
-            let maxfreq = self.collect_vars_at_position(&mut aligned_variants, position, &mut var);
+            let mut maxfreq = 0.0;
+            let mut non_ref_rows = 0usize;
+            let mut all_non_ref_doomed = true;
+            for tvar in &var {
+                if tvar.description != ref_base_str {
+                    non_ref_rows = non_ref_rows.saturating_add(1);
+                    if tvar.frequency > maxfreq {
+                        maxfreq = tvar.frequency;
+                    }
+                    if all_non_ref_doomed
+                        && !(tvar.hicnt < min_reads
+                            || tvar.mean_position < self.config.read_pos
+                            || tvar.mean_quality < self.config.base_qual)
+                    {
+                        all_non_ref_doomed = false;
+                    }
+                }
+            }
 
             if self.should_drop_low_freq(maxfreq) {
+                if !var.is_empty() {
+                    let _ = crate::variations::get_or_put_vars(&mut aligned_variants, position);
+                }
                 aligned_variants.remove(&position);
+                var.clear();
                 continue;
             }
 
-            let entry = crate::variations::get_or_put_vars(&mut aligned_variants, position);
             if can_prune_doomed
+                && non_ref_rows > 0
                 && prune_doomed_at.is_some_and(|pred| pred(position))
-                && !entry.variants.is_empty()
-                && entry.variants.iter().all(|v| {
-                    v.hicnt < min_reads
-                        || v.mean_position < self.config.read_pos
-                        || v.mean_quality < self.config.base_qual
-                })
+                && all_non_ref_doomed
             {
-                entry.variants.clear();
+                let _ = crate::variations::get_or_put_vars(&mut aligned_variants, position);
+                var.clear();
                 continue;
             }
+
+            self.sort_variants(&mut var);
+            let entry = crate::variations::get_or_put_vars(&mut aligned_variants, position);
+            let _ = Self::drain_vars_into(entry, ref_base_str, non_ref_rows, &mut var);
             self.collect_reference_variants(
                 position,
                 current_total_cov,
@@ -896,7 +919,7 @@ impl<'a> ToVarsBuilder<'a> {
             ttcov = cnt.cnt;
         }
 
-        let mut tvref = Variant::new();
+        let mut tvref = Variant::empty_internal();
         fill_common_fields(
             &mut tvref,
             description_string,
@@ -1172,7 +1195,7 @@ impl<'a> ToVarsBuilder<'a> {
                         hicov = hicnt;
                     }
 
-                    let mut tvref = Variant::new();
+                    let mut tvref = Variant::empty_internal();
                     fill_common_fields(
                         &mut tvref,
                         description_string,
@@ -1203,6 +1226,7 @@ impl<'a> ToVarsBuilder<'a> {
         total_pos_coverage
     }
 
+    #[cfg(test)]
     fn collect_vars_at_position(
         &self,
         aligned_variants: &mut crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
@@ -1225,7 +1249,6 @@ impl<'a> ToVarsBuilder<'a> {
         position: i32,
         var: &mut Vec<Variant>,
     ) -> f64 {
-        let mut maxfreq = 0.0;
         let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
         let mut buf = [0u8; 4];
         let ref_base_str: &str = (ref_base as char).encode_utf8(&mut buf);
@@ -1234,6 +1257,16 @@ impl<'a> ToVarsBuilder<'a> {
             .iter()
             .filter(|t| t.description.as_str() != ref_base_str)
             .count();
+        Self::drain_vars_into(entry, ref_base_str, non_ref_rows, var)
+    }
+
+    fn drain_vars_into(
+        entry: &mut crate::variations::Vars,
+        ref_base_str: &str,
+        non_ref_rows: usize,
+        var: &mut Vec<Variant>,
+    ) -> f64 {
+        let mut maxfreq = 0.0;
         if non_ref_rows > 0 {
             entry.variants.reserve(non_ref_rows);
         }
@@ -4590,9 +4623,19 @@ mod tests {
                 !unpruned.get(&doomed_pos).unwrap().variants.is_empty(),
                 "unpruned pos {doomed_pos} should carry unpruned variant"
             );
+            let doomed_entry = pruned.get(&doomed_pos).unwrap();
             assert!(
-                pruned.get(&doomed_pos).unwrap().variants.is_empty(),
+                doomed_entry.variants.is_empty(),
                 "pruned pos {doomed_pos} must have empty variants while keeping map key"
+            );
+            assert_eq!(
+                doomed_entry.variants.capacity(),
+                0,
+                "doomed-pruned pos {doomed_pos} must elide entry.variants allocation"
+            );
+            assert!(
+                doomed_entry.var_desc_to_variant.is_empty(),
+                "doomed-pruned pos {doomed_pos} must keep var_desc_to_variant empty"
             );
         }
 
@@ -4853,5 +4896,191 @@ mod tests {
             render_som(&som_keep_all),
             "somatic_post_process_at output must be byte-identical to KeepAll"
         );
+        assert_eq!(
+            aligned2.get(&40).unwrap().variants.capacity(),
+            0,
+            "somatic BAM2 doomed-pruned pos 40 must have capacity() == 0"
+        );
+        assert!(aligned2.get(&40).unwrap().var_desc_to_variant.is_empty());
+        assert!(aligned2.get(&25).unwrap().var_desc_to_variant.is_empty());
+        assert!(aligned2.get(&60).unwrap().var_desc_to_variant.is_empty());
+
+        // --- 3. Variant::empty_internal() + UB-3 12..16 resize threshold sweep (AR-02) ---
+        assert_eq!(Variant::new().bias, "0");
+        let empty_internal = Variant::empty_internal();
+        assert!(empty_internal.bias.is_empty());
+        assert_eq!(empty_internal.bias.capacity(), 0);
+
+        // Build a 16-position fixture crossing the 12-entry (16 * 0.75) resize threshold
+        // where capacity 16 vs 32 permutes bucket order (e.g. pos 32 vs pos 16, pos 17 vs pos 1).
+        let mut ub3_vd = VariationData::new();
+        ub3_vd.duprate = 0.01;
+        // 11 doomed non-ref positions (hicnt = 1 < min_reads = 2, freq = 1/20 = 0.05 > 0.01):
+        // keys chosen to collide differently at cap 16 vs cap 32.
+        let doomed_keys = [1, 2, 3, 5, 6, 7, 17, 18, 19, 32, 33];
+        for &p in &doomed_keys {
+            ub3_vd.ref_coverage.insert(p, 20);
+            let mut vm = VariationMap::new();
+            vm.map
+                .insert(ref_base_str(p), mk_var(19, 19, 10, 9, 20.0, 35.0));
+            let alt = if ref_base_str(p) == "A" { "G" } else { "A" };
+            vm.map
+                .insert(alt.to_string(), mk_var(1, 1, 1, 0, 20.0, 35.0));
+            ub3_vd.non_insertion_variants.insert(p, vm);
+        }
+        // 12th entry (pos 16): surviving variant -> brings map size to 12 (right at cap-16 threshold!).
+        ub3_vd.ref_coverage.insert(16, 20);
+        let mut vm_16 = VariationMap::new();
+        vm_16
+            .map
+            .insert(ref_base_str(16), mk_var(14, 14, 7, 7, 22.0, 35.0));
+        let alt16 = if ref_base_str(16) == "C" { "T" } else { "C" };
+        vm_16
+            .map
+            .insert(alt16.to_string(), mk_var(6, 6, 3, 3, 22.0, 35.0));
+        ub3_vd.non_insertion_variants.insert(16, vm_16);
+
+        // Pos 24 (bucket 24 > buckets 0..=19 of the 12 kept entries at cap 32): cnt == 0 -> empty `var`!
+        // Visited when `aligned_variants.len() == 12` (exact cap-16 load-factor threshold):
+        // in single-sample `should_drop_low_freq(0.0) == true`, an empty `var` MUST NOT
+        // call `get_or_put_vars` and therefore MUST NOT trigger the 12->13 resize!
+        ub3_vd.ref_coverage.insert(24, 20);
+        let mut vm_24 = VariationMap::new();
+        vm_24.map.insert("G".to_string(), Variation::new()); // cnt == 0 -> var.is_empty()
+        ub3_vd.non_insertion_variants.insert(24, vm_24);
+
+        // First test BEFORE adding the 13th non-empty low-freq entry: with 12 non-empty entries
+        // + empty-var pos 24 (13 keys in ub3_vd -> cap 32, pos 24 visited last at len == 12),
+        // single-sample capacity MUST stay 16 (no spurious resize!).
+        let ub3_12_unpruned = builder.build_aligned_variants(&ub3_vd);
+        let ub3_12_pruned =
+            builder.build_aligned_variants_pruned(&ub3_vd, RefSiteMode::DropAll, &|_| true);
+        assert_eq!(ub3_12_unpruned.len(), 12);
+        assert_eq!(ub3_12_unpruned.capacity(), 16);
+        assert_eq!(ub3_12_pruned.capacity(), 16);
+        assert_eq!(
+            ub3_12_pruned.keys().copied().collect::<Vec<_>>(),
+            ub3_12_unpruned.keys().copied().collect::<Vec<_>>(),
+            "empty var at threshold=12 must not trigger resize"
+        );
+
+        // Now add pos 25 (bucket 25 > bucket 24) with `!var.is_empty()` (cnt = 1 / 200 -> freq = 0.005 <= 0.01)
+        // so `should_drop_low_freq` drops it AFTER `get_or_put_vars` inserts the 13th entry and
+        // resizes `aligned_variants` from 16 -> 32 buckets (keeping len == 12, capacity == 32!).
+        ub3_vd.ref_coverage.insert(25, 200);
+        let mut vm_25 = VariationMap::new();
+        vm_25
+            .map
+            .insert(ref_base_str(25), mk_var(199, 199, 100, 99, 20.0, 35.0));
+        let alt25 = if ref_base_str(25) == "A" { "G" } else { "A" };
+        vm_25
+            .map
+            .insert(alt25.to_string(), mk_var(1, 1, 1, 0, 20.0, 35.0));
+        ub3_vd.non_insertion_variants.insert(25, vm_25);
+
+        // Also add pure-ref (`non_ref_rows == 0`) sites at pos 49 and pos 64 for KeepAll / somatic BAM2.
+        for &rp in &[49, 64] {
+            ub3_vd.ref_coverage.insert(rp, 24);
+            let mut vmr = VariationMap::new();
+            vmr.map
+                .insert(ref_base_str(rp), mk_var(24, 24, 12, 12, 21.0, 35.0));
+            ub3_vd.non_insertion_variants.insert(rp, vmr);
+        }
+
+        let ub3_unpruned = builder.build_aligned_variants(&ub3_vd);
+        let ub3_pruned =
+            builder.build_aligned_variants_pruned(&ub3_vd, RefSiteMode::DropAll, &|_| true);
+        assert_eq!(ub3_unpruned.len(), 12);
+        assert_eq!(
+            ub3_unpruned.capacity(),
+            32,
+            "13th transient low-freq !var.is_empty() entry must resize 16 -> 32 before remove"
+        );
+        assert_eq!(ub3_pruned.len(), 12);
+        assert_eq!(ub3_pruned.capacity(), 32);
+        assert_ne!(
+            ub3_pruned.keys().copied().collect::<Vec<_>>(),
+            ub3_12_pruned.keys().copied().collect::<Vec<_>>(),
+            "16 -> 32 resize must permute bucket order vs pre-resize cap-16 map"
+        );
+        assert_eq!(
+            ub3_pruned.keys().copied().collect::<Vec<_>>(),
+            ub3_unpruned.keys().copied().collect::<Vec<_>>(),
+            "UB-3 key order across 12->13 transient resize must match unpruned exactly"
+        );
+        for &dk in &doomed_keys {
+            let e = ub3_pruned.get(&dk).unwrap();
+            assert!(e.variants.is_empty());
+            assert_eq!(e.variants.capacity(), 0);
+            assert!(e.var_desc_to_variant.is_empty());
+        }
+        let surv16 = ub3_pruned.get(&16).unwrap();
+        let exp16 = ub3_unpruned.get(&16).unwrap();
+        assert_eq!(surv16.variants.len(), 1);
+        assert!(surv16.var_desc_to_variant.is_empty());
+        assert_eq!(surv16.variants[0].start_pos, 16);
+        assert_eq!(surv16.variants[0].genotype, exp16.variants[0].genotype);
+        assert_eq!(
+            surv16.ref_variant.as_ref().unwrap().pos_coverage,
+            exp16.ref_variant.as_ref().unwrap().pos_coverage,
+            "surviving pos 16 ref_variant must match unpruned"
+        );
+
+        // Somatic BAM2 `KeepAll` + `build_aligned_variants_pruned` with `prune_doomed_at`:
+        // - `non_ref_rows == 0` ref-only sites (49, 64) MUST still execute `collect_reference_variants`
+        //   even when `prune_doomed_at` returns `true`!
+        // - `prune_doomed_at(1) == false` (Tumor has variant) MUST finalize both `variants` & `ref_variant`!
+        // - `prune_doomed_at(p) == true` on other doomed keys MUST elide `entry.variants` (`capacity() == 0`)!
+        let ub3_som_ref =
+            som_builder.build_aligned_variants_with_ref_mode(&ub3_vd, RefSiteMode::KeepAll);
+        let ub3_som_pruned =
+            som_builder.build_aligned_variants_pruned(&ub3_vd, RefSiteMode::KeepAll, &|p| p != 1);
+        assert_eq!(
+            ub3_som_pruned.keys().copied().collect::<Vec<_>>(),
+            ub3_som_ref.keys().copied().collect::<Vec<_>>(),
+            "somatic UB-3 key order across 16-entry map must match KeepAll exactly"
+        );
+        for &rp in &[49, 64] {
+            let got_r = ub3_som_pruned.get(&rp).unwrap();
+            let exp_r = ub3_som_ref.get(&rp).unwrap();
+            assert!(got_r.variants.is_empty());
+            assert_eq!(got_r.variants.capacity(), 0);
+            assert!(got_r.var_desc_to_variant.is_empty());
+            let rv = got_r
+                .ref_variant
+                .as_ref()
+                .expect("non_ref_rows == 0 must finalize ref_variant");
+            assert_eq!(rv.start_pos, rp);
+            assert_eq!(rv.genotype, exp_r.ref_variant.as_ref().unwrap().genotype);
+            assert_eq!(rv.bias, exp_r.ref_variant.as_ref().unwrap().bias);
+        }
+        // Pos 24 (empty `var` in somatic mode): present in map with `ref_variant: None`, `variants: []`.
+        let empty24 = ub3_som_pruned.get(&24).unwrap();
+        assert!(empty24.ref_variant.is_none());
+        assert!(empty24.variants.is_empty());
+        assert_eq!(empty24.variants.capacity(), 0);
+        assert!(empty24.var_desc_to_variant.is_empty());
+        // Pos 1 (`prune_doomed_at(1) == false`): NOT pruned, `variants[0]` finalized & `ref_variant` retained.
+        let unpruned_1 = ub3_som_pruned.get(&1).unwrap();
+        let exp_1 = ub3_som_ref.get(&1).unwrap();
+        assert_eq!(unpruned_1.variants.len(), 1);
+        assert_eq!(unpruned_1.variants[0].start_pos, 1);
+        assert!(unpruned_1.variants[0].bias.contains(';'));
+        assert_eq!(
+            unpruned_1.ref_variant.as_ref().unwrap().pos_coverage,
+            exp_1.ref_variant.as_ref().unwrap().pos_coverage
+        );
+        assert_eq!(
+            unpruned_1.ref_variant.as_ref().unwrap().bias,
+            exp_1.ref_variant.as_ref().unwrap().bias
+        );
+        assert!(unpruned_1.var_desc_to_variant.is_empty());
+        // Other doomed keys (`prune_doomed_at(p) == true`, plus low-freq pos 25 in somatic mode): pruned with cap 0.
+        for &dk in doomed_keys.iter().filter(|&&p| p != 1).chain([&25]) {
+            let de = ub3_som_pruned.get(&dk).unwrap();
+            assert!(de.variants.is_empty());
+            assert_eq!(de.variants.capacity(), 0);
+            assert!(de.var_desc_to_variant.is_empty());
+        }
     }
 }
