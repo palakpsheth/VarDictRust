@@ -13,8 +13,11 @@ use vardictrust_core::sv::find_all_sv_paths;
 use vardictrust_core::tovars::ToVarsBuilder;
 use vardictrust_core::types::Pos1;
 
+/// Maximum accepted libFuzzer input payload (`4 KiB`) to bound per-iteration runtime.
+const MAX_FUZZ_INPUT_BYTES: usize = 4096;
+
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 16 {
+    if data.len() < 18 || data.len() > MAX_FUZZ_INPUT_BYTES {
         return;
     }
 
@@ -58,12 +61,42 @@ fuzz_target!(|data: &[u8]| {
         config.trim_bases_after = i32::from(data[8]);
     }
 
-    let payload = &data[9..];
+    let extra_bits = data[9];
+    let extra_param = data[10];
+    let payload = &data[11..];
     if payload.is_empty() {
         return;
     }
 
     let bases = [b'A', b'C', b'G', b'T', b'N'];
+    config.splice = (extra_bits & 1) != 0;
+    if (extra_bits & 2) != 0 {
+        let cut_site = if (extra_bits & 16) != 0 {
+            match extra_param & 3 {
+                0 => 0,
+                1 => -1,
+                2 => i32::MIN,
+                _ => i32::MAX,
+            }
+        } else {
+            let cut_off = u32::from(extra_param) % (eff_len as u32).max(1);
+            base_start.saturating_add(cut_off).min(i32::MAX as u32) as i32
+        };
+        config.crispr_cutting_site = Some(cut_site);
+    }
+    if (extra_bits & 4) != 0 {
+        config.crispr_flanking_size = Some(i32::from(extra_param as i8));
+    }
+    if (extra_bits & 8) != 0 {
+        let ad_len = (usize::from(extra_param & 0x0f)).saturating_add(4); // 4..=19 bp (covers <7 and >=7 ADSEED=6)
+        let ad_seq: String = (0..ad_len)
+            .map(|i| bases[usize::from(payload[i % payload.len()]) % 4] as char)
+            .collect();
+        config.adaptor.push(ad_seq);
+        if (extra_bits & 32) != 0 {
+            config.adaptor.push("AGATCGGAAGAGC".to_string());
+        }
+    }
     let ref_seq: Vec<u8> = (0..eff_len)
         .map(|i| bases[usize::from(payload[i % payload.len()]) % bases.len()])
         .collect();

@@ -7,12 +7,15 @@ Conforms strictly to the Python Standard Library purity constraint (zero PyPI pa
 """
 
 import importlib.util
+import json
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent.parent
@@ -116,6 +119,255 @@ class TestBiocondaRecipe(unittest.TestCase):
             root_noodles["version"],
             fuzz_noodles["version"],
             "crates/vardictrust-core/fuzz/Cargo.toml noodles version must match root Cargo.toml",
+        )
+
+        expected_fuzz_bins = {
+            "fuzz_modify_cigar",
+            "fuzz_realign",
+            "fuzz_bed_parser",
+            "fuzz_sam_aux",
+            "fuzz_parse_and_realign",
+            "fuzz_vcf_streamer",
+            "fuzz_cram_and_fai",
+            "fuzz_somatic_fisher_and_amplicon",
+        }
+        bins = fuzz_cfg.get("bin") or []
+        self.assertEqual(len(bins), 8, f"Expected 8 [[bin]] targets in {fuzz_path}, got {len(bins)}")
+        actual_fuzz_bins = {entry.get("name") for entry in bins if isinstance(entry, dict)}
+        self.assertEqual(
+            actual_fuzz_bins,
+            expected_fuzz_bins,
+            f"Fuzz Cargo.toml [[bin]] targets mismatch: got {sorted(a for a in actual_fuzz_bins if a)}",
+        )
+        fuzz_dir = fuzz_path.parent
+        for entry in bins:
+            rel_target = entry.get("path")
+            self.assertTrue(rel_target, f"Missing path in fuzz [[bin]] entry: {entry}")
+            target_file = fuzz_dir / rel_target
+            self.assertTrue(target_file.is_file(), f"Missing fuzz target source on disk: {target_file}")
+
+        runner_path = ROOT_DIR / "harness" / "run_deep_fuzz.sh"
+        self.assertTrue(runner_path.is_file(), f"Missing deep fuzz runner: {runner_path}")
+        self.assertTrue(os.access(runner_path, os.X_OK), "harness/run_deep_fuzz.sh must be executable")
+        before_status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            probe_out_dir = pathlib.Path(tmp_dir) / "dry_run_out"
+            env = dict(os.environ)
+            env["FUZZ_OUT_DIR"] = str(probe_out_dir)
+            dry = subprocess.run(
+                ["bash", str(runner_path), "--dry-run"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                dry.returncode,
+                0,
+                f"run_deep_fuzz.sh --dry-run failed ({dry.returncode}):\n{dry.stderr}\n{dry.stdout}",
+            )
+            self.assertFalse(
+                probe_out_dir.exists(),
+                f"run_deep_fuzz.sh --dry-run must not create FUZZ_OUT_DIR: {probe_out_dir}",
+            )
+            for target_name in sorted(expected_fuzz_bins):
+                self.assertIn(
+                    target_name,
+                    dry.stdout,
+                    f"run_deep_fuzz.sh --dry-run schedule missing {target_name}",
+                )
+
+            # Verify artifact staging, stale-artifact cleanup across re-runs,
+            # summary.json 1-to-1 alignment with $ART_OUT_DIR, and SIGTERM -> 130 exit.
+            mock_bin = pathlib.Path(tmp_dir) / "mock_bin"
+            mock_bin.mkdir(parents=True, exist_ok=True)
+            mock_cargo = mock_bin / "cargo"
+            mock_cargo.write_text(
+                f"#!{sys.executable}\n"
+                "import os, pathlib, sys, time\n"
+                "args = sys.argv[1:]\n"
+                "if args[:3] == ['+nightly', 'fuzz', '--version']:\n"
+                "    print('cargo-fuzz 0.12.0')\n"
+                "    sys.exit(0)\n"
+                "if args[:3] == ['+nightly', 'fuzz', 'build']:\n"
+                "    bmarker = os.environ.get('MOCK_BUILD_MARKER', '')\n"
+                "    if bmarker:\n"
+                "        pathlib.Path(bmarker).write_text('building', encoding='utf-8')\n"
+                "        time.sleep(10)\n"
+                "    sys.exit(0)\n"
+                "if len(args) >= 4 and args[:3] == ['+nightly', 'fuzz', 'run']:\n"
+                "    tgt = args[3]\n"
+                "    shm_dir = os.environ.get('VDR_FUZZ_SHM_DIR', '')\n"
+                "    if not shm_dir or not pathlib.Path(shm_dir).is_dir():\n"
+                "        sys.stderr.write('missing VDR_FUZZ_SHM_DIR\\n')\n"
+                "        sys.exit(99)\n"
+                "    (pathlib.Path(shm_dir) / f'vdr-fuzz-{tgt}-leak').mkdir(exist_ok=True)\n"
+                "    shm_rec = os.environ.get('MOCK_SHM_RECORD', '')\n"
+                "    if shm_rec:\n"
+                "        pathlib.Path(shm_rec).write_text(shm_dir, encoding='utf-8')\n"
+                "    marker = os.environ.get('MOCK_WORKER_MARKER', '')\n"
+                "    if marker:\n"
+                "        pathlib.Path(marker).write_text(tgt, encoding='utf-8')\n"
+                "        time.sleep(10)\n"
+                "        sys.exit(0)\n"
+                "    art_prefix = ''\n"
+                "    for a in args:\n"
+                "        if a.startswith('-artifact_prefix='):\n"
+                "            art_prefix = a.split('=', 1)[1]\n"
+                "    if os.environ.get('MOCK_CRASH_TARGET') == tgt and art_prefix:\n"
+                "        p = pathlib.Path(art_prefix) / 'crash-mock123'\n"
+                "        p.parent.mkdir(parents=True, exist_ok=True)\n"
+                "        p.write_bytes(b'boom')\n"
+                "        sys.exit(1)\n"
+                "    print('#12\\tINITED cov: 10 ft: 15 corp: 1/1b exec/s: 12 rss: 32Mb')\n"
+                "    print('Done 12 runs in 1 second(s)')\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            mock_cargo.chmod(0o755)
+
+            live_out_dir = pathlib.Path(tmp_dir) / "live_out"
+            mock_env = dict(os.environ)
+            mock_env["PATH"] = f"{mock_bin}:{mock_env.get('PATH', '')}"
+            mock_env["FUZZ_OUT_DIR"] = str(live_out_dir)
+            mock_env["MIN_AVAIL_GB"] = "0"
+            mock_env["TMPDIR"] = tmp_dir
+
+            # 1) Simulated crash run populates ART_OUT_DIR and fails summary.json 1-to-1
+            crash_env = dict(mock_env, MOCK_CRASH_TARGET="fuzz_realign")
+            crash_res = subprocess.run(
+                ["bash", str(runner_path), "--fast-secs", "1", "--deep-secs", "1", "--jobs", "2"],
+                cwd=str(ROOT_DIR),
+                env=crash_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(crash_res.returncode, 0, "Crash run must exit non-zero")
+            staged_crash = live_out_dir / "artifacts" / "fuzz_realign__crash-mock123"
+            self.assertTrue(staged_crash.is_file(), "Crash artifact must be staged in ART_OUT_DIR")
+            crash_summary = json.loads((live_out_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(crash_summary["status"], "FAIL")
+            self.assertEqual(crash_summary["total_artifacts"], 1)
+            self.assertEqual(crash_summary["artifacts"], ["fuzz_realign__crash-mock123"])
+
+            # 2) Clean re-run into same FUZZ_OUT_DIR clears stale artifacts, scopes /dev/shm cleanup
+            # strictly to campaign VDR_FUZZ_SHM_DIR (preserving external /dev/shm/vdr-fuzz-*), and reports PASS
+            shm_record_file = pathlib.Path(tmp_dir) / "recorded_shm_dir.txt"
+            shm_base = pathlib.Path("/dev/shm") if os.access("/dev/shm", os.W_OK | os.X_OK) else pathlib.Path(tmp_dir)
+            with tempfile.TemporaryDirectory(prefix="vdr-fuzz-external-", dir=str(shm_base)) as ext_shm:
+                clean_env = dict(mock_env, MOCK_SHM_RECORD=str(shm_record_file))
+                clean_res = subprocess.run(
+                    ["bash", str(runner_path), "--fast-secs", "1", "--deep-secs", "1", "--jobs", "2"],
+                    cwd=str(ROOT_DIR),
+                    env=clean_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(
+                    clean_res.returncode,
+                    0,
+                    f"Clean re-run failed ({clean_res.returncode}):\n{clean_res.stderr}\n{clean_res.stdout}",
+                )
+                self.assertTrue(
+                    pathlib.Path(ext_shm).is_dir(),
+                    "External same-user /dev/shm/vdr-fuzz-* directory must not be deleted by run_deep_fuzz.sh",
+                )
+                recorded_shm = pathlib.Path(shm_record_file.read_text(encoding="utf-8").strip())
+                self.assertFalse(
+                    recorded_shm.exists(),
+                    f"Campaign-scoped VDR_FUZZ_SHM_DIR must be removed on exit: {recorded_shm}",
+                )
+            self.assertFalse(staged_crash.exists(), "Stale crash artifact must be removed on live re-run")
+            clean_summary = json.loads((live_out_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(clean_summary["status"], "PASS")
+            self.assertEqual(clean_summary["total_artifacts"], 0)
+            self.assertEqual(clean_summary["artifacts"], [])
+
+            # 3) SIGTERM during worker wait exits 130 (not interrupted wait rc 143)
+            marker_file = pathlib.Path(tmp_dir) / "worker_started"
+            sig_env = dict(mock_env, MOCK_WORKER_MARKER=str(marker_file), FUZZ_OUT_DIR=str(pathlib.Path(tmp_dir) / "sig_out"))
+            sig_proc = subprocess.Popen(
+                ["bash", str(runner_path), "--fast-secs", "10", "--deep-secs", "10", "--jobs", "1"],
+                cwd=str(ROOT_DIR),
+                env=sig_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 5.0
+                while not marker_file.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(marker_file.exists(), "Mock fuzz worker did not start within 5s")
+                time.sleep(0.05)
+                sig_proc.send_signal(signal.SIGTERM)
+                sig_rc = sig_proc.wait(timeout=10)
+                self.assertEqual(sig_rc, 130, f"Expected exit 130 on SIGTERM, got {sig_rc}")
+            finally:
+                if sig_proc.poll() is None:
+                    sig_proc.kill()
+                    sig_proc.wait(timeout=5)
+                if sig_proc.stdout:
+                    sig_proc.stdout.close()
+                if sig_proc.stderr:
+                    sig_proc.stderr.close()
+
+            # 4) SIGTERM during sequential pre-build clears stale summary.json/logs, interrupts (<4s), and exits 130
+            bsig_out_dir = pathlib.Path(tmp_dir) / "bsig_out"
+            bsig_out_dir.mkdir(parents=True, exist_ok=True)
+            stale_summary = bsig_out_dir / "summary.json"
+            stale_summary.write_text('{"status": "PASS"}', encoding="utf-8")
+            bmarker_file = pathlib.Path(tmp_dir) / "build_started"
+            bsig_env = dict(mock_env, MOCK_BUILD_MARKER=str(bmarker_file), FUZZ_OUT_DIR=str(bsig_out_dir))
+            bsig_proc = subprocess.Popen(
+                ["bash", str(runner_path), "--fast-secs", "10", "--deep-secs", "10", "--jobs", "1"],
+                cwd=str(ROOT_DIR),
+                env=bsig_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 5.0
+                while not bmarker_file.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(bmarker_file.exists(), "Mock fuzz pre-build did not start within 5s")
+                time.sleep(0.05)
+                t_sig = time.monotonic()
+                bsig_proc.send_signal(signal.SIGTERM)
+                bsig_rc = bsig_proc.wait(timeout=4)
+                self.assertEqual(bsig_rc, 130, f"Expected exit 130 on SIGTERM during pre-build, got {bsig_rc}")
+                self.assertLess(time.monotonic() - t_sig, 4.0, "Pre-build ignored SIGTERM instead of interrupting wait")
+                self.assertFalse(stale_summary.exists(), "Stale PASS summary.json must be cleared before pre-build")
+            finally:
+                if bsig_proc.poll() is None:
+                    bsig_proc.kill()
+                    bsig_proc.wait(timeout=5)
+                if bsig_proc.stdout:
+                    bsig_proc.stdout.close()
+                if bsig_proc.stderr:
+                    bsig_proc.stderr.close()
+        after_status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertEqual(
+            before_status,
+            after_status,
+            f"run_deep_fuzz.sh tests dirtied git working tree:\n{after_status}",
         )
 
     def test_cargo_deny_license_allow_list(self):

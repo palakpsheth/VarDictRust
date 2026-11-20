@@ -10,16 +10,32 @@ use std::collections::BTreeMap;
 /// (SimpleOutputVariant.java:50-52): start/end = the alignedVariants map key,
 /// everything else at printer defaults — bias "0;0" (:24), genotype "" (:22),
 /// empty flank seqs (OutputVariant.java:22-23) — rendered by table.rs when
-/// `null_record` is set.
-fn make_null_record(position: i32, sv: &str) -> Variant {
+/// `null_record` is set (`sv` populated by caller).
+fn make_null_record(position: i32) -> Variant {
     let mut out = Variant::new();
     out.start_pos = position;
     out.end_pos = position;
     out.bias.clear();
     out.bias.push_str("0;0");
-    out.sv = sv.to_string();
     out.null_record = true;
     out
+}
+
+enum SimpleVarIter<'a> {
+    Borrowed(std::slice::Iter<'a, Variant>),
+    Owned(std::vec::IntoIter<Variant>),
+}
+
+impl<'a> Iterator for SimpleVarIter<'a> {
+    type Item = std::borrow::Cow<'a, Variant>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Borrowed(it) => it.next().map(std::borrow::Cow::Borrowed),
+            Self::Owned(it) => it.next().map(std::borrow::Cow::Owned),
+        }
+    }
 }
 
 /// Single sample mode variant filtering and postprocessing.
@@ -32,25 +48,87 @@ pub fn simple_post_process(
     aligned_variants: &crate::javamap::JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
 ) -> Vec<Variant> {
+    simple_post_process_core(
+        config,
+        region,
+        aligned_variants
+            .iter()
+            .map(|(&pos, vars)| (pos, std::borrow::Cow::Borrowed(vars))),
+        splice,
+    )
+}
+
+/// Owned fast-path counterpart of [`simple_post_process`], moving finalized [`Variant`]
+/// and SV strings directly out of `aligned_variants` without cloning.
+pub(crate) fn simple_post_process_owned(
+    config: &Config,
+    region: &Region,
+    aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+) -> Vec<Variant> {
+    simple_post_process_core(
+        config,
+        region,
+        aligned_variants
+            .into_entries()
+            .map(|(pos, vars)| (pos, std::borrow::Cow::Owned(vars))),
+        splice,
+    )
+}
+
+fn simple_post_process_core<'a>(
+    config: &Config,
+    region: &Region,
+    entries: impl IntoIterator<Item = (i32, std::borrow::Cow<'a, Vars>)>,
+    splice: &rustc_hash::FxHashSet<String>,
+) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
     // Iterate entries in JavaHashMap table-bucket iteration order
     // (ports SimplePostProcessModule.java:35; see DIVERGENCES.md UB-3).
-    for (&position, variants_on_position) in aligned_variants.iter() {
-        let sv = &variants_on_position.sv;
-
-        if sv.is_empty() && (position < region.start.0 as i32 || position > region.end.0 as i32) {
+    for (position, variants_on_position) in entries {
+        if variants_on_position.sv.is_empty()
+            && (position < region.start.0 as i32 || position > region.end.0 as i32)
+        {
             continue;
         }
 
-        if variants_on_position.variants.is_empty() {
+        let (mut ref_var_cow, vvar_len, vvar_iter, sv_cow): (
+            Option<std::borrow::Cow<'a, Variant>>,
+            usize,
+            SimpleVarIter<'a>,
+            std::borrow::Cow<'a, str>,
+        ) = match variants_on_position {
+            std::borrow::Cow::Borrowed(vars) => (
+                vars.ref_variant.as_ref().map(std::borrow::Cow::Borrowed),
+                vars.variants.len(),
+                SimpleVarIter::Borrowed(vars.variants.iter()),
+                std::borrow::Cow::Borrowed(vars.sv.as_str()),
+            ),
+            std::borrow::Cow::Owned(Vars {
+                ref_variant,
+                variants,
+                sv,
+                ..
+            }) => {
+                let len = variants.len();
+                (
+                    ref_variant.map(std::borrow::Cow::Owned),
+                    len,
+                    SimpleVarIter::Owned(variants.into_iter()),
+                    std::borrow::Cow::Owned(sv),
+                )
+            }
+        };
+
+        let pos_start = vrefs.len();
+        if vvar_len == 0 {
             if !config.pileup {
                 continue;
             }
-            if let Some(ref vref) = variants_on_position.ref_variant {
-                let mut vref = vref.clone();
+            if let Some(vref_cow) = ref_var_cow.take() {
+                let mut vref = vref_cow.into_owned();
                 vref.var_type = String::new();
-                vref.sv = sv.clone();
                 vrefs.push(vref);
             } else {
                 // ports SimplePostProcessModule.java:55-58: under -p an entry
@@ -59,34 +137,27 @@ pub fn simple_post_process(
                 // keep the printer defaults (genotype "", bias "0;0", flank seqs
                 // ""). CLAUDE.md §5: live-oracle output is replicated as-is and
                 // tracked upstream, never silently fixed.
-                vrefs.push(make_null_record(position, sv));
+                vrefs.push(make_null_record(position));
             }
         } else {
-            let vvar = &variants_on_position.variants;
-            for vref_orig in vvar {
-                if vref_orig.ref_allele.contains('N') {
+            for vref_cow in vvar_iter {
+                if vref_cow.ref_allele.contains('N') {
                     continue;
                 }
-                if vref_orig.ref_allele == vref_orig.var_allele && !config.pileup {
+                if vref_cow.ref_allele == vref_cow.var_allele && !config.pileup {
                     continue;
                 }
-                let vtype_cow = vref_orig.var_type_cow();
-                let is_good = vref_orig.is_good_var(
-                    variants_on_position.ref_variant.as_ref(),
-                    &vtype_cow,
-                    splice,
-                    config,
-                );
+                let vtype_cow = vref_cow.var_type_cow();
+                let is_good =
+                    vref_cow.is_good_var(ref_var_cow.as_deref(), &vtype_cow, splice, config);
                 if !is_good && !config.pileup {
                     continue;
                 }
-                let mut vref = vref_orig.clone();
-                vref.sv = sv.clone();
-                if vref.start_pos != position && config.pileup && vvar.len() == 1 {
-                    if let Some(ref_var) = &variants_on_position.ref_variant {
-                        let mut ref_var = ref_var.clone();
+                let mut vref = vref_cow.into_owned();
+                if vref.start_pos != position && config.pileup && vvar_len == 1 {
+                    if let Some(rv_cow) = ref_var_cow.take() {
+                        let mut ref_var = rv_cow.into_owned();
                         ref_var.var_type = String::new();
-                        ref_var.sv = sv.clone();
                         vrefs.push(ref_var);
                     } else {
                         // ports SimplePostProcessModule.java:75-79: Java prints a
@@ -96,10 +167,9 @@ pub fn simple_post_process(
                         // stay 0 — that 0 leaks into .var columns 4-5 (the
                         // upstream pos-0 quirk; replicated per §5, see
                         // DIVERGENCES.md "Known non-bugs").
-                        vrefs.push(make_null_record(position, sv));
+                        vrefs.push(make_null_record(position));
                         let mut ref_var = Variant::new();
                         ref_var.var_type = String::new();
-                        ref_var.sv = sv.clone();
                         vrefs.push(ref_var);
                     }
                 }
@@ -109,6 +179,14 @@ pub fn simple_post_process(
                 }
                 vrefs.push(vref);
             }
+        }
+
+        if let Some((last, prior)) = vrefs.get_mut(pos_start..).and_then(|s| s.split_last_mut()) {
+            for r in prior {
+                r.sv.clear();
+                r.sv.push_str(&sv_cow);
+            }
+            last.sv = sv_cow.into_owned();
         }
     }
 
@@ -486,5 +564,185 @@ mod tests {
         let kept_unrounded = simple_post_process(&config, &region, &aligned_unrounded, &splice);
         assert_eq!(kept_unrounded.len(), 1);
         assert_eq!(kept_unrounded[0].var_allele, "T");
+
+        // 4. Exhaustive field-for-field parity between `simple_post_process_owned` and
+        // `simple_post_process` across germline, -p pileup (empty with/without ref_variant,
+        // shifted-singleton with/without ref_variant, multi-variant with sv != ""), Complex,
+        // CRISPR, and multi-allelic VCF/intermediate buckets.
+        fn assert_variant_fields_eq(a: &Variant, b: &Variant) {
+            let Variant {
+                description,
+                pos_coverage,
+                fwd,
+                rev,
+                bias,
+                frequency,
+                mean_position,
+                pstd,
+                mean_quality,
+                qstd,
+                mean_mapping_quality,
+                hq_lq_ratio,
+                hi_freq,
+                extra_freq,
+                shift3,
+                msi,
+                msint,
+                nm,
+                hicnt,
+                hicov,
+                left_seq,
+                right_seq,
+                start_pos,
+                end_pos,
+                ref_rev_cov,
+                ref_fwd_cov,
+                total_pos_cov,
+                duprate,
+                genotype,
+                var_allele,
+                ref_allele,
+                var_type,
+                debug,
+                crispr,
+                sv,
+                null_record,
+            } = a;
+            assert_eq!(description, &b.description);
+            assert_eq!(pos_coverage, &b.pos_coverage);
+            assert_eq!(fwd, &b.fwd);
+            assert_eq!(rev, &b.rev);
+            assert_eq!(bias, &b.bias);
+            assert_eq!(frequency.to_bits(), b.frequency.to_bits());
+            assert_eq!(mean_position.to_bits(), b.mean_position.to_bits());
+            assert_eq!(pstd, &b.pstd);
+            assert_eq!(mean_quality.to_bits(), b.mean_quality.to_bits());
+            assert_eq!(qstd, &b.qstd);
+            assert_eq!(
+                mean_mapping_quality.to_bits(),
+                b.mean_mapping_quality.to_bits()
+            );
+            assert_eq!(hq_lq_ratio.to_bits(), b.hq_lq_ratio.to_bits());
+            assert_eq!(hi_freq.to_bits(), b.hi_freq.to_bits());
+            assert_eq!(extra_freq.to_bits(), b.extra_freq.to_bits());
+            assert_eq!(shift3, &b.shift3);
+            assert_eq!(msi.to_bits(), b.msi.to_bits());
+            assert_eq!(msint, &b.msint);
+            assert_eq!(nm.to_bits(), b.nm.to_bits());
+            assert_eq!(hicnt, &b.hicnt);
+            assert_eq!(hicov, &b.hicov);
+            assert_eq!(left_seq, &b.left_seq);
+            assert_eq!(right_seq, &b.right_seq);
+            assert_eq!(start_pos, &b.start_pos);
+            assert_eq!(end_pos, &b.end_pos);
+            assert_eq!(ref_rev_cov, &b.ref_rev_cov);
+            assert_eq!(ref_fwd_cov, &b.ref_fwd_cov);
+            assert_eq!(total_pos_cov, &b.total_pos_cov);
+            assert_eq!(duprate.to_bits(), b.duprate.to_bits());
+            assert_eq!(genotype, &b.genotype);
+            assert_eq!(var_allele, &b.var_allele);
+            assert_eq!(ref_allele, &b.ref_allele);
+            assert_eq!(var_type, &b.var_type);
+            assert_eq!(debug, &b.debug);
+            assert_eq!(crispr, &b.crispr);
+            assert_eq!(sv, &b.sv);
+            assert_eq!(null_record, &b.null_record);
+        }
+
+        let mut parity_map = crate::javamap::JavaHashMap::new();
+        // Out-of-region without SV (skipped) vs with SV (kept)
+        let mut out_no_sv = Vars::new();
+        out_no_sv.variants.push(mk_variant(90, 90, "A", "G", 0.5));
+        parity_map.insert(90, out_no_sv);
+        let mut out_with_sv = Vars::new();
+        out_with_sv.sv = "95-210-4".to_string();
+        let mut v_sv_out = mk_variant(95, 95, "A", "<DEL>", 0.4);
+        v_sv_out.crispr = 7;
+        out_with_sv.variants.push(v_sv_out);
+        parity_map.insert(95, out_with_sv);
+
+        // Pos 105: empty variants without ref_variant (null_record under -p)
+        let mut empty_no_ref = Vars::new();
+        empty_no_ref.sv = "105-180-2".to_string();
+        parity_map.insert(105, empty_no_ref);
+
+        // Pos 110: empty variants with ref_variant
+        let mut empty_with_ref = Vars::new();
+        let mut ref_110 = mk_variant(110, 110, "C", "C", 1.0);
+        ref_110.var_type = "SNV".to_string();
+        ref_110.crispr = 3;
+        empty_with_ref.ref_variant = Some(ref_110);
+        empty_with_ref.sv = "110-190-1".to_string();
+        parity_map.insert(110, empty_with_ref);
+
+        // Pos 120: shifted-singleton WITHOUT ref_variant + non-empty sv
+        let mut shifted_no_ref = Vars::new();
+        shifted_no_ref.sv = "120-160-3".to_string();
+        shifted_no_ref
+            .variants
+            .push(mk_variant(122, 122, "G", "GTT", 0.6));
+        parity_map.insert(120, shifted_no_ref);
+
+        // Pos 130: shifted-singleton WITH ref_variant + non-empty sv
+        let mut shifted_with_ref = Vars::new();
+        shifted_with_ref.sv = "130-170-5".to_string();
+        let mut ref_130 = mk_variant(130, 130, "T", "T", 0.4);
+        ref_130.var_type = "SNV".to_string();
+        shifted_with_ref.ref_variant = Some(ref_130);
+        shifted_with_ref
+            .variants
+            .push(mk_variant(132, 134, "TAC", "T", 0.55));
+        parity_map.insert(130, shifted_with_ref);
+
+        // Pos 140: vvar.len() > 1 with sv != "", N-ref skip, Complex adj_complex, and
+        // shifted start_pos (must NOT trigger vvar.len() == 1 shifted-singleton branch even
+        // when one sibling is skipped for 'N' in ref_allele!)
+        let mut multi_sv = Vars::new();
+        multi_sv.sv = "140-199-8".to_string();
+        multi_sv.ref_variant = Some(mk_variant(140, 140, "A", "A", 0.2));
+        multi_sv
+            .variants
+            .push(mk_variant(140, 140, "AN", "AT", 0.5));
+        let mut v_complex = mk_variant(141, 144, "ACGT", "AGGT", 0.45);
+        v_complex.left_seq = "TT".to_string();
+        v_complex.right_seq = "CC".to_string();
+        v_complex.crispr = 9;
+        multi_sv.variants.push(v_complex);
+        multi_sv.variants.push(mk_variant(142, 142, "C", "A", 0.35));
+        parity_map.insert(140, multi_sv);
+
+        // Pos 150 & 151: multi-allelic VCF/intermediate bucket tie + higher-AF override + low-AF filter
+        let mut bucket_a = Vars::new();
+        bucket_a.variants.push(mk_variant(150, 150, "A", "G", 0.25));
+        bucket_a.variants.push(mk_variant(150, 150, "A", "T", 0.25));
+        bucket_a
+            .variants
+            .push(mk_variant(150, 150, "A", "C", 0.001));
+        bucket_a.variants.push(mk_variant(150, 150, "A", "A", 0.50));
+        parity_map.insert(150, bucket_a);
+        let mut bucket_b = Vars::new();
+        bucket_b.sv = "0-100-1".to_string();
+        bucket_b
+            .variants
+            .push(mk_variant(150, 180, "ACGT", "<INV>", 0.50));
+        parity_map.insert(151, bucket_b);
+
+        for pileup in [false, true] {
+            for emit_intermediate in [false, true] {
+                for crispr_site in [None, Some(150)] {
+                    let mut cfg = config.clone();
+                    cfg.pileup = pileup;
+                    cfg.emit_intermediate = emit_intermediate;
+                    cfg.crispr_cutting_site = crispr_site;
+                    let borrowed = simple_post_process(&cfg, &region, &parity_map, &splice);
+                    let owned =
+                        simple_post_process_owned(&cfg, &region, parity_map.clone(), &splice);
+                    assert_eq!(owned.len(), borrowed.len());
+                    for (got, want) in owned.iter().zip(borrowed.iter()) {
+                        assert_variant_fields_eq(got, want);
+                    }
+                }
+            }
+        }
     }
 }

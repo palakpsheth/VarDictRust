@@ -5314,10 +5314,10 @@ fn run_with_writer_inner<W: EngineWriter>(
             } else {
                 builder.build_aligned_variants(&var_data)
             };
-            let variants = crate::postprocess::simple::simple_post_process(
+            let variants = crate::postprocess::simple::simple_post_process_owned(
                 &config_clone,
                 &builder_region,
-                &aligned_variants,
+                aligned_variants,
                 &var_data.splice,
             );
 
@@ -5681,32 +5681,32 @@ fn run_amplicon<W: EngineWriter>(
             // map `continue` without output (AmpliconPostProcessModule.java:129-131),
             // so skipping them is output-identical while bounding the map by
             // data, not interval size.
-            let mut amplicons_on_positions: std::collections::BTreeMap<
-                i32,
-                Vec<(usize, &crate::regions::Region)>,
-            > = std::collections::BTreeMap::new();
             let mut positions: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
             for vars in &vars_per_amplicon {
                 positions.extend(vars.keys().copied());
             }
             // BTreeSet iterates ascending: satisfies the sweep precondition,
-            // and each covering list comes out in segment order — the same
-            // pairs the old per-position scan built, at O((P + A) log A).
+            // and each covering list comes out in segment order via cached Arc
+            // without materializing an intermediate BTreeMap<i32, Vec<_>>.
             let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
-            for p in positions {
-                let covering = sweep.covering_refs_at(p);
-                if !covering.is_empty() {
-                    amplicons_on_positions.insert(p, covering);
-                }
-            }
-
-            let results = crate::postprocess::amplicon::amplicon_post_process(
+            let mut results = Vec::new();
+            crate::postprocess::amplicon::amplicon_post_process_streaming(
                 &config_clone,
                 current_region,
                 &vars_per_amplicon,
-                &amplicons_on_positions,
+                positions.into_iter().filter_map(|p| {
+                    let cov = sweep.covering_arc_at(p);
+                    (!cov.is_empty()).then_some((p, cov))
+                }),
                 &splice,
+                &mut |av| {
+                    results.push(av);
+                    Ok(())
+                },
             )?;
+            if !config_clone.emit_intermediate {
+                results = crate::postprocess::amplicon::amplicon_select_vcf_rows(results);
+            }
 
             if config_clone.emit_intermediate {
                 let mut block = String::with_capacity(results.len().saturating_mul(256));
@@ -6157,11 +6157,11 @@ fn run_somatic<W: EngineWriter>(
                     }
                 };
 
-            let somatic_variants = crate::postprocess::somatic::somatic_post_process_at(
+            let somatic_variants = crate::postprocess::somatic::somatic_post_process_owned(
                 &config_clone,
                 &builder_region,
-                &aligned1,
-                &aligned2,
+                aligned1,
+                aligned2,
                 &splice,
                 Some(&pipeline_fn),
                 combined_max_rl,
