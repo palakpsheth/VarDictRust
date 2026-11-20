@@ -212,7 +212,12 @@ pub fn batch_tiles(
 /// Ports `RegionBuilder.java` (`Integer.parseInt(s.replaceAll(",", ""))`): rejects values
 /// above `i32::MAX` (`2_147_483_647`) instead of silently wrapping to negative `i32`.
 pub fn parse_int_with_commas(s: &str) -> Result<u32, VardictError> {
-    let clean = s.replace(',', "");
+    let trimmed = s.trim();
+    let clean: std::borrow::Cow<'_, str> = if !trimmed.contains(',') {
+        std::borrow::Cow::Borrowed(trimmed)
+    } else {
+        std::borrow::Cow::Owned(trimmed.replace(',', ""))
+    };
     let v = clean
         .trim()
         .parse::<u32>()

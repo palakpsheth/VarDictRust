@@ -6199,7 +6199,7 @@ fn run_somatic<W: EngineWriter>(
                                 sv.end_is_variant2,
                             );
                         }
-                        // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
+                        // ports SomaticOutputVariant.java:80, 193-194 (DEBUG = beginVariant.DEBUG)
                         if config_clone.debug {
                             block.push('\t');
                             block.push_str(&sv.variant1.debug);
@@ -6236,7 +6236,7 @@ fn run_somatic<W: EngineWriter>(
                                 sv.end_is_variant2,
                             );
                         }
-                        // ports SomaticOutputVariant.java:193-194 (DEBUG = tumor variant's)
+                        // ports SomaticOutputVariant.java:80, 193-194 (DEBUG = beginVariant.DEBUG)
                         if config_clone.debug {
                             line.push('\t');
                             line.push_str(&sv.variant1.debug);

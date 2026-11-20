@@ -4061,9 +4061,6 @@ fn partial_pipeline_paths(
         var_data.splice = parser.splice;
         var_data.mnp = parser.mnp;
         var_data.splice_count = parser.splice_count;
-        if run_res.is_ok() {
-            var_data.max_read_length = var_data.max_read_length.max(parser.max_read_length);
-        }
         run_res
     };
     var_data.sv_structures = orig_sv_structures;
@@ -6021,6 +6018,85 @@ mod tests {
         huge_lens.insert(chr.to_string(), (u32::MAX as usize).saturating_add(500));
         assert_eq!(saturated_chr_len(&huge_lens, chr), u32::MAX);
         assert_eq!(saturated_chr_len(&huge_lens, "missing_chr"), 0);
+
+        // Ports StructuralVariantsProcessor.java:1508 — `partial_pipeline_paths` seeds
+        // `CigarParser` with `var_data.max_read_length` and discards the returned scope,
+        // so a longer 151 bp mate-window read must NOT write back to `var_data.max_read_length`.
+        let bam_151 = dir.path().join("mate_151bp.bam");
+        let bai_151 = dir.path().join("mate_151bp.bam.bai");
+        {
+            let header = sam::Header::builder()
+                .add_reference_sequence(
+                    chr,
+                    sam::header::record::value::Map::<
+                        sam::header::record::value::map::ReferenceSequence,
+                    >::new(NonZeroUsize::new(200).unwrap()),
+                )
+                .build();
+            let mut writer = bam::io::Writer::new(std::fs::File::create(&bam_151).unwrap());
+            writer.write_header(&header).unwrap();
+
+            let cigar: Cigar = [Op::new(Kind::Match, 151)].into_iter().collect();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(0i32))]
+                .into_iter()
+                .collect();
+            let rec = RecordBuf::builder()
+                .set_name("mate_151")
+                .set_flags(sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(10usize).unwrap())
+                .set_mapping_quality(sam::alignment::record::MappingQuality::try_from(60).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(Sequence::from(vec![b'A'; 151]))
+                .set_quality_scores(QualityScores::from(vec![35u8; 151]))
+                .set_data(data)
+                .build();
+            let start_vp = writer.get_ref().virtual_position();
+            writer.write_alignment_record(&header, &rec).unwrap();
+            let end_vp = writer.get_ref().virtual_position();
+            writer.try_finish().unwrap();
+
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            indexer
+                .add_record(
+                    Some((
+                        0,
+                        Position::try_from(10usize).unwrap(),
+                        Position::try_from(160usize).unwrap(),
+                        true,
+                    )),
+                    Chunk::new(start_vp, end_vp),
+                )
+                .unwrap();
+            bam::bai::io::Writer::new(std::fs::File::create(&bai_151).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+        }
+        let mut ref_200 = Reference::new();
+        ref_200.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: chr.to_string(),
+            sequence_start: 1,
+            sequence_end: 200,
+        });
+        ref_200.region_sequences.push(vec![b'A'; 200]);
+        ref_200
+            .reference_sequences
+            .insert(chr.to_string(), vec![b'A'; 200]);
+        let mut vd_mrl = crate::variations::VariationData::default();
+        vd_mrl.max_read_length = 100;
+        let bam_151_paths = vec![bam_151.to_string_lossy().into_owned()];
+        partial_pipeline_paths(
+            &bam_151_paths,
+            &mut vd_mrl,
+            &mut ref_200,
+            chr,
+            1,
+            200,
+            &config,
+            &chr_lengths,
+        )
+        .unwrap();
+        assert_eq!(vd_mrl.max_read_length, 100);
     }
 
     #[test]

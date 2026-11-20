@@ -30,31 +30,41 @@ pub struct SamRecord {
 /// and populated for `"=ABCDGHKMNRSTVWY"` at `b` and `b + 32`).
 ///
 /// Bytes `>= 0x7F` (`127..=255`) are out of bounds in HTSJDK's `byte[127]` table and return `None`.
+const CRAM_BASE_LUT: [u8; 127] = build_cram_base_lut();
+
+const fn build_cram_base_lut() -> [u8; 127] {
+    let mut table = [b'N'; 127];
+    let mut rem: &mut [u8] = &mut table;
+    let mut b: u8 = 0;
+    while let [slot, rest @ ..] = rem {
+        *slot = match b {
+            b'=' | b']' => b'=',
+            b'A' | b'a' => b'A',
+            b'B' | b'b' => b'B',
+            b'C' | b'c' => b'C',
+            b'D' | b'd' => b'D',
+            b'G' | b'g' => b'G',
+            b'H' | b'h' => b'H',
+            b'K' | b'k' => b'K',
+            b'M' | b'm' => b'M',
+            b'N' | b'n' => b'N',
+            b'R' | b'r' => b'R',
+            b'S' | b's' => b'S',
+            b'T' | b't' => b'T',
+            b'V' | b'v' => b'V',
+            b'W' | b'w' => b'W',
+            b'Y' | b'y' => b'Y',
+            _ => b'N',
+        };
+        rem = rest;
+        b += 1;
+    }
+    table
+}
+
 #[inline]
 pub(crate) fn normalize_cram_base(b: u8) -> Option<u8> {
-    if b >= 127 {
-        return None;
-    }
-    let norm = match b {
-        b'=' | b']' => b'=',
-        b'A' | b'a' => b'A',
-        b'B' | b'b' => b'B',
-        b'C' | b'c' => b'C',
-        b'D' | b'd' => b'D',
-        b'G' | b'g' => b'G',
-        b'H' | b'h' => b'H',
-        b'K' | b'k' => b'K',
-        b'M' | b'm' => b'M',
-        b'N' | b'n' => b'N',
-        b'R' | b'r' => b'R',
-        b'S' | b's' => b'S',
-        b'T' | b't' => b'T',
-        b'V' | b'v' => b'V',
-        b'W' | b'w' => b'W',
-        b'Y' | b'y' => b'Y',
-        _ => b'N',
-    };
-    Some(norm)
+    CRAM_BASE_LUT.get(usize::from(b)).copied()
 }
 
 const BAM_SEQ_PAIR_LUT: [[u8; 2]; 256] = build_bam_seq_pair_lut();
@@ -3632,6 +3642,8 @@ pub struct SharedCramMeta {
     indexed_crai: IndexedCrai,
     spans_by_offset: HashMap<u64, Vec<(usize, usize, usize)>>,
     fasta_repo: std::sync::Arc<SharedFastaRepo>,
+    #[cfg(test)]
+    decodes: std::sync::atomic::AtomicUsize,
 }
 
 impl std::fmt::Debug for SharedCramMeta {
@@ -3986,6 +3998,8 @@ fn acquire_cram_meta(
         indexed_crai,
         spans_by_offset,
         fasta_repo,
+        #[cfg(test)]
+        decodes: std::sync::atomic::AtomicUsize::new(0),
     });
     #[cfg(test)]
     if let Some(hook) = TEST_MID_COLD_OPEN_HOOK
@@ -4093,10 +4107,6 @@ fn validate_cram_span(
 
 const CRAM_CONTAINER_CACHE_SHARDS: usize = 8;
 const CRAM_CONTAINER_SLOTS_PER_SHARD: usize = 4;
-
-#[cfg(test)]
-static CRAM_CONTAINER_DECODE_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
 
 #[derive(Clone, Debug)]
 struct CachedCramRecord {
@@ -5846,7 +5856,8 @@ fn fetch_cram_container_in(
     crate::count!(CramContainerDecodes);
     #[cfg(test)]
     if is_global_cache {
-        CRAM_CONTAINER_DECODE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        meta.decodes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     #[cfg(test)]
     if let Some(shard_mutex) = cache.get(shard_idx) {
@@ -7351,51 +7362,80 @@ mod tests {
         };
 
         NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
-        let decodes_before = CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
         let bam_records = query_region(&slice_bam, "chr7", Pos0(100), Pos0(600), &config).unwrap();
-        let cram_records = query_region(&cram_path, "chr7", Pos0(100), Pos0(600), &config).unwrap();
-
         assert_eq!(bam_records.len(), records.len());
-        assert_eq!(
-            bam_records.len(),
-            cram_records.len(),
-            "BAM and CRAM must have the exact same number of reads"
-        );
-        for (i, (bam_rec, cram_rec)) in bam_records.iter().zip(cram_records.iter()).enumerate() {
-            assert_eq!(bam_rec, cram_rec, "Parity mismatch at record {}", i);
-        }
-
-        // 6. Verify streaming CramFeed (`query_region_iter`) matches `query_region`
-        //    and serves repeated sub-window queries from `CRAM_CONTAINER_CACHE` with 0 re-decodes.
-        let decodes_after_1 =
-            CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        assert!(
-            decodes_after_1 > decodes_before,
-            "first CRAM query must decode container"
-        );
-        let mut feed1 =
-            query_region_iter(&cram_path, "chr7", Pos0(100), Pos0(600), &config).unwrap();
-        let mut iter_records_1 = Vec::new();
         let mut reusable_rec = SamRecord::new();
-        while feed1.next_into(&mut reusable_rec).unwrap() {
-            iter_records_1.push(reusable_rec.clone());
-        }
-        assert_eq!(iter_records_1, cram_records);
 
-        let iter_records_2: Vec<SamRecord> =
-            query_region_iter(&cram_path, "chr7", Pos0(180), Pos0(420), &config)
-                .unwrap()
-                .map(|r| r.unwrap())
-                .collect();
-        let expected_sub: Vec<SamRecord> =
-            query_region(&cram_path, "chr7", Pos0(180), Pos0(420), &config).unwrap();
-        assert_eq!(iter_records_2, expected_sub);
-        let decodes_after_2 =
-            CRAM_CONTAINER_DECODE_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(
-            decodes_after_2, decodes_after_1,
-            "second CRAM sub-window query must hit CRAM_CONTAINER_CACHE without re-decoding"
-        );
+        // Retry across `BAM_CACHE_EPOCH` bumps from sibling parallel tests, explicitly
+        // evicting `(meta.id, _)` at the top of each attempt so `TEST_META_ID_BASE`-pinned
+        // cache entries from a partial prior attempt cannot mask `decodes_after_1 > decodes_before`.
+        loop {
+            let ep0 = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+            let meta = acquire_cram_meta(&cram_path, &config).unwrap();
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                continue;
+            }
+            for shard_mutex in cram_container_cache_shards() {
+                shard_mutex
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .lru
+                    .entries
+                    .retain(|((mid, _), _)| *mid != meta.id);
+            }
+            let decodes_before = meta.decodes.load(std::sync::atomic::Ordering::Relaxed);
+            let cram_records =
+                query_region(&cram_path, "chr7", Pos0(100), Pos0(600), &config).unwrap();
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                continue;
+            }
+
+            assert_eq!(
+                bam_records.len(),
+                cram_records.len(),
+                "BAM and CRAM must have the exact same number of reads"
+            );
+            for (i, (bam_rec, cram_rec)) in bam_records.iter().zip(cram_records.iter()).enumerate()
+            {
+                assert_eq!(bam_rec, cram_rec, "Parity mismatch at record {}", i);
+            }
+
+            // 6. Verify streaming CramFeed (`query_region_iter`) matches `query_region`
+            //    and serves repeated sub-window queries from `CRAM_CONTAINER_CACHE` with 0 re-decodes.
+            let decodes_after_1 = meta.decodes.load(std::sync::atomic::Ordering::Relaxed);
+            assert!(
+                decodes_after_1 > decodes_before,
+                "first CRAM query must decode container"
+            );
+            let mut feed1 =
+                query_region_iter(&cram_path, "chr7", Pos0(100), Pos0(600), &config).unwrap();
+            let mut iter_records_1 = Vec::new();
+            while feed1.next_into(&mut reusable_rec).unwrap() {
+                iter_records_1.push(reusable_rec.clone());
+            }
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                continue;
+            }
+            assert_eq!(iter_records_1, cram_records);
+
+            let iter_records_2: Vec<SamRecord> =
+                query_region_iter(&cram_path, "chr7", Pos0(180), Pos0(420), &config)
+                    .unwrap()
+                    .map(|r| r.unwrap())
+                    .collect();
+            let expected_sub: Vec<SamRecord> =
+                query_region(&cram_path, "chr7", Pos0(180), Pos0(420), &config).unwrap();
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                continue;
+            }
+            assert_eq!(iter_records_2, expected_sub);
+            let decodes_after_2 = meta.decodes.load(std::sync::atomic::Ordering::Relaxed);
+            assert_eq!(
+                decodes_after_2, decodes_after_1,
+                "second CRAM sub-window query must hit CRAM_CONTAINER_CACHE without re-decoding"
+            );
+            break;
+        }
 
         // 7. Verify empty-window short-circuit (`start > end`) and missing-contig error on CRAM.
         let mut empty_cram =

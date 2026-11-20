@@ -71,33 +71,6 @@ pub struct SomaticVariant {
     pub end_is_variant2: bool,
 }
 
-enum SomaticVarIter<'a> {
-    Borrowed(std::slice::Iter<'a, Variant>),
-    Owned(std::vec::IntoIter<Variant>),
-}
-
-impl<'a> Iterator for SomaticVarIter<'a> {
-    type Item = std::borrow::Cow<'a, Variant>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            Self::Borrowed(it) => it.next().map(std::borrow::Cow::Borrowed),
-            Self::Owned(it) => it.next().map(std::borrow::Cow::Owned),
-        }
-    }
-}
-
-impl SomaticVarIter<'_> {
-    #[inline]
-    fn is_empty(&self) -> bool {
-        match self {
-            Self::Borrowed(it) => it.as_slice().is_empty(),
-            Self::Owned(it) => it.as_slice().is_empty(),
-        }
-    }
-}
-
 fn collect_sorted_region_positions(
     region: &Region,
     aligned_variants_bam1: &JavaHashMap<i32, Vars>,
@@ -114,7 +87,6 @@ fn collect_sorted_region_positions(
     all_positions
 }
 
-#[allow(clippy::too_many_arguments)]
 fn dispatch_somatic_position(
     config: &Config,
     position: i32,
@@ -306,27 +278,7 @@ fn calling_for_one_sample(
     if variants.variants.is_empty() {
         return;
     }
-    let (ref_var_cow, var_iter, sv_cow): (
-        Option<std::borrow::Cow<'_, Variant>>,
-        SomaticVarIter<'_>,
-        std::borrow::Cow<'_, str>,
-    ) = match variants {
-        std::borrow::Cow::Borrowed(vars) => (
-            vars.ref_variant.as_ref().map(std::borrow::Cow::Borrowed),
-            SomaticVarIter::Borrowed(vars.variants.iter()),
-            std::borrow::Cow::Borrowed(vars.sv.as_str()),
-        ),
-        std::borrow::Cow::Owned(Vars {
-            ref_variant,
-            variants,
-            sv,
-            ..
-        }) => (
-            ref_variant.map(std::borrow::Cow::Owned),
-            SomaticVarIter::Owned(variants.into_iter()),
-            std::borrow::Cow::Owned(sv),
-        ),
-    };
+    let (ref_var_cow, var_iter, sv_cow) = super::unpack_cow_vars(variants);
 
     let start_idx = results.len();
     for variant_cow in var_iter {
@@ -360,6 +312,7 @@ fn calling_for_one_sample(
             tumor.msint = v.msint;
             tumor.left_seq = v.left_seq.clone();
             tumor.right_seq = v.right_seq.clone();
+            tumor.debug.clone_from(&v.debug);
             results.push(SomaticVariant {
                 variant1: tumor,
                 variant2: Some(v),
@@ -404,7 +357,6 @@ fn calling_for_one_sample(
 /// Run analysis of variations from BAM1 and BAM2.
 ///
 /// Ports `SomaticPostProcessModule.callingForBothSamples()`.
-#[allow(clippy::too_many_arguments)]
 fn calling_for_both_samples(
     config: &Config,
     position: i32,
@@ -450,7 +402,6 @@ fn calling_for_both_samples(
 /// Analyse and output variations from BAM1 based on variations from BAM2.
 ///
 /// Ports `SomaticPostProcessModule.printVariationsFromFirstSample()`.
-#[allow(clippy::too_many_arguments)]
 fn print_variations_from_first_sample(
     config: &Config,
     position: i32,
@@ -474,27 +425,7 @@ fn print_variations_from_first_sample(
         if v2.variants.is_empty() {
             return;
         }
-        let (v2_ref_cow, v2_iter, sv2_cow): (
-            Option<std::borrow::Cow<'_, Variant>>,
-            SomaticVarIter<'_>,
-            std::borrow::Cow<'_, str>,
-        ) = match v2 {
-            std::borrow::Cow::Borrowed(vars) => (
-                vars.ref_variant.as_ref().map(std::borrow::Cow::Borrowed),
-                SomaticVarIter::Borrowed(vars.variants.iter()),
-                std::borrow::Cow::Borrowed(vars.sv.as_str()),
-            ),
-            std::borrow::Cow::Owned(Vars {
-                ref_variant,
-                variants,
-                sv,
-                ..
-            }) => (
-                ref_variant.map(std::borrow::Cow::Owned),
-                SomaticVarIter::Owned(variants.into_iter()),
-                std::borrow::Cow::Owned(sv),
-            ),
-        };
+        let (v2_ref_cow, v2_iter, sv2_cow) = super::unpack_cow_vars(v2);
         let start_idx = results.len();
         for v2var_cow in v2_iter {
             let vtype = v2var_cow.var_type_cow();
@@ -552,6 +483,7 @@ fn print_variations_from_first_sample(
                 var_for_print.msint = v2var_out.msint;
                 var_for_print.left_seq = v2var_out.left_seq.clone();
                 var_for_print.right_seq = v2var_out.right_seq.clone();
+                var_for_print.debug.clone_from(&v2var_out.debug);
                 results.push(SomaticVariant {
                     variant1: var_for_print,
                     variant2: Some(v2var_out),
@@ -585,33 +517,8 @@ fn print_variations_from_first_sample(
     // branch reads the mutated `v2.variants.get(0).totalPosCoverage`.
     // Keep `v2` via `Cow` (`to_mut()` mutates in place on `Cow::Owned` and clones lazily
     // on `Cow::Borrowed` only when a subsequent tumor variant exists at this locus, #45).
-    let (v1_ref_cow, v1_len, v1_iter, sv1_cow): (
-        Option<std::borrow::Cow<'_, Variant>>,
-        usize,
-        SomaticVarIter<'_>,
-        std::borrow::Cow<'_, str>,
-    ) = match v1 {
-        std::borrow::Cow::Borrowed(vars) => (
-            vars.ref_variant.as_ref().map(std::borrow::Cow::Borrowed),
-            vars.variants.len(),
-            SomaticVarIter::Borrowed(vars.variants.iter()),
-            std::borrow::Cow::Borrowed(vars.sv.as_str()),
-        ),
-        std::borrow::Cow::Owned(Vars {
-            ref_variant,
-            variants,
-            sv,
-            ..
-        }) => {
-            let len = variants.len();
-            (
-                ref_variant.map(std::borrow::Cow::Owned),
-                len,
-                SomaticVarIter::Owned(variants.into_iter()),
-                std::borrow::Cow::Owned(sv),
-            )
-        }
-    };
+    let (v1_ref_cow, v1_iter, sv1_cow) = super::unpack_cow_vars(v1);
+    let v1_len = v1_iter.len();
 
     let start_idx = results.len();
     for (idx, vref_cow) in v1_iter.enumerate() {
@@ -772,7 +679,6 @@ fn print_variations_from_first_sample(
 ///
 /// Ports `SomaticPostProcessModule.printVariationsFromSecondSample()`
 /// (SomaticPostProcessModule.java:285-336).
-#[allow(clippy::too_many_arguments)]
 fn print_variations_from_second_sample(
     config: &Config,
     v1: std::borrow::Cow<'_, Vars>,
@@ -792,27 +698,7 @@ fn print_variations_from_second_sample(
             ref_variant.map(std::borrow::Cow::Owned)
         }
     };
-    let (v2_ref_cow, mut v2_iter, sv2_cow): (
-        Option<std::borrow::Cow<'_, Variant>>,
-        SomaticVarIter<'_>,
-        std::borrow::Cow<'_, str>,
-    ) = match v2 {
-        std::borrow::Cow::Borrowed(vars) => (
-            vars.ref_variant.as_ref().map(std::borrow::Cow::Borrowed),
-            SomaticVarIter::Borrowed(vars.variants.iter()),
-            std::borrow::Cow::Borrowed(vars.sv.as_str()),
-        ),
-        std::borrow::Cow::Owned(Vars {
-            ref_variant,
-            variants,
-            sv,
-            ..
-        }) => (
-            ref_variant.map(std::borrow::Cow::Owned),
-            SomaticVarIter::Owned(variants.into_iter()),
-            std::borrow::Cow::Owned(sv),
-        ),
-    };
+    let (v2_ref_cow, mut v2_iter, sv2_cow) = super::unpack_cow_vars(v2);
 
     let start_idx = results.len();
     while let Some(v2var_cow) = v2_iter.next() {
@@ -879,6 +765,7 @@ fn print_variations_from_second_sample(
                 t.msint = v2var.msint;
                 t.left_seq = v2var.left_seq.clone();
                 t.right_seq = v2var.right_seq.clone();
+                t.debug.clone_from(&v2var.debug);
                 t.duprate = 0.0; // fresh Variant in Java; never set by combineAnalysis
                 t
             }
@@ -907,6 +794,7 @@ fn print_variations_from_second_sample(
                 var_for_print.msint = v2var.msint;
                 var_for_print.left_seq = v2var.left_seq.clone();
                 var_for_print.right_seq = v2var.right_seq.clone();
+                var_for_print.debug.clone_from(&v2var.debug);
                 var_for_print
             }
         };
@@ -1287,14 +1175,120 @@ mod tests {
 
         let mut bam2 = crate::javamap::JavaHashMap::new();
         let mut vars = Vars::new();
-        vars.variants.push(make_good_variant("G", "A", "G", 0.10));
+        let mut v2_del = make_good_variant("G", "A", "G", 0.10);
+        v2_del.debug = "BAM2_VAR_DBG".to_string();
+        vars.variants.push(v2_del);
         vars.sv = String::new();
         bam2.insert(150, vars);
 
-        let results = somatic_post_process(&config, &region, &bam1, &bam2, &splice, None, 150);
+        // 1) Deletion (`callingForOneSample` `:121`): beginVariant = v2var -> DEBUG = v2var.DEBUG
+        let results = somatic_post_process_at(&config, &region, &bam1, &bam2, &splice, None, 150);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].status, DELETION);
         assert!(results[0].variant2.is_some());
+        assert_eq!(results[0].variant1.debug, "BAM2_VAR_DBG");
+        let results_owned =
+            somatic_post_process_owned(&config, &region, bam1, bam2, &splice, None, 150);
+        assert_eq!(results_owned[0].variant1.debug, "BAM2_VAR_DBG");
+
+        let mk_v1_ref = || {
+            let mut r = Variant::new();
+            r.description = "A".to_string();
+            r.ref_allele = "A".to_string();
+            r.var_allele = "A".to_string();
+            r.total_pos_cov = 80;
+            r.ref_fwd_cov = 40;
+            r.ref_rev_cov = 40;
+            r.fwd = 40;
+            r.rev = 40;
+            r.debug = "BAM1_REF_DBG".to_string();
+            r
+        };
+
+        // 2) `print_variations_from_first_sample` StrongLOH (`:270`): beginVariant = v2var
+        let mut bam1_b2 = crate::javamap::JavaHashMap::new();
+        let mut vars1_b2 = Vars::new();
+        let mut v1_bad = make_good_variant("C", "A", "C", 0.002); // fails freq -> !first_passes
+        v1_bad.debug = "BAM1_BAD_DBG".to_string();
+        vars1_b2.variants.push(v1_bad);
+        vars1_b2.ref_variant = Some(mk_v1_ref());
+        bam1_b2.insert(150, vars1_b2);
+
+        let mut bam2_b2 = crate::javamap::JavaHashMap::new();
+        let mut vars2_b2 = Vars::new();
+        let mut v2_loh1 = make_good_variant("G", "A", "G", 0.40);
+        v2_loh1.debug = "BAM2_VAR_DBG".to_string();
+        vars2_b2.variants.push(v2_loh1);
+        bam2_b2.insert(150, vars2_b2);
+
+        let res_b2 =
+            somatic_post_process_at(&config, &region, &bam1_b2, &bam2_b2, &splice, None, 150);
+        assert_eq!(res_b2.len(), 1);
+        assert_eq!(res_b2[0].status, STRONG_LOH);
+        assert_eq!(res_b2[0].variant1.debug, "BAM2_VAR_DBG");
+        let res_b2_owned =
+            somatic_post_process_owned(&config, &region, bam1_b2, bam2_b2, &splice, None, 150);
+        assert_eq!(res_b2_owned[0].variant1.debug, "BAM2_VAR_DBG");
+
+        // 3) `print_variations_from_second_sample` CombineVerdict::Germline (`:333`): beginVariant = v2var
+        let mut bam1_b3 = crate::javamap::JavaHashMap::new();
+        let mut vars1_b3 = Vars::new();
+        vars1_b3.ref_variant = Some(mk_v1_ref());
+        bam1_b3.insert(150, vars1_b3);
+
+        let mut bam2_b3 = crate::javamap::JavaHashMap::new();
+        let mut vars2_b3 = Vars::new();
+        let mut v2_ins = make_insertion_variant();
+        v2_ins.debug = "BAM2_VAR_DBG".to_string();
+        vars2_b3.variants.push(v2_ins);
+        bam2_b3.insert(150, vars2_b3);
+
+        let germ_pipe = combined_pipeline(150, Some("+GAACCACTGAGACAGGA"), 7, 20);
+        let germ_adapted = adapt_pipeline(&germ_pipe);
+        let res_b3 = somatic_post_process_at(
+            &config,
+            &region,
+            &bam1_b3,
+            &bam2_b3,
+            &splice,
+            Some(&germ_adapted),
+            150,
+        );
+        assert_eq!(res_b3.len(), 1);
+        assert_eq!(res_b3[0].status, GERMLINE);
+        assert_eq!(res_b3[0].variant1.debug, "BAM2_VAR_DBG");
+        let res_b3_owned = somatic_post_process_owned(
+            &config,
+            &region,
+            bam1_b3,
+            bam2_b3,
+            &splice,
+            Some(&germ_adapted),
+            150,
+        );
+        assert_eq!(res_b3_owned[0].variant1.debug, "BAM2_VAR_DBG");
+
+        // 4) `print_variations_from_second_sample` None StrongLOH (`:333`): beginVariant = v2var
+        let mut bam1_b4 = crate::javamap::JavaHashMap::new();
+        let mut vars1_b4 = Vars::new();
+        vars1_b4.ref_variant = Some(mk_v1_ref());
+        bam1_b4.insert(150, vars1_b4);
+
+        let mut bam2_b4 = crate::javamap::JavaHashMap::new();
+        let mut vars2_b4 = Vars::new();
+        let mut v2_loh2 = make_good_variant("G", "A", "G", 0.40);
+        v2_loh2.debug = "BAM2_VAR_DBG".to_string();
+        vars2_b4.variants.push(v2_loh2);
+        bam2_b4.insert(150, vars2_b4);
+
+        let res_b4 =
+            somatic_post_process_at(&config, &region, &bam1_b4, &bam2_b4, &splice, None, 150);
+        assert_eq!(res_b4.len(), 1);
+        assert_eq!(res_b4[0].status, STRONG_LOH);
+        assert_eq!(res_b4[0].variant1.debug, "BAM2_VAR_DBG");
+        let res_b4_owned =
+            somatic_post_process_owned(&config, &region, bam1_b4, bam2_b4, &splice, None, 150);
+        assert_eq!(res_b4_owned[0].variant1.debug, "BAM2_VAR_DBG");
     }
 
     #[test]
