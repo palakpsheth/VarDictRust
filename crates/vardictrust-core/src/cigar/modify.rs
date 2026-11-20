@@ -748,10 +748,7 @@ pub(crate) fn step_combine_dig_s_dig_m(
 
 #[inline]
 fn unique_seed_map_pos(seed: &SeedMap, rc_seed: &[u8]) -> Option<u32> {
-    match seed.get(rc_seed) {
-        Some([pos]) => Some(*pos),
-        _ => None,
-    }
+    seed.get_unique(rc_seed)
 }
 
 #[inline]
