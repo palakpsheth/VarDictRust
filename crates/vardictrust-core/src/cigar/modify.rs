@@ -204,6 +204,7 @@ fn is_regex_decimal_digit(ch: char) -> bool {
             | '\u{FF10}'..='\u{FF19}'
             | '\u{104A0}'..='\u{104A9}'
             | '\u{10D30}'..='\u{10D39}'
+            | '\u{10D40}'..='\u{10D49}'
             | '\u{11066}'..='\u{1106F}'
             | '\u{110F0}'..='\u{110F9}'
             | '\u{11136}'..='\u{1113F}'
@@ -213,20 +214,26 @@ fn is_regex_decimal_digit(ch: char) -> bool {
             | '\u{114D0}'..='\u{114D9}'
             | '\u{11650}'..='\u{11659}'
             | '\u{116C0}'..='\u{116C9}'
+            | '\u{116D0}'..='\u{116E3}'
             | '\u{11730}'..='\u{11739}'
             | '\u{118E0}'..='\u{118E9}'
             | '\u{11950}'..='\u{11959}'
+            | '\u{11BF0}'..='\u{11BF9}'
             | '\u{11C50}'..='\u{11C59}'
             | '\u{11D50}'..='\u{11D59}'
             | '\u{11DA0}'..='\u{11DA9}'
             | '\u{11F50}'..='\u{11F59}'
+            | '\u{16130}'..='\u{16139}'
             | '\u{16A60}'..='\u{16A69}'
             | '\u{16AC0}'..='\u{16AC9}'
             | '\u{16B50}'..='\u{16B59}'
+            | '\u{16D70}'..='\u{16D79}'
+            | '\u{1CCF0}'..='\u{1CCF9}'
             | '\u{1D7CE}'..='\u{1D7FF}'
             | '\u{1E140}'..='\u{1E149}'
             | '\u{1E2F0}'..='\u{1E2F9}'
             | '\u{1E4F0}'..='\u{1E4F9}'
+            | '\u{1E5F1}'..='\u{1E5FA}'
             | '\u{1E950}'..='\u{1E959}'
             | '\u{1FBF0}'..='\u{1FBF9}'
     )
@@ -803,7 +810,13 @@ fn validate_cigar_element_lengths(s: &str) -> Result<(), crate::types::VardictEr
             }
             idx = d_end;
         } else if start == idx {
-            idx = step_past_current_run(s, idx);
+            idx += if bytes.get(idx).is_some_and(u8::is_ascii) {
+                1
+            } else {
+                s.get(idx..)
+                    .and_then(|t| t.chars().next())
+                    .map_or(1, char::len_utf8)
+            };
         }
     }
     Ok(())
@@ -3549,6 +3562,10 @@ mod tests {
             "10M-5M",
             "10M-1M5S",
             "0S10M",
+            "A-5M",
+            "5S\n-5M",
+            "10Z-5M",
+            "10ä-5M",
             "5S\n10M",
             "5S\n10M5S",
             "10٠M",
@@ -3559,43 +3576,10 @@ mod tests {
             assert_byte_matchers_equal_regex(special);
         }
 
-        // Verify `is_regex_decimal_digit` matches `regex::Regex` `\d` on ASCII + Unicode boundaries.
+        // Verify `is_regex_decimal_digit` matches `regex::Regex` `\d` across every Unicode scalar value.
         let re_dig = crate::util::static_regex(r"^\d$");
         let mut ch_buf = [0u8; 4];
-        for ch in [
-            '\0',
-            '\n',
-            '/',
-            '0',
-            '9',
-            ':',
-            'D',
-            'H',
-            'I',
-            'M',
-            'S',
-            '²',
-            '½',
-            'ä',
-            '€',
-            '🧬',
-            '\u{065F}',
-            '\u{0660}',
-            '\u{0669}',
-            '\u{066A}',
-            '\u{FF0F}',
-            '\u{FF10}',
-            '\u{FF19}',
-            '\u{FF1A}',
-            '\u{1D7CD}',
-            '\u{1D7CE}',
-            '\u{1D7FF}',
-            '\u{1D800}',
-            '\u{1FBEF}',
-            '\u{1FBF0}',
-            '\u{1FBF9}',
-            '\u{1FBFA}',
-        ] {
+        for ch in (0..=0x10FFFFu32).filter_map(char::from_u32) {
             let s = ch.encode_utf8(&mut ch_buf);
             assert_eq!(
                 is_regex_decimal_digit(ch),
@@ -4871,6 +4855,11 @@ mod tests {
             "10½1I5M1D20M",
             "10٠1I5M1D20M",
             "5S10٠1I5M1D20M",
+            "10\u{10D40}1I5M1D20M",
+            "A-5M",
+            "5S\n-5M",
+            "10Z-5M",
+            "10ä-5M",
             "10H1I5M1D20M",
             "10D1I5M1D20M",
             "10H1I5M1I4M1D20M",

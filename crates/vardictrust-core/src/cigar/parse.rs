@@ -7788,6 +7788,43 @@ mod tests {
         assert_post_region_parity(&rec_post_del, &cfg_fast, "post_del_realign1");
         assert_post_region_parity(&rec_post_del, &cfg_norealign, "post_del_realign0");
 
+        // Active post-region indel grafting at `i == indel_prox_start` (`i = 169`) + `find_offset` (`toffset = 2`):
+        let mut seq_171_del_graft = seq_171.clone();
+        seq_171_del_graft[169] = b'C'; // mismatch at `i == indel_prox_start` (`start = 259`) triggers `grafted = true`
+        let mut tail_10m = [b'A'; 10];
+        tail_10m[1] = b'G'; // mismatch at `vi = 1` (8 bp from 3' end) triggers `find_offset` `toffset == 2` -> `ref_coverage` at 265..=266
+        seq_171_del_graft.extend_from_slice(&tail_10m);
+        let rec_post_del_graft = SamRecord {
+            name: b"r_post_del_graft".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(90)),
+            alignment_end: Some(Pos1(274)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (171, CigarKind::Match),
+                (4, CigarKind::Deletion),
+                (10, CigarKind::Match),
+            ],
+            sequence: seq_171_del_graft,
+            quality_scores: vec![b'I'; 181],
+            nm: Some(10),
+            ..SamRecord::default()
+        };
+        assert_post_region_parity(&rec_post_del_graft, &cfg_fast, "post_del_graft_find_offset");
+        let mut p_graft_check = CigarParser::new(&post_ref, &region, &cfg_fast, true, 0, 0, 200);
+        p_graft_check.parse_cigar(&rec_post_del_graft).unwrap();
+        assert_eq!(
+            p_graft_check.ref_coverage.get(&265),
+            Some(&1),
+            "grafted post-region deletion + find_offset must record ref_coverage at 265"
+        );
+        assert_eq!(
+            p_graft_check.ref_coverage.get(&266),
+            Some(&1),
+            "grafted post-region deletion + find_offset must record ref_coverage at 266"
+        );
+
         let mut seq_171_sc = seq_171.clone();
         seq_171_sc.extend_from_slice(&[b'T'; 15]);
         let rec_post_sc = SamRecord {
