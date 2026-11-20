@@ -7,12 +7,15 @@ Conforms strictly to the Python Standard Library purity constraint (zero PyPI pa
 """
 
 import importlib.util
+import json
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent.parent
@@ -180,6 +183,118 @@ class TestBiocondaRecipe(unittest.TestCase):
                     dry.stdout,
                     f"run_deep_fuzz.sh --dry-run schedule missing {target_name}",
                 )
+
+            # Verify artifact staging, stale-artifact cleanup across re-runs,
+            # summary.json 1-to-1 alignment with $ART_OUT_DIR, and SIGTERM -> 130 exit.
+            mock_bin = pathlib.Path(tmp_dir) / "mock_bin"
+            mock_bin.mkdir(parents=True, exist_ok=True)
+            mock_cargo = mock_bin / "cargo"
+            mock_cargo.write_text(
+                f"#!{sys.executable}\n"
+                "import os, pathlib, sys, time\n"
+                "args = sys.argv[1:]\n"
+                "if args[:3] == ['+nightly', 'fuzz', '--version']:\n"
+                "    print('cargo-fuzz 0.12.0')\n"
+                "    sys.exit(0)\n"
+                "if args[:3] == ['+nightly', 'fuzz', 'build']:\n"
+                "    sys.exit(0)\n"
+                "if len(args) >= 4 and args[:3] == ['+nightly', 'fuzz', 'run']:\n"
+                "    tgt = args[3]\n"
+                "    marker = os.environ.get('MOCK_WORKER_MARKER', '')\n"
+                "    if marker:\n"
+                "        pathlib.Path(marker).write_text(tgt, encoding='utf-8')\n"
+                "        time.sleep(10)\n"
+                "        sys.exit(0)\n"
+                "    art_prefix = ''\n"
+                "    for a in args:\n"
+                "        if a.startswith('-artifact_prefix='):\n"
+                "            art_prefix = a.split('=', 1)[1]\n"
+                "    if os.environ.get('MOCK_CRASH_TARGET') == tgt and art_prefix:\n"
+                "        p = pathlib.Path(art_prefix) / 'crash-mock123'\n"
+                "        p.parent.mkdir(parents=True, exist_ok=True)\n"
+                "        p.write_bytes(b'boom')\n"
+                "        sys.exit(1)\n"
+                "    print('#12\\tINITED cov: 10 ft: 15 corp: 1/1b exec/s: 12 rss: 32Mb')\n"
+                "    print('Done 12 runs in 1 second(s)')\n"
+                "    sys.exit(0)\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            mock_cargo.chmod(0o755)
+
+            live_out_dir = pathlib.Path(tmp_dir) / "live_out"
+            mock_env = dict(os.environ)
+            mock_env["PATH"] = f"{mock_bin}:{mock_env.get('PATH', '')}"
+            mock_env["FUZZ_OUT_DIR"] = str(live_out_dir)
+            mock_env["MIN_AVAIL_GB"] = "0"
+            mock_env["TMPDIR"] = tmp_dir
+
+            # 1) Simulated crash run populates ART_OUT_DIR and fails summary.json 1-to-1
+            crash_env = dict(mock_env, MOCK_CRASH_TARGET="fuzz_realign")
+            crash_res = subprocess.run(
+                ["bash", str(runner_path), "--fast-secs", "1", "--deep-secs", "1", "--jobs", "2"],
+                cwd=str(ROOT_DIR),
+                env=crash_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(crash_res.returncode, 0, "Crash run must exit non-zero")
+            staged_crash = live_out_dir / "artifacts" / "fuzz_realign__crash-mock123"
+            self.assertTrue(staged_crash.is_file(), "Crash artifact must be staged in ART_OUT_DIR")
+            crash_summary = json.loads((live_out_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(crash_summary["status"], "FAIL")
+            self.assertEqual(crash_summary["total_artifacts"], 1)
+            self.assertEqual(crash_summary["artifacts"], ["fuzz_realign__crash-mock123"])
+
+            # 2) Clean re-run into same FUZZ_OUT_DIR clears stale artifacts and reports PASS / 0 artifacts
+            clean_res = subprocess.run(
+                ["bash", str(runner_path), "--fast-secs", "1", "--deep-secs", "1", "--jobs", "2"],
+                cwd=str(ROOT_DIR),
+                env=mock_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                clean_res.returncode,
+                0,
+                f"Clean re-run failed ({clean_res.returncode}):\n{clean_res.stderr}\n{clean_res.stdout}",
+            )
+            self.assertFalse(staged_crash.exists(), "Stale crash artifact must be removed on live re-run")
+            clean_summary = json.loads((live_out_dir / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(clean_summary["status"], "PASS")
+            self.assertEqual(clean_summary["total_artifacts"], 0)
+            self.assertEqual(clean_summary["artifacts"], [])
+
+            # 3) SIGTERM during worker wait exits 130 (not interrupted wait rc 143)
+            marker_file = pathlib.Path(tmp_dir) / "worker_started"
+            sig_env = dict(mock_env, MOCK_WORKER_MARKER=str(marker_file), FUZZ_OUT_DIR=str(pathlib.Path(tmp_dir) / "sig_out"))
+            sig_proc = subprocess.Popen(
+                ["bash", str(runner_path), "--fast-secs", "10", "--deep-secs", "10", "--jobs", "1"],
+                cwd=str(ROOT_DIR),
+                env=sig_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 5.0
+                while not marker_file.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(marker_file.exists(), "Mock fuzz worker did not start within 5s")
+                time.sleep(0.05)
+                sig_proc.send_signal(signal.SIGTERM)
+                sig_rc = sig_proc.wait(timeout=10)
+                self.assertEqual(sig_rc, 130, f"Expected exit 130 on SIGTERM, got {sig_rc}")
+            finally:
+                if sig_proc.poll() is None:
+                    sig_proc.kill()
+                    sig_proc.wait(timeout=5)
+                if sig_proc.stdout:
+                    sig_proc.stdout.close()
+                if sig_proc.stderr:
+                    sig_proc.stderr.close()
         after_status = subprocess.run(
             ["git", "status", "--porcelain", "--untracked-files=all"],
             cwd=str(ROOT_DIR),

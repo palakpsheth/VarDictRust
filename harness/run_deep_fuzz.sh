@@ -184,6 +184,7 @@ HAD_IN_TREE_ARTIFACTS=0
 [ -d "$FUZZ_DIR/corpus" ] && HAD_IN_TREE_CORPUS=1
 [ -d "$FUZZ_DIR/artifacts" ] && HAD_IN_TREE_ARTIFACTS=1
 
+rm -rf "$ART_OUT_DIR"
 mkdir -p "$ART_OUT_DIR" "$LOG_OUT_DIR"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/vdr-deep-fuzz.XXXXXX")"
 mkdir -p "$TMP_ROOT/corpus" "$TMP_ROOT/artifacts" "$TMP_ROOT/meta"
@@ -193,8 +194,15 @@ CLEANED_UP=0
 
 copy_staged_artifacts() {
     local src_root tgt_dir art_f base_f tgt_base
-    for src_root in "${TMP_ROOT:+$TMP_ROOT/artifacts}" "$FUZZ_DIR/artifacts"; do
-        [ -n "$src_root" ] && [ -d "$src_root" ] || continue
+    local src_roots=()
+    if [ -n "${TMP_ROOT:-}" ]; then
+        src_roots+=("$TMP_ROOT/artifacts")
+    fi
+    if [ "$HAD_IN_TREE_ARTIFACTS" -eq 0 ]; then
+        src_roots+=("$FUZZ_DIR/artifacts")
+    fi
+    for src_root in ${src_roots[@]+"${src_roots[@]}"}; do
+        [ -d "$src_root" ] || continue
         mkdir -p "$ART_OUT_DIR" 2>/dev/null || true
         for tgt_dir in "$src_root"/*; do
             [ -d "$tgt_dir" ] || continue
@@ -264,7 +272,7 @@ for p in reversed(order):
 }
 
 on_signal() {
-    cleanup_campaign
+    cleanup_campaign || true
     exit 130
 }
 
@@ -437,14 +445,13 @@ for tgt in targets_order:
         if dm:
             runs = max(runs, int(dm.group(1)))
 
-    tgt_art_dir = tmp_root / "artifacts" / tgt
+    prefix = f"{tgt}__"
     tgt_arts = []
-    if tgt_art_dir.is_dir():
-        for p in sorted(tgt_art_dir.iterdir()):
-            if p.is_file():
-                saved_name = f"{tgt}__{p.name}"
-                tgt_arts.append(saved_name)
-                all_artifacts.append(saved_name)
+    if art_out_dir.is_dir():
+        for p in sorted(art_out_dir.iterdir()):
+            if p.is_file() and p.name.startswith(prefix):
+                tgt_arts.append(p.name)
+                all_artifacts.append(p.name)
 
     ok = exit_code == 0 and len(tgt_arts) == 0
     if ok:
@@ -470,8 +477,15 @@ for tgt in targets_order:
         }
     )
 
+if art_out_dir.is_dir():
+    known_arts = set(all_artifacts)
+    for p in sorted(art_out_dir.iterdir()):
+        if p.is_file() and p.name not in known_arts:
+            all_artifacts.append(p.name)
+
+overall_ok = failed == 0 and len(all_artifacts) == 0
 summary = {
-    "status": "PASS" if failed == 0 else "FAIL",
+    "status": "PASS" if overall_ok else "FAIL",
     "git_head": git_head,
     "fast_secs": fast_secs,
     "deep_secs": deep_secs,
@@ -494,7 +508,7 @@ print(
     f"[deep-fuzz] Summary written to {summary_path}: status={summary['status']} "
     f"targets={passed}/{len(targets_order)} total_executions={total_execs} artifacts={len(all_artifacts)}"
 )
-if failed > 0:
+if not overall_ok:
     sys.exit(1)
 PY
 
