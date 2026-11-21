@@ -1,3 +1,43 @@
+#![cfg_attr(
+    not(any(
+        feature = "profile-cpu",
+        feature = "jemalloc",
+        feature = "profile-heap"
+    )),
+    forbid(unsafe_code)
+)]
+#![cfg_attr(
+    all(
+        any(feature = "jemalloc", feature = "profile-heap"),
+        not(feature = "profile-cpu")
+    ),
+    deny(unsafe_code)
+)]
+#![cfg_attr(
+    feature = "profile-cpu",
+    deny(
+        unsafe_op_in_unsafe_fn,
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::dbg_macro,
+        clippy::print_stdout,
+        clippy::print_stderr,
+        clippy::string_slice,
+        clippy::indexing_slicing,
+    )
+)]
+
 mod cli;
 mod profile;
 
@@ -35,6 +75,13 @@ const MALLOC_CONF_NON_LINUX_PROF: &[u8; 106] = b"prof:true,prof_active:true,lg_p
     not(feature = "profile-heap"),
     target_os = "linux"
 ))]
+#[cfg_attr(
+    not(feature = "profile-cpu"),
+    expect(
+        unsafe_code,
+        reason = "jemalloc C ABI symbol _rjem_malloc_conf requires #[export_name] on thin &[u8; N] static"
+    )
+)]
 #[export_name = "_rjem_malloc_conf"]
 pub static MALLOC_CONF: &[u8; 69] = MALLOC_CONF_LINUX_DEFAULT;
 
@@ -43,14 +90,35 @@ pub static MALLOC_CONF: &[u8; 69] = MALLOC_CONF_LINUX_DEFAULT;
     not(feature = "profile-heap"),
     not(target_os = "linux")
 ))]
+#[cfg_attr(
+    not(feature = "profile-cpu"),
+    expect(
+        unsafe_code,
+        reason = "jemalloc C ABI symbol _rjem_malloc_conf requires #[export_name] on thin &[u8; N] static"
+    )
+)]
 #[export_name = "_rjem_malloc_conf"]
 pub static MALLOC_CONF: &[u8; 70] = MALLOC_CONF_NON_LINUX_DEFAULT;
 
 #[cfg(all(feature = "profile-heap", target_os = "linux"))]
+#[cfg_attr(
+    not(feature = "profile-cpu"),
+    expect(
+        unsafe_code,
+        reason = "jemalloc C ABI symbol _rjem_malloc_conf requires #[export_name] on thin &[u8; N] static"
+    )
+)]
 #[export_name = "_rjem_malloc_conf"]
 pub static MALLOC_CONF: &[u8; 105] = MALLOC_CONF_LINUX_PROF;
 
 #[cfg(all(feature = "profile-heap", not(target_os = "linux")))]
+#[cfg_attr(
+    not(feature = "profile-cpu"),
+    expect(
+        unsafe_code,
+        reason = "jemalloc C ABI symbol _rjem_malloc_conf requires #[export_name] on thin &[u8; N] static"
+    )
+)]
 #[export_name = "_rjem_malloc_conf"]
 pub static MALLOC_CONF: &[u8; 106] = MALLOC_CONF_NON_LINUX_PROF;
 

@@ -21,6 +21,10 @@
         clippy::panic,
         clippy::unreachable,
         clippy::todo,
+        clippy::unimplemented,
+        clippy::dbg_macro,
+        clippy::print_stdout,
+        clippy::print_stderr,
         clippy::string_slice,
         clippy::indexing_slicing,
     )

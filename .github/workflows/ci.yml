@@ -49,8 +49,9 @@ jobs:
         id: fmt-lint
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Step 1/9] Running cargo fmt --check, cargo clippy -D warnings, and bench compile..."
+          echo "[$(date '+%H:%M:%S')] [Step 1/9] Running cargo fmt --check, lint_ratchet, cargo clippy -D warnings, and bench compile..."
           cargo fmt --all -- --check
+          bash harness/lint_ratchet.sh --scan-only
           cargo clippy --all-targets --all-features -- -D warnings
           cargo test --benches -p vardictrust-core
           echo "STEP1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"

@@ -1,4 +1,12 @@
-#![deny(unsafe_op_in_unsafe_fn)]
+#![cfg_attr(not(feature = "profile-cpu"), forbid(unsafe_code))]
+#![cfg_attr(
+    feature = "profile-cpu",
+    deny(
+        unsafe_op_in_unsafe_fn,
+        clippy::undocumented_unsafe_blocks,
+        clippy::multiple_unsafe_ops_per_block
+    )
+)]
 
 use anyhow::Result;
 use std::path::PathBuf;
@@ -96,14 +104,10 @@ fn normalize_dir_for_lstat(dir: &std::path::Path) -> std::borrow::Cow<'_, std::p
         let orig = dir.as_os_str().as_bytes();
         let mut bytes = orig;
         while bytes.len() > 1 {
-            if bytes.ends_with(b"/") {
-                bytes = &bytes[..bytes.len() - 1];
-            } else if bytes.ends_with(b"/.") {
-                if bytes == b"/." {
-                    bytes = b"/";
-                } else {
-                    bytes = &bytes[..bytes.len() - 2];
-                }
+            if let Some(stripped) = bytes.strip_suffix(b"/") {
+                bytes = if stripped.is_empty() { b"/" } else { stripped };
+            } else if let Some(stripped) = bytes.strip_suffix(b"/.") {
+                bytes = if stripped.is_empty() { b"/" } else { stripped };
             } else {
                 break;
             }
@@ -117,13 +121,22 @@ fn normalize_dir_for_lstat(dir: &std::path::Path) -> std::borrow::Cow<'_, std::p
     #[cfg(not(unix))]
     {
         let orig = dir.to_string_lossy();
-        let trimmed = orig.trim_end_matches(['/', '\\']);
-        if trimmed.is_empty() {
-            std::borrow::Cow::Owned(PathBuf::from("/"))
-        } else if trimmed.len() == orig.len() {
+        let mut cur: &str = orig.as_ref();
+        while cur.len() > 1 {
+            if let Some(stripped) = cur.strip_suffix(['/', '\\']) {
+                cur = if stripped.is_empty() { "/" } else { stripped };
+            } else if let Some(stripped) =
+                cur.strip_suffix("/.").or_else(|| cur.strip_suffix("\\."))
+            {
+                cur = if stripped.is_empty() { "/" } else { stripped };
+            } else {
+                break;
+            }
+        }
+        if cur.len() == orig.len() {
             std::borrow::Cow::Borrowed(dir)
         } else {
-            std::borrow::Cow::Owned(PathBuf::from(trimmed))
+            std::borrow::Cow::Owned(PathBuf::from(cur))
         }
     }
 }
@@ -706,6 +719,22 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_dir_for_lstat_maps_root_dot_suffix_to_slash() {
+        use std::path::Path;
+
+        assert_eq!(normalize_dir_for_lstat(Path::new("/.")), Path::new("/"));
+        assert_eq!(normalize_dir_for_lstat(Path::new("/")), Path::new("/"));
+        assert_eq!(normalize_dir_for_lstat(Path::new("///")), Path::new("/"));
+        assert_eq!(normalize_dir_for_lstat(Path::new("/./.")), Path::new("/"));
+        assert_eq!(normalize_dir_for_lstat(Path::new("//.")), Path::new("/"));
+        assert_eq!(normalize_dir_for_lstat(Path::new("./.")), Path::new("."));
+        assert_eq!(
+            normalize_dir_for_lstat(Path::new("/tmp/prof/.")),
+            Path::new("/tmp/prof")
+        );
+    }
 
     #[test]
     fn batch12_profile_temp_and_atomic_write_refuse_symlinks_and_set_0600() {
