@@ -106,6 +106,15 @@ impl SplitVarRow {
     fn anchor_pos(&self) -> i32 {
         self.id.origin_pos
     }
+
+    #[inline]
+    fn approx_heap_bytes(&self) -> usize {
+        self.id
+            .ref_allele
+            .capacity()
+            .saturating_add(self.id.var_allele.capacity())
+            .saturating_add(self.line.capacity())
+    }
 }
 
 /// Builds `SplitVarIdentity` entries for a `simple_post_process` variant list,
@@ -1529,6 +1538,20 @@ struct BandCandidate {
     quality_scores: Vec<u8>,
 }
 
+impl BandCandidate {
+    #[inline]
+    fn approx_heap_bytes(&self) -> usize {
+        self.cigar
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(
+                u32,
+                noodles::sam::alignment::record::cigar::op::Kind,
+            )>())
+            .saturating_add(self.sequence.capacity())
+            .saturating_add(self.quality_scores.capacity())
+    }
+}
+
 enum BandScan {
     Candidates {
         any_passed: bool,
@@ -1536,6 +1559,37 @@ enum BandScan {
         candidates: Vec<BandCandidate>,
     },
     FallbackSequential,
+}
+
+impl BandScan {
+    fn approx_heap_bytes(&self) -> usize {
+        match self {
+            Self::Candidates {
+                groups, candidates, ..
+            } => {
+                let groups_bytes = groups
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Vec<i32>>())
+                    .saturating_add(
+                        groups
+                            .iter()
+                            .map(|g| g.capacity().saturating_mul(std::mem::size_of::<i32>()))
+                            .fold(0usize, usize::saturating_add),
+                    );
+                let cands_bytes = candidates
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<BandCandidate>())
+                    .saturating_add(
+                        candidates
+                            .iter()
+                            .map(BandCandidate::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    );
+                groups_bytes.saturating_add(cands_bytes)
+            }
+            Self::FallbackSequential => 0,
+        }
+    }
 }
 
 fn flush_candidate_group(
@@ -1983,7 +2037,7 @@ fn scan_multi_regions_max_read_lengths(
         let multi_regs_for_worker = std::sync::Arc::clone(&multi_regs);
         let cfg_for_worker = config.clone();
 
-        crate::runner::run_parallel_batched_for_bam(
+        crate::runner::run_parallel_batched_for_bam_weighted(
             bam_spec_for_stack,
             batches,
             eff_threads,
@@ -2100,6 +2154,7 @@ fn scan_multi_regions_max_read_lengths(
                 }
                 Ok(())
             },
+            |(_, scan)| scan.approx_heap_bytes(),
         )?;
 
         #[cfg(test)]
@@ -5130,7 +5185,12 @@ fn prepare_tiles_and_prescan(
         tel.tiles_count
             .store(tiles.len(), std::sync::atomic::Ordering::Relaxed);
     }
-    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
+    let tile_batches = crate::regions::batch_tiles(
+        tiles,
+        tile_size.min(crate::regions::MAX_UNSPLIT_BATCH_BP),
+        crate::regions::DEFAULT_MAX_BATCH_TILES,
+        config.threads,
+    );
     Ok((tile_batches, multi_tile_seeds))
 }
 
@@ -5211,12 +5271,44 @@ fn run_with_writer_inner<W: EngineWriter>(
         },
     }
 
+    impl SimpleTileOutput {
+        fn approx_heap_bytes(&self) -> usize {
+            match self {
+                Self::UnSplitVarBlock(block) => block.capacity(),
+                Self::Lines { rows, .. } => rows
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<SplitVarRow>())
+                    .saturating_add(
+                        rows.iter()
+                            .map(SplitVarRow::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    ),
+                Self::Vcf { chr, records } => chr
+                    .capacity()
+                    .saturating_add(
+                        records
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<RawVcfCandidate>()),
+                    )
+                    .saturating_add(
+                        records
+                            .iter()
+                            .map(|r| match &r.event {
+                                crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
+                                _ => 0,
+                            })
+                            .fold(0usize, usize::saturating_add),
+                    ),
+            }
+        }
+    }
+
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> =
         SpillableVcfAccumulator::from_config(config);
     let mut split_var_deduper = SplitVarDeduper::default();
 
     // Process tiles in parallel, print variants in deterministic index order
-    crate::runner::run_parallel_batched_for_bam(
+    crate::runner::run_parallel_batched_for_bam_weighted(
         &config.bam,
         tile_batches,
         config.threads,
@@ -5489,6 +5581,7 @@ fn run_with_writer_inner<W: EngineWriter>(
             }
             Ok(())
         },
+        SimpleTileOutput::approx_heap_bytes,
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, line))?;
 
@@ -5634,6 +5727,68 @@ fn run_amplicon<W: EngineWriter>(
         },
     }
 
+    impl AmpliconSegmentOutput {
+        fn approx_heap_bytes(&self) -> usize {
+            match self {
+                Self::UnSplitVarBlock(block) => block.capacity(),
+                Self::Vcf { chr, records } => chr
+                    .capacity()
+                    .saturating_add(
+                        records
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<RawVcfCandidate>()),
+                    )
+                    .saturating_add(
+                        records
+                            .iter()
+                            .map(|r| match &r.event {
+                                crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
+                                _ => 0,
+                            })
+                            .fold(0usize, usize::saturating_add),
+                    ),
+                Self::Pileup {
+                    segment,
+                    vars_per_amplicon,
+                    splice,
+                } => {
+                    let seg_bytes = segment
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<crate::regions::Region>())
+                        .saturating_add(
+                            segment
+                                .iter()
+                                .map(|r| r.chr.capacity().saturating_add(r.gene.capacity()))
+                                .fold(0usize, usize::saturating_add),
+                        );
+                    let vars_bytes = vars_per_amplicon
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<
+                            crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
+                        >())
+                        .saturating_add(
+                            vars_per_amplicon
+                                .iter()
+                                .map(crate::javamap::JavaHashMap::approx_heap_bytes)
+                                .fold(0usize, usize::saturating_add),
+                        );
+                    let splice_bytes = splice
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<String>())
+                        .saturating_add(
+                            splice
+                                .iter()
+                                .map(String::capacity)
+                                .fold(0usize, usize::saturating_add),
+                        );
+                    seg_bytes
+                        .saturating_add(vars_bytes)
+                        .saturating_add(splice_bytes)
+                }
+            }
+        }
+    }
+
     let segments: Vec<Vec<crate::regions::Region>> =
         segments.into_iter().filter(|s| !s.is_empty()).collect();
     if let Some(tel) = telemetry {
@@ -5647,9 +5802,9 @@ fn run_amplicon<W: EngineWriter>(
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
 
-    // H5: Process independent amplicon segments in parallel via `run_parallel_for_bam`,
+    // H5: Process independent amplicon segments in parallel via `run_parallel_for_bam_weighted`,
     // streaming results into the consumer in exact BED segment order.
-    crate::runner::run_parallel_for_bam(
+    crate::runner::run_parallel_for_bam_weighted(
         &config.bam,
         segments,
         config.threads,
@@ -5876,6 +6031,7 @@ fn run_amplicon<W: EngineWriter>(
             }
             Ok(())
         },
+        AmpliconSegmentOutput::approx_heap_bytes,
     )?;
 
     if let Some(ref contigs) = vcf_contigs {
@@ -5961,12 +6117,41 @@ fn run_somatic<W: EngineWriter>(
         },
     }
 
+    impl SomaticTileOutput {
+        fn approx_heap_bytes(&self) -> usize {
+            match self {
+                Self::UnSplitVarBlock(block) => block.capacity(),
+                Self::Lines { rows, .. } => rows
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<SplitVarRow>())
+                    .saturating_add(
+                        rows.iter()
+                            .map(SplitVarRow::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    ),
+                Self::Vcf { chr, candidates } => chr
+                    .capacity()
+                    .saturating_add(
+                        candidates
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<SomaticVcfCandidate>()),
+                    )
+                    .saturating_add(
+                        candidates
+                            .iter()
+                            .map(|c| c.record.as_ref().map_or(0, |rec| rec.capacity()))
+                            .fold(0usize, usize::saturating_add),
+                    ),
+            }
+        }
+    }
+
     let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> =
         SpillableVcfAccumulator::from_config(config);
     let mut split_var_deduper = SplitVarDeduper::default();
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
-    crate::runner::run_parallel_batched_for_bam(
+    crate::runner::run_parallel_batched_for_bam_weighted(
         &config.bam,
         tile_batches,
         config.threads,
@@ -6393,6 +6578,7 @@ fn run_somatic<W: EngineWriter>(
             }
             Ok(())
         },
+        SomaticTileOutput::approx_heap_bytes,
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(writer, line))?;
 

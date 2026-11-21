@@ -488,6 +488,23 @@ impl Variant {
         }
     }
 
+    /// Approximate heap bytes owned by this `Variant`'s backing `String` buffers
+    /// (excluding `size_of::<Self>()`, which container owners account via capacity).
+    #[inline]
+    pub(crate) fn approx_heap_bytes(&self) -> usize {
+        self.description
+            .capacity()
+            .saturating_add(self.bias.capacity())
+            .saturating_add(self.left_seq.capacity())
+            .saturating_add(self.right_seq.capacity())
+            .saturating_add(self.genotype.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.var_allele.capacity())
+            .saturating_add(self.ref_allele.capacity())
+            .saturating_add(self.var_type.capacity())
+            .saturating_add(self.debug.capacity())
+            .saturating_add(self.sv.capacity())
+    }
+
     /// Per-read debug content string for -D output.
     /// Ports `Variant.debugVariantsContent` (Variant.java:268-282):
     /// `n:cnt:F-fwd:R-rev:freq:bias:meanPos:pstd:meanQual:qstd:hifreq:mapq:qratio`.
@@ -874,6 +891,41 @@ impl Vars {
         if let Some(item) = self.variants.iter_mut().rfind(|v| v.description == desc) {
             *item = updated;
         }
+    }
+
+    /// Approximate heap bytes owned by this `Vars` container (`ref_variant`, `variants`,
+    /// `var_desc_to_variant`, and `sv`, excluding `size_of::<Self>()`).
+    pub(crate) fn approx_heap_bytes(&self) -> usize {
+        let ref_bytes = self
+            .ref_variant
+            .as_ref()
+            .map_or(0, Variant::approx_heap_bytes);
+        let variants_bytes = self
+            .variants
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Variant>())
+            .saturating_add(
+                self.variants
+                    .iter()
+                    .map(Variant::approx_heap_bytes)
+                    .fold(0usize, usize::saturating_add),
+            );
+        let map_slot_bytes =
+            std::mem::size_of::<(String, Variant)>().saturating_add(std::mem::size_of::<usize>());
+        let map_bytes = self
+            .var_desc_to_variant
+            .capacity()
+            .saturating_mul(map_slot_bytes)
+            .saturating_add(
+                self.var_desc_to_variant
+                    .iter()
+                    .map(|(k, v)| k.capacity().saturating_add(v.approx_heap_bytes()))
+                    .fold(0usize, usize::saturating_add),
+            );
+        ref_bytes
+            .saturating_add(variants_bytes)
+            .saturating_add(map_bytes)
+            .saturating_add(self.sv.capacity())
     }
 }
 
@@ -1598,6 +1650,40 @@ mod tests {
         assert!(sc.nt.is_empty());
         assert!(sc.seq.is_empty());
         assert!(!sc.used);
+    }
+
+    #[test]
+    fn approx_heap_bytes_accounts_variant_vars_and_javamap() {
+        let mut v = Variant::new();
+        v.description = "A".repeat(32);
+        v.left_seq = "C".repeat(20);
+        v.right_seq = "G".repeat(20);
+        v.genotype = Some("A/T".to_string());
+        v.var_allele = "T".to_string();
+        v.ref_allele = "A".to_string();
+        v.debug = "dbg".repeat(16);
+        let v_bytes = v.approx_heap_bytes();
+        assert!(
+            v_bytes >= 32 + 20 + 20 + 3 + 1 + 1 + 48,
+            "expected Variant::approx_heap_bytes >= string lengths, got {v_bytes}"
+        );
+
+        let mut vars = Vars::new();
+        vars.ref_variant = Some(v.clone());
+        vars.variants.push(v.clone());
+        vars.var_desc_to_variant.insert("T".to_string(), v);
+        vars.sv = "100-200".to_string();
+        let vars_bytes = vars.approx_heap_bytes();
+        assert!(
+            vars_bytes >= 3 * v_bytes + std::mem::size_of::<Variant>(),
+            "expected Vars::approx_heap_bytes to sum ref_variant, variants, and var_desc_to_variant, got {vars_bytes}"
+        );
+
+        let empty_map: crate::javamap::JavaHashMap<i32, Vars> = crate::javamap::JavaHashMap::new();
+        assert_eq!(empty_map.approx_heap_bytes(), 0);
+        let mut map = crate::javamap::JavaHashMap::new();
+        map.insert(100, vars);
+        assert!(map.approx_heap_bytes() > vars_bytes);
     }
 
     #[test]

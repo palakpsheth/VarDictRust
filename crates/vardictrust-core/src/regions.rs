@@ -137,6 +137,17 @@ pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
     tiles
 }
 
+/// Maximum genomic span (`32,768 bp` = half a `64 KiB` BGZF block, `M-DOCUMENTED-MAGIC`)
+/// across which consecutive unsplit BED tiles on the same chromosome may be merged into
+/// one worker batch (`AR-19`). Preserves per-worker BGZF block locality on adjacent exons
+/// while preventing distant high-depth exons from fusing into non-stealable batches.
+pub const MAX_UNSPLIT_BATCH_BP: u32 = 32_768;
+
+/// Default maximum number of adjacent unsplit tiles per worker batch (`4`, `M-DOCUMENTED-MAGIC`),
+/// balancing task/channel amortization on large exome/AML panels against Rayon work-stealing
+/// granularity on skewed exons (`AR-19`).
+pub const DEFAULT_MAX_BATCH_TILES: usize = 4;
+
 /// Groups consecutive small tiles on the same chromosome into coarse-grained
 /// batches (`EBO-3`) so high-region-count Exome BEDs (~300k exons) amortize
 /// Rayon/Condvar/channel scheduling and preserve per-thread BGZF block locality (`M-THROUGHPUT`).
@@ -145,8 +156,10 @@ pub fn tile(region: &Region, tile_size: u32, halo: u32) -> Vec<Tile> {
 /// - Effective batch size is capped at `(tiles.len() / (num_threads.max(1) * 4)).clamp(1, max_batch_tiles)`
 ///   so small BEDs (`tiles.len() <= num_threads * 4`) never merge tiles and
 ///   always keep all worker threads busy.
-/// - Split sub-tiles of a large region (`tile.start != tile.original_start || tile.end != tile.original_end`)
-///   or tiles whose cumulative base span would exceed `target_batch_bp` are never merged.
+/// - Split sub-tiles of a large region (`tile.start != tile.original_start || tile.end != tile.original_end`),
+///   tiles whose cumulative base count exceeds `target_batch_bp`, or tiles whose genomic span
+///   from the batch's first tile (`tile.halo_end - first.halo_start + 1`) exceeds `target_batch_bp`
+///   are never merged (`AR-19`).
 /// - Batches never cross chromosome boundaries (`curr.chr != prev.chr`).
 pub fn batch_tiles(
     tiles: Vec<Tile>,
@@ -166,6 +179,7 @@ pub fn batch_tiles(
     let mut batches: Vec<Vec<Tile>> = Vec::with_capacity(tiles.len() / effective_max + 1);
     let mut current_batch: Vec<Tile> = Vec::with_capacity(effective_max);
     let mut current_bp: u32 = 0;
+    let mut batch_first_start: u32 = 0;
 
     for t in tiles {
         let tile_bp = t
@@ -179,6 +193,12 @@ pub fn batch_tiles(
             && !is_split_tile
             && current_batch.len() < effective_max
             && current_bp.saturating_add(tile_bp) <= target_batch_bp
+            && t.halo_end.0 >= batch_first_start
+            && t.halo_end
+                .0
+                .saturating_sub(batch_first_start)
+                .saturating_add(1)
+                <= target_batch_bp
             && current_batch.last().is_some_and(|prev| {
                 prev.chr == t.chr
                     && prev.start == prev.original_start
@@ -196,6 +216,7 @@ pub fn batch_tiles(
                 ));
             }
             current_bp = tile_bp;
+            batch_first_start = t.halo_start.0;
             current_batch.push(t);
         }
     }
@@ -1584,6 +1605,123 @@ Y\t59042860\t59047860\tY_59042860_5\t0\t.\t59042860\t59047860
             .collect();
         let expected: Vec<String> = exome_tiles.into_iter().map(|t| t.gene).collect();
         assert_eq!(flattened, expected);
+    }
+
+    #[test]
+    fn test_batch_tiles_enforces_genomic_span_from_first_tile() {
+        const TARGET_BP: u32 = MAX_UNSPLIT_BATCH_BP;
+        const MAX_BATCH: usize = DEFAULT_MAX_BATCH_TILES;
+
+        // 1. Distant small exons (> 32,768 bp apart): each exon is only 200 bp, so
+        //    cumulative exon length would be 800 bp <= 32,768 bp, but genomic span from
+        //    batch_first_start exceeds 32,768 bp -> never merged into one batch.
+        let distant_tiles: Vec<Tile> = (0..64u32)
+            .map(|i| {
+                let start = i * 40_000 + 1;
+                let end = start + 199;
+                Tile {
+                    chr: "chr1".to_string(),
+                    start: Pos1(start),
+                    end: Pos1(end),
+                    gene: format!("DIST_{i}"),
+                    halo_start: Pos1(start),
+                    halo_end: Pos1(end),
+                    amplicon: None,
+                    original_start: Pos1(start),
+                    original_end: Pos1(end),
+                }
+            })
+            .collect();
+        let distant_batches = batch_tiles(distant_tiles, TARGET_BP, MAX_BATCH, 4);
+        assert_eq!(
+            distant_batches.len(),
+            64,
+            "distant exons > 32,768 bp apart must never merge into a single batch"
+        );
+        assert!(distant_batches.iter().all(|b| b.len() == 1));
+
+        // 2. Adjacent exons within 32,768 bp span: 64 exons spaced 1,000 bp apart
+        //    batch up to max_batch_tiles = 4 (16 batches of 4).
+        let close_tiles: Vec<Tile> = (0..64u32)
+            .map(|i| {
+                let start = i * 1_000 + 1;
+                let end = start + 199;
+                Tile {
+                    chr: "chr1".to_string(),
+                    start: Pos1(start),
+                    end: Pos1(end),
+                    gene: format!("CLOSE_{i}"),
+                    halo_start: Pos1(start),
+                    halo_end: Pos1(end),
+                    amplicon: None,
+                    original_start: Pos1(start),
+                    original_end: Pos1(end),
+                }
+            })
+            .collect();
+        let close_batches = batch_tiles(close_tiles, TARGET_BP, MAX_BATCH, 4);
+        assert_eq!(close_batches.len(), 16);
+        assert!(close_batches.iter().all(|b| b.len() == 4));
+
+        // 3. Exact 32,768 bp boundary from batch_first_start:
+        //    tile 0 at 1..200, tile 1 at 32,569..32,768 (span = 32,768 -> merges),
+        //    tile 2 at 32,769..32,968 (span = 32,968 > 32,768 -> starts new batch).
+        let mut boundary_tiles = vec![
+            Tile {
+                chr: "chr1".to_string(),
+                start: Pos1(1),
+                end: Pos1(200),
+                gene: "B0".to_string(),
+                halo_start: Pos1(1),
+                halo_end: Pos1(200),
+                amplicon: None,
+                original_start: Pos1(1),
+                original_end: Pos1(200),
+            },
+            Tile {
+                chr: "chr1".to_string(),
+                start: Pos1(32_569),
+                end: Pos1(32_768),
+                gene: "B1".to_string(),
+                halo_start: Pos1(32_569),
+                halo_end: Pos1(32_768),
+                amplicon: None,
+                original_start: Pos1(32_569),
+                original_end: Pos1(32_768),
+            },
+            Tile {
+                chr: "chr1".to_string(),
+                start: Pos1(32_769),
+                end: Pos1(32_968),
+                gene: "B2".to_string(),
+                halo_start: Pos1(32_769),
+                halo_end: Pos1(32_968),
+                amplicon: None,
+                original_start: Pos1(32_769),
+                original_end: Pos1(32_968),
+            },
+        ];
+        for i in 3..64u32 {
+            let start = 100_000 + i * 50_000;
+            let end = start + 199;
+            boundary_tiles.push(Tile {
+                chr: "chr1".to_string(),
+                start: Pos1(start),
+                end: Pos1(end),
+                gene: format!("B{i}"),
+                halo_start: Pos1(start),
+                halo_end: Pos1(end),
+                amplicon: None,
+                original_start: Pos1(start),
+                original_end: Pos1(end),
+            });
+        }
+        let boundary_batches = batch_tiles(boundary_tiles, TARGET_BP, MAX_BATCH, 4);
+        assert_eq!(boundary_batches[0].len(), 2);
+        assert_eq!(boundary_batches[0][0].gene, "B0");
+        assert_eq!(boundary_batches[0][1].gene, "B1");
+        assert_eq!(boundary_batches[1].len(), 1);
+        assert_eq!(boundary_batches[1][0].gene, "B2");
     }
 
     /// Task 4 pin: tile active intervals partition the region with no gap

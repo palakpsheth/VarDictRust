@@ -213,6 +213,92 @@ impl<T: JavaHash + ?Sized> JavaHash for &T {
     }
 }
 
+pub(crate) trait ApproxHeapBytes {
+    #[inline]
+    fn heap_bytes(&self) -> usize {
+        0
+    }
+}
+
+impl ApproxHeapBytes for i32 {}
+impl ApproxHeapBytes for str {}
+
+impl ApproxHeapBytes for String {
+    #[inline]
+    fn heap_bytes(&self) -> usize {
+        self.capacity()
+    }
+}
+
+impl ApproxHeapBytes for crate::variations::Variant {
+    #[inline]
+    fn heap_bytes(&self) -> usize {
+        self.approx_heap_bytes()
+    }
+}
+
+impl ApproxHeapBytes for crate::variations::Vars {
+    #[inline]
+    fn heap_bytes(&self) -> usize {
+        self.approx_heap_bytes()
+    }
+}
+
+impl<T: ApproxHeapBytes + ?Sized> ApproxHeapBytes for &T {
+    #[inline]
+    fn heap_bytes(&self) -> usize {
+        (**self).heap_bytes()
+    }
+}
+
+impl<K, V> JavaHashMap<K, V> {
+    /// Approximate heap bytes owned by this `JavaHashMap`'s bucket table, node arena,
+    /// lazy tree-link sidecar, fallback slot, new-key log, and entry inner allocations.
+    pub(crate) fn approx_heap_bytes(&self) -> usize
+    where
+        K: ApproxHeapBytes,
+        V: ApproxHeapBytes,
+    {
+        let buckets_bytes = self
+            .buckets
+            .capacity()
+            .saturating_mul(std::mem::size_of::<u32>());
+        let nodes_buf_bytes = self
+            .nodes
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Node<K, V>>());
+        let nodes_inner_bytes = self.nodes.iter().fold(0usize, |acc, nd| {
+            acc.saturating_add(nd.key.heap_bytes())
+                .saturating_add(nd.val.heap_bytes())
+        });
+        let tree_bytes = self.tree_links.as_deref().map_or(0, |links| {
+            std::mem::size_of::<Vec<TreeLink>>().saturating_add(
+                links
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<TreeLink>()),
+            )
+        });
+        let fallback_bytes = self.fallback.as_deref().map_or(0, |fb| {
+            std::mem::size_of::<V>().saturating_add(fb.heap_bytes())
+        });
+        let log_bytes = self.new_key_log.0.as_deref().map_or(0, |log| {
+            std::mem::size_of::<Vec<K>>()
+                .saturating_add(log.capacity().saturating_mul(std::mem::size_of::<K>()))
+                .saturating_add(
+                    log.iter()
+                        .map(ApproxHeapBytes::heap_bytes)
+                        .fold(0usize, usize::saturating_add),
+                )
+        });
+        buckets_bytes
+            .saturating_add(nodes_buf_bytes)
+            .saturating_add(nodes_inner_bytes)
+            .saturating_add(tree_bytes)
+            .saturating_add(fallback_bytes)
+            .saturating_add(log_bytes)
+    }
+}
+
 impl<K, V> JavaHashMap<K, V>
 where
     K: Clone + JavaHash + Eq + PartialEq + Hash + Debug,

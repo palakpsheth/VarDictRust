@@ -43,6 +43,33 @@ where
     run_parallel_batched_for_bam(bam_spec, batches, num_threads, worker_fn, consumer_fn)
 }
 
+/// Weighted crate-internal counterpart to [`run_parallel_for_bam`] that accounts
+/// out-of-order pending result heap bytes via `weight_fn` (`AR-8`).
+pub(crate) fn run_parallel_for_bam_weighted<T, R, F, W>(
+    bam_spec: &str,
+    items: Vec<T>,
+    num_threads: usize,
+    worker_fn: F,
+    consumer_fn: W,
+    weight_fn: impl Fn(&R) -> usize + Send + Sync,
+) -> Result<(), VardictError>
+where
+    T: Send + Sync + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
+    W: FnMut(R) -> Result<(), VardictError>,
+{
+    let batches: Vec<Vec<T>> = items.into_iter().map(|item| vec![item]).collect();
+    run_parallel_batched_for_bam_weighted(
+        bam_spec,
+        batches,
+        num_threads,
+        worker_fn,
+        consumer_fn,
+        weight_fn,
+    )
+}
+
 /// Worker thread stack floor (16 MiB) for Rayon tile workers (`M-DOCUMENTED-MAGIC`).
 ///
 /// Deep CRAM container decompression (`noodles-cram` RANS/bzip2/lzma codecs) combined
@@ -281,6 +308,24 @@ where
     run_with_worker_stack_bytes(worker_thread_stack_bytes_for_bam(bam_spec), f)
 }
 
+/// Per-worker in-flight batch multiplier (`max_in_flight = num_threads.max(1) * 2`,
+/// `M-DOCUMENTED-MAGIC`): keeps one active batch plus one pre-queued batch per worker
+/// thread so Rayon work-stealing stays saturated without unbounded task queueing (`AR-7`).
+pub(crate) const MAX_IN_FLIGHT_FACTOR: usize = 2;
+
+/// Maximum out-of-order pending output bytes (`64 MiB`, `M-DOCUMENTED-MAGIC`) buffered in
+/// the ordered consumer `BTreeMap` while an earlier slow tile batch is still running (`AR-7`).
+pub(crate) const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum out-of-order pending batches (`262,144`, `M-DOCUMENTED-MAGIC`): covers `> 1,000,000`
+/// BED rows at `DEFAULT_MAX_BATCH_TILES = 4` so `773k`-row `mkbed()` AML/exome panels with
+/// empty/near-empty batches never stall workers on batch count while a hot exon runs (`AR-7`).
+pub(crate) const MAX_PENDING_BATCHES: usize = 262_144;
+
+/// Estimated `BTreeMap` node + `(Vec<R>, usize)` bookkeeping overhead (`64 B`, `M-DOCUMENTED-MAGIC`)
+/// charged per out-of-order batch stored in `pending`.
+pub(crate) const PENDING_BATCH_OVERHEAD_BYTES: usize = 64;
+
 /// Executes `worker_fn` in parallel over pre-grouped `batches` (`Vec<Vec<T>>`),
 /// streaming flattened results into `consumer_fn` in exact deterministic order (`EBO-3`).
 #[deprecated(since = "1.0.10", note = "use runner::run_parallel_batched_for_bam")]
@@ -303,6 +348,7 @@ where
         false,
         worker_fn,
         consumer_fn,
+        |_| std::mem::size_of::<R>(),
     )
 }
 
@@ -321,6 +367,32 @@ where
     F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
     W: FnMut(R) -> Result<(), VardictError>,
 {
+    run_parallel_batched_for_bam_weighted(
+        bam_spec,
+        batches,
+        num_threads,
+        worker_fn,
+        consumer_fn,
+        |_| std::mem::size_of::<R>(),
+    )
+}
+
+/// Weighted crate-internal counterpart to [`run_parallel_batched_for_bam`] that bounds
+/// out-of-order pending heap bytes via `weight_fn` (`AR-7`, `AR-8`).
+pub(crate) fn run_parallel_batched_for_bam_weighted<T, R, F, W>(
+    bam_spec: &str,
+    batches: Vec<Vec<T>>,
+    num_threads: usize,
+    worker_fn: F,
+    consumer_fn: W,
+    weight_fn: impl Fn(&R) -> usize + Send + Sync,
+) -> Result<(), VardictError>
+where
+    T: Send + Sync + 'static,
+    R: Send + 'static,
+    F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
+    W: FnMut(R) -> Result<(), VardictError>,
+{
     run_parallel_batched_with_stack(
         batches,
         num_threads,
@@ -328,22 +400,33 @@ where
         true,
         worker_fn,
         consumer_fn,
+        weight_fn,
     )
 }
 
-fn run_parallel_batched_with_stack<T, R, F, W>(
+struct FlowState {
+    next_expected_idx: usize,
+    in_flight: usize,
+    pending_bytes: usize,
+    pending_batches: usize,
+    shutdown: bool,
+}
+
+fn run_parallel_batched_with_stack<T, R, F, W, G>(
     batches: Vec<Vec<T>>,
     num_threads: usize,
     stack_bytes: usize,
     enforce_serial_stack: bool,
     worker_fn: F,
     mut consumer_fn: W,
+    weight_fn: G,
 ) -> Result<(), VardictError>
 where
     T: Send + Sync + 'static,
     R: Send + 'static,
     F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
     W: FnMut(R) -> Result<(), VardictError>,
+    G: Fn(&R) -> usize + Send + Sync,
 {
     if batches.is_empty() {
         return Ok(());
@@ -376,13 +459,18 @@ where
             )))
         })?;
 
-    let window_size = num_threads.max(1).saturating_mul(4);
+    let max_in_flight = num_threads.max(1).saturating_mul(MAX_IN_FLIGHT_FACTOR);
     let (tx, rx) = mpsc::channel::<(usize, Result<Vec<R>, VardictError>)>();
 
-    // Shared state for throttling: (next_expected_batch_idx, is_shutdown) + lock-free AtomicBool
-    type SharedState = (Mutex<(usize, bool)>, Condvar, std::sync::atomic::AtomicBool);
+    type SharedState = (Mutex<FlowState>, Condvar, std::sync::atomic::AtomicBool);
     let shared_state: Arc<SharedState> = Arc::new((
-        Mutex::new((0_usize, false)),
+        Mutex::new(FlowState {
+            next_expected_idx: 0,
+            in_flight: 0,
+            pending_bytes: 0,
+            pending_batches: 0,
+            shutdown: false,
+        }),
         Condvar::new(),
         std::sync::atomic::AtomicBool::new(false),
     ));
@@ -395,8 +483,8 @@ where
             self.state
                 .2
                 .store(true, std::sync::atomic::Ordering::Release);
-            let mut state = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
-            state.1 = true;
+            let mut st = self.state.0.lock().unwrap_or_else(|e| e.into_inner());
+            st.shutdown = true;
             self.state.1.notify_all();
         }
     }
@@ -413,24 +501,31 @@ where
         let pool_clone = &pool;
         let worker_fn_clone = Arc::clone(&worker_fn);
 
-        // Feeder thread
+        // Feeder thread: dispatches work whenever a worker slot is available and either
+        // the batch is next-expected or pending out-of-order output is below 64 MiB / 262k batches.
         s.spawn(move || {
             let (lock, cvar, _) = &*shared_clone;
             for (batch_idx, batch) in batches.into_iter().enumerate() {
-                let mut state = match lock.lock() {
+                let mut st = match lock.lock() {
                     Ok(g) => g,
                     Err(p) => p.into_inner(),
                 };
-                while batch_idx >= state.0 + window_size && !state.1 {
-                    state = match cvar.wait(state) {
+                while !st.shutdown
+                    && !(st.in_flight < max_in_flight
+                        && (batch_idx == st.next_expected_idx
+                            || (st.pending_bytes < MAX_PENDING_BYTES
+                                && st.pending_batches < MAX_PENDING_BATCHES)))
+                {
+                    st = match cvar.wait(st) {
                         Ok(g) => g,
                         Err(p) => p.into_inner(),
                     };
                 }
-                if state.1 {
+                if st.shutdown {
                     break;
                 }
-                drop(state);
+                st.in_flight = st.in_flight.saturating_add(1);
+                drop(st);
 
                 let tx_clone = tx.clone();
                 let w_fn = Arc::clone(&worker_fn_clone);
@@ -467,29 +562,67 @@ where
         });
 
         // Consumer loop on main thread
-        let mut next_expected_idx = 0;
-        let mut pending = BTreeMap::new();
+        let mut next_expected_idx = 0usize;
+        let mut pending: BTreeMap<usize, (Vec<R>, usize)> = BTreeMap::new();
         let (lock, cvar, _) = &*shared_state;
 
         for (batch_idx, res) in rx {
             let batch_vals = res?;
-            pending.insert(batch_idx, batch_vals);
+            if batch_idx == next_expected_idx {
+                next_expected_idx = next_expected_idx.saturating_add(1);
+                {
+                    let mut st = match lock.lock() {
+                        Ok(g) => g,
+                        Err(p) => p.into_inner(),
+                    };
+                    st.in_flight = st.in_flight.saturating_sub(1);
+                    st.next_expected_idx = next_expected_idx;
+                }
+                cvar.notify_all();
 
-            let mut advanced = false;
-            while let Some(vals) = pending.remove(&next_expected_idx) {
-                for val in vals {
+                for val in batch_vals {
                     consumer_fn(val)?;
                 }
-                next_expected_idx += 1;
-                advanced = true;
-            }
 
-            if advanced {
-                let mut state = match lock.lock() {
-                    Ok(g) => g,
-                    Err(p) => p.into_inner(),
-                };
-                state.0 = next_expected_idx;
+                while let Some((vals, stored_bytes)) = pending.remove(&next_expected_idx) {
+                    next_expected_idx = next_expected_idx.saturating_add(1);
+                    for val in vals {
+                        consumer_fn(val)?;
+                    }
+                    {
+                        let mut st = match lock.lock() {
+                            Ok(g) => g,
+                            Err(p) => p.into_inner(),
+                        };
+                        st.next_expected_idx = next_expected_idx;
+                        st.pending_bytes = st.pending_bytes.saturating_sub(stored_bytes);
+                        st.pending_batches = st.pending_batches.saturating_sub(1);
+                    }
+                    cvar.notify_all();
+                }
+            } else {
+                let batch_bytes = PENDING_BATCH_OVERHEAD_BYTES
+                    .saturating_add(
+                        batch_vals
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<R>()),
+                    )
+                    .saturating_add(
+                        batch_vals
+                            .iter()
+                            .map(&weight_fn)
+                            .fold(0usize, usize::saturating_add),
+                    );
+                pending.insert(batch_idx, (batch_vals, batch_bytes));
+                {
+                    let mut st = match lock.lock() {
+                        Ok(g) => g,
+                        Err(p) => p.into_inner(),
+                    };
+                    st.in_flight = st.in_flight.saturating_sub(1);
+                    st.pending_bytes = st.pending_bytes.saturating_add(batch_bytes);
+                    st.pending_batches = st.pending_batches.saturating_add(1);
+                }
                 cvar.notify_all();
             }
 
@@ -888,5 +1021,211 @@ mod tests {
         )
         .unwrap();
         assert_eq!(consumed, vec![11, 21]);
+    }
+
+    #[test]
+    fn test_head_of_line_slow_batch_does_not_starve_workers() {
+        let batches: Vec<Vec<usize>> = (0..200).map(|i| vec![i]).collect();
+        let progress = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let progress_for_workers = Arc::clone(&progress);
+        let batch0_obs = Arc::new(Mutex::new((0usize, true)));
+        let batch0_obs_worker = Arc::clone(&batch0_obs);
+        let mut consumed = Vec::with_capacity(200);
+
+        run_parallel_batched_for_bam(
+            "panel.bam",
+            batches,
+            4,
+            move |idx| {
+                if idx == 0 {
+                    let (lock, cvar) = &*progress_for_workers;
+                    let guard = lock.lock().unwrap();
+                    let (guard, timeout_res) = cvar
+                        .wait_timeout_while(guard, std::time::Duration::from_secs(3), |done| {
+                            *done < 100
+                        })
+                        .unwrap();
+                    *batch0_obs_worker.lock().unwrap() = (*guard, timeout_res.timed_out());
+                    Ok(0usize)
+                } else {
+                    let (lock, cvar) = &*progress_for_workers;
+                    let mut done = lock.lock().unwrap();
+                    *done += 1;
+                    if *done >= 100 {
+                        cvar.notify_all();
+                    }
+                    Ok(idx)
+                }
+            },
+            |val| {
+                consumed.push(val);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let (done_before_batch0_exit, timed_out) = *batch0_obs.lock().unwrap();
+        assert!(
+            !timed_out,
+            "batch 0 timed out waiting for non-blocked workers (done = {done_before_batch0_exit})"
+        );
+        assert!(
+            done_before_batch0_exit >= 100,
+            "expected >= 100 batches completed before batch 0 exited, got {done_before_batch0_exit}"
+        );
+        let expected: Vec<usize> = (0..200).collect();
+        assert_eq!(consumed, expected);
+    }
+
+    #[test]
+    fn test_pending_byte_cap_throttles_feeder() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const FOUR_MIB: usize = 4 * 1024 * 1024;
+        const NUM_THREADS: usize = 4;
+        const TOTAL_BATCHES: usize = 40;
+
+        struct WeightedItem {
+            idx: usize,
+            bytes: usize,
+            live_bytes: Arc<AtomicUsize>,
+        }
+        impl Drop for WeightedItem {
+            fn drop(&mut self) {
+                self.live_bytes.fetch_sub(self.bytes, Ordering::SeqCst);
+            }
+        }
+
+        let live_bytes = Arc::new(AtomicUsize::new(0));
+        let peak_bytes = Arc::new(AtomicUsize::new(0));
+        let nonzero_done = Arc::new((Mutex::new(0usize), Condvar::new()));
+
+        let batches: Vec<Vec<usize>> = (0..TOTAL_BATCHES).map(|i| vec![i]).collect();
+        let live_w = Arc::clone(&live_bytes);
+        let peak_w = Arc::clone(&peak_bytes);
+        let done_w = Arc::clone(&nonzero_done);
+        let mut drained_order = Vec::with_capacity(TOTAL_BATCHES);
+
+        run_parallel_batched_for_bam_weighted(
+            "panel.bam",
+            batches,
+            NUM_THREADS,
+            move |idx| {
+                if idx == 0 {
+                    let (lock, cvar) = &*done_w;
+                    let guard = lock.lock().unwrap();
+                    let (_guard, timeout_res) = cvar
+                        .wait_timeout_while(
+                            guard,
+                            std::time::Duration::from_secs(3),
+                            |done| *done < 16,
+                        )
+                        .unwrap();
+                    assert!(
+                        !timeout_res.timed_out(),
+                        "batch 0 timed out waiting for 16 x 4 MiB batches to reach MAX_PENDING_BYTES"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                }
+
+                let prev = live_w.fetch_add(FOUR_MIB, Ordering::SeqCst);
+                peak_w.fetch_max(prev + FOUR_MIB, Ordering::SeqCst);
+                let item = WeightedItem {
+                    idx,
+                    bytes: FOUR_MIB,
+                    live_bytes: Arc::clone(&live_w),
+                };
+
+                if idx > 0 {
+                    let (lock, cvar) = &*done_w;
+                    let mut done = lock.lock().unwrap();
+                    *done += 1;
+                    if *done >= 16 {
+                        cvar.notify_all();
+                    }
+                }
+                Ok(item)
+            },
+            |item| {
+                drained_order.push(item.idx);
+                Ok(())
+            },
+            |item| item.bytes,
+        )
+        .unwrap();
+
+        let max_in_flight = NUM_THREADS * MAX_IN_FLIGHT_FACTOR;
+        let max_allowed_bytes = MAX_PENDING_BYTES + max_in_flight * FOUR_MIB;
+        let observed_peak = peak_bytes.load(Ordering::SeqCst);
+        assert!(
+            observed_peak <= max_allowed_bytes,
+            "peak in_flight + pending bytes ({observed_peak}) exceeded cap ({max_allowed_bytes})"
+        );
+        assert_eq!(live_bytes.load(Ordering::SeqCst), 0);
+        let expected_order: Vec<usize> = (0..TOTAL_BATCHES).collect();
+        assert_eq!(drained_order, expected_order);
+
+        // Early consumer Err(BrokenPipe) mid-batch without hang or usize underflow.
+        let (done_tx, done_rx) = mpsc::channel();
+        let live_abort = Arc::new(AtomicUsize::new(0));
+        let live_abort_check = Arc::clone(&live_abort);
+        std::thread::spawn(move || {
+            let batches: Vec<Vec<usize>> =
+                (0..24).map(|b| (b * 4..(b + 1) * 4).collect()).collect();
+            let live_w = Arc::clone(&live_abort);
+            let mut seen = Vec::new();
+            let res = run_parallel_batched_for_bam_weighted(
+                "panel.bam",
+                batches,
+                NUM_THREADS,
+                move |idx| {
+                    if idx == 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    live_w.fetch_add(FOUR_MIB, Ordering::SeqCst);
+                    Ok(WeightedItem {
+                        idx,
+                        bytes: FOUR_MIB,
+                        live_bytes: Arc::clone(&live_w),
+                    })
+                },
+                |item| {
+                    seen.push(item.idx);
+                    if item.idx == 6 {
+                        return Err(VardictError::Io(std::io::Error::from(
+                            std::io::ErrorKind::BrokenPipe,
+                        )));
+                    }
+                    Ok(())
+                },
+                |item| item.bytes,
+            );
+            done_tx.send((res, seen)).unwrap();
+        });
+
+        let (abort_res, seen) = done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("weighted BrokenPipe mid-batch abort timed out");
+        let err = abort_res.expect_err("expected BrokenPipe error");
+        assert!(err.is_broken_pipe(), "expected BrokenPipe, got {err:?}");
+        assert_eq!(seen, vec![0, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(live_abort_check.load(Ordering::SeqCst), 0);
+
+        // Unbatched `run_parallel_for_bam_weighted` also streams in exact 0..N order.
+        let mut unbatched = Vec::new();
+        run_parallel_for_bam_weighted(
+            "panel.bam",
+            (0..12usize).collect(),
+            NUM_THREADS,
+            |i| Ok(format!("row_{i}")),
+            |s| {
+                unbatched.push(s);
+                Ok(())
+            },
+            String::capacity,
+        )
+        .unwrap();
+        let expected_rows: Vec<String> = (0..12).map(|i| format!("row_{i}")).collect();
+        assert_eq!(unbatched, expected_rows);
     }
 }
