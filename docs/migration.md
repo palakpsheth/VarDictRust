@@ -28,7 +28,8 @@ VarDict \
 **Single-binary `vardictrust` equivalent (stdout VCF or direct BGZF + Tabix):**
 
 ```bash
-# Uncompressed VCF to stdout (drop-in replacement):
+# Uncompressed VCF to stdout (drop-in replacement; note `-E 3` already omits INFO/END
+# automatically to match `var2vcf_valid.pl -E`, while `--no-end` omits it when `-E` is absent):
 vardictrust \
   -G ref.fa \
   -f 0.01 \
@@ -115,7 +116,7 @@ Because `vardictrust` fuses [`VarDictJava`](https://github.com/AstraZeneca-NGS/V
 | Legacy Perl Flag (`var2vcf_valid.pl` / `var2vcf_paired.pl`) | `vardictrust` Flag | Single-Sample Default (`valid`) | Paired Somatic Default (`paired`) | Notes & Exact Parity Semantics |
 | :--- | :--- | :--- | :--- | :--- |
 | `-N <NAME>` (`TUMOR\|NORMAL` in paired) | `-N <NAME>` / `--name <NAME>` | BAM stem | `<bam1>\|<bam2>` stems | Shared directly between pileup engine and VCF `#CHROM` sample columns. |
-| `-E` (`var2vcf_valid.pl` only) | `--no-end` | Emit `END=` | Never emits `END=` | Omits `END=<INT>` in single-sample VCF `INFO` (paired mode already omits `END=`). |
+| `-E` (`var2vcf_valid.pl` only) | `--no-end` (or `-E <COL>`) | Emit `END=` | Never emits `END=` | Omits `END=<INT>` in single-sample VCF `INFO` (paired mode already omits `END=`). Passing BED end column `-E <COL>` (for example `-c 1 -S 2 -E 3 -z`) also omits `INFO/END` automatically (`var2vcf_valid.pl -E` parity); pass `--no-end` when invoking `-R` or auto-detected 4-/8-column BEDs without `-E`. |
 | `-S` | `--pass-only` | Emit all (`FILTER` tagged) | Emit all (`FILTER` tagged) | Emits only `PASS` variants; non-`PASS` sites short-circuit before expensive VCF Fisher formatting when safe. |
 | `-M` (`var2vcf_paired.pl` only) | `--paired-strict` | N/A | Off (germline rescue on) | Disables germline/LOH rescue and restricts paired output to strict somatic candidates (`var2vcf_paired.pl -M`). |
 | `-P <FLOAT>` (`var2vcf_paired.pl`) | `--vcf-pval <FLOAT>` | N/A | `0.05` | Maximum somatic Fisher p-value (`SSF`) threshold and `P<FLOAT>` `FILTER` tag in paired VCF output. |

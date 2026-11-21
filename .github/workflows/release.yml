@@ -54,6 +54,7 @@ jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
     runs-on: "ubuntu-22.04"
+    timeout-minutes: 15
     outputs:
       val: ${{ steps.plan.outputs.manifest }}
       tag: ${{ steps.guard.outputs.tag }}
@@ -343,6 +344,7 @@ jobs:
       # - N "local" tasks that build each platform's binaries and platform-specific installers
       matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     container: ${{ matrix.container && matrix.container.image || null }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -618,6 +620,7 @@ jobs:
       - plan
       - build-local-artifacts
     runs-on: "ubuntu-22.04"
+    timeout-minutes: 20
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
@@ -688,6 +691,7 @@ jobs:
     permissions:
       "contents": "write"
     runs-on: "ubuntu-22.04"
+    timeout-minutes: 20
     outputs:
       val: ${{ steps.host.outputs.manifest }}
     steps:
@@ -769,6 +773,7 @@ jobs:
       - host
     if: ${{ always() && needs.host.result == 'success' && needs.plan.outputs.publishing == 'true' && !fromJson(needs.host.outputs.val).announcement_is_prerelease }}
     runs-on: "ubuntu-22.04"
+    timeout-minutes: 20
     steps:
       - name: Harden GitHub Actions Runner
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4

@@ -20,7 +20,7 @@ if ! command -v truvari >/dev/null 2>&1; then
   exit 0
 fi
 mkdir -p "$OUT"
-VER=$(truvari version 2>&1 | head -n 1)
+VER=$(truvari version 2>&1 | awk 'NR == 1 { print }')
 echo "$VER"
 truvari bench -b "$TRUTH" -c "$CALLS" -o "$OUT/truvari" --includebed "$REGIONS"
 python3 - "$OUT" "$VER" <<'PY'

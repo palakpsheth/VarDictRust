@@ -708,11 +708,16 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
         writeln!(w, "{line}")?;
     }
 
-    let sample_nowhitespace = config.sample.replace(char::is_whitespace, "_");
+    // Ports var2vcf_valid.pl:44, 116 — `#CHROM` prints `$sample` (preserving ASCII spaces),
+    // while `INFO/SAMPLE` uses `$sample_nowhitespace`; replace non-space Unicode whitespace
+    // (`\u{0085}`, `\u{2028}`, `\u{2029}`, etc.) with `'_'` so line separators cannot split `#CHROM`.
+    let sample_hdr = config
+        .sample
+        .replace(|c: char| c != ' ' && c.is_whitespace(), "_");
     writeln!(
         w,
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{}",
-        sample_nowhitespace
+        sample_hdr
     )?;
 
     Ok(())
@@ -2256,12 +2261,12 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
         Some((s, _)) => (s.to_string(), format!("{}-match", s)),
         None => (config.sample.clone(), format!("{}-match", config.sample)),
     };
-    let sample_nowhitespace = sample.replace(char::is_whitespace, "_");
-    let samplem_nowhitespace = samplem.replace(char::is_whitespace, "_");
+    let sample_hdr = sample.replace(|c: char| c != ' ' && c.is_whitespace(), "_");
+    let samplem_hdr = samplem.replace(|c: char| c != ' ' && c.is_whitespace(), "_");
     writeln!(
         w,
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{}\t{}",
-        sample_nowhitespace, samplem_nowhitespace
+        sample_hdr, samplem_hdr
     )?;
 
     Ok(())
@@ -5748,6 +5753,32 @@ mod tests {
         assert!(String::from_utf8(ok2)
             .unwrap()
             .contains("\tTUMOR,rep1>armA;TAG=1\tNORMAL,rep2>armB;TAG=2\n"));
+
+        // Preserve ASCII spaces in `#CHROM` sample columns (`var2vcf_valid.pl:116`, `var2vcf_paired.pl:43-49,115`)
+        // while replacing Unicode line separators (`\u{0085}`, `\u{2028}`, `\u{2029}`) with `'_'`.
+        let mut space_single_cfg = Config::default();
+        space_single_cfg.sample = "My Sample\u{0085}A\u{2028}B\u{2029}C".to_string();
+        let mut space_out1 = Vec::new();
+        print_vcf_header(&mut space_out1, &space_single_cfg, &empty_lengths).unwrap();
+        assert!(String::from_utf8(space_out1)
+            .unwrap()
+            .ends_with("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tMy Sample_A_B_C\n"));
+
+        let mut space_paired_cfg = Config::default();
+        space_paired_cfg.sample = "Tumor A\u{2028}1|Normal B\u{2029}2\u{0085}3".to_string();
+        let mut space_out2 = Vec::new();
+        print_paired_vcf_header(&mut space_out2, &space_paired_cfg, &empty_lengths).unwrap();
+        assert!(String::from_utf8(space_out2).unwrap().ends_with(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tTumor A_1\tNormal B_2_3\n"
+        ));
+
+        let mut space_match_cfg = Config::default();
+        space_match_cfg.sample = "Tumor A".to_string();
+        let mut space_out3 = Vec::new();
+        print_paired_vcf_header(&mut space_out3, &space_match_cfg, &empty_lengths).unwrap();
+        assert!(String::from_utf8(space_out3).unwrap().ends_with(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tTumor A\tTumor A-match\n"
+        ));
 
         // Malformed 5-column .fai must fail loudly without writing `##fileformat=VCFv4.2`
         // and without falling back to the 2-column stub parser or BAM header.

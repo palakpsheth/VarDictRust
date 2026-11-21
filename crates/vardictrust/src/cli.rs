@@ -3,6 +3,8 @@
 //!
 //! ports Main.java / CmdParser.java
 
+#![forbid(unsafe_code)]
+
 use clap::Parser;
 
 #[path = "completions_man.rs"]
@@ -363,11 +365,11 @@ fn normalize_optional_or_passthrough(
         return i + 1;
     }
     if effective_arg == "-z" {
-        let next_is_num = args.get(i + 1).is_some_and(|n| {
-            parse_java_signed_i32(n).is_ok() && (has_region || i + 2 < args.len())
-        });
-        if next_is_num {
-            out.push(format!("-z={}", args[i + 1]));
+        if let Some(next) = args
+            .get(i + 1)
+            .filter(|n| parse_java_signed_i32(n).is_ok() && (has_region || i + 2 < args.len()))
+        {
+            out.push(format!("-z={next}"));
             return i + 2;
         }
         out.push("-z=1".to_string());

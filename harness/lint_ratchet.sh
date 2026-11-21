@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# harness/lint_ratchet.sh — Enforces AGENTS.md §9 no-panic / byte-safe string-slicing
-# and bounds-checked slice-indexing zero-allow lint ratchet on `crates/vardictrust-core`.
+# harness/lint_ratchet.sh — Enforces AGENTS.md §9 11-lint no-panic / hygiene,
+# byte-safe string-slicing, bounds-checked slice-indexing, and unsafe_code
+# zero-allow lint ratchet across `crates/vardictrust-core` and `crates/vardictrust`.
 set -euo pipefail
 
 SCAN_ONLY=0
@@ -20,36 +21,22 @@ done
 REPO_ROOT="${LINT_RATCHET_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$REPO_ROOT"
 
-LIB_RS="crates/vardictrust-core/src/lib.rs"
-if [[ ! -f "$LIB_RS" ]]; then
-    echo "FAIL: missing $LIB_RS" >&2
-    exit 1
-fi
-
-if ! grep -q '#!\[forbid(unsafe_code)\]' "$LIB_RS"; then
-    echo "FAIL: $LIB_RS is missing #![forbid(unsafe_code)]" >&2
-    exit 1
-fi
-
-for lint in \
-    "clippy::unwrap_used" \
-    "clippy::expect_used" \
-    "clippy::panic" \
-    "clippy::unreachable" \
-    "clippy::todo" \
-    "clippy::string_slice" \
-    "clippy::indexing_slicing"
+for req_file in \
+    "crates/vardictrust-core/src/lib.rs" \
+    "crates/vardictrust/src/main.rs" \
+    "crates/vardictrust/src/cli.rs" \
+    "crates/vardictrust/src/profile.rs"
 do
-    if ! grep -q "$lint" "$LIB_RS"; then
-        echo "FAIL: $LIB_RS does not deny $lint" >&2
+    if [[ ! -f "$req_file" ]]; then
+        echo "FAIL: missing $req_file" >&2
         exit 1
     fi
 done
 
-# Ensure zero #[allow(...)] or #[expect(...)] bypasses (including multiline
-# attributes or cfg_attr wrappers) exist in non-test source across
-# crates/vardictrust-core/src/**, and verify lib.rs header attributes on
-# comment/string/cfg(test)-stripped source.
+# Ensure zero unauthorized #[allow(...)] or #[expect(...)] bypasses (including
+# multiline attributes or cfg_attr wrappers) exist in non-test source across
+# crates/vardictrust-core/src/** and crates/vardictrust/src/**, and verify
+# crate/module header attributes on comment/string/cfg(test)-stripped source.
 python3 - <<'PY'
 import pathlib
 import re
@@ -61,6 +48,10 @@ REQUIRED_DENY_LINTS = (
     "clippy::panic",
     "clippy::unreachable",
     "clippy::todo",
+    "clippy::unimplemented",
+    "clippy::dbg_macro",
+    "clippy::print_stdout",
+    "clippy::print_stderr",
     "clippy::string_slice",
     "clippy::indexing_slicing",
 )
@@ -90,8 +81,24 @@ SUPPRESS_KIND_RE = re.compile(r"\b(?:allow|expect)\s*\(")
 DENY_KIND_RE = re.compile(r"\bdeny\s*\(")
 FORBID_UNSAFE_RE = re.compile(r"#\s*!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]")
 LINT_TOKEN_RE = re.compile(
-    r"(?:clippy\s*::\s*(?:unwrap_used|expect_used|panic|unreachable|todo|string_slice|indexing_slicing|restriction|all)\b"
-    r"|\b(?:unwrap_used|expect_used|panic|unreachable|todo|string_slice|indexing_slicing|warnings)\b)"
+    r"(?:clippy\s*::\s*(?:"
+    r"unwrap_used|expect_used|panic|unreachable|todo|unimplemented|dbg_macro|"
+    r"print_stdout|print_stderr|string_slice|indexing_slicing|"
+    r"undocumented_unsafe_blocks|multiple_unsafe_ops_per_block|"
+    r"restriction|all"
+    r")\b"
+    r"|\b(?:"
+    r"unwrap_used|expect_used|panic|unreachable|todo|unimplemented|dbg_macro|"
+    r"print_stdout|print_stderr|string_slice|indexing_slicing|"
+    r"unsafe_code|unsafe_op_in_unsafe_fn|"
+    r"undocumented_unsafe_blocks|multiple_unsafe_ops_per_block|"
+    r"warnings"
+    r")\b)"
+)
+
+_MALLOC_CONF_FOLLOW_RE = re.compile(
+    r'^\s*#\s*\[\s*export_name\s*=\s*"_rjem_malloc_conf"\s*\]\s*'
+    r"pub\s+static\s+MALLOC_CONF\s*:\s*&\s*\[\s*u8\s*;"
 )
 
 
@@ -115,7 +122,7 @@ def _skip_balanced(text: str, open_idx: int, open_ch: str, close_ch: str) -> int
     return n
 
 
-def strip_comments_and_strings(text: str) -> str:
+def _lex_transform(text: str, *, blank_strings: bool) -> str:
     chunks: list[str] = []
     pos = 0
     n = len(text)
@@ -127,9 +134,14 @@ def strip_comments_and_strings(text: str) -> str:
         start = m.start()
         if start > pos:
             chunks.append(text[pos:start])
-        if m.group("line_comment") is not None or m.group("char_lit") is not None:
+        is_comment = False
+        if m.group("line_comment") is not None:
+            end = m.end()
+            is_comment = True
+        elif m.group("char_lit") is not None:
             end = m.end()
         elif m.group("block_open") is not None:
+            is_comment = True
             depth = 1
             end = n
             for bm in _BLOCK_STEP_RE.finditer(text, m.end()):
@@ -150,9 +162,31 @@ def strip_comments_and_strings(text: str) -> str:
                 if sm.group(0) == '"':
                     end = sm.end()
                     break
-        chunks.append(_blank_segment(text[start:end]))
+        if is_comment or blank_strings:
+            chunks.append(_blank_segment(text[start:end]))
+        else:
+            chunks.append(text[start:end])
         pos = end
     return "".join(chunks)
+
+
+def strip_comments_and_strings(text: str) -> str:
+    return _lex_transform(text, blank_strings=True)
+
+
+def strip_comments_preserving_strings(text: str) -> str:
+    return _lex_transform(text, blank_strings=False)
+
+
+def _normalize_attr(attr_text: str) -> str:
+    no_comments = strip_comments_preserving_strings(attr_text)
+    compact = re.sub(r"\s+", "", no_comments)
+    while True:
+        nxt = re.sub(r",([)\]])", r"\1", compact)
+        if nxt == compact:
+            break
+        compact = nxt
+    return compact
 
 
 def _strip_inner_cfg_test_scopes(code: str) -> str:
@@ -285,9 +319,37 @@ def sanitize_non_test_rust(raw_text: str) -> str:
     return strip_cfg_test_blocks(strip_comments_and_strings(raw_text))
 
 
+def _is_exempt_malloc_conf_expect(
+    rel_path: str,
+    raw_text: str,
+    clean_attr: str,
+    start: int,
+    end: int,
+) -> bool:
+    """Permit expect(unsafe_code) solely on the _rjem_malloc_conf #[export_name] statics in main.rs."""
+    if rel_path != "crates/vardictrust/src/main.rs":
+        return False
+    if re.match(r"#\s*!", clean_attr):
+        return False
+    clean_norm = _normalize_attr(clean_attr)
+    if clean_norm not in (
+        "#[cfg_attr(not(feature=),expect(unsafe_code,reason=))]",
+        "#[cfg_attr(not(feature=),expect(unsafe_code))]",
+    ):
+        return False
+    raw_attr_no_comments = strip_comments_preserving_strings(raw_text[start:end])
+    if not re.search(
+        r'not\s*\(\s*feature\s*=\s*"profile-cpu"\s*\)', raw_attr_no_comments
+    ):
+        return False
+    tail_no_comments = strip_comments_preserving_strings(raw_text[end : end + 512])
+    return bool(_MALLOC_CONF_FOLLOW_RE.match(tail_no_comments))
+
+
 def scan_source(rel_path: str, raw_text: str) -> list[tuple[str, int, str]]:
     clean = sanitize_non_test_rust(raw_text)
     hits: list[tuple[str, int, str]] = []
+    exempt_malloc_conf_hits = 0
     for m in ATTR_RE.finditer(clean):
         body = m.group("body")
         matched = False
@@ -300,16 +362,28 @@ def scan_source(rel_path: str, raw_text: str) -> list[tuple[str, int, str]]:
                 break
         if not matched:
             continue
+        if (
+            exempt_malloc_conf_hits < 4
+            and _is_exempt_malloc_conf_expect(
+                rel_path, raw_text, m.group(0), m.start(), m.end()
+            )
+        ):
+            exempt_malloc_conf_hits += 1
+            continue
         line_no = raw_text.count("\n", 0, m.start()) + 1
         hits.append((rel_path, line_no, raw_text[m.start() : m.end()]))
     return hits
 
 
-def verify_lib_rs_header(raw_text: str) -> list[str]:
-    clean = sanitize_non_test_rust(raw_text)
-    errs: list[str] = []
-    if not FORBID_UNSAFE_RE.search(clean):
-        errs.append("missing active #![forbid(unsafe_code)]")
+def _collect_active_inner_attrs_normalized(raw_text: str, clean: str) -> set[str]:
+    out: set[str] = set()
+    for m in ATTR_RE.finditer(clean):
+        if re.match(r"#\s*!", m.group(0)):
+            out.add(_normalize_attr(raw_text[m.start() : m.end()]))
+    return out
+
+
+def _collect_active_non_test_denied_blob(clean: str) -> str:
     denied_text_parts: list[str] = []
     for m in ATTR_RE.finditer(clean):
         attr_src = m.group(0)
@@ -324,11 +398,85 @@ def verify_lib_rs_header(raw_text: str) -> list[str]:
         for dm in DENY_KIND_RE.finditer(body):
             open_paren = dm.end() - 1
             close_paren = _skip_balanced(body, open_paren, "(", ")")
-            denied_text_parts.append(body[open_paren + 1 : max(open_paren + 1, close_paren - 1)])
-    denied_blob = "\n".join(denied_text_parts)
+            denied_text_parts.append(
+                body[open_paren + 1 : max(open_paren + 1, close_paren - 1)]
+            )
+    return "\n".join(denied_text_parts)
+
+
+def verify_lib_rs_header(raw_text: str) -> list[str]:
+    clean = sanitize_non_test_rust(raw_text)
+    errs: list[str] = []
+    if not FORBID_UNSAFE_RE.search(clean):
+        errs.append("missing active #![forbid(unsafe_code)]")
+    denied_blob = _collect_active_non_test_denied_blob(clean)
     for lint in REQUIRED_DENY_LINTS:
         if not re.search(rf"\b{re.escape(lint)}\b", denied_blob):
             errs.append(f"missing active crate-level deny({lint})")
+    if re.search(r"\bunsafe\b", clean):
+        errs.append("lib.rs must not contain unsafe items/blocks")
+    return errs
+
+
+def verify_cli_rs_header(raw_text: str) -> list[str]:
+    clean = sanitize_non_test_rust(raw_text)
+    if not FORBID_UNSAFE_RE.search(clean):
+        return ["missing active #![forbid(unsafe_code)]"]
+    return []
+
+
+def verify_profile_rs_header(raw_text: str) -> list[str]:
+    clean = sanitize_non_test_rust(raw_text)
+    active = _collect_active_inner_attrs_normalized(raw_text, clean)
+    errs: list[str] = []
+    req_forbid = _normalize_attr(
+        '#![cfg_attr(not(feature = "profile-cpu"), forbid(unsafe_code))]'
+    )
+    req_deny = _normalize_attr(
+        '#![cfg_attr(feature = "profile-cpu", deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block))]'
+    )
+    if req_forbid not in active:
+        errs.append(
+            'missing active #![cfg_attr(not(feature = "profile-cpu"), forbid(unsafe_code))]'
+        )
+    if req_deny not in active:
+        errs.append(
+            'missing active #![cfg_attr(feature = "profile-cpu", deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block))]'
+        )
+    return errs
+
+
+def verify_main_rs_header(raw_text: str) -> list[str]:
+    clean = sanitize_non_test_rust(raw_text)
+    active = _collect_active_inner_attrs_normalized(raw_text, clean)
+    errs: list[str] = []
+    req_forbid = _normalize_attr(
+        '#![cfg_attr(not(any(feature = "profile-cpu", feature = "jemalloc", feature = "profile-heap")), forbid(unsafe_code))]'
+    )
+    req_deny_unsafe = _normalize_attr(
+        '#![cfg_attr(all(any(feature = "jemalloc", feature = "profile-heap"), not(feature = "profile-cpu")), deny(unsafe_code))]'
+    )
+    req_deny_cpu = _normalize_attr(
+        '#![cfg_attr(feature = "profile-cpu", deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block))]'
+    )
+    if req_forbid not in active:
+        errs.append(
+            'missing active #![cfg_attr(not(any(feature = "profile-cpu", feature = "jemalloc", feature = "profile-heap")), forbid(unsafe_code))]'
+        )
+    if req_deny_unsafe not in active:
+        errs.append(
+            'missing active #![cfg_attr(all(any(feature = "jemalloc", feature = "profile-heap"), not(feature = "profile-cpu")), deny(unsafe_code))]'
+        )
+    if req_deny_cpu not in active:
+        errs.append(
+            'missing active #![cfg_attr(feature = "profile-cpu", deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block))]'
+        )
+    denied_blob = _collect_active_non_test_denied_blob(clean)
+    for lint in REQUIRED_DENY_LINTS:
+        if not re.search(rf"\b{re.escape(lint)}\b", denied_blob):
+            errs.append(f"missing active crate-level deny({lint})")
+    if re.search(r"\bunsafe\b", clean):
+        errs.append("main.rs must not contain direct unsafe items/blocks (scope profile-cpu unsafe to profile.rs)")
     return errs
 
 
@@ -344,6 +492,20 @@ POSITIVE_CASES = (
         "cfg_attr allow clippy::indexing_slicing",
         "#[cfg_attr(not(test), allow(clippy::indexing_slicing))]\nfn f() {}\n",
     ),
+    ("allow clippy::unimplemented", "#[allow(clippy::unimplemented)]\nfn f() {}\n"),
+    ("allow clippy::dbg_macro", "#[allow(clippy::dbg_macro)]\nfn f() {}\n"),
+    ("allow clippy::print_stdout", "#[allow(clippy::print_stdout)]\nfn f() {}\n"),
+    ("allow clippy::print_stderr", "#[allow(clippy::print_stderr)]\nfn f() {}\n"),
+    ("expect unsafe_code", "#[expect(unsafe_code)]\nfn f() {}\n"),
+    ("allow unsafe_op_in_unsafe_fn", "#[allow(unsafe_op_in_unsafe_fn)]\nfn f() {}\n"),
+    (
+        "allow clippy::undocumented_unsafe_blocks",
+        "#[allow(clippy::undocumented_unsafe_blocks)]\nfn f() {}\n",
+    ),
+    (
+        "allow clippy::multiple_unsafe_ops_per_block",
+        "#[allow(clippy::multiple_unsafe_ops_per_block)]\nfn f() {}\n",
+    ),
     ("allow clippy::all", "#[allow(clippy::all)]\nfn f() {}\n"),
     ("allow clippy::restriction", "#[allow(clippy::restriction)]\nfn f() {}\n"),
     ("allow warnings", "#[allow(warnings)]\nfn f() {}\n"),
@@ -355,6 +517,27 @@ for label, snippet in POSITIVE_CASES:
     got = scan_source("synthetic.rs", snippet)
     assert len(got) == 1, f"self-test failed ({label}): expected 1 hit, got {got}"
 
+# Unauthorized expect(unsafe_code) inside main.rs on non-_rjem_malloc_conf item MUST be flagged,
+# whereas _rjem_malloc_conf static ONLY in crates/vardictrust/src/main.rs is exempted.
+MALLOC_CONF_SNIPPET = (
+    '#[cfg_attr(not(feature = "profile-cpu"), expect(unsafe_code, reason = "jemalloc C ABI symbol _rjem_malloc_conf requires #[export_name] on thin &[u8; N] static"))]\n'
+    '#[export_name = "_rjem_malloc_conf"]\n'
+    'pub static MALLOC_CONF: &[u8; 4] = b"ok!\\0";\n'
+)
+assert scan_source("crates/vardictrust/src/main.rs", MALLOC_CONF_SNIPPET) == [], (
+    "self-test failed: _rjem_malloc_conf expect(unsafe_code) in main.rs must be exempted"
+)
+assert len(scan_source("crates/vardictrust/src/cli.rs", MALLOC_CONF_SNIPPET)) == 1, (
+    "self-test failed: _rjem_malloc_conf expect(unsafe_code) outside main.rs must fail"
+)
+assert len(
+    scan_source(
+        "crates/vardictrust/src/main.rs",
+        '#[cfg_attr(not(feature = "profile-cpu"), expect(unsafe_code, reason = "sneaky"))]\n'
+        "static OTHER: u8 = 0;\n",
+    )
+) == 1, "self-test failed: expect(unsafe_code) on non-_rjem_malloc_conf item in main.rs must fail"
+
 # 2) Occurrences inside comments, string/raw-string literals, reason strings, and #[cfg(test)] blocks MUST be ignored
 NEGATIVE_SNIPPET = """
 // #[allow(clippy::indexing_slicing)]
@@ -363,7 +546,7 @@ const S1: &str = "#[allow(clippy::indexing_slicing)] \\" #[allow(todo)]";
 const S2: &str = r#"#[expect(clippy::indexing_slicing)]"#;
 const S3: &[u8] = br##"#[allow(clippy::restriction)] #[allow(unreachable)]"##;
 const Q: char = '"';
-#[expect(deprecated, reason = "mentions panic and indexing_slicing inside reason literal")]
+#[expect(deprecated, reason = "mentions panic, unsafe_code, and indexing_slicing inside reason literal")]
 #[allow(clippy::too_many_arguments)]
 fn prod_clean() {}
 
@@ -407,37 +590,56 @@ assert len(scan_source("synthetic_post.rs", POST_TEST_SNIPPET)) == 2, (
     "self-test failed: non-test code surrounding #[cfg(test)] and inline #![cfg(test)] scopes must still be scanned"
 )
 
-# 4) Self-test header verifier against commented-out or inactive-cfg forbid/deny attributes
+# 4) Self-test header verifiers against commented-out or inactive-cfg forbid/deny attributes
 assert verify_lib_rs_header(
     "// #![forbid(unsafe_code)]\n#![deny(clippy::unwrap_used)]\n"
 ), "self-test failed: commented-out forbid(unsafe_code) and missing deny lints must fail"
 assert verify_lib_rs_header(
     "#![forbid(unsafe_code)]\n"
-    "// clippy::indexing_slicing\n"
-    "#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo, clippy::string_slice))]\n"
-), "self-test failed: missing active deny(clippy::indexing_slicing) must fail"
+    "// clippy::print_stderr\n"
+    "#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo, clippy::unimplemented, clippy::dbg_macro, clippy::print_stdout, clippy::string_slice, clippy::indexing_slicing))]\n"
+), "self-test failed: missing active deny(clippy::print_stderr) must fail"
 assert verify_lib_rs_header(
     "#![forbid(unsafe_code)]\n"
-    "#![cfg_attr(test, deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unreachable, clippy::todo, clippy::string_slice, clippy::indexing_slicing))]\n"
+    "#![cfg_attr(test, deny(" + ", ".join(REQUIRED_DENY_LINTS) + "))]\n"
 ), "self-test failed: cfg_attr(test, deny(...)) must fail verify_lib_rs_header"
+assert verify_cli_rs_header("// #![forbid(unsafe_code)]\n"), (
+    "self-test failed: commented-out cli.rs forbid(unsafe_code) must fail"
+)
+assert verify_profile_rs_header("#![deny(unsafe_op_in_unsafe_fn)]\n"), (
+    "self-test failed: incomplete profile.rs header must fail"
+)
 
-# 5) Verify lib.rs active header attributes
-lib_path = pathlib.Path("crates/vardictrust-core/src/lib.rs")
-header_errs = verify_lib_rs_header(lib_path.read_text(encoding="utf-8"))
-if header_errs:
-    for err in header_errs:
-        print(f"FAIL: {lib_path.as_posix()}: {err}", file=sys.stderr)
+# 5) Verify active header attributes across lib.rs, main.rs, cli.rs, and profile.rs
+header_checks = (
+    ("crates/vardictrust-core/src/lib.rs", verify_lib_rs_header),
+    ("crates/vardictrust/src/main.rs", verify_main_rs_header),
+    ("crates/vardictrust/src/cli.rs", verify_cli_rs_header),
+    ("crates/vardictrust/src/profile.rs", verify_profile_rs_header),
+)
+header_failed = False
+for rel_hdr, verifier in header_checks:
+    hdr_path = pathlib.Path(rel_hdr)
+    errs = verifier(hdr_path.read_text(encoding="utf-8"))
+    if errs:
+        header_failed = True
+        for err in errs:
+            print(f"FAIL: {rel_hdr}: {err}", file=sys.stderr)
+if header_failed:
     sys.exit(1)
 
-src_root = pathlib.Path("crates/vardictrust-core/src")
 all_hits: list[tuple[str, int, str]] = []
-for rs_path in sorted(src_root.rglob("*.rs")):
-    rel = rs_path.as_posix()
-    all_hits.extend(scan_source(rel, rs_path.read_text(encoding="utf-8")))
+for src_dir in (
+    pathlib.Path("crates/vardictrust-core/src"),
+    pathlib.Path("crates/vardictrust/src"),
+):
+    for rs_path in sorted(src_dir.rglob("*.rs")):
+        rel = rs_path.as_posix()
+        all_hits.extend(scan_source(rel, rs_path.read_text(encoding="utf-8")))
 
 if all_hits:
     print(
-        "FAIL: #[allow(...)] / #[expect(...)] bypass on ratcheted lint in crates/vardictrust-core/src/ (zero-allow policy):",
+        "FAIL: unauthorized #[allow(...)] / #[expect(...)] bypass on ratcheted lint in crates/{vardictrust-core,vardictrust}/src/ (zero-allow policy):",
         file=sys.stderr,
     )
     for rel, line_no, attr_src in all_hits:
@@ -447,10 +649,12 @@ if all_hits:
 PY
 
 if [[ "$SCAN_ONLY" -eq 1 ]]; then
-    echo "PASS: lint_ratchet.sh --scan-only (zero-allow + indexing_slicing header scan clean)"
+    echo "PASS: lint_ratchet.sh --scan-only (11-lint + unsafe_code zero-allow header & source scan clean)"
     exit 0
 fi
 
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-echo "PASS: lint_ratchet.sh (no-panic + string_slice + indexing_slicing zero-allow ratchet clean)"
+echo "PASS: lint_ratchet.sh (11-lint + unsafe_code zero-allow ratchet clean across --no-default-features, default, and --all-features)"

@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -716,87 +717,6 @@ class TestRepoAgentSkills(unittest.TestCase):
             pr_template_content,
         )
 
-    def test_lint_ratchet_indexing_slicing_and_zero_allow(self):
-        ratchet_script = ROOT_DIR / "harness" / "lint_ratchet.sh"
-        lib_rs = ROOT_DIR / "crates" / "vardictrust-core" / "src" / "lib.rs"
-        pr_check = ROOT_DIR / "harness" / "pr_check.sh"
-
-        self.assertTrue(ratchet_script.is_file(), f"Missing lint ratchet script: {ratchet_script}")
-        self.assertTrue(os.access(ratchet_script, os.X_OK), "harness/lint_ratchet.sh must be executable")
-
-        lib_content = lib_rs.read_text(encoding="utf-8")
-        self.assertIn("#![forbid(unsafe_code)]", lib_content)
-        self.assertIn("clippy::indexing_slicing", lib_content)
-
-        pr_check_content = pr_check.read_text(encoding="utf-8")
-        self.assertIn("bash harness/lint_ratchet.sh --scan-only", pr_check_content)
-
-        # 1) Live --scan-only check on workspace must exit 0 quickly
-        t0 = time.monotonic()
-        scan_res = subprocess.run(
-            ["bash", str(ratchet_script), "--scan-only"],
-            cwd=str(ROOT_DIR),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        elapsed = time.monotonic() - t0
-        self.assertEqual(
-            scan_res.returncode,
-            0,
-            f"lint_ratchet.sh --scan-only failed ({scan_res.returncode}):\n{scan_res.stderr}\n{scan_res.stdout}",
-        )
-        self.assertLess(elapsed, 2.0, f"lint_ratchet.sh --scan-only took {elapsed:.3f}s (expected < 0.5s)")
-
-        # 2) Unknown flag must fail non-zero
-        bad_flag = subprocess.run(
-            ["bash", str(ratchet_script), "--unknown-flag"],
-            cwd=str(ROOT_DIR),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        self.assertNotEqual(bad_flag.returncode, 0, "lint_ratchet.sh must reject unknown flags")
-
-        # 3) Synthetic violations in isolated temp tree must fail non-zero without touching git tree
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            fake_src = pathlib.Path(tmp_dir) / "crates" / "vardictrust-core" / "src"
-            fake_src.mkdir(parents=True, exist_ok=True)
-            valid_header = (
-                "#![forbid(unsafe_code)]\n"
-                "#![cfg_attr(not(test), deny(\n"
-                "    clippy::unwrap_used, clippy::expect_used, clippy::panic,\n"
-                "    clippy::unreachable, clippy::todo, clippy::string_slice,\n"
-                "    clippy::indexing_slicing,\n"
-                "))]\n"
-            )
-            (fake_src / "lib.rs").write_text(valid_header, encoding="utf-8")
-            (fake_src / "sneaky.rs").write_text(
-                "#[allow(clippy::indexing_slicing)]\n"
-                "fn bypass() {}\n"
-                "mod tests {\n"
-                "    #![cfg(test)]\n"
-                "    #[allow(clippy::unwrap_used)]\n"
-                "    fn test_only() {}\n"
-                "}\n",
-                encoding="utf-8",
-            )
-            env = dict(os.environ, LINT_RATCHET_ROOT=tmp_dir)
-            viol_res = subprocess.run(
-                ["bash", str(ratchet_script), "--scan-only"],
-                cwd=str(ROOT_DIR),
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            self.assertNotEqual(
-                viol_res.returncode,
-                0,
-                "Synthetic #[allow(clippy::indexing_slicing)] violation must fail --scan-only",
-            )
-            self.assertIn("sneaky.rs", viol_res.stderr)
-
     def test_release_consistency_script_passes_and_catches_drift(self):
         script = SKILLS_DIR / "vardictrust-release" / "scripts" / "check_release_consistency.py"
         self.assertTrue(script.is_file(), f"Missing validator script: {script}")
@@ -903,6 +823,304 @@ class TestRepoAgentSkills(unittest.TestCase):
             mod.check_divergences_surface(fake_root, "1.0.8", post_tag_errs, phase="post-tag", require_head_fp=False)
             self.assertTrue(post_tag_errs, "post-tag must reject unfolded Current Workspace Test Suite block")
 
+
+class TestLintRatchet(unittest.TestCase):
+    """Verify 11-lint safety/hygiene + unsafe_code zero-allow ratchet across both crates and CI (AR-1)."""
+
+    EXPECTED_11_LINTS = (
+        "clippy::unwrap_used",
+        "clippy::expect_used",
+        "clippy::panic",
+        "clippy::unreachable",
+        "clippy::todo",
+        "clippy::unimplemented",
+        "clippy::dbg_macro",
+        "clippy::print_stdout",
+        "clippy::print_stderr",
+        "clippy::string_slice",
+        "clippy::indexing_slicing",
+    )
+
+    @staticmethod
+    def _normalize_ws(text: str) -> str:
+        return re.sub(r"\s+", "", text)
+
+    def _populate_clean_workspace(self, root: pathlib.Path) -> None:
+        shutil.rmtree(root / "crates", ignore_errors=True)
+        core_src = root / "crates" / "vardictrust-core" / "src"
+        cli_src = root / "crates" / "vardictrust" / "src"
+        core_src.mkdir(parents=True, exist_ok=True)
+        cli_src.mkdir(parents=True, exist_ok=True)
+
+        lints_csv = ",\n        ".join(self.EXPECTED_11_LINTS)
+        (core_src / "lib.rs").write_text(
+            "#![forbid(unsafe_code)]\n"
+            f"#![cfg_attr(\n    not(test),\n    deny(\n        {lints_csv},\n    )\n)]\n"
+            "pub fn ok() {}\n",
+            encoding="utf-8",
+        )
+        (cli_src / "cli.rs").write_text(
+            "#![forbid(unsafe_code)]\n"
+            "pub fn ok() {}\n",
+            encoding="utf-8",
+        )
+        (cli_src / "profile.rs").write_text(
+            '#![cfg_attr(not(feature = "profile-cpu"), forbid(unsafe_code))]\n'
+            '#![cfg_attr(\n'
+            '    feature = "profile-cpu",\n'
+            '    deny(\n'
+            '        unsafe_op_in_unsafe_fn,\n'
+            '        clippy::undocumented_unsafe_blocks,\n'
+            '        clippy::multiple_unsafe_ops_per_block\n'
+            '    )\n'
+            ')]\n'
+            "pub fn ok() {}\n",
+            encoding="utf-8",
+        )
+        (cli_src / "main.rs").write_text(
+            '#![cfg_attr(\n'
+            '    not(any(\n'
+            '        feature = "profile-cpu",\n'
+            '        feature = "jemalloc",\n'
+            '        feature = "profile-heap"\n'
+            '    )),\n'
+            '    forbid(unsafe_code)\n'
+            ')]\n'
+            '#![cfg_attr(\n'
+            '    all(\n'
+            '        any(feature = "jemalloc", feature = "profile-heap"),\n'
+            '        not(feature = "profile-cpu")\n'
+            '    ),\n'
+            '    deny(unsafe_code)\n'
+            ')]\n'
+            '#![cfg_attr(\n'
+            '    feature = "profile-cpu",\n'
+            '    deny(\n'
+            '        unsafe_op_in_unsafe_fn,\n'
+            '        clippy::undocumented_unsafe_blocks,\n'
+            '        clippy::multiple_unsafe_ops_per_block\n'
+            '    )\n'
+            ')]\n'
+            f"#![cfg_attr(\n    not(test),\n    deny(\n        {lints_csv},\n    )\n)]\n"
+            "mod cli;\n"
+            "mod profile;\n"
+            '#[cfg(all(feature = "jemalloc", not(feature = "profile-heap"), target_os = "linux"))]\n'
+            '#[cfg_attr(not(feature = "profile-cpu"), expect(unsafe_code, reason = "jemalloc C ABI symbol _rjem_malloc_conf requires #[export_name] on thin &[u8; N] static"))]\n'
+            '#[export_name = "_rjem_malloc_conf"]\n'
+            'pub static MALLOC_CONF: &[u8; 4] = b"ok!\\0";\n'
+            "fn main() {}\n",
+            encoding="utf-8",
+        )
+
+    def test_crate_headers_and_ci_wiring(self):
+        lib_rs = ROOT_DIR / "crates" / "vardictrust-core" / "src" / "lib.rs"
+        main_rs = ROOT_DIR / "crates" / "vardictrust" / "src" / "main.rs"
+        cli_rs = ROOT_DIR / "crates" / "vardictrust" / "src" / "cli.rs"
+        profile_rs = ROOT_DIR / "crates" / "vardictrust" / "src" / "profile.rs"
+        pr_check = ROOT_DIR / "harness" / "pr_check.sh"
+        ci_yml = ROOT_DIR / ".github" / "workflows" / "ci.yml"
+
+        lib_content = lib_rs.read_text(encoding="utf-8")
+        main_content = main_rs.read_text(encoding="utf-8")
+        cli_content = cli_rs.read_text(encoding="utf-8")
+        profile_content = profile_rs.read_text(encoding="utf-8")
+
+        # 1) Both lib.rs and main.rs must deny all 11 safety/hygiene lints in non-test builds
+        for target_name, content in (("vardictrust-core/src/lib.rs", lib_content), ("vardictrust/src/main.rs", main_content)):
+            for lint in self.EXPECTED_11_LINTS:
+                self.assertTrue(lint in content, f"{target_name} missing deny({lint})")
+
+        # 2) Exact unsafe_code & unsafe discipline headers across lib.rs, cli.rs, profile.rs, and main.rs
+        self.assertTrue("#![forbid(unsafe_code)]" in lib_content, "lib.rs missing #![forbid(unsafe_code)]")
+        self.assertTrue("#![forbid(unsafe_code)]" in cli_content, "cli.rs missing #![forbid(unsafe_code)]")
+
+        profile_norm = self._normalize_ws(profile_content)
+        self.assertTrue(
+            self._normalize_ws('#![cfg_attr(not(feature = "profile-cpu"), forbid(unsafe_code))]') in profile_norm,
+            "profile.rs missing not(feature = \"profile-cpu\") forbid(unsafe_code)",
+        )
+        self.assertTrue(
+            self._normalize_ws(
+                '#![cfg_attr(feature = "profile-cpu", deny(unsafe_op_in_unsafe_fn, clippy::undocumented_unsafe_blocks, clippy::multiple_unsafe_ops_per_block))]'
+            ) in profile_norm,
+            "profile.rs missing feature = \"profile-cpu\" unsafe discipline deny header",
+        )
+
+        main_norm = self._normalize_ws(main_content)
+        self.assertTrue(
+            self._normalize_ws(
+                '#![cfg_attr(not(any(feature = "profile-cpu", feature = "jemalloc", feature = "profile-heap")), forbid(unsafe_code))]'
+            ) in main_norm,
+            "main.rs missing forbid(unsafe_code) feature guard",
+        )
+        self.assertTrue(
+            self._normalize_ws(
+                '#![cfg_attr(all(any(feature = "jemalloc", feature = "profile-heap"), not(feature = "profile-cpu")), deny(unsafe_code))]'
+            ) in main_norm,
+            "main.rs missing deny(unsafe_code) feature guard",
+        )
+        # All 4 _rjem_malloc_conf statics carry cfg_attr(not(feature = "profile-cpu"), expect(unsafe_code, ...))
+        self.assertEqual(
+            main_content.count('#[export_name = "_rjem_malloc_conf"]'),
+            4,
+            "Expected 4 target/feature-split _rjem_malloc_conf statics in main.rs",
+        )
+        self.assertEqual(
+            len(re.findall(r"\bexpect\s*\(\s*unsafe_code\b", main_content)),
+            4,
+            "expect(unsafe_code) must appear solely on the 4 _rjem_malloc_conf statics in main.rs",
+        )
+
+        # 3) pr_check.sh and .github/workflows/ci.yml Step 1 both run lint_ratchet.sh --scan-only
+        #    plus all three Clippy feature configurations (--no-default-features, default, --all-features)
+        pr_check_text = pr_check.read_text(encoding="utf-8")
+        self.assertIn(
+            "bash harness/lint_ratchet.sh --scan-only",
+            pr_check_text,
+        )
+        ci_text = ci_yml.read_text(encoding="utf-8")
+        step1_start = ci_text.find("1. Format & Lint Gate")
+        step2_start = ci_text.find("2. Build Instrumented Workspace")
+        self.assertNotEqual(step1_start, -1, "ci.yml missing Step 1")
+        self.assertGreater(step2_start, step1_start)
+        step1_block = ci_text[step1_start:step2_start]
+        self.assertIn(
+            "bash harness/lint_ratchet.sh --scan-only",
+            step1_block,
+            "ci.yml Step 1 must execute 'bash harness/lint_ratchet.sh --scan-only'",
+        )
+        for clippy_cmd in (
+            "cargo clippy --workspace --all-targets --no-default-features -- -D warnings",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+            "cargo clippy --all-targets --all-features -- -D warnings",
+        ):
+            self.assertIn(
+                clippy_cmd,
+                step1_block,
+                f"ci.yml Step 1 must execute {clippy_cmd!r}",
+            )
+            self.assertIn(
+                clippy_cmd,
+                pr_check_text,
+                f"pr_check.sh Stage 1 must execute {clippy_cmd!r}",
+            )
+
+    def test_lint_ratchet_scan_only_and_unauthorized_suppression_rejection(self):
+        ratchet_script = ROOT_DIR / "harness" / "lint_ratchet.sh"
+        self.assertTrue(ratchet_script.is_file(), f"Missing lint ratchet script: {ratchet_script}")
+        self.assertTrue(os.access(ratchet_script, os.X_OK), "harness/lint_ratchet.sh must be executable")
+
+        # 1) Live --scan-only check on workspace must exit 0 quickly
+        t0 = time.monotonic()
+        scan_res = subprocess.run(
+            ["bash", str(ratchet_script), "--scan-only"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        elapsed = time.monotonic() - t0
+        self.assertEqual(
+            scan_res.returncode,
+            0,
+            f"lint_ratchet.sh --scan-only failed ({scan_res.returncode}):\n{scan_res.stderr}\n{scan_res.stdout}",
+        )
+        self.assertLess(elapsed, 2.0, f"lint_ratchet.sh --scan-only took {elapsed:.3f}s (expected < 0.5s)")
+
+        # 2) Unknown flag must fail non-zero
+        bad_flag = subprocess.run(
+            ["bash", str(ratchet_script), "--unknown-flag"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(bad_flag.returncode, 0, "lint_ratchet.sh must reject unknown flags")
+
+        # 3) Clean synthetic workspace passes, and injecting any unauthorized allow/expect in either crate fails
+        unauthorized_attrs = (
+            "#[allow(clippy::unwrap_used)]",
+            "#[expect(unsafe_code)]",
+            "#[allow(clippy::print_stderr)]",
+            "#[allow(clippy::undocumented_unsafe_blocks)]",
+            "#[allow(clippy::indexing_slicing)]",
+        )
+        injection_targets = (
+            "crates/vardictrust-core/src/sneaky.rs",
+            "crates/vardictrust/src/sneaky_cli.rs",
+            "crates/vardictrust/src/main.rs",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_root = pathlib.Path(tmp_dir)
+            self._populate_clean_workspace(tmp_root)
+            env = dict(os.environ, LINT_RATCHET_ROOT=tmp_dir)
+
+            clean_res = subprocess.run(
+                ["bash", str(ratchet_script), "--scan-only"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                clean_res.returncode,
+                0,
+                f"Clean synthetic workspace failed --scan-only:\n{clean_res.stderr}\n{clean_res.stdout}",
+            )
+
+            for rel_target in injection_targets:
+                for bad_attr in unauthorized_attrs:
+                    self._populate_clean_workspace(tmp_root)
+                    target_path = tmp_root / rel_target
+                    existing = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
+                    target_path.write_text(
+                        existing
+                        + f"\n{bad_attr}\npub fn unauthorized_bypass() {{}}\n"
+                        + "mod tests {\n    #![cfg(test)]\n    #[allow(clippy::unwrap_used)]\n    fn ok_in_test() {}\n}\n",
+                        encoding="utf-8",
+                    )
+                    viol_res = subprocess.run(
+                        ["bash", str(ratchet_script), "--scan-only"],
+                        cwd=str(ROOT_DIR),
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(
+                        viol_res.returncode,
+                        0,
+                        f"Unauthorized {bad_attr} in {rel_target} must fail lint_ratchet.sh --scan-only",
+                    )
+                    self.assertIn(rel_target, viol_res.stderr)
+
+            # 4) Stripping required unsafe_code headers from cli.rs, profile.rs, or main.rs must also fail
+            for broken_rel, broken_src in (
+                ("crates/vardictrust/src/cli.rs", "pub fn missing_forbid() {}\n"),
+                ("crates/vardictrust/src/profile.rs", "#![deny(unsafe_op_in_unsafe_fn)]\npub fn missing_forbid() {}\n"),
+                (
+                    "crates/vardictrust/src/main.rs",
+                    "#![cfg_attr(not(test), deny(" + ", ".join(self.EXPECTED_11_LINTS) + "))]\nfn main() {}\n",
+                ),
+            ):
+                self._populate_clean_workspace(tmp_root)
+                (tmp_root / broken_rel).write_text(broken_src, encoding="utf-8")
+                hdr_res = subprocess.run(
+                    ["bash", str(ratchet_script), "--scan-only"],
+                    cwd=str(ROOT_DIR),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertNotEqual(
+                    hdr_res.returncode,
+                    0,
+                    f"Missing unsafe_code header in {broken_rel} must fail lint_ratchet.sh --scan-only",
+                )
+                self.assertIn(broken_rel, hdr_res.stderr)
 
 
 if __name__ == "__main__":

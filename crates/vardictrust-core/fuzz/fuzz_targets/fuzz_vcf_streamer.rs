@@ -1,5 +1,7 @@
 #![no_main]
 
+use std::collections::HashMap;
+
 use libfuzzer_sys::fuzz_target;
 use vardictrust_core::config::{Config, VcfThreshold};
 use vardictrust_core::output::table::{
@@ -184,6 +186,45 @@ fn assert_tsv_cols(kind: &str, line: &str, expected_cols: usize) {
     assert_eq!(
         actual_cols, expected_cols,
         "{kind} column count mismatch: got {actual_cols}, expected {expected_cols}"
+    );
+}
+
+fn assert_vcf_header(kind: &str, hdr_bytes: &[u8], expected_chrom_cols: usize) {
+    let hdr_str = std::str::from_utf8(hdr_bytes).expect("VCF header must be valid UTF-8");
+    assert!(
+        !hdr_str
+            .chars()
+            .any(|c| matches!(c, '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}')),
+        "{kind} contains forbidden CR or Unicode line separator"
+    );
+    assert!(
+        hdr_str.ends_with('\n'),
+        "{kind} must end with trailing newline"
+    );
+    let trimmed = &hdr_str[..hdr_str.len() - 1];
+    let mut chrom_count = 0usize;
+    let lines: Vec<&str> = trimmed.split('\n').collect();
+    assert!(!lines.is_empty(), "{kind} emitted zero lines");
+    for (idx, line) in lines.iter().enumerate() {
+        if idx + 1 < lines.len() {
+            assert!(
+                line.starts_with("##"),
+                "{kind} meta line {idx} does not start with '##': {line:?}"
+            );
+        } else {
+            assert!(
+                line.starts_with("#CHROM\t"),
+                "{kind} final header line does not start with '#CHROM\\t': {line:?}"
+            );
+        }
+        if line.starts_with("#CHROM") {
+            chrom_count += 1;
+            assert_tsv_cols(kind, line, expected_chrom_cols);
+        }
+    }
+    assert_eq!(
+        chrom_count, 1,
+        "{kind} must contain exactly one #CHROM line, got {chrom_count}"
     );
 }
 
@@ -491,6 +532,8 @@ fuzz_target!(|data: &[u8]| {
             let extra_debug_cols = 1 + av.good_variants.len() + av.bad_variants.len();
             amplicon_38_into(&mut table_buf, &av, &table_region, &table_sample, true);
             assert_tsv_cols("amplicon_38_debug", &table_buf, 38 + extra_debug_cols);
+            amplicon_40_into(&mut table_buf, &av, &table_region, &table_sample, true);
+            assert_tsv_cols("amplicon_40_debug", &table_buf, 40 + extra_debug_cols);
         }
 
         // 3. Single / amplicon VCF event builder, direct formatter, and delayed streamer.
@@ -650,4 +693,52 @@ fuzz_target!(|data: &[u8]| {
         assert_tsv_cols("paired_vcf_finish_raw", line, 11);
         Ok(())
     });
+
+    // 5. Single & Paired VCF header writers (zero disk I/O via cleared reference path).
+    let mut fuzz_chrom_lengths: HashMap<String, usize> = HashMap::with_capacity(4);
+    let n_contigs = usize::from(cur.u8() % 5);
+    for c_idx in 0..n_contigs {
+        let cname = match cur.u8() % 6 {
+            0 => "chr1".to_string(),
+            1 => "chrX".to_string(),
+            2 => "MT".to_string(),
+            3 => format!("chr{}", (c_idx % 22) + 1),
+            4 => vcf_chr.clone(),
+            _ => cur.utf8_capped(24, true),
+        };
+        let clen = usize::from(cur.u16()).saturating_mul(64).saturating_add(1);
+        fuzz_chrom_lengths.insert(cname, clen);
+    }
+
+    let mut hdr_cfg = config.clone();
+    hdr_cfg.reference.clear();
+    if (cur.u8() & 3) == 0 {
+        hdr_cfg.sample = match cur.u8() % 4 {
+            0 => "TUMOR A\u{0085}B|NORMAL C\u{2028}D\u{2029}E".to_string(),
+            1 => "SAMPLE WITH SPACES\u{0085}\u{2028}\u{2029}".to_string(),
+            2 => format!(
+                "{}|{}",
+                cur.utf8_capped(24, false),
+                cur.utf8_capped(24, false)
+            ),
+            _ => cur.utf8_capped(48, true),
+        };
+    }
+
+    let mut hdr_buf: Vec<u8> = Vec::with_capacity(4096);
+    if vardictrust_core::output::vcf::print_vcf_header(&mut hdr_buf, &hdr_cfg, &fuzz_chrom_lengths)
+        .is_ok()
+    {
+        assert_vcf_header("single_vcf_header", &hdr_buf, 10);
+    }
+    hdr_buf.clear();
+    if vardictrust_core::output::vcf::print_paired_vcf_header(
+        &mut hdr_buf,
+        &hdr_cfg,
+        &fuzz_chrom_lengths,
+    )
+    .is_ok()
+    {
+        assert_vcf_header("paired_vcf_header", &hdr_buf, 11);
+    }
 });

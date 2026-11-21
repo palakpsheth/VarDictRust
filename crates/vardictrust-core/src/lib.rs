@@ -21,6 +21,10 @@
         clippy::panic,
         clippy::unreachable,
         clippy::todo,
+        clippy::unimplemented,
+        clippy::dbg_macro,
+        clippy::print_stdout,
+        clippy::print_stderr,
         clippy::string_slice,
         clippy::indexing_slicing,
     )
@@ -105,6 +109,15 @@ impl SplitVarRow {
     #[inline]
     fn anchor_pos(&self) -> i32 {
         self.id.origin_pos
+    }
+
+    #[inline]
+    fn approx_heap_bytes(&self) -> usize {
+        self.id
+            .ref_allele
+            .capacity()
+            .saturating_add(self.id.var_allele.capacity())
+            .saturating_add(self.line.capacity())
     }
 }
 
@@ -421,6 +434,7 @@ fn run_pipeline_on_records(
         &[],
         None,
         None,
+        None,
     )
 }
 
@@ -475,6 +489,7 @@ fn run_pipeline_on_records_ext(
     max_rl_steps: &[MaxRlStep],
     post_pileup_max_read_length: Option<i32>,
     parent_original_start: Option<crate::types::Pos1>,
+    parent_active_bam_limit: Option<usize>,
 ) -> Result<crate::variations::VariationData, VardictError> {
     // Task 4 (streaming feed): one lazy pass per BAM, BAM1-then-BAM2, through
     // a single sequential preprocessor into a single CigarParser. Records are
@@ -519,7 +534,11 @@ fn run_pipeline_on_records_ext(
         parser.splice = seed_splice;
     }
     let mut step_cursor = 0usize;
-    for (idx, mut feed) in feeds.into_iter().enumerate() {
+    for (idx, mut feed) in feeds
+        .into_iter()
+        .enumerate()
+        .take(parent_active_bam_limit.unwrap_or(usize::MAX))
+    {
         preprocessor.reset_for_next_bam();
         while let Some(step) = max_rl_steps.get(step_cursor) {
             if step.bam_idx < idx {
@@ -613,7 +632,9 @@ fn run_pipeline_on_records_ext(
             }
         }
         // Ports RecordPreprocessor.java:57-64 (`if (record == null)` advances at most one reader).
-        if idx > 0 && !any_passed {
+        // On split tiles (`parent_active_bam_limit.is_some()`), the parent-region pre-scan has
+        // already computed the active reader limit across the full parent region (`AR-9`).
+        if parent_active_bam_limit.is_none() && idx > 0 && !any_passed {
             break;
         }
     }
@@ -1373,12 +1394,17 @@ fn replay_prescan_candidate(
     if total_length_including_soft_clipped > (*cur_max).max(0) as u32 {
         *cur_max = total_length_including_soft_clipped as i32;
         for (tile, steps) in reg_tiles.iter().zip(steps_per_tile.iter_mut()) {
-            if r_start_u32 <= tile.end.0 || bam_idx + 1 < total_bams {
+            let (eff_start, eff_end) = if config.splice {
+                (tile.halo_start.0, tile.halo_end.0)
+            } else {
+                (tile.start.0, tile.end.0)
+            };
+            if r_start_u32 <= eff_end || bam_idx + 1 < total_bams {
                 let prev_ov = same_start_prefix
                     .iter()
-                    .filter(|&&e| e > tile.start.0 as i32)
+                    .filter(|&&e| e > eff_start as i32)
                     .count();
-                let self_ov = usize::from(read_end > tile.start.0 as i32);
+                let self_ov = usize::from(read_end > eff_start as i32);
                 steps.push(MaxRlStep {
                     bam_idx,
                     read_start: r_start_u32,
@@ -1516,6 +1542,20 @@ struct BandCandidate {
     quality_scores: Vec<u8>,
 }
 
+impl BandCandidate {
+    #[inline]
+    fn approx_heap_bytes(&self) -> usize {
+        self.cigar
+            .capacity()
+            .saturating_mul(std::mem::size_of::<(
+                u32,
+                noodles::sam::alignment::record::cigar::op::Kind,
+            )>())
+            .saturating_add(self.sequence.capacity())
+            .saturating_add(self.quality_scores.capacity())
+    }
+}
+
 enum BandScan {
     Candidates {
         any_passed: bool,
@@ -1523,6 +1563,37 @@ enum BandScan {
         candidates: Vec<BandCandidate>,
     },
     FallbackSequential,
+}
+
+impl BandScan {
+    fn approx_heap_bytes(&self) -> usize {
+        match self {
+            Self::Candidates {
+                groups, candidates, ..
+            } => {
+                let groups_bytes = groups
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<Vec<i32>>())
+                    .saturating_add(
+                        groups
+                            .iter()
+                            .map(|g| g.capacity().saturating_mul(std::mem::size_of::<i32>()))
+                            .fold(0usize, usize::saturating_add),
+                    );
+                let cands_bytes = candidates
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<BandCandidate>())
+                    .saturating_add(
+                        candidates
+                            .iter()
+                            .map(BandCandidate::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    );
+                groups_bytes.saturating_add(cands_bytes)
+            }
+            Self::FallbackSequential => 0,
+        }
+    }
 }
 
 fn flush_candidate_group(
@@ -1793,7 +1864,7 @@ fn build_region_bands(reg: &crate::regions::Region, band_bp: u32) -> Vec<(u32, u
     bands
 }
 
-type MultiTilePrescanOut = (Vec<Vec<MaxRlStep>>, i32);
+type MultiTilePrescanOut = (Vec<Vec<MaxRlStep>>, i32, usize);
 
 #[cfg(test)]
 thread_local! {
@@ -1905,6 +1976,7 @@ fn scan_multi_regions_max_read_lengths(
         scanner: BoundedParentRefScanner,
         active: bool,
         bam_any_passed: bool,
+        active_bams: usize,
     }
 
     let mut states: Vec<MultiRegState> = Vec::with_capacity(multi_idxs.len());
@@ -1922,6 +1994,7 @@ fn scan_multi_regions_max_read_lengths(
             scanner: BoundedParentRefScanner::new(reg, chromosomes_lengths, config),
             active: !reg_tiles.is_empty(),
             bam_any_passed: false,
+            active_bams: 0,
         });
     }
 
@@ -1942,6 +2015,7 @@ fn scan_multi_regions_max_read_lengths(
             if !st.active {
                 continue;
             }
+            st.active_bams = bam_idx + 1;
             st.bam_any_passed = false;
             let seed_rl = st.cur_max;
             if let Some(bands) = bands_per_multi.get(m_pos) {
@@ -1967,7 +2041,7 @@ fn scan_multi_regions_max_read_lengths(
         let multi_regs_for_worker = std::sync::Arc::clone(&multi_regs);
         let cfg_for_worker = config.clone();
 
-        crate::runner::run_parallel_batched_for_bam(
+        crate::runner::run_parallel_batched_for_bam_weighted(
             bam_spec_for_stack,
             batches,
             eff_threads,
@@ -2084,6 +2158,7 @@ fn scan_multi_regions_max_read_lengths(
                 }
                 Ok(())
             },
+            |(_, scan)| scan.approx_heap_bytes(),
         )?;
 
         #[cfg(test)]
@@ -2106,7 +2181,7 @@ fn scan_multi_regions_max_read_lengths(
 
     Ok(states
         .into_iter()
-        .map(|st| (st.steps_per_tile, st.cur_max))
+        .map(|st| (st.steps_per_tile, st.cur_max, st.active_bams))
         .collect())
 }
 
@@ -2118,6 +2193,8 @@ fn scan_multi_regions_max_read_lengths(
 /// 2. `final_max_rl`: the final `max_read_length` at the end of the parent region's pileup, used by
 ///    the post-pileup tail (`adjust_mnp`, `realign_indels`, `find_all_sv`, `adj_snv`) and to seed
 ///    BAM2 in Somatic mode (`SomaticMode.java:104-122`).
+/// 3. `active_bam_limit`: count of colon-separated BAM readers visited across the full parent
+///    region before `RecordPreprocessor.java:57-64` (`idx > 0 && !any_passed`) stops (`AR-9`).
 fn scan_multi_tile_max_read_lengths(
     bam_paths: &[String],
     reg: &crate::regions::Region,
@@ -2125,10 +2202,10 @@ fn scan_multi_tile_max_read_lengths(
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
     initial_max_rl: i32,
-) -> Result<(Vec<Vec<MaxRlStep>>, i32), VardictError> {
+) -> Result<MultiTilePrescanOut, VardictError> {
     let mut steps_per_tile = vec![Vec::new(); reg_tiles.len()];
     if reg_tiles.is_empty() {
-        return Ok((steps_per_tile, initial_max_rl));
+        return Ok((steps_per_tile, initial_max_rl, 0));
     }
     let mut cur_max = initial_max_rl;
     let query_start = reg.start.to_zero_based();
@@ -2150,8 +2227,10 @@ fn scan_multi_tile_max_read_lengths(
     let mut cigar_str = String::new();
     let mut scanner = BoundedParentRefScanner::new(reg, chromosomes_lengths, config);
     let total_bams = bam_paths.len();
+    let mut active_bam_limit = 0usize;
 
     for (idx, mut feed) in feeds.into_iter().enumerate() {
+        active_bam_limit = idx + 1;
         preprocessor.reset_for_next_bam();
         let mut r = crate::bam::SamRecord::new();
         let mut any_passed = false;
@@ -2231,7 +2310,7 @@ fn scan_multi_tile_max_read_lengths(
         }
     }
 
-    Ok((steps_per_tile, cur_max))
+    Ok((steps_per_tile, cur_max, active_bam_limit))
 }
 
 const DEFAULT_VCF_SPILL_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
@@ -4965,8 +5044,10 @@ fn run_with_engine_writer_and_telemetry<W: EngineWriter>(
 struct PreparedTileSeed {
     bam1_steps: Vec<MaxRlStep>,
     bam1_final: i32,
+    bam1_active_bams: usize,
     bam2_steps: Vec<MaxRlStep>,
     bam2_final: i32,
+    bam2_active_bams: usize,
 }
 
 fn parse_target_regions(
@@ -5018,15 +5099,11 @@ fn prepare_tiles_and_prescan(
         .iter()
         .map(|reg| crate::regions::tile(reg, effective_tile_size(reg, config.tile_size), halo))
         .collect();
-    let multi_idxs: Vec<usize> = if config.splice {
-        Vec::new()
-    } else {
-        reg_tiles_list
-            .iter()
-            .enumerate()
-            .filter_map(|(i, rt)| (rt.len() > 1).then_some(i))
-            .collect()
-    };
+    let multi_idxs: Vec<usize> = reg_tiles_list
+        .iter()
+        .enumerate()
+        .filter_map(|(i, rt)| (rt.len() > 1).then_some(i))
+        .collect();
 
     let mut multi_tile_seeds: HashMap<MultiTileKey, PreparedTileSeed> = HashMap::new();
     if !multi_idxs.is_empty() {
@@ -5044,7 +5121,7 @@ fn prepare_tiles_and_prescan(
             MAX_BAND_CANDIDATE_BYTES,
         )?;
         if let Some(bam2_list) = bam2_bams {
-            let bam1_finals: Vec<i32> = bam1_scanned.iter().map(|&(_, f)| f).collect();
+            let bam1_finals: Vec<i32> = bam1_scanned.iter().map(|&(_, f, _)| f).collect();
             let bam2_scanned = scan_multi_regions_max_read_lengths(
                 &config.bam,
                 bam2_list,
@@ -5057,8 +5134,10 @@ fn prepare_tiles_and_prescan(
                 PRESCAN_BAND_BP,
                 MAX_BAND_CANDIDATE_BYTES,
             )?;
-            for ((&idx, (bam1_steps, bam1_final)), (bam2_steps, bam2_final)) in
-                multi_idxs.iter().zip(bam1_scanned).zip(bam2_scanned)
+            for (
+                (&idx, (bam1_steps, bam1_final, bam1_active_bams)),
+                (bam2_steps, bam2_final, bam2_active_bams),
+            ) in multi_idxs.iter().zip(bam1_scanned).zip(bam2_scanned)
             {
                 if let Some(reg_tiles) = reg_tiles_list.get(idx) {
                     for ((t, s1), s2) in reg_tiles.iter().zip(bam1_steps).zip(bam2_steps) {
@@ -5067,15 +5146,19 @@ fn prepare_tiles_and_prescan(
                             PreparedTileSeed {
                                 bam1_steps: s1,
                                 bam1_final,
+                                bam1_active_bams,
                                 bam2_steps: s2,
                                 bam2_final,
+                                bam2_active_bams,
                             },
                         );
                     }
                 }
             }
         } else {
-            for (&idx, (bam1_steps, bam1_final)) in multi_idxs.iter().zip(bam1_scanned) {
+            for (&idx, (bam1_steps, bam1_final, bam1_active_bams)) in
+                multi_idxs.iter().zip(bam1_scanned)
+            {
                 if let Some(reg_tiles) = reg_tiles_list.get(idx) {
                     for (t, s1) in reg_tiles.iter().zip(bam1_steps) {
                         multi_tile_seeds.insert(
@@ -5083,8 +5166,10 @@ fn prepare_tiles_and_prescan(
                             PreparedTileSeed {
                                 bam1_steps: s1,
                                 bam1_final,
+                                bam1_active_bams,
                                 bam2_steps: Vec::new(),
                                 bam2_final: 0,
+                                bam2_active_bams: 0,
                             },
                         );
                     }
@@ -5104,7 +5189,12 @@ fn prepare_tiles_and_prescan(
         tel.tiles_count
             .store(tiles.len(), std::sync::atomic::Ordering::Relaxed);
     }
-    let tile_batches = crate::regions::batch_tiles(tiles, tile_size, 16, config.threads);
+    let tile_batches = crate::regions::batch_tiles(
+        tiles,
+        tile_size.min(crate::regions::MAX_UNSPLIT_BATCH_BP),
+        crate::regions::DEFAULT_MAX_BATCH_TILES,
+        config.threads,
+    );
     Ok((tile_batches, multi_tile_seeds))
 }
 
@@ -5185,18 +5275,52 @@ fn run_with_writer_inner<W: EngineWriter>(
         },
     }
 
+    impl SimpleTileOutput {
+        fn approx_heap_bytes(&self) -> usize {
+            match self {
+                Self::UnSplitVarBlock(block) => block.capacity(),
+                Self::Lines { rows, .. } => rows
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<SplitVarRow>())
+                    .saturating_add(
+                        rows.iter()
+                            .map(SplitVarRow::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    ),
+                Self::Vcf { chr, records } => chr
+                    .capacity()
+                    .saturating_add(
+                        records
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<RawVcfCandidate>()),
+                    )
+                    .saturating_add(
+                        records
+                            .iter()
+                            .map(|r| match &r.event {
+                                crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
+                                _ => 0,
+                            })
+                            .fold(0usize, usize::saturating_add),
+                    ),
+            }
+        }
+    }
+
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> =
         SpillableVcfAccumulator::from_config(config);
     let mut split_var_deduper = SplitVarDeduper::default();
 
     // Process tiles in parallel, print variants in deterministic index order
-    crate::runner::run_parallel_batched_for_bam(
+    crate::runner::run_parallel_batched_for_bam_weighted(
         &config.bam,
         tile_batches,
         config.threads,
         move |tile| -> Result<SimpleTileOutput, VardictError> {
             let _region_guard =
                 crate::runner::enter_worker_region(&tile.chr, tile.start.0, tile.end.0);
+            let _cram_contig_pin =
+                crate::bam::pin_cram_contig_for_spec(&config_clone.bam, &tile.chr, &config_clone);
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.halo_start,
@@ -5223,19 +5347,20 @@ fn run_with_writer_inner<W: EngineWriter>(
                 &region_for_pileup
             };
             let is_split_tile = tile.start != tile.original_start || tile.end != tile.original_end;
-            let (steps_slice, post_max_rl, parent_orig_start) =
+            let (steps_slice, post_max_rl, parent_orig_start, parent_active_bams) =
                 if is_split_tile && !multi_tile_seeds.is_empty() {
                     if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
                         (
                             seed.bam1_steps.as_slice(),
                             Some(seed.bam1_final),
                             Some(tile.original_start),
+                            Some(seed.bam1_active_bams),
                         )
                     } else {
-                        (&[] as &[MaxRlStep], None, Some(tile.original_start))
+                        (&[] as &[MaxRlStep], None, Some(tile.original_start), None)
                     }
                 } else {
-                    (&[] as &[MaxRlStep], None, None)
+                    (&[] as &[MaxRlStep], None, None, None)
                 };
             let var_data = run_pipeline_on_records_ext(
                 &bam_list,
@@ -5257,6 +5382,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                 steps_slice,
                 post_max_rl,
                 parent_orig_start,
+                parent_active_bams,
             )?;
 
             if config_clone.splice {
@@ -5461,6 +5587,7 @@ fn run_with_writer_inner<W: EngineWriter>(
             }
             Ok(())
         },
+        SimpleTileOutput::approx_heap_bytes,
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, line))?;
 
@@ -5495,17 +5622,15 @@ fn process_amplicon_region(
     ),
     VardictError,
 > {
-    let halo = 500u32;
-    let halo_start = crate::types::Pos0(region.start.0.saturating_sub(halo).saturating_sub(1));
-    let halo_end = crate::types::Pos0(region.end.0.saturating_add(halo));
-
+    // Ports AmpliconMode.java:61, 98 + SamView.java:20-21: query exact [region.start, region.end]
+    // without a 500 bp halo so multi-BAM reader cutoffs and `-t` dedup match VarDictJava.
     let mut reference = crate::reference::Reference::new();
     let bam_list = parse_colon_bams(bam, "No BAM files specified")?;
     let var_data = run_pipeline_on_records(
         &bam_list,
         &region.chr,
-        halo_start,
-        halo_end,
+        region.start.to_zero_based(),
+        crate::types::Pos0(region.end.0),
         Some(region),
         &mut reference,
         region,
@@ -5608,6 +5733,68 @@ fn run_amplicon<W: EngineWriter>(
         },
     }
 
+    impl AmpliconSegmentOutput {
+        fn approx_heap_bytes(&self) -> usize {
+            match self {
+                Self::UnSplitVarBlock(block) => block.capacity(),
+                Self::Vcf { chr, records } => chr
+                    .capacity()
+                    .saturating_add(
+                        records
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<RawVcfCandidate>()),
+                    )
+                    .saturating_add(
+                        records
+                            .iter()
+                            .map(|r| match &r.event {
+                                crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
+                                _ => 0,
+                            })
+                            .fold(0usize, usize::saturating_add),
+                    ),
+                Self::Pileup {
+                    segment,
+                    vars_per_amplicon,
+                    splice,
+                } => {
+                    let seg_bytes = segment
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<crate::regions::Region>())
+                        .saturating_add(
+                            segment
+                                .iter()
+                                .map(|r| r.chr.capacity().saturating_add(r.gene.capacity()))
+                                .fold(0usize, usize::saturating_add),
+                        );
+                    let vars_bytes = vars_per_amplicon
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<
+                            crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
+                        >())
+                        .saturating_add(
+                            vars_per_amplicon
+                                .iter()
+                                .map(crate::javamap::JavaHashMap::approx_heap_bytes)
+                                .fold(0usize, usize::saturating_add),
+                        );
+                    let splice_bytes = splice
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<String>())
+                        .saturating_add(
+                            splice
+                                .iter()
+                                .map(String::capacity)
+                                .fold(0usize, usize::saturating_add),
+                        );
+                    seg_bytes
+                        .saturating_add(vars_bytes)
+                        .saturating_add(splice_bytes)
+                }
+            }
+        }
+    }
+
     let segments: Vec<Vec<crate::regions::Region>> =
         segments.into_iter().filter(|s| !s.is_empty()).collect();
     if let Some(tel) = telemetry {
@@ -5621,9 +5808,9 @@ fn run_amplicon<W: EngineWriter>(
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
 
-    // H5: Process independent amplicon segments in parallel via `run_parallel_for_bam`,
+    // H5: Process independent amplicon segments in parallel via `run_parallel_for_bam_weighted`,
     // streaming results into the consumer in exact BED segment order.
-    crate::runner::run_parallel_for_bam(
+    crate::runner::run_parallel_for_bam_weighted(
         &config.bam,
         segments,
         config.threads,
@@ -5850,6 +6037,7 @@ fn run_amplicon<W: EngineWriter>(
             }
             Ok(())
         },
+        AmpliconSegmentOutput::approx_heap_bytes,
     )?;
 
     if let Some(ref contigs) = vcf_contigs {
@@ -5935,18 +6123,49 @@ fn run_somatic<W: EngineWriter>(
         },
     }
 
+    impl SomaticTileOutput {
+        fn approx_heap_bytes(&self) -> usize {
+            match self {
+                Self::UnSplitVarBlock(block) => block.capacity(),
+                Self::Lines { rows, .. } => rows
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<SplitVarRow>())
+                    .saturating_add(
+                        rows.iter()
+                            .map(SplitVarRow::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    ),
+                Self::Vcf { chr, candidates } => chr
+                    .capacity()
+                    .saturating_add(
+                        candidates
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<SomaticVcfCandidate>()),
+                    )
+                    .saturating_add(
+                        candidates
+                            .iter()
+                            .map(|c| c.record.as_ref().map_or(0, |rec| rec.capacity()))
+                            .fold(0usize, usize::saturating_add),
+                    ),
+            }
+        }
+    }
+
     let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> =
         SpillableVcfAccumulator::from_config(config);
     let mut split_var_deduper = SplitVarDeduper::default();
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
-    crate::runner::run_parallel_batched_for_bam(
+    crate::runner::run_parallel_batched_for_bam_weighted(
         &config.bam,
         tile_batches,
         config.threads,
         move |tile| -> Result<SomaticTileOutput, VardictError> {
             let _region_guard =
                 crate::runner::enter_worker_region(&tile.chr, tile.start.0, tile.end.0);
+            let _cram_contig_pin =
+                crate::bam::pin_cram_contig_for_spec(&config_clone.bam, &tile.chr, &config_clone);
             // Process BAM1 (tumor)
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
@@ -5964,27 +6183,39 @@ fn run_somatic<W: EngineWriter>(
             };
 
             let is_split_tile = tile.start != tile.original_start || tile.end != tile.original_end;
-            let (steps1, post1, steps2, post2, parent_orig_start) =
+            let (steps1, post1, active1, steps2, post2, active2, parent_orig_start) =
                 if is_split_tile && !multi_tile_seeds.is_empty() {
                     if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
                         (
                             seed.bam1_steps.as_slice(),
                             Some(seed.bam1_final),
+                            Some(seed.bam1_active_bams),
                             seed.bam2_steps.as_slice(),
                             Some(seed.bam2_final),
+                            Some(seed.bam2_active_bams),
                             Some(tile.original_start),
                         )
                     } else {
                         (
                             &[] as &[MaxRlStep],
                             None,
+                            None,
                             &[] as &[MaxRlStep],
+                            None,
                             None,
                             Some(tile.original_start),
                         )
                     }
                 } else {
-                    (&[] as &[MaxRlStep], None, &[] as &[MaxRlStep], None, None)
+                    (
+                        &[] as &[MaxRlStep],
+                        None,
+                        None,
+                        &[] as &[MaxRlStep],
+                        None,
+                        None,
+                        None,
+                    )
                 };
 
             let mut reference = crate::reference::Reference::new();
@@ -6004,6 +6235,7 @@ fn run_somatic<W: EngineWriter>(
                 steps1,
                 post1,
                 parent_orig_start,
+                active1,
             )?;
 
             let max_read_length_bam1 = var_data1.max_read_length;
@@ -6065,6 +6297,7 @@ fn run_somatic<W: EngineWriter>(
                 steps2,
                 post_bam2,
                 parent_orig_start,
+                active2,
             )?;
 
             // Use max of both BAMs' maxReadLength (SomaticPostProcessModule.java:64)
@@ -6353,6 +6586,7 @@ fn run_somatic<W: EngineWriter>(
             }
             Ok(())
         },
+        SomaticTileOutput::approx_heap_bytes,
     )?;
     split_var_deduper.flush_all_pending(|line| write_output_line(writer, line))?;
 
@@ -7839,7 +8073,7 @@ mod tests {
             sample: "S".to_string(),
             ..Default::default()
         };
-        let (steps_per_tile, final_max) = scan_multi_tile_max_read_lengths(
+        let (steps_per_tile, final_max, active_bams) = scan_multi_tile_max_read_lengths(
             &[order_bam.to_string_lossy().into_owned()],
             &parent_reg,
             &parent_tiles,
@@ -7849,6 +8083,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(final_max, 400);
+        assert_eq!(active_bams, 1);
         let tile2_steps = &steps_per_tile[1];
         assert_eq!(tile2_steps.len(), 2);
         // Step 0 is from Read A at 99,900 (same_start_overlap_before = 1, so it applies AFTER Read A)

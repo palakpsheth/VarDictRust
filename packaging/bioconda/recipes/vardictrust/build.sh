@@ -18,7 +18,7 @@ cargo-bundle-licenses --format yaml --output THIRDPARTY.yml
 cargo install --no-track --locked --verbose --root "${PREFIX}" --path crates/vardictrust
 
 # Install shell completions and manpage when executing natively and supported by the binary
-if [ "${CONDA_BUILD_CROSS_COMPILATION:-0}" != "1" ] && "${PREFIX}/bin/vardictrust" --help 2>&1 | grep -q -- "--completions"; then
+if [ "${CONDA_BUILD_CROSS_COMPILATION:-0}" != "1" ] && "${PREFIX}/bin/vardictrust" --help 2>&1 | awk '/--completions/ { found=1 } END { exit !found }'; then
     mkdir -p \
         "${PREFIX}/share/bash-completion/completions" \
         "${PREFIX}/share/zsh/site-functions" \

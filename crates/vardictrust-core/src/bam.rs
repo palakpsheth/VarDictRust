@@ -1761,7 +1761,8 @@ const MAX_CACHED_CRAM_CONTAINER_RECORDS: usize = 65_536;
 /// Standard `samtools`/`htslib` (`10,000`-read) and `noodles-cram` (`10,240`-read) `150–250 bp`
 /// Illumina containers occupy `~6.3–9.8 MiB` (`HG008` max `6.63 MiB`); values `< 8 MiB` reject
 /// standard Illumina containers and breach `perf_budget.py`'s `<= 2.50×` CRAM/BAM wall ratio.
-/// Across `8` shards × `4` slots (`32` slots), decoded-record cache residency stays `<= 512 MiB`
+/// Across `4` shards × `4` slots (`16` slots) with a `40 MiB` per-shard byte budget
+/// ([`MAX_SHARD_CACHED_CRAM_BYTES`]), decoded-record cache residency stays `<= 160 MiB`
 /// (separate from `SharedFastaRepo`'s `512 MiB` CRAM reference cache) while bypassing oversized
 /// PacBio/ONT long-read containers.
 const MAX_CACHED_CRAM_CONTAINER_BYTES: usize = 16 * 1024 * 1024;
@@ -2452,6 +2453,16 @@ pub fn clear_bam_caches() {
             *slots = [None, None];
         }
     });
+    let _ = CRAM_LAST_CONTAINER_TLS.try_with(|tls| {
+        if let Ok(mut slots) = tls.try_borrow_mut() {
+            *slots = [None, None];
+        }
+    });
+    let _ = CRAM_IO_SCRATCH_TLS.try_with(|tls| {
+        if let Ok(mut buf) = tls.try_borrow_mut() {
+            *buf = Vec::new();
+        }
+    });
     if let Some(cache) = FASTA_REPO_CACHE.get() {
         cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
@@ -2918,9 +2929,9 @@ impl Iterator for BamFeed {
     }
 }
 
-const FASTA_BUF_CAPACITY: usize = 256 * 1024;
+const FASTA_BUF_CAPACITY: usize = 1024 * 1024;
 const DEFAULT_FASTA_CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
-const MAX_POOLED_FASTA_ADAPTERS: usize = 8;
+const MAX_POOLED_FASTA_ADAPTERS: usize = 4;
 /// Trailing `b'N'` padding appended to every CRAM reference contig loaded into
 /// [`PreallocatedFastaAdapter`] so `noodles-cram` can decode reads overhanging
 /// the 3' end of a chromosome (`[LN - k, LN + m]`) without panicking inside
@@ -2931,6 +2942,7 @@ const CRAM_REF_OVERHANG_PAD: usize = 65_536;
 struct PreallocatedFastaAdapter {
     reader: noodles::fasta::io::Reader<noodles::fasta::io::BufReader<std::fs::File>>,
     index: noodles::fasta::fai::Index,
+    raw_file_len: Option<u64>,
 }
 
 impl PreallocatedFastaAdapter {
@@ -2938,9 +2950,16 @@ impl PreallocatedFastaAdapter {
         buf_reader: noodles::fasta::io::BufReader<std::fs::File>,
         index: noodles::fasta::fai::Index,
     ) -> Self {
+        let raw_file_len = match buf_reader {
+            noodles::fasta::io::BufReader::Uncompressed(ref br) => {
+                br.get_ref().metadata().ok().map(|m| m.len())
+            }
+            noodles::fasta::io::BufReader::Bgzf(_) => None,
+        };
         Self {
             reader: noodles::fasta::io::Reader::new(buf_reader),
             index,
+            raw_file_len,
         }
     }
 
@@ -3001,29 +3020,126 @@ impl noodles::fasta::repository::Adapter for PreallocatedFastaAdapter {
         }
 
         let max_raw_len = cap.max(1).saturating_add(CRAM_REF_OVERHANG_PAD);
-        let mut raw_sequence = Vec::with_capacity(
-            cap.min(MAX_PREALLOC_CAP)
-                .saturating_add(CRAM_REF_OVERHANG_PAD),
-        );
-        let mut seq_reader = self.reader.sequence_reader();
+        let prealloc_bases = match self.raw_file_len {
+            Some(fl) => {
+                let rem_file = usize::try_from(fl.saturating_sub(pos)).unwrap_or(usize::MAX);
+                cap.min(rem_file).min(DEFAULT_FASTA_CACHE_BUDGET_BYTES)
+            }
+            None => cap.min(MAX_PREALLOC_CAP),
+        };
+        let mut raw_sequence =
+            Vec::with_capacity(prealloc_bases.saturating_add(CRAM_REF_OVERHANG_PAD));
+        let buf_reader = self.reader.get_mut();
+        let mut at_line_start = true;
+        let mut pending_cr = false;
         loop {
-            let src = match seq_reader.fill_buf() {
-                Ok([]) => break,
+            let chunk = match buf_reader.fill_buf() {
+                Ok([]) => {
+                    if pending_cr {
+                        if raw_sequence.len().saturating_add(1) > max_raw_len {
+                            return Some(Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "FASTA sequence for '{}' exceeds .fai length ({cap} bp) + overhang bound",
+                                    String::from_utf8_lossy(name)
+                                ),
+                            )));
+                        }
+                        raw_sequence.push(b'\r');
+                    }
+                    break;
+                }
                 Ok(s) => s,
                 Err(e) => return Some(Err(e)),
             };
-            if raw_sequence.len().saturating_add(src.len()) > max_raw_len {
-                return Some(Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "FASTA sequence for '{}' exceeds .fai length ({cap} bp) + overhang bound",
-                        String::from_utf8_lossy(name)
-                    ),
-                )));
+            let mut rem = chunk;
+            let mut consumed = 0usize;
+            let mut hit_next_record = false;
+
+            if pending_cr {
+                pending_cr = false;
+                if rem.first() == Some(&b'\n') {
+                    rem = rem.get(1..).unwrap_or(&[]);
+                    consumed += 1;
+                    at_line_start = true;
+                } else {
+                    if raw_sequence.len().saturating_add(1) > max_raw_len {
+                        return Some(Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "FASTA sequence for '{}' exceeds .fai length ({cap} bp) + overhang bound",
+                                String::from_utf8_lossy(name)
+                            ),
+                        )));
+                    }
+                    raw_sequence.push(b'\r');
+                }
             }
-            raw_sequence.extend_from_slice(src);
-            let consumed = src.len();
-            seq_reader.consume(consumed);
+
+            while !rem.is_empty() {
+                if at_line_start {
+                    let ws = rem
+                        .iter()
+                        .take_while(|&&b| b == b'\n' || b == b'\r')
+                        .count();
+                    if ws > 0 {
+                        rem = rem.get(ws..).unwrap_or(&[]);
+                        consumed += ws;
+                        if rem.is_empty() {
+                            break;
+                        }
+                    }
+                    if rem.first() == Some(&b'>') {
+                        hit_next_record = true;
+                        break;
+                    }
+                    at_line_start = false;
+                }
+
+                if let Some(nl_pos) = rem.iter().position(|&b| b == b'\n') {
+                    let line_raw = rem.get(..nl_pos).unwrap_or(&[]);
+                    let line = line_raw.strip_suffix(b"\r").unwrap_or(line_raw);
+                    if raw_sequence.len().saturating_add(line.len()) > max_raw_len {
+                        return Some(Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "FASTA sequence for '{}' exceeds .fai length ({cap} bp) + overhang bound",
+                                String::from_utf8_lossy(name)
+                            ),
+                        )));
+                    }
+                    raw_sequence.extend_from_slice(line);
+                    let step = nl_pos + 1;
+                    rem = rem.get(step..).unwrap_or(&[]);
+                    consumed += step;
+                    at_line_start = true;
+                } else {
+                    let line = match rem.strip_suffix(b"\r") {
+                        Some(stripped) => {
+                            pending_cr = true;
+                            stripped
+                        }
+                        None => rem,
+                    };
+                    if raw_sequence.len().saturating_add(line.len()) > max_raw_len {
+                        return Some(Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "FASTA sequence for '{}' exceeds .fai length ({cap} bp) + overhang bound",
+                                String::from_utf8_lossy(name)
+                            ),
+                        )));
+                    }
+                    raw_sequence.extend_from_slice(line);
+                    consumed += rem.len();
+                    break;
+                }
+            }
+
+            buf_reader.consume(consumed);
+            if hit_next_record {
+                break;
+            }
         }
         raw_sequence.resize(
             raw_sequence.len().saturating_add(CRAM_REF_OVERHANG_PAD),
@@ -3148,6 +3264,8 @@ struct FastaRegistryState {
     slots: HashMap<Vec<u8>, std::sync::Arc<ContigSlot>>,
     order: Vec<Vec<u8>>,
     resident_bytes: usize,
+    inflight_bytes: usize,
+    inflight_loads: usize,
     budget_bytes: usize,
 }
 
@@ -3157,6 +3275,8 @@ impl FastaRegistryState {
             slots: HashMap::new(),
             order: Vec::new(),
             resident_bytes: 0,
+            inflight_bytes: 0,
+            inflight_loads: 0,
             budget_bytes,
         }
     }
@@ -3170,8 +3290,18 @@ impl FastaRegistryState {
         }
     }
 
-    fn evict_unpinned_to_budget(&mut self) {
-        while self.resident_bytes > self.budget_bytes {
+    fn evict_unpinned_to_budget(&mut self) -> bool {
+        self.evict_unpinned_for_incoming(0)
+    }
+
+    fn evict_unpinned_for_incoming(&mut self, incoming_bytes: usize) -> bool {
+        let mut evicted_any = false;
+        while self
+            .resident_bytes
+            .saturating_add(self.inflight_bytes)
+            .saturating_add(incoming_bytes)
+            > self.budget_bytes
+        {
             let candidate_pos = self.order.iter().position(|key| {
                 self.slots
                     .get(key)
@@ -3182,6 +3312,7 @@ impl FastaRegistryState {
             };
             let key = self.order.remove(pos);
             if let Some(evicted) = self.slots.remove(&key) {
+                evicted_any = true;
                 if evicted
                     .counted_in_registry
                     .swap(false, std::sync::atomic::Ordering::Relaxed)
@@ -3196,12 +3327,30 @@ impl FastaRegistryState {
                 }
             }
         }
+        evicted_any
+    }
+}
+
+struct InflightFastaLoadGuard<'a> {
+    repo: &'a SharedFastaRepo,
+    reserved_bytes: usize,
+}
+
+impl Drop for InflightFastaLoadGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.repo.registry.lock().unwrap_or_else(|e| e.into_inner());
+        state.inflight_loads = state.inflight_loads.saturating_sub(1);
+        state.inflight_bytes = state.inflight_bytes.saturating_sub(self.reserved_bytes);
+        drop(state);
+        self.repo.budget_cvar.notify_all();
     }
 }
 
 struct SharedFastaRepo {
     fasta_path: PathBuf,
     fai_index: noodles::fasta::fai::Index,
+    clone_gate: std::sync::Mutex<()>,
+    budget_cvar: std::sync::Condvar,
     adapter_pool: std::sync::Mutex<Vec<PreallocatedFastaAdapter>>,
     registry: std::sync::Mutex<FastaRegistryState>,
     #[cfg(test)]
@@ -3225,6 +3374,8 @@ impl SharedFastaRepo {
         std::sync::Arc::new(Self {
             fasta_path,
             fai_index,
+            clone_gate: std::sync::Mutex::new(()),
+            budget_cvar: std::sync::Condvar::new(),
             adapter_pool: std::sync::Mutex::new(vec![adapter]),
             registry: std::sync::Mutex::new(FastaRegistryState::new(budget_bytes)),
             #[cfg(test)]
@@ -3260,6 +3411,8 @@ impl SharedFastaRepo {
         self: &std::sync::Arc<Self>,
         contig: &[u8],
     ) -> Result<LoadedContig, (std::io::ErrorKind, String)> {
+        const MAX_CONCURRENT_FASTA_LOADS: usize = 4;
+
         if contig.is_empty() {
             let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
                 primary_name: Vec::new(),
@@ -3272,6 +3425,42 @@ impl SharedFastaRepo {
                 byte_len: 0,
             });
         }
+        // Reserve `incoming_bytes` against the 512 MiB FASTA cache budget before reading
+        // so multiple workers load non-overlapping chromosomes in parallel without breaching
+        // the cache ceiling, while `clone_gate` serializes only `Repository::get`'s short
+        // `Sequence::clone` step so two transient `2 * contig_len` copies never overlap.
+        let incoming_bytes = self
+            .fai_index
+            .as_ref()
+            .iter()
+            .find(|r| r.name() == contig)
+            .and_then(|r| usize::try_from(r.length()).ok())
+            .map_or(0, |len| len.saturating_add(CRAM_REF_OVERHANG_PAD));
+        let _inflight_guard = {
+            let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                let _ = state.evict_unpinned_for_incoming(incoming_bytes);
+                let fits_budget = state
+                    .resident_bytes
+                    .saturating_add(state.inflight_bytes)
+                    .saturating_add(incoming_bytes)
+                    <= state.budget_bytes;
+                if state.inflight_loads == 0
+                    || (state.inflight_loads < MAX_CONCURRENT_FASTA_LOADS && fits_budget)
+                {
+                    state.inflight_loads = state.inflight_loads.saturating_add(1);
+                    state.inflight_bytes = state.inflight_bytes.saturating_add(incoming_bytes);
+                    break InflightFastaLoadGuard {
+                        repo: self,
+                        reserved_bytes: incoming_bytes,
+                    };
+                }
+                state = self
+                    .budget_cvar
+                    .wait(state)
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+        };
         let mut adapter = self
             .pop_or_open_adapter()
             .map_err(|e| (e.kind(), e.to_string()))?;
@@ -3285,12 +3474,17 @@ impl SharedFastaRepo {
             Some(Ok(record)) => {
                 // Charge full retained sequence length (including CRAM_REF_OVERHANG_PAD).
                 let byte_len = record.sequence().len();
-                let repo = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
-                    primary_name: contig.to_vec(),
-                    primary_record: Some(Ok(record)),
-                    shared: std::sync::Arc::downgrade(self),
-                });
-                let seq = repo.get(contig).and_then(|r| r.ok());
+                let seq;
+                let repo = {
+                    let _cg = self.clone_gate.lock().unwrap_or_else(|e| e.into_inner());
+                    let r = noodles::fasta::Repository::new(RegistryDelegatingAdapter {
+                        primary_name: contig.to_vec(),
+                        primary_record: Some(Ok(record)),
+                        shared: std::sync::Arc::downgrade(self),
+                    });
+                    seq = r.get(contig).and_then(|res| res.ok());
+                    r
+                };
                 Ok(LoadedContig {
                     repo: std::sync::Mutex::new(repo),
                     seq,
@@ -3457,8 +3651,13 @@ impl SharedFastaRepo {
     }
 
     fn evict_unpinned(&self) {
-        let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
-        state.evict_unpinned_to_budget();
+        let evicted = {
+            let mut state = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+            state.evict_unpinned_to_budget()
+        };
+        if evicted {
+            self.budget_cvar.notify_all();
+        }
     }
 
     #[cfg(test)]
@@ -3577,6 +3776,13 @@ impl IndexedCrai {
         }
 
         Self { by_ref }
+    }
+
+    #[inline]
+    fn has_ref_containers(&self, reference_sequence_id: usize) -> bool {
+        self.by_ref
+            .get(&reference_sequence_id)
+            .is_some_and(|g| !g.unbounded_offsets.is_empty())
     }
 
     fn query_offsets(
@@ -4105,8 +4311,62 @@ fn validate_cram_span(
     Ok(())
 }
 
-const CRAM_CONTAINER_CACHE_SHARDS: usize = 8;
+const CRAM_CONTAINER_CACHE_SHARDS: usize = 4;
 const CRAM_CONTAINER_SLOTS_PER_SHARD: usize = 4;
+/// Per-shard decoded CRAM container byte budget (`40 MiB`; `160 MiB` ceiling across `4` shards).
+const MAX_SHARD_CACHED_CRAM_BYTES: usize = 40 * 1024 * 1024;
+
+/// RAII guard pinning a chromosome's [`ContigSlot`] in [`SharedFastaRepo`] across
+/// all passes of a somatic tile (`bam1 -> bam2 -> combineAnalysis`) so intermediate
+/// [`CramFeedInner::drop`] calls cannot evict `tile.chr` mid-tile.
+pub(crate) struct CramContigPinGuard {
+    inner: Option<(std::sync::Arc<SharedFastaRepo>, std::sync::Arc<ContigSlot>)>,
+}
+
+impl Drop for CramContigPinGuard {
+    fn drop(&mut self) {
+        if let Some((repo, slot)) = self.inner.take() {
+            drop(slot);
+            repo.evict_unpinned();
+        }
+    }
+}
+
+/// Warms and pins `chr` in [`SharedFastaRepo`] when `bam_spec` contains at least one
+/// `.cram` file with `.crai` containers on `chr`; returns a zero-cost empty guard for BAM specs.
+pub(crate) fn pin_cram_contig_for_spec(
+    bam_spec: &str,
+    chr: &str,
+    config: &crate::config::Config,
+) -> CramContigPinGuard {
+    if !crate::runner::bam_spec_has_cram(bam_spec) || chr.is_empty() || config.reference.is_empty()
+    {
+        return CramContigPinGuard { inner: None };
+    }
+    let chr_bytes = chr.as_bytes();
+    for raw_part in bam_spec.split(['|', ':']).map(str::trim) {
+        if raw_part.is_empty() {
+            continue;
+        }
+        let path = Path::new(raw_part);
+        if !is_cram_path(path) {
+            continue;
+        }
+        let Ok(meta) = acquire_cram_meta(path, config) else {
+            continue;
+        };
+        let Some(ref_id) = meta.header.reference_sequences().get_index_of(chr_bytes) else {
+            continue;
+        };
+        if meta.indexed_crai.has_ref_containers(ref_id) {
+            let slot = meta.fasta_repo.warm_contig_slot(chr_bytes);
+            return CramContigPinGuard {
+                inner: Some((std::sync::Arc::clone(&meta.fasta_repo), slot)),
+            };
+        }
+    }
+    CramContigPinGuard { inner: None }
+}
 
 #[derive(Clone, Debug)]
 struct CachedCramRecord {
@@ -4118,7 +4378,86 @@ struct CachedCramRecord {
     sam: SamRecord,
 }
 
-type CachedCramBlock = std::sync::Arc<Vec<CachedCramRecord>>;
+#[derive(Clone, Debug)]
+struct CachedCramContainer {
+    records: Vec<CachedCramRecord>,
+    /// `Some((ref_id, max_span_minus_1))` when every record in `records` belongs to
+    /// `Some(ref_id)` with monotonically non-decreasing `alignment_start`, enabling
+    /// `O(log N)` binary-search start positioning and `O(1)` post-interval early exit
+    /// in [`CramFeedInner::pump`].
+    sorted_single_ref: Option<(usize, usize)>,
+}
+
+impl CachedCramContainer {
+    fn from_records(records: Vec<CachedCramRecord>) -> Self {
+        let sorted_single_ref = (|| -> Option<(usize, usize)> {
+            let first = records.first()?;
+            let ref_id = first.reference_sequence_id?;
+            let mut prev_start = usize::from(first.alignment_start?);
+            let mut max_span = first
+                .alignment_end
+                .map_or(0, |e| usize::from(e).saturating_sub(prev_start));
+            for rec in records.get(1..).unwrap_or(&[]) {
+                if rec.reference_sequence_id != Some(ref_id) {
+                    return None;
+                }
+                let start = usize::from(rec.alignment_start?);
+                if start < prev_start {
+                    return None;
+                }
+                prev_start = start;
+                if let Some(end) = rec.alignment_end {
+                    let span = usize::from(end).saturating_sub(start);
+                    if span > max_span {
+                        max_span = span;
+                    }
+                }
+            }
+            Some((ref_id, max_span))
+        })();
+        Self {
+            records,
+            sorted_single_ref,
+        }
+    }
+
+    #[inline]
+    fn start_index_and_upper_bound(
+        &self,
+        reference_sequence_id: usize,
+        interval: noodles::core::region::Interval,
+    ) -> (usize, Option<usize>) {
+        let Some((block_ref_id, max_span)) = self.sorted_single_ref else {
+            return (0, None);
+        };
+        if block_ref_id != reference_sequence_id {
+            return (self.records.len(), Some(0));
+        }
+        let first_idx = match interval.start() {
+            Some(q_start) => {
+                let min_start = usize::from(q_start).saturating_sub(max_span);
+                self.records.partition_point(|r| {
+                    r.alignment_start
+                        .is_some_and(|s| usize::from(s) < min_start)
+                })
+            }
+            None => 0,
+        };
+        let end_bound = interval.end().map(usize::from);
+        (first_idx, end_bound)
+    }
+}
+
+impl std::ops::Deref for CachedCramContainer {
+    type Target = [CachedCramRecord];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.records
+    }
+}
+
+type CachedCramBlock = std::sync::Arc<CachedCramContainer>;
 
 enum InflightCramState {
     Pending,
@@ -4143,14 +4482,84 @@ impl InflightCramDecode {
 #[derive(Default)]
 struct CramContainerCacheShard {
     lru: LruCacheShard<CachedCramBlock, CRAM_CONTAINER_SLOTS_PER_SHARD>,
+    entry_bytes: Vec<((u64, u64), usize)>,
+    cached_bytes: usize,
     inflight: Vec<((u64, u64), std::sync::Arc<InflightCramDecode>)>,
     #[cfg(test)]
     decodes: usize,
 }
 
 impl CramContainerCacheShard {
+    fn take_tracked_bytes(&mut self, key: (u64, u64)) -> usize {
+        if let Some(pos) = self.entry_bytes.iter().position(|(k, _)| *k == key) {
+            let (_, bytes) = self.entry_bytes.swap_remove(pos);
+            self.cached_bytes = self.cached_bytes.saturating_sub(bytes);
+            bytes
+        } else {
+            0
+        }
+    }
+
+    fn insert_with_budget(
+        &mut self,
+        key: (u64, u64),
+        block: CachedCramBlock,
+        block_bytes: usize,
+        max_shard_bytes: usize,
+    ) {
+        if let Some(idx) = self.lru.entries.iter().position(|(k, _)| *k == key) {
+            self.lru.entries.remove(idx);
+            let _ = self.take_tracked_bytes(key);
+        }
+        if block_bytes > max_shard_bytes {
+            return;
+        }
+        while !self.lru.entries.is_empty()
+            && (self.lru.entries.len() >= CRAM_CONTAINER_SLOTS_PER_SHARD
+                || self.cached_bytes.saturating_add(block_bytes) > max_shard_bytes)
+        {
+            let (evicted_key, _) = self.lru.entries.remove(0);
+            let _ = self.take_tracked_bytes(evicted_key);
+        }
+        self.lru.entries.push((key, block));
+        self.entry_bytes.push((key, block_bytes));
+        self.cached_bytes = self.cached_bytes.saturating_add(block_bytes);
+    }
+
+    #[cfg(test)]
+    fn remove_key(&mut self, key: (u64, u64)) {
+        if let Some(idx) = self.lru.entries.iter().position(|(k, _)| *k == key) {
+            self.lru.entries.remove(idx);
+        }
+        let _ = self.take_tracked_bytes(key);
+        let _ = CRAM_LAST_CONTAINER_TLS.try_with(|tls| {
+            if let Ok(mut slots) = tls.try_borrow_mut() {
+                for slot in slots.iter_mut() {
+                    if slot.as_ref().is_some_and(|(_, k, _)| *k == key) {
+                        *slot = None;
+                    }
+                }
+            }
+        });
+    }
+
     fn clear_production(&mut self) {
         self.lru.clear_production();
+        #[cfg(test)]
+        {
+            self.entry_bytes
+                .retain(|((id, _), _)| *id >= TEST_META_ID_BASE);
+            self.cached_bytes = self
+                .entry_bytes
+                .iter()
+                .map(|(_, b)| *b)
+                .fold(0usize, usize::saturating_add);
+        }
+        #[cfg(not(test))]
+        {
+            self.entry_bytes.clear();
+            self.cached_bytes = 0;
+        }
     }
 }
 
@@ -4169,20 +4578,33 @@ impl InflightCramGuard<'_> {
         start_epoch: Option<u64>,
     ) {
         self.completed = true;
+        let cache_candidate_bytes = result
+            .as_ref()
+            .and_then(|arc_records| cacheable_cram_container_bytes(arc_records, max_cached_bytes));
         {
             let mut shard = self.shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
             shard
                 .inflight
                 .retain(|(k, w)| !(*k == self.key && std::sync::Arc::ptr_eq(w, &self.entry)));
-            if let Some(ref arc_records) = result {
-                if should_cache_cram_container(arc_records, max_cached_bytes)
-                    && start_epoch.is_none_or(|ep| {
-                        BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == ep
-                    })
-                {
-                    shard
-                        .lru
-                        .insert(self.key, std::sync::Arc::clone(arc_records));
+            if let (Some(ref arc_records), Some(block_bytes)) = (&result, cache_candidate_bytes) {
+                if start_epoch.is_none_or(|ep| {
+                    BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == ep
+                }) {
+                    shard.insert_with_budget(
+                        self.key,
+                        std::sync::Arc::clone(arc_records),
+                        block_bytes,
+                        MAX_SHARD_CACHED_CRAM_BYTES,
+                    );
+                    if let Some(ep) = start_epoch {
+                        if block_bytes <= MAX_SHARD_CACHED_CRAM_BYTES {
+                            store_cram_container_tls(
+                                ep,
+                                self.key,
+                                std::sync::Arc::clone(arc_records),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -4206,6 +4628,58 @@ impl Drop for InflightCramGuard<'_> {
             self.entry.cvar.notify_all();
         }
     }
+}
+
+type CramContainerTlsEntry = (u64, (u64, u64), CachedCramBlock);
+
+thread_local! {
+    /// Two-slot thread-local MRU cursor (`tumor` + `normal`) so intra-tile SV mate rescue
+    /// and intra-batch adjacent-exon queries reuse the worker's active [`CachedCramBlock`]
+    /// lock-free without cross-thread shard collisions at `-th 8`.
+    static CRAM_LAST_CONTAINER_TLS: RefCell<[Option<CramContainerTlsEntry>; 2]> =
+        const { RefCell::new([None, None]) };
+    /// Reusable per-thread byte buffer for reading + prevalidating `<= 4 MiB` CRAM containers
+    /// in memory without repeated 1-byte `File` syscalls or `SeekWindowReader` allocations.
+    static CRAM_IO_SCRATCH_TLS: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+#[inline]
+fn lookup_cram_container_tls(cur_epoch: u64, key: (u64, u64)) -> Option<CachedCramBlock> {
+    CRAM_LAST_CONTAINER_TLS
+        .try_with(|tls| {
+            let mut slots = tls.try_borrow_mut().ok()?;
+            let [s0, s1] = &mut *slots;
+            if let Some((ep, k, block)) = s0.as_ref() {
+                if *ep == cur_epoch && *k == key {
+                    return Some(std::sync::Arc::clone(block));
+                }
+            }
+            if let Some((ep, k, block)) = s1.as_ref() {
+                if *ep == cur_epoch && *k == key {
+                    let hit = std::sync::Arc::clone(block);
+                    std::mem::swap(s0, s1);
+                    return Some(hit);
+                }
+            }
+            None
+        })
+        .ok()
+        .flatten()
+}
+
+#[inline]
+fn store_cram_container_tls(cur_epoch: u64, key: (u64, u64), block: CachedCramBlock) {
+    let _ = CRAM_LAST_CONTAINER_TLS.try_with(|tls| {
+        if let Ok(mut slots) = tls.try_borrow_mut() {
+            let [s0, s1] = &mut *slots;
+            if s0.as_ref().is_some_and(|(_, k, _)| *k == key) {
+                *s0 = Some((cur_epoch, key, block));
+            } else {
+                *s1 = s0.take();
+                *s0 = Some((cur_epoch, key, block));
+            }
+        }
+    });
 }
 
 static CRAM_CONTAINER_CACHE: std::sync::OnceLock<
@@ -4251,9 +4725,12 @@ fn crai_record_intersects(
 
 /// Approximates total heap memory owned by a decoded [`CachedCramBlock`].
 fn approx_cram_container_bytes(records: &CachedCramBlock) -> usize {
-    let mut total = records
-        .capacity()
-        .saturating_mul(std::mem::size_of::<CachedCramRecord>());
+    let mut total = std::mem::size_of::<CachedCramContainer>().saturating_add(
+        records
+            .records
+            .capacity()
+            .saturating_mul(std::mem::size_of::<CachedCramRecord>()),
+    );
     for rec in records.iter() {
         let sam = &rec.sam;
         let cigar_bytes = sam
@@ -4277,11 +4754,23 @@ fn approx_cram_container_bytes(records: &CachedCramBlock) -> usize {
     total
 }
 
-/// Returns `true` when `records` fits within both record-count and heap-byte cache bounds.
+/// Returns `Some(approx_bytes)` when `records` fits within both record-count and heap-byte cache bounds.
+#[inline]
+fn cacheable_cram_container_bytes(
+    records: &CachedCramBlock,
+    max_cached_bytes: usize,
+) -> Option<usize> {
+    if records.len() > MAX_CACHED_CRAM_CONTAINER_RECORDS {
+        return None;
+    }
+    let bytes = approx_cram_container_bytes(records);
+    (bytes <= max_cached_bytes).then_some(bytes)
+}
+
+#[cfg(test)]
 #[inline]
 fn should_cache_cram_container(records: &CachedCramBlock, max_cached_bytes: usize) -> bool {
-    records.len() <= MAX_CACHED_CRAM_CONTAINER_RECORDS
-        && approx_cram_container_bytes(records) <= max_cached_bytes
+    cacheable_cram_container_bytes(records, max_cached_bytes).is_some()
 }
 
 fn cram_record_intersects(
@@ -4367,44 +4856,47 @@ fn cram_record_to_cached(
         for result in record.quality_scores().iter() {
             let _ = result?;
         }
-        for result in record.data().iter() {
-            let (_, val) = result?;
-            if let Value::Array(ref arr) = val {
-                use noodles::sam::alignment::record::data::field::value::Array;
-                match arr {
-                    Array::Int8(v) => {
-                        for r in v.iter() {
-                            r?;
+        let raw_data = record.data();
+        if !raw_data.is_empty() {
+            for result in raw_data.iter() {
+                let (_, val) = result?;
+                if let Value::Array(ref arr) = val {
+                    use noodles::sam::alignment::record::data::field::value::Array;
+                    match arr {
+                        Array::Int8(v) => {
+                            for r in v.iter() {
+                                r?;
+                            }
                         }
-                    }
-                    Array::UInt8(v) => {
-                        for r in v.iter() {
-                            r?;
+                        Array::UInt8(v) => {
+                            for r in v.iter() {
+                                r?;
+                            }
                         }
-                    }
-                    Array::Int16(v) => {
-                        for r in v.iter() {
-                            r?;
+                        Array::Int16(v) => {
+                            for r in v.iter() {
+                                r?;
+                            }
                         }
-                    }
-                    Array::UInt16(v) => {
-                        for r in v.iter() {
-                            r?;
+                        Array::UInt16(v) => {
+                            for r in v.iter() {
+                                r?;
+                            }
                         }
-                    }
-                    Array::Int32(v) => {
-                        for r in v.iter() {
-                            r?;
+                        Array::Int32(v) => {
+                            for r in v.iter() {
+                                r?;
+                            }
                         }
-                    }
-                    Array::UInt32(v) => {
-                        for r in v.iter() {
-                            r?;
+                        Array::UInt32(v) => {
+                            for r in v.iter() {
+                                r?;
+                            }
                         }
-                    }
-                    Array::Float(v) => {
-                        for r in v.iter() {
-                            r?;
+                        Array::Float(v) => {
+                            for r in v.iter() {
+                                r?;
+                            }
                         }
                     }
                 }
@@ -4419,13 +4911,16 @@ fn cram_record_to_cached(
             sam: SamRecord::new(),
         });
     }
-    let name = record
+    let mut name = record
         .name()
         .map(|n| {
             let bytes: &[u8] = n.as_ref();
             bytes.to_vec()
         })
         .unwrap_or_default();
+    if name.capacity() > name.len() {
+        name.shrink_to_fit();
+    }
     let reference_name = reference_sequence_id
         .and_then(|id| contig_names.get(id))
         .cloned();
@@ -4437,9 +4932,12 @@ fn cram_record_to_cached(
     };
 
     // In `noodles-cram 0.100.0`, `Cigar::len()` calls `self.iter().count()`,
-    // boxing and walking all CRAM features just to count ops. Pre-allocate 4
-    // slots for mapped reads and walk `record.cigar().iter()` once.
-    let mut cigar = Vec::with_capacity(if (flags & 0x4) != 0 { 0 } else { 4 });
+    // boxing and walking all CRAM features just to count ops. Buffer up to 8 ops
+    // on the stack so common Illumina reads allocate once at exact capacity without
+    // per-record `shrink_to_fit` reallocations.
+    let mut cigar_inline = [(0_u32, CigarKind::Match); 8];
+    let mut cigar_inline_len = 0usize;
+    let mut cigar_spill: Vec<(u32, CigarKind)> = Vec::new();
     let mut alignment_span = 0usize;
     for result in record.cigar().iter() {
         let op = result?;
@@ -4452,8 +4950,27 @@ fn cram_record_to_cached(
                 )
             })?;
         }
-        cigar.push((op_len, op.kind()));
+        if cigar_spill.is_empty() {
+            if let Some(slot) = cigar_inline.get_mut(cigar_inline_len) {
+                *slot = (op_len, op.kind());
+                cigar_inline_len += 1;
+            } else {
+                cigar_spill.reserve_exact(16);
+                cigar_spill.extend_from_slice(&cigar_inline);
+                cigar_spill.push((op_len, op.kind()));
+            }
+        } else {
+            cigar_spill.push((op_len, op.kind()));
+        }
     }
+    let cigar = if cigar_spill.is_empty() {
+        cigar_inline.get(..cigar_inline_len).unwrap_or(&[]).to_vec()
+    } else {
+        if cigar_spill.capacity() > cigar_spill.len() {
+            cigar_spill.shrink_to_fit();
+        }
+        cigar_spill
+    };
     let alignment_end = match alignment_start {
         Some(start) => Some(checked_alignment_end(start, alignment_span)?),
         None => None,
@@ -4495,12 +5012,18 @@ fn cram_record_to_cached(
         };
         sequence.push(norm);
     }
+    if sequence.capacity() > sequence.len() {
+        sequence.shrink_to_fit();
+    }
 
     let raw_quals = record.quality_scores();
     let mut quality_scores = Vec::with_capacity(raw_quals.len());
     for result in raw_quals.iter() {
         let score = result?;
         quality_scores.push(score.saturating_add(33));
+    }
+    if quality_scores.capacity() > quality_scores.len() {
+        quality_scores.shrink_to_fit();
     }
 
     const TAG_NM_LOWER: Tag = Tag::new(b'n', b'M');
@@ -4518,84 +5041,86 @@ fn cram_record_to_cached(
     let mut mq: Option<u8> = None;
 
     let raw_data = record.data();
-    for result in raw_data.iter() {
-        let (tag, val) = result?;
-        if let Value::Array(ref arr) = val {
-            use noodles::sam::alignment::record::data::field::value::Array;
-            match arr {
-                Array::Int8(v) => {
-                    for r in v.iter() {
-                        r?;
+    if !raw_data.is_empty() {
+        for result in raw_data.iter() {
+            let (tag, val) = result?;
+            if let Value::Array(ref arr) = val {
+                use noodles::sam::alignment::record::data::field::value::Array;
+                match arr {
+                    Array::Int8(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
                     }
-                }
-                Array::UInt8(v) => {
-                    for r in v.iter() {
-                        r?;
+                    Array::UInt8(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
                     }
-                }
-                Array::Int16(v) => {
-                    for r in v.iter() {
-                        r?;
+                    Array::Int16(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
                     }
-                }
-                Array::UInt16(v) => {
-                    for r in v.iter() {
-                        r?;
+                    Array::UInt16(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
                     }
-                }
-                Array::Int32(v) => {
-                    for r in v.iter() {
-                        r?;
+                    Array::Int32(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
                     }
-                }
-                Array::UInt32(v) => {
-                    for r in v.iter() {
-                        r?;
+                    Array::UInt32(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
                     }
-                }
-                Array::Float(v) => {
-                    for r in v.iter() {
-                        r?;
+                    Array::Float(v) => {
+                        for r in v.iter() {
+                            r?;
+                        }
                     }
                 }
             }
-        }
-        if tag == TAG_NM_LOWER {
-            seen_nm_lower = true;
-            nm_lower_val = val
-                .as_int()
-                .map(|x| x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
-        } else if tag == TAG_NM_UPPER {
-            seen_nm_upper = true;
-            nm_upper_val = val
-                .as_int()
-                .map(|x| x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
-        } else if tag == TAG_SA {
-            let buf = sa.get_or_insert_with(String::new);
-            buf.clear();
-            match val {
-                Value::String(s) => buf.push_str(&String::from_utf8_lossy(s.as_ref())),
-                _ => {
-                    let buf_val =
-                        noodles::sam::alignment::record_buf::data::field::Value::try_from(val)?;
-                    use std::fmt::Write as _;
-                    let _ = write!(buf, "{buf_val:?}");
+            if tag == TAG_NM_LOWER {
+                seen_nm_lower = true;
+                nm_lower_val = val
+                    .as_int()
+                    .map(|x| x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
+            } else if tag == TAG_NM_UPPER {
+                seen_nm_upper = true;
+                nm_upper_val = val
+                    .as_int()
+                    .map(|x| x.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32);
+            } else if tag == TAG_SA {
+                let buf = sa.get_or_insert_with(String::new);
+                buf.clear();
+                match val {
+                    Value::String(s) => buf.push_str(&String::from_utf8_lossy(s.as_ref())),
+                    _ => {
+                        let buf_val =
+                            noodles::sam::alignment::record_buf::data::field::Value::try_from(val)?;
+                        use std::fmt::Write as _;
+                        let _ = write!(buf, "{buf_val:?}");
+                    }
                 }
-            }
-        } else if tag == TAG_MC {
-            let buf = mc.get_or_insert_with(String::new);
-            buf.clear();
-            match val {
-                Value::String(s) => buf.push_str(&String::from_utf8_lossy(s.as_ref())),
-                _ => {
-                    let buf_val =
-                        noodles::sam::alignment::record_buf::data::field::Value::try_from(val)?;
-                    use std::fmt::Write as _;
-                    let _ = write!(buf, "{buf_val:?}");
+            } else if tag == TAG_MC {
+                let buf = mc.get_or_insert_with(String::new);
+                buf.clear();
+                match val {
+                    Value::String(s) => buf.push_str(&String::from_utf8_lossy(s.as_ref())),
+                    _ => {
+                        let buf_val =
+                            noodles::sam::alignment::record_buf::data::field::Value::try_from(val)?;
+                        use std::fmt::Write as _;
+                        let _ = write!(buf, "{buf_val:?}");
+                    }
                 }
+            } else if tag == TAG_MQ {
+                mq = val.as_int().and_then(|x| u8::try_from(x).ok());
             }
-        } else if tag == TAG_MQ {
-            mq = val.as_int().and_then(|x| u8::try_from(x).ok());
         }
     }
 
@@ -5372,6 +5897,7 @@ fn prevalidate_cram_container_slices(
     bytes_read: usize,
     landmarks: &[usize],
     meta: Option<&SharedCramMeta>,
+    hint_bounds: Option<(usize, usize, usize)>,
 ) -> std::io::Result<()> {
     use std::io::{Read as _, SeekFrom};
     const MAX_SLICE_HEADER_UNCOMPRESSED_BYTES: usize = 1024 * 1024;
@@ -5587,14 +6113,14 @@ fn prevalidate_cram_container_slices(
                 ));
             };
             if let Some(m) = meta {
-                validate_cram_span(path, m, ref_id, start_pos, end_pos, None).map_err(|err| {
-                    match err {
+                validate_cram_span(path, m, ref_id, start_pos, end_pos, hint_bounds).map_err(
+                    |err| match err {
                         crate::types::VardictError::Io(io_err) => io_err,
                         other => {
                             std::io::Error::new(std::io::ErrorKind::InvalidData, other.to_string())
                         }
-                    }
-                })?;
+                    },
+                )?;
             }
         }
         let slice_records = usize::try_from(raw_record_count).map_err(|_| {
@@ -5723,12 +6249,20 @@ fn fetch_cram_container_in(
         .is_some_and(|global| std::ptr::eq(cache, global));
     let start_epoch =
         is_global_cache.then(|| BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire));
+    if let Some(ep) = start_epoch {
+        if let Some(records) = lookup_cram_container_tls(ep, key) {
+            return Ok(Some(records));
+        }
+    }
 
     let inflight_guard = if let Some(shard_mutex) = cache.get(shard_idx) {
         loop {
             let waiter_opt = {
                 let mut shard = shard_mutex.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(records) = shard.lru.get(key) {
+                    if let Some(ep) = start_epoch {
+                        store_cram_container_tls(ep, key, std::sync::Arc::clone(&records));
+                    }
                     return Ok(Some(records));
                 }
                 if let Some((_, waiter)) = shard.inflight.iter().find(|(k, _)| *k == key) {
@@ -5759,6 +6293,21 @@ fn fetch_cram_container_in(
         None
     };
 
+    let pre_hint_bounds = pinned_slot
+        .filter(|slot| slot.name.as_slice() == hint_contig)
+        .and_then(|slot| match slot.loaded.get() {
+            Some(Ok(loaded)) => {
+                let (ref_id, _, mr) = meta.header.reference_sequences().get_full(hint_contig)?;
+                let seq = loaded.seq.as_ref()?;
+                Some((
+                    ref_id,
+                    mr.length().get(),
+                    SharedFastaRepo::unpadded_slice(seq).len(),
+                ))
+            }
+            _ => None,
+        });
+
     let mut reader = match pop_pooled_cram_reader(path, meta) {
         Some(r) => r,
         None => noodles::cram::io::Reader::new(std::fs::File::open(path)?),
@@ -5782,49 +6331,142 @@ fn fetch_cram_container_in(
             ),
         )));
     }
-    reader.seek(SeekFrom::Start(container_offset))?;
+
+    const MAX_INMEM_CRAM_CONTAINER_BYTES: usize = 4 * 1024 * 1024;
+    const CRAM_HDR_SLACK_BYTES: usize = 4096;
+    const MAX_RETAINED_CRAM_SCRATCH_BYTES: usize = 2 * 1024 * 1024;
+    let payload_len_est = raw_container_len as usize;
 
     let mut container = noodles::cram::io::reader::Container::default();
-    let bytes_read = reader.read_container(&mut container)?;
-    if bytes_read == 0 {
-        return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
-        if let Some(g) = inflight_guard {
-            g.complete(None, max_cached_bytes, start_epoch);
+    let inmem_outcome = if payload_len_est <= MAX_INMEM_CRAM_CONTAINER_BYTES {
+        CRAM_IO_SCRATCH_TLS
+            .try_with(|tls| -> Option<Result<Option<usize>, crate::types::VardictError>> {
+                let mut scratch = tls.try_borrow_mut().ok()?;
+                let want = payload_len_est.saturating_add(CRAM_HDR_SLACK_BYTES);
+                scratch.clear();
+                scratch.reserve(want);
+                scratch.extend_from_slice(&len_buf);
+                let rem_to_read = want.saturating_sub(4);
+                let read_res = (&mut *reader.get_mut())
+                    .take(rem_to_read as u64)
+                    .read_to_end(&mut scratch);
+                let Ok(_) = read_res else {
+                    return None;
+                };
+                let mut cur = std::io::Cursor::new(scratch.as_slice());
+                let mut mem_reader = noodles::cram::io::Reader::new(&mut cur);
+                let bytes_read = match mem_reader.read_container(&mut container) {
+                    Ok(n) => n,
+                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        container = noodles::cram::io::reader::Container::default();
+                        return None;
+                    }
+                    Err(e) => return Some(Err(crate::types::VardictError::Io(e))),
+                };
+                if bytes_read == 0 {
+                    return Some(Ok(None));
+                }
+                if container.header().record_count() > MAX_CRAM_CONTAINER_RECORDS {
+                    return Some(Err(crate::types::VardictError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "CRAM container record_count ({}) at offset {container_offset} in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_RECORDS})",
+                            container.header().record_count(),
+                            path.display()
+                        ),
+                    ))));
+                }
+                let post_rel = cur.position() as usize;
+                let Some(body_rel) = post_rel.checked_sub(bytes_read) else {
+                    return Some(Err(crate::types::VardictError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "CRAM container stream position precedes container payload",
+                    ))));
+                };
+                let mut val_cur =
+                    std::io::Cursor::new(scratch.get(..post_rel).unwrap_or(scratch.as_slice()));
+                if let Err(e) = prevalidate_cram_container_slices(
+                    path,
+                    &mut val_cur,
+                    body_rel as u64,
+                    bytes_read,
+                    container.header().landmarks(),
+                    Some(meta.as_ref()),
+                    pre_hint_bounds,
+                ) {
+                    return Some(Err(crate::types::VardictError::Io(e)));
+                }
+                if scratch.capacity() > MAX_RETAINED_CRAM_SCRATCH_BYTES {
+                    scratch.clear();
+                    scratch.shrink_to(MAX_RETAINED_CRAM_SCRATCH_BYTES);
+                }
+                Some(Ok(Some(bytes_read)))
+            })
+            .ok()
+            .flatten()
+    } else {
+        None
+    };
+
+    match inmem_outcome {
+        Some(Ok(Some(_bytes_read))) => {
+            return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
         }
-        return Ok(None);
+        Some(Ok(None)) => {
+            return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
+            if let Some(g) = inflight_guard {
+                g.complete(None, max_cached_bytes, start_epoch);
+            }
+            return Ok(None);
+        }
+        Some(Err(err)) => {
+            return Err(err);
+        }
+        None => {
+            reader.seek(SeekFrom::Start(container_offset))?;
+            let bytes_read = reader.read_container(&mut container)?;
+            if bytes_read == 0 {
+                return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
+                if let Some(g) = inflight_guard {
+                    g.complete(None, max_cached_bytes, start_epoch);
+                }
+                return Ok(None);
+            }
+            if container.header().record_count() > MAX_CRAM_CONTAINER_RECORDS {
+                return Err(crate::types::VardictError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "CRAM container record_count ({}) at offset {container_offset} in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_RECORDS})",
+                        container.header().record_count(),
+                        path.display()
+                    ),
+                )));
+            }
+            let post_container_pos = reader.get_mut().stream_position()?;
+            let body_offset = post_container_pos
+                .checked_sub(bytes_read as u64)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "CRAM container stream position precedes container payload",
+                    )
+                })?;
+            {
+                let mut buffered = SeekWindowReader::with_capacity(64 * 1024, reader.get_mut());
+                prevalidate_cram_container_slices(
+                    path,
+                    &mut buffered,
+                    body_offset,
+                    bytes_read,
+                    container.header().landmarks(),
+                    Some(meta.as_ref()),
+                    pre_hint_bounds,
+                )?;
+            }
+            reader.get_mut().seek(SeekFrom::Start(post_container_pos))?;
+            return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
+        }
     }
-    if container.header().record_count() > MAX_CRAM_CONTAINER_RECORDS {
-        return Err(crate::types::VardictError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!(
-                "CRAM container record_count ({}) at offset {container_offset} in '{}' exceeds maximum allowed ({MAX_CRAM_CONTAINER_RECORDS})",
-                container.header().record_count(),
-                path.display()
-            ),
-        )));
-    }
-    let post_container_pos = reader.get_mut().stream_position()?;
-    let body_offset = post_container_pos
-        .checked_sub(bytes_read as u64)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "CRAM container stream position precedes container payload",
-            )
-        })?;
-    {
-        let mut buffered = SeekWindowReader::with_capacity(64 * 1024, reader.get_mut());
-        prevalidate_cram_container_slices(
-            path,
-            &mut buffered,
-            body_offset,
-            bytes_read,
-            container.header().landmarks(),
-            Some(meta.as_ref()),
-        )?;
-    }
-    reader.get_mut().seek(SeekFrom::Start(post_container_pos))?;
-    return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
 
     let (hint_repo, hint_seq) = match pinned_slot {
         Some(slot) if slot.name.as_slice() == hint_contig => {
@@ -5943,7 +6585,8 @@ fn fetch_cram_container_in(
     };
     out_records.shrink_to_fit();
 
-    let arc_records: CachedCramBlock = std::sync::Arc::new(out_records);
+    let arc_records: CachedCramBlock =
+        std::sync::Arc::new(CachedCramContainer::from_records(out_records));
     #[cfg(test)]
     if let Some(hook) = TEST_MID_CRAM_DECODE_HOOK
         .try_with(|h| h.try_borrow_mut().ok().and_then(|mut g| g.take()))
@@ -5988,7 +6631,7 @@ struct CramFeedInner {
     pinned_slot: Option<std::sync::Arc<ContigSlot>>,
     interval: noodles::core::region::Interval,
     container_offsets: std::vec::IntoIter<u64>,
-    current_block: Option<(CachedCramBlock, usize)>,
+    current_block: Option<(CachedCramBlock, usize, Option<usize>)>,
 }
 
 impl Drop for CramFeedInner {
@@ -6002,9 +6645,14 @@ impl Drop for CramFeedInner {
 impl CramFeedInner {
     fn pump(&mut self, out: &mut SamRecord) -> Result<bool, crate::types::VardictError> {
         loop {
-            if let Some((ref block, ref mut idx)) = self.current_block {
+            if let Some((ref block, ref mut idx, end_bound)) = self.current_block {
                 while let Some(rec) = block.get(*idx) {
                     *idx += 1;
+                    if let (Some(max_end), Some(start)) = (end_bound, rec.alignment_start) {
+                        if usize::from(start) > max_end {
+                            break;
+                        }
+                    }
                     if cram_record_intersects(rec, self.reference_sequence_id, self.interval) {
                         crate::count!(CramRecordsYielded);
                         let prev_ref_name = out.reference_name.take();
@@ -6030,7 +6678,9 @@ impl CramFeedInner {
                 self.pinned_slot.as_ref(),
             )? {
                 Some(block) => {
-                    self.current_block = Some((block, 0));
+                    let (start_idx, end_bound) = block
+                        .start_index_and_upper_bound(self.reference_sequence_id, self.interval);
+                    self.current_block = Some((block, start_idx, end_bound));
                 }
                 None => {
                     self.container_offsets = Vec::new().into_iter();
@@ -11708,7 +12358,7 @@ mod tests {
                 });
             }
             out.shrink_to_fit();
-            std::sync::Arc::new(out)
+            std::sync::Arc::new(CachedCramContainer::from_records(out))
         };
 
         // Part A: Standard 10,000 × 150 bp Illumina CRAM container (~6.28 MiB > 4 MiB)
@@ -11960,9 +12610,7 @@ mod tests {
             cram_container_cache_shards()[global_shard_idx]
                 .lock()
                 .unwrap()
-                .lru
-                .entries
-                .retain(|(k, _)| *k != global_key);
+                .remove_key(global_key);
         }
     }
 
@@ -13484,5 +14132,314 @@ mod tests {
             total_decodes, 1,
             "8 concurrent fetches on the same uncached CRAM container must perform exactly 1 decode"
         );
+    }
+
+    #[test]
+    fn cram_4x4_shard_byte_budget_lru_eviction_and_somatic_contig_pin_guard() {
+        use noodles::core::Position;
+        use noodles::sam::{
+            alignment::{
+                io::Write as _,
+                record::{
+                    cigar::{op::Kind, Op},
+                    Flags, MappingQuality,
+                },
+                record_buf::{Cigar, QualityScores as BufQual, RecordBuf, Sequence as BufSeq},
+            },
+            header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+            Header,
+        };
+
+        assert_eq!(CRAM_CONTAINER_CACHE_SHARDS, 4);
+        assert_eq!(CRAM_CONTAINER_SLOTS_PER_SHARD, 4);
+        assert_eq!(MAX_SHARD_CACHED_CRAM_BYTES, 40 * 1024 * 1024);
+        assert_eq!(DEFAULT_FASTA_CACHE_BUDGET_BYTES, 512 * 1024 * 1024);
+
+        // 1. Per-shard byte budget (`40 MiB` across `4` slots) evicts LRU entries until
+        //    total cached bytes in the shard `<= MAX_SHARD_CACHED_CRAM_BYTES`.
+        let chr1_arc: std::sync::Arc<str> = std::sync::Arc::from("chr1");
+        let build_block = |read_count: usize, read_len: usize| -> CachedCramBlock {
+            let mut out = Vec::with_capacity(read_count);
+            for idx in 0..read_count {
+                let mut sam = SamRecord::new();
+                sam.name = format!("r{idx:05}").into_bytes();
+                sam.name.shrink_to_fit();
+                sam.cigar = vec![(read_len as u32, CigarKind::Match)];
+                sam.sequence = vec![b'A'; read_len];
+                sam.quality_scores = vec![35u8; read_len];
+                out.push(CachedCramRecord {
+                    reference_sequence_id: Some(0),
+                    alignment_start: Position::new(10),
+                    alignment_end: Position::new(10 + read_len - 1),
+                    reference_name: Some(std::sync::Arc::clone(&chr1_arc)),
+                    mate_reference_name: None,
+                    sam,
+                });
+            }
+            out.shrink_to_fit();
+            std::sync::Arc::new(CachedCramContainer::from_records(out))
+        };
+
+        // Choose block sizes each `<= MAX_CACHED_CRAM_CONTAINER_BYTES` (16 MiB):
+        // b1 ~ 10.5 MiB, b2 ~ 14.5 MiB, b3 ~ 14.5 MiB (sum ~ 39.5 MiB <= 40 MiB),
+        // then touch b1 (MRU) and insert b4 ~ 15.5 MiB: evicting only b2 leaves ~ 40.5 MiB > 40 MiB,
+        // so BOTH b2 and b3 must be evicted while promoted b1 and new b4 remain!
+        let b1 = build_block(1_024, 5_200); // ~10.41 MiB
+        let b2 = build_block(1_024, 7_250); // ~14.41 MiB
+        let b3 = build_block(1_024, 7_250); // ~14.41 MiB
+        let b4 = build_block(1_024, 7_900); // ~15.68 MiB
+        for b in [&b1, &b2, &b3, &b4] {
+            assert!(should_cache_cram_container(
+                b,
+                MAX_CACHED_CRAM_CONTAINER_BYTES
+            ));
+        }
+        let s1 = approx_cram_container_bytes(&b1);
+        let s2 = approx_cram_container_bytes(&b2);
+        let s3 = approx_cram_container_bytes(&b3);
+        let s4 = approx_cram_container_bytes(&b4);
+        assert!(s1 + s2 + s3 <= MAX_SHARD_CACHED_CRAM_BYTES);
+        assert!(s1 + s3 + s4 > MAX_SHARD_CACHED_CRAM_BYTES);
+        assert!(s1 + s4 <= MAX_SHARD_CACHED_CRAM_BYTES);
+
+        let mut shard = CramContainerCacheShard::default();
+        shard.insert_with_budget(
+            (1, 100),
+            std::sync::Arc::clone(&b1),
+            s1,
+            MAX_SHARD_CACHED_CRAM_BYTES,
+        );
+        shard.insert_with_budget(
+            (1, 200),
+            std::sync::Arc::clone(&b2),
+            s2,
+            MAX_SHARD_CACHED_CRAM_BYTES,
+        );
+        shard.insert_with_budget(
+            (1, 300),
+            std::sync::Arc::clone(&b3),
+            s3,
+            MAX_SHARD_CACHED_CRAM_BYTES,
+        );
+        assert_eq!(shard.lru.entries.len(), 3);
+        assert_eq!(shard.cached_bytes, s1 + s2 + s3);
+        assert!(shard.cached_bytes <= MAX_SHARD_CACHED_CRAM_BYTES);
+
+        // Promote (1, 100) to MRU so LRU order is [(1, 200), (1, 300), (1, 100)].
+        assert!(shard.lru.get((1, 100)).is_some());
+        shard.insert_with_budget(
+            (1, 400),
+            std::sync::Arc::clone(&b4),
+            s4,
+            MAX_SHARD_CACHED_CRAM_BYTES,
+        );
+        assert!(
+            shard.cached_bytes <= MAX_SHARD_CACHED_CRAM_BYTES,
+            "shard cached_bytes ({}) must stay <= MAX_SHARD_CACHED_CRAM_BYTES ({MAX_SHARD_CACHED_CRAM_BYTES})",
+            shard.cached_bytes
+        );
+        assert_eq!(shard.cached_bytes, s1 + s4);
+        assert_eq!(shard.lru.entries.len(), 2);
+        assert!(
+            shard.lru.get((1, 200)).is_none(),
+            "oldest LRU entry b2 must be evicted"
+        );
+        assert!(
+            shard.lru.get((1, 300)).is_none(),
+            "second LRU entry b3 must also be evicted to meet 40 MiB cap"
+        );
+        assert!(
+            shard.lru.get((1, 100)).is_some(),
+            "MRU-promoted b1 must remain cached"
+        );
+        assert!(
+            shard.lru.get((1, 400)).is_some(),
+            "newly inserted b4 must be cached"
+        );
+        drop((b1, b2, b3, b4, shard));
+
+        // 2. Verify `pin_cram_contig_for_spec` keeps `tile.chr` pinned across consecutive
+        //    `CramFeed` drops (`bam1 -> bam2 -> combineAnalysis`) until the guard drops,
+        //    and `cram_record_to_cached` shrinks `SamRecord` buffers to exact length.
+        let dir = tempfile::tempdir().unwrap();
+        let ref_fa = dir.path().join("som_pin.fa");
+        let ref_fai = dir.path().join("som_pin.fa.fai");
+        let tumor_cram = dir.path().join("tumor_pin.cram");
+        let normal_cram = dir.path().join("normal_pin.cram");
+
+        let contig_len = 600usize;
+        let seq1 = vec![b'A'; contig_len];
+        let seq2 = vec![b'C'; contig_len];
+        std::fs::write(
+            &ref_fa,
+            format!(
+                ">chr1\n{}\n>chr2\n{}\n",
+                std::str::from_utf8(&seq1).unwrap(),
+                std::str::from_utf8(&seq2).unwrap()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &ref_fai,
+            format!(
+                "chr1\t{contig_len}\t6\t{contig_len}\t{}\nchr2\t{contig_len}\t{}\t{contig_len}\t{}\n",
+                contig_len + 1,
+                6 + contig_len + 1 + 6,
+                contig_len + 1
+            ),
+        )
+        .unwrap();
+
+        let write_one_cram = |cram_path: &Path, qname: &str| -> u64 {
+            let mut hb = Header::builder();
+            for name in ["chr1", "chr2"] {
+                let rs = HeaderMap::<RefSeqMap>::builder()
+                    .set_length(contig_len.try_into().unwrap())
+                    .build()
+                    .unwrap();
+                hb = hb.add_reference_sequence(name, rs);
+            }
+            let header = hb.build();
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(std::fs::File::open(&ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(&ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut cw = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(cram_path)
+                .unwrap();
+            cw.write_alignment_header(&header).unwrap();
+            let rec = RecordBuf::builder()
+                .set_name(qname)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(100usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+                .set_cigar([Op::new(Kind::Match, 100)].into_iter().collect::<Cigar>())
+                .set_sequence(BufSeq::from(vec![b'A'; 100]))
+                .set_quality_scores(BufQual::from(vec![35u8; 100]))
+                .build();
+            cw.write_alignment_record(&header, &rec).unwrap();
+            cw.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(cram_path).unwrap();
+            let off = crai[0].offset();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+            off
+        };
+
+        let t_off = write_one_cram(&tumor_cram, "tumor_r1");
+        let _ = write_one_cram(&normal_cram, "normal_r1");
+        let bam_spec = format!("{}|{}", tumor_cram.display(), normal_cram.display());
+        let cfg = Config {
+            bam: bam_spec.clone(),
+            reference: ref_fa.to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+
+        NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
+        let meta_t = acquire_cram_meta(&tumor_cram, &cfg).unwrap();
+        let per_contig_bytes = contig_len + CRAM_REF_OVERHANG_PAD;
+        // Budget holds at most 1 contig (`chr1` OR `chr2`).
+        meta_t.fasta_repo.set_budget_bytes(per_contig_bytes);
+
+        // Verify `cram_record_to_cached` shrinks `name`/`cigar`/`sequence`/`quality_scores` to exact length.
+        let shrink_cache: [std::sync::Mutex<CramContainerCacheShard>; CRAM_CONTAINER_CACHE_SHARDS] =
+            std::array::from_fn(|_| std::sync::Mutex::new(CramContainerCacheShard::default()));
+        let decoded_block = fetch_cram_container_in(
+            &tumor_cram,
+            &meta_t,
+            t_off,
+            b"chr1",
+            None,
+            &shrink_cache,
+            MAX_CACHED_CRAM_CONTAINER_BYTES,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(decoded_block.len(), 1);
+        let cached_sam = &decoded_block[0].sam;
+        assert_eq!(cached_sam.name.capacity(), cached_sam.name.len());
+        assert_eq!(cached_sam.cigar.capacity(), cached_sam.cigar.len());
+        assert_eq!(cached_sam.sequence.capacity(), cached_sam.sequence.len());
+        assert_eq!(
+            cached_sam.quality_scores.capacity(),
+            cached_sam.quality_scores.len()
+        );
+
+        // Simulate a concurrent worker holding `chr2` pinned (`resident_bytes > budget`):
+        // 1) Baseline without tile guard: dropping `feed1` unpins and evicts `chr1`.
+        let chr2_worker_pin = meta_t.fasta_repo.warm_contig_slot(b"chr2");
+        {
+            let mut feed1 =
+                query_region_iter(&tumor_cram, "chr1", Pos0(50), Pos0(250), &cfg).unwrap();
+            let mut rec = SamRecord::new();
+            assert!(feed1.next_into(&mut rec).unwrap());
+            drop(feed1);
+        }
+        assert!(
+            meta_t.fasta_repo.resident_slot(b"chr1").is_none(),
+            "without tile guard, CramFeedInner::drop must evict chr1 when over budget"
+        );
+
+        // 2) With `pin_cram_contig_for_spec`: `chr1` stays pinned across `tumor` feed drop AND
+        //    `normal` feed drop (exact same `ContigSlot` Arc, zero chr1 reload) and evicts cleanly
+        //    once `tile_pin` drops.
+        let tile_pin = pin_cram_contig_for_spec(&bam_spec, "chr1", &cfg);
+        let initial_chr1_slot = meta_t
+            .fasta_repo
+            .resident_slot(b"chr1")
+            .expect("chr1 must be warmed and pinned by pin_cram_contig_for_spec");
+
+        {
+            let mut feed_t =
+                query_region_iter(&tumor_cram, "chr1", Pos0(50), Pos0(250), &cfg).unwrap();
+            let mut rec = SamRecord::new();
+            assert!(feed_t.next_into(&mut rec).unwrap());
+            drop(feed_t);
+        }
+        let after_t_slot = meta_t
+            .fasta_repo
+            .resident_slot(b"chr1")
+            .expect("tile guard must keep chr1 pinned after BAM1 CramFeed drops");
+        assert!(std::sync::Arc::ptr_eq(&initial_chr1_slot, &after_t_slot));
+        drop(after_t_slot);
+
+        let loads_before_n = meta_t
+            .fasta_repo
+            .load_count
+            .load(std::sync::atomic::Ordering::SeqCst);
+        {
+            let mut feed_n =
+                query_region_iter(&normal_cram, "chr1", Pos0(50), Pos0(250), &cfg).unwrap();
+            let mut rec = SamRecord::new();
+            assert!(feed_n.next_into(&mut rec).unwrap());
+            drop(feed_n);
+        }
+        assert_eq!(
+            meta_t
+                .fasta_repo
+                .load_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            loads_before_n,
+            "BAM2 CramFeed on pinned chr1 must incur 0 FASTA loads"
+        );
+        let after_n_slot = meta_t
+            .fasta_repo
+            .resident_slot(b"chr1")
+            .expect("tile guard must keep chr1 pinned after BAM2 CramFeed drops");
+        assert!(std::sync::Arc::ptr_eq(&initial_chr1_slot, &after_n_slot));
+        drop((initial_chr1_slot, after_n_slot));
+
+        assert!(meta_t.fasta_repo.resident_slot(b"chr1").is_some());
+        assert!(meta_t.fasta_repo.resident_slot(b"chr2").is_some());
+        drop(tile_pin);
+        assert!(
+            meta_t.fasta_repo.resident_slot(b"chr1").is_none(),
+            "dropping CramContigPinGuard must unpin and evict chr1 under budget pressure"
+        );
+        drop(chr2_worker_pin);
     }
 }

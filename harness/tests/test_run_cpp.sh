@@ -66,7 +66,7 @@ fi
 # 4. Version pin (Task 1: vardictcpp=3=hc52dbad_0).
 ver=$(conda run -n vardict-oracle vardictcpp --version 2>&1)
 [[ "$ver" == *"vardictcpp 3"* ]] || { echo "FAIL: --version pin mismatch: $ver"; fail=1; }
-conda list -n vardict-oracle 2>/dev/null | grep -q 'vardictcpp.*hc52dbad_0' \
+conda list -n vardict-oracle 2>/dev/null | awk '/vardictcpp.*hc52dbad_0/ { found=1 } END { exit !found }' \
   || { echo "FAIL: conda pin vardictcpp=3=hc52dbad_0 missing"; fail=1; }
 
 # 5. Micro fixture -> non-empty VCF (bcftools record view, never head -1).

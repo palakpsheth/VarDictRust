@@ -23,6 +23,7 @@ jobs:
   build-and-test:
     name: Build, Unit, Integration, Parity & Coverage Gate
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Harden GitHub Actions Runner
         uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
@@ -49,8 +50,11 @@ jobs:
         id: fmt-lint
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Step 1/9] Running cargo fmt --check, cargo clippy -D warnings, and bench compile..."
+          echo "[$(date '+%H:%M:%S')] [Step 1/9] Running cargo fmt --check, lint_ratchet, 3-mode cargo clippy -D warnings, and bench compile..."
           cargo fmt --all -- --check
+          bash harness/lint_ratchet.sh --scan-only
+          cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+          cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy --all-targets --all-features -- -D warnings
           cargo test --benches -p vardictrust-core
           echo "STEP1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
@@ -68,7 +72,7 @@ jobs:
         id: unit-tests
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Step 3/9] Running unit tests (491 vardictrust-core --lib + 29 vardictrust --bins)..."
+          echo "[$(date '+%H:%M:%S')] [Step 3/9] Running unit tests (500 vardictrust-core --lib + 30 vardictrust --bins)..."
           cargo llvm-cov --no-report --workspace --lib --bins -- --test-threads=2
           echo "STEP3_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "STEP3_STATUS=PASS" >> "$GITHUB_ENV"
@@ -173,8 +177,8 @@ jobs:
             echo "| :--- | :--- | :---: | :---: |"
             echo "| **1** | Format & Lint Gate (\`rustfmt\` & \`clippy -D warnings\`) | \`${STEP1_STATUS:-FAIL}\` | \`${STEP1_S:-0}s\` |"
             echo "| **2** | Build Instrumented Workspace & Test Targets | \`${STEP2_STATUS:-FAIL}\` | \`${STEP2_S:-0}s\` |"
-            echo "| **3** | Unit Tests (\`491 vardictrust-core\` + \`29 vardictrust\`) | \`${STEP3_STATUS:-FAIL}\` | \`${STEP3_S:-0}s\` |"
-            echo "| **4** | Integration & Hostile-Input Tests (\`61\` tests) | \`${STEP4_STATUS:-FAIL}\` | \`${STEP4_S:-0}s\` |"
+            echo "| **3** | Unit Tests (\`500 vardictrust-core\` + \`30 vardictrust\`) | \`${STEP3_STATUS:-FAIL}\` | \`${STEP3_S:-0}s\` |"
+            echo "| **4** | Integration & Hostile-Input Tests (\`66\` tests) | \`${STEP4_STATUS:-FAIL}\` | \`${STEP4_S:-0}s\` |"
             echo "| **5** | Corpus & Modality Parity Tests (\`110\` cases) | \`${STEP5_STATUS:-FAIL}\` | \`${STEP5_S:-0}s\` |"
             echo "| **6** | Code Coverage Gate (\`cargo-llvm-cov >= 90%\` Lines) | \`${STEP6_STATUS:-FAIL}\` | \`${STEP6_S:-0}s\` |"
             echo "| **7** | Harness Diagnostic Self-Tests (Zero-Conda Suites) | \`${STEP7_STATUS:-FAIL}\` | \`${STEP7_S:-0}s\` |"

@@ -379,7 +379,7 @@ Flag parity with VarDictJava v1.8.3 (`89` CLI flags across 7 functional groups) 
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`) | off | `parity-exempt` |
+| — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`; also enabled automatically when `-E <COL>` is passed) | off | `parity-exempt` |
 | — | `--pass-only` | Emit only `PASS` variants in VCF output (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -S`) | off | `parity-exempt` |
 | — | `--paired-strict` | Disable germline rescue in paired somatic VCF filtering and apply `P<FLOAT>` / `P0.01Likely` / `InDelLikely` tags (ports `var2vcf_paired.pl -M`) | off | `parity-exempt` |
 | — | `--vcf-pval` | Maximum Fisher p-value `<FLOAT>` for high-confidence somatic calls under `--paired-strict` (ports `var2vcf_paired.pl -P`) | `0.05` | `parity-exempt` |
@@ -403,7 +403,7 @@ Flag parity with VarDictJava v1.8.3 (`89` CLI flags across 7 functional groups) 
 | :--- | :--- | :--- | :--- | :--- |
 | `-c` | — | BED chromosome column (1-based; default 3 for 13-col UCSC `refGene`; 4-col BED & 8-col amplicon BED auto-detected) | `3` | `corpus` |
 | `-S` | — | BED start column (default 7 for 13-col UCSC `refGene`) | `7` | `corpus` |
-| `-E` | — | BED end column (default 8 for 13-col UCSC `refGene`) | `8` | `corpus` |
+| `-E` | — | BED end column (default 8 for 13-col UCSC `refGene`; also omits single-sample VCF `INFO/END` matching `var2vcf_valid.pl -E`) | `8` | `corpus` |
 | `-s` | — | BED segment-start column | `10` (= `-S` if set) | `corpus` |
 | `-e` | — | BED segment-end column | `11` (= `-E` if set) | `corpus` |
 | `-g` | — | BED gene column | `13` | `corpus` |
@@ -488,7 +488,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under human architectural direction, transliteration of R/Perl statistical routines into pure Rust, test harness engineering, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 691 automated Cargo workspace tests (491 core library tests, 110 corpus and modality parity tests, 29 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 29 CLI tests, and 27 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 37 harness diagnostic self-tests (25 shell tests and 12 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 706 automated Cargo workspace tests (500 core library tests, 110 corpus and modality parity tests, 34 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 30 CLI tests, and 27 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 37 harness diagnostic self-tests (25 shell tests and 12 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
 
 ---
 

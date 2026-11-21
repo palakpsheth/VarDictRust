@@ -26,7 +26,7 @@ git fetch origin main --quiet 2>/dev/null || true
 if git rev-parse --verify origin/main >/dev/null 2>&1; then
   if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
     base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
-    if [[ -n "$base" ]] && git merge-tree "$base" origin/main HEAD | grep -q '^+<<<<<<< \.our$'; then
+    if [[ -n "$base" ]] && git merge-tree "$base" origin/main HEAD | awk '/^\+<<<<<<< \.our$/ { found=1 } END { exit !found }'; then
       echo "ERROR: Branch has merge conflicts with 'origin/main' (causes GitHub Actions pull_request workflows to be skipped)." >&2
       echo "Run: git fetch origin main && git rebase origin/main" >&2
       exit 1
@@ -34,11 +34,13 @@ if git rev-parse --verify origin/main >/dev/null 2>&1; then
   fi
 fi
 
-# Stage 1: Hygiene (fmt, lint_ratchet, clippy, unit + integration + robustness tests, release binary)
+# Stage 1: Hygiene (fmt, lint_ratchet, 3-mode clippy, unit + integration + robustness tests, release binary)
 st_t0=$SECONDS
 echo "$(ts) [Stage 1/6] Running workspace hygiene and unit tests..."
 cargo fmt --all -- --check
 bash harness/lint_ratchet.sh --scan-only
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --workspace --bins --lib --tests
 cargo build -q --release

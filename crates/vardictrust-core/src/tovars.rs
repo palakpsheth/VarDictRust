@@ -403,16 +403,16 @@ impl<'a> ToVarsBuilder<'a> {
         let mut overlay: rustc_hash::FxHashMap<i32, crate::variations::VariationMap> =
             rustc_hash::FxHashMap::default();
 
-        let iter_positions: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
+        let num_positions = var_data.non_insertion_variants.len();
         // Do not sort positions, use the JavaHashMap iteration order!
         match ref_mode {
             RefSiteMode::KeepAll => {
-                aligned_variants.reserve_nodes(iter_positions.len());
+                aligned_variants.reserve_nodes(num_positions);
             }
             RefSiteMode::CompactOut(ref mut out) => {
                 let region_span = (self.region.end.0.saturating_sub(self.region.start.0) as usize)
                     .saturating_add(1);
-                out.reserve(iter_positions.len().min(region_span));
+                out.reserve(num_positions.min(region_span));
             }
             RefSiteMode::DropAll | RefSiteMode::KeepWhere(_) => {}
         }
@@ -429,7 +429,7 @@ impl<'a> ToVarsBuilder<'a> {
         let mut scratch2 = String::new();
 
         // Process non-insertion variants
-        for position in iter_positions {
+        for &position in var_data.non_insertion_variants.keys() {
             // `var_map`'s shared NLL borrow of `overlay` and `var_data.non_insertion_variants`
             // ends at `create_variant` below, before `&mut overlay` is passed to `create_insertion`.
             let Some((var_map, total_cov)) =
@@ -1268,7 +1268,11 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> f64 {
         let mut maxfreq = 0.0;
         if non_ref_rows > 0 {
-            entry.variants.reserve(non_ref_rows);
+            if entry.variants.is_empty() {
+                entry.variants.reserve_exact(non_ref_rows);
+            } else {
+                entry.variants.reserve(non_ref_rows);
+            }
         }
 
         for tvar in var.drain(..) {
@@ -5082,5 +5086,40 @@ mod tests {
             assert_eq!(de.variants.capacity(), 0);
             assert!(de.var_desc_to_variant.is_empty());
         }
+    }
+
+    #[test]
+    fn drain_vars_into_reserves_exact_capacity_for_fresh_vars() {
+        let mut ref_var = Variant::empty_internal();
+        ref_var.description = "A".to_string();
+        ref_var.frequency = 0.8;
+
+        let mut alt_var = Variant::empty_internal();
+        alt_var.description = "G".to_string();
+        alt_var.frequency = 0.2;
+
+        let mut var = vec![ref_var, alt_var];
+        let mut entry = crate::variations::Vars::new();
+        let maxfreq = ToVarsBuilder::drain_vars_into(&mut entry, "A", 1, &mut var);
+
+        assert!((maxfreq - 0.2).abs() < 1e-12);
+        assert!(var.is_empty());
+        assert!(entry.ref_variant.is_some());
+        assert_eq!(entry.variants.len(), 1);
+        assert_eq!(
+            entry.variants.capacity(),
+            1,
+            "fresh 1-allele Vars populated via drain_vars_into must allocate exact capacity 1 instead of 4"
+        );
+
+        // Non-empty `entry.variants` falls back to amortised `reserve(non_ref_rows)`.
+        let mut second_alt = Variant::empty_internal();
+        second_alt.description = "T".to_string();
+        second_alt.frequency = 0.25;
+        let mut extra = vec![second_alt];
+        let maxfreq2 = ToVarsBuilder::drain_vars_into(&mut entry, "A", 1, &mut extra);
+        assert!((maxfreq2 - 0.25).abs() < 1e-12);
+        assert_eq!(entry.variants.len(), 2);
+        assert!(entry.variants.capacity() >= 2);
     }
 }
