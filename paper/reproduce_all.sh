@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Reproduce all VarDictRust v1.0.6 paper figures, tables, manuscript text, and LinkedIn carousel.
 # Default mode is 100% offline using git-tracked benchmarks/gcp-study-v106/.
-# Pass --sync-gcs to re-pull raw cell outputs from gs://vardict-paper-trial-results/cells-v106/.
+# Usage: bash paper/reproduce_all.sh [--sync-gcs] [--require-head-fingerprint]
+#   --sync-gcs                  Re-pull raw cell outputs from gs://vardict-paper-trial-results/cells-v106/.
+#   --require-head-fingerprint  Enforce live HEAD engine fingerprint parity in check_release_consistency.py
+#                               (also enabled automatically on release/* branches/PRs and refs/tags/v*).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
