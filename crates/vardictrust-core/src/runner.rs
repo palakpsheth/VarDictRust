@@ -313,6 +313,11 @@ where
 /// thread so Rayon work-stealing stays saturated without unbounded task queueing (`AR-7`).
 pub(crate) const MAX_IN_FLIGHT_FACTOR: usize = 2;
 
+/// Dispatch-window multiplier (`4 * num_threads`, `M-DOCUMENTED-MAGIC`) for public unweighted
+/// runner entrypoints where `size_of::<R>()` does not account owned `Vec`/`String` heap buffers;
+/// crate-internal `_weighted` callers pass `None` and bound actual heap bytes via `weight_fn`.
+const UNWEIGHTED_DISPATCH_WINDOW_FACTOR: usize = 4;
+
 /// Maximum out-of-order pending output bytes (`64 MiB`, `M-DOCUMENTED-MAGIC`) buffered in
 /// the ordered consumer `BTreeMap` while an earlier slow tile batch is still running (`AR-7`).
 pub(crate) const MAX_PENDING_BYTES: usize = 64 * 1024 * 1024;
@@ -341,11 +346,16 @@ where
     F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
     W: FnMut(R) -> Result<(), VardictError>,
 {
-    run_parallel_batched_with_stack(
+    run_parallel_batched_with_stack_weighted(
         batches,
         num_threads,
         worker_thread_stack_bytes(),
         false,
+        Some(
+            num_threads
+                .max(1)
+                .saturating_mul(UNWEIGHTED_DISPATCH_WINDOW_FACTOR),
+        ),
         worker_fn,
         consumer_fn,
         |_| std::mem::size_of::<R>(),
@@ -367,10 +377,16 @@ where
     F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
     W: FnMut(R) -> Result<(), VardictError>,
 {
-    run_parallel_batched_for_bam_weighted(
-        bam_spec,
+    run_parallel_batched_with_stack_weighted(
         batches,
         num_threads,
+        worker_thread_stack_bytes_for_bam(bam_spec),
+        true,
+        Some(
+            num_threads
+                .max(1)
+                .saturating_mul(UNWEIGHTED_DISPATCH_WINDOW_FACTOR),
+        ),
         worker_fn,
         consumer_fn,
         |_| std::mem::size_of::<R>(),
@@ -393,11 +409,12 @@ where
     F: Fn(T) -> Result<R, VardictError> + Send + Sync + 'static,
     W: FnMut(R) -> Result<(), VardictError>,
 {
-    run_parallel_batched_with_stack(
+    run_parallel_batched_with_stack_weighted(
         batches,
         num_threads,
         worker_thread_stack_bytes_for_bam(bam_spec),
         true,
+        None,
         worker_fn,
         consumer_fn,
         weight_fn,
@@ -412,11 +429,13 @@ struct FlowState {
     shutdown: bool,
 }
 
-fn run_parallel_batched_with_stack<T, R, F, W, G>(
+#[allow(clippy::too_many_arguments)]
+fn run_parallel_batched_with_stack_weighted<T, R, F, W, G>(
     batches: Vec<Vec<T>>,
     num_threads: usize,
     stack_bytes: usize,
     enforce_serial_stack: bool,
+    max_window_batches: Option<usize>,
     worker_fn: F,
     mut consumer_fn: W,
     weight_fn: G,
@@ -501,8 +520,9 @@ where
         let pool_clone = &pool;
         let worker_fn_clone = Arc::clone(&worker_fn);
 
-        // Feeder thread: dispatches work whenever a worker slot is available and either
-        // the batch is next-expected or pending out-of-order output is below 64 MiB / 262k batches.
+        // Feeder thread: dispatches work whenever a worker slot is available, any optional
+        // unweighted batch-window bound (`4 * num_threads`) holds, and either the batch is
+        // next-expected or pending out-of-order output is below 64 MiB / 262k batches.
         s.spawn(move || {
             let (lock, cvar, _) = &*shared_clone;
             for (batch_idx, batch) in batches.into_iter().enumerate() {
@@ -512,6 +532,8 @@ where
                 };
                 while !st.shutdown
                     && !(st.in_flight < max_in_flight
+                        && max_window_batches
+                            .is_none_or(|win| batch_idx < st.next_expected_idx.saturating_add(win))
                         && (batch_idx == st.next_expected_idx
                             || (st.pending_bytes < MAX_PENDING_BYTES
                                 && st.pending_batches < MAX_PENDING_BATCHES)))
@@ -1032,7 +1054,7 @@ mod tests {
         let batch0_obs_worker = Arc::clone(&batch0_obs);
         let mut consumed = Vec::with_capacity(200);
 
-        run_parallel_batched_for_bam(
+        run_parallel_batched_for_bam_weighted(
             "panel.bam",
             batches,
             4,
@@ -1061,6 +1083,7 @@ mod tests {
                 consumed.push(val);
                 Ok(())
             },
+            |_| std::mem::size_of::<usize>(),
         )
         .unwrap();
 
@@ -1227,5 +1250,71 @@ mod tests {
         .unwrap();
         let expected_rows: Vec<String> = (0..12).map(|i| format!("row_{i}")).collect();
         assert_eq!(unbatched, expected_rows);
+    }
+
+    #[test]
+    fn test_unweighted_runner_preserves_four_x_threads_dispatch_window() {
+        const NUM_THREADS: usize = 2;
+        const TOTAL_BATCHES: usize = 40;
+        const EXPECTED_WINDOW: usize = NUM_THREADS * 4;
+
+        for use_for_bam in [true, false] {
+            let batches: Vec<Vec<usize>> = (0..TOTAL_BATCHES).map(|i| vec![i]).collect();
+            // (downstream_completed_while_batch0_held, batch0_holding)
+            let state = Arc::new((Mutex::new((0usize, true)), Condvar::new()));
+            let state_w = Arc::clone(&state);
+            let observed_downstream = Arc::new(Mutex::new(0usize));
+            let observed_w = Arc::clone(&observed_downstream);
+            let mut drained = Vec::with_capacity(TOTAL_BATCHES);
+
+            let worker = move |idx: usize| -> Result<Vec<u8>, VardictError> {
+                if idx == 0 {
+                    let (lock, cvar) = &*state_w;
+                    let guard = lock.lock().unwrap();
+                    let (mut guard, _timeout) = cvar
+                        .wait_timeout_while(
+                            guard,
+                            std::time::Duration::from_millis(200),
+                            |(done, _holding)| *done < EXPECTED_WINDOW,
+                        )
+                        .unwrap();
+                    *observed_w.lock().unwrap() = guard.0;
+                    guard.1 = false;
+                    Ok(vec![0u8; 1024])
+                } else {
+                    let (lock, cvar) = &*state_w;
+                    let mut guard = lock.lock().unwrap();
+                    if guard.1 {
+                        guard.0 += 1;
+                        cvar.notify_all();
+                    }
+                    Ok(vec![(idx & 0xff) as u8; 1024])
+                }
+            };
+
+            if use_for_bam {
+                run_parallel_batched_for_bam("panel.bam", batches, NUM_THREADS, worker, |buf| {
+                    drained.push(buf[0]);
+                    Ok(())
+                })
+                .unwrap();
+            } else {
+                run_parallel_batched(batches, NUM_THREADS, worker, |buf| {
+                    drained.push(buf[0]);
+                    Ok(())
+                })
+                .unwrap();
+            }
+
+            let downstream_while_held = *observed_downstream.lock().unwrap();
+            let dispatched_ahead = 1 + downstream_while_held;
+            assert!(
+                dispatched_ahead <= EXPECTED_WINDOW,
+                "unweighted runner (for_bam={use_for_bam}) dispatched {dispatched_ahead} batches \
+                 ({downstream_while_held} downstream while batch 0 held), exceeding 4 * num_threads = {EXPECTED_WINDOW}"
+            );
+            let expected_drained: Vec<u8> = (0..TOTAL_BATCHES).map(|i| (i & 0xff) as u8).collect();
+            assert_eq!(drained, expected_drained);
+        }
     }
 }

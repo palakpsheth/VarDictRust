@@ -972,9 +972,11 @@ class TestLintRatchet(unittest.TestCase):
         )
 
         # 3) pr_check.sh and .github/workflows/ci.yml Step 1 both run lint_ratchet.sh --scan-only
+        #    plus all three Clippy feature configurations (--no-default-features, default, --all-features)
+        pr_check_text = pr_check.read_text(encoding="utf-8")
         self.assertIn(
             "bash harness/lint_ratchet.sh --scan-only",
-            pr_check.read_text(encoding="utf-8"),
+            pr_check_text,
         )
         ci_text = ci_yml.read_text(encoding="utf-8")
         step1_start = ci_text.find("1. Format & Lint Gate")
@@ -987,6 +989,21 @@ class TestLintRatchet(unittest.TestCase):
             step1_block,
             "ci.yml Step 1 must execute 'bash harness/lint_ratchet.sh --scan-only'",
         )
+        for clippy_cmd in (
+            "cargo clippy --workspace --all-targets --no-default-features -- -D warnings",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+            "cargo clippy --all-targets --all-features -- -D warnings",
+        ):
+            self.assertIn(
+                clippy_cmd,
+                step1_block,
+                f"ci.yml Step 1 must execute {clippy_cmd!r}",
+            )
+            self.assertIn(
+                clippy_cmd,
+                pr_check_text,
+                f"pr_check.sh Stage 1 must execute {clippy_cmd!r}",
+            )
 
     def test_lint_ratchet_scan_only_and_unauthorized_suppression_rejection(self):
         ratchet_script = ROOT_DIR / "harness" / "lint_ratchet.sh"

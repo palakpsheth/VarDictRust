@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (705 total:
-499 core lib + 110 corpus_parity + 34 engine_behavior + 2 amplicon_stream_mem
+Verifies that all version-bearing files, workspace test counts (706 total:
+500 core lib + 110 corpus_parity + 34 engine_behavior + 2 amplicon_stream_mem
 + 3 cram_stack + 30 CLI bin + 27 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
@@ -21,8 +21,8 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 705,
-    "core_lib": 499,
+    "total_workspace": 706,
+    "core_lib": 500,
     "corpus_parity": 110,
     "engine_behavior": 34,
     "amplicon_stream_mem": 2,
