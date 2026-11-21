@@ -379,7 +379,7 @@ Flag parity with VarDictJava v1.8.3 (`89` CLI flags across 7 functional groups) 
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`) | off | `parity-exempt` |
+| — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`; also enabled automatically when `-E <COL>` is passed) | off | `parity-exempt` |
 | — | `--pass-only` | Emit only `PASS` variants in VCF output (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -S`) | off | `parity-exempt` |
 | — | `--paired-strict` | Disable germline rescue in paired somatic VCF filtering and apply `P<FLOAT>` / `P0.01Likely` / `InDelLikely` tags (ports `var2vcf_paired.pl -M`) | off | `parity-exempt` |
 | — | `--vcf-pval` | Maximum Fisher p-value `<FLOAT>` for high-confidence somatic calls under `--paired-strict` (ports `var2vcf_paired.pl -P`) | `0.05` | `parity-exempt` |
@@ -403,7 +403,7 @@ Flag parity with VarDictJava v1.8.3 (`89` CLI flags across 7 functional groups) 
 | :--- | :--- | :--- | :--- | :--- |
 | `-c` | — | BED chromosome column (1-based; default 3 for 13-col UCSC `refGene`; 4-col BED & 8-col amplicon BED auto-detected) | `3` | `corpus` |
 | `-S` | — | BED start column (default 7 for 13-col UCSC `refGene`) | `7` | `corpus` |
-| `-E` | — | BED end column (default 8 for 13-col UCSC `refGene`) | `8` | `corpus` |
+| `-E` | — | BED end column (default 8 for 13-col UCSC `refGene`; also omits single-sample VCF `INFO/END` matching `var2vcf_valid.pl -E`) | `8` | `corpus` |
 | `-s` | — | BED segment-start column | `10` (= `-S` if set) | `corpus` |
 | `-e` | — | BED segment-end column | `11` (= `-E` if set) | `corpus` |
 | `-g` | — | BED gene column | `13` | `corpus` |

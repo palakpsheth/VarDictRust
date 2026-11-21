@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`29` tests).
+//! First-class functional engine behavior integration suite (`34` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs, and
@@ -2114,6 +2114,1107 @@ mod concurrency {
         assert_eq!(
             tiled_splice, untiled_splice,
             "tiled (tile_size=Some(200)) -i splice output must match untiled None byte-for-byte"
+        );
+    }
+}
+
+// 8. mod parity_edge_cases (5 tests)
+mod parity_edge_cases {
+    use super::*;
+    use noodles::sam::alignment::record::Flags;
+    use vardictrust_core::variations::Variant;
+
+    fn lcg_ref_bytes(len: usize) -> Vec<u8> {
+        let mut s = 0x9E37_79B9_7F4A_7C15_u64;
+        let bases = [b'A', b'C', b'G', b'T'];
+        (0..len)
+            .map(|_| {
+                s = s
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                bases[((s >> 33) & 3) as usize]
+            })
+            .collect()
+    }
+
+    fn write_custom_ref(dir: &TempDir, tag: &str, name: &str, seq: &[u8]) -> std::path::PathBuf {
+        let fa = dir.path().join(format!("{tag}.fa"));
+        let mut content = Vec::with_capacity(name.len() + seq.len() + 4);
+        content.push(b'>');
+        content.extend_from_slice(name.as_bytes());
+        content.push(b'\n');
+        content.extend_from_slice(seq);
+        content.push(b'\n');
+        fs::write(&fa, &content).expect("write custom fasta");
+        let len = seq.len();
+        fs::write(
+            fa.with_extension("fa.fai"),
+            format!("{name}\t{len}\t{}\t{len}\t{}\n", name.len() + 2, len + 1),
+        )
+        .expect("write custom fai");
+        fa
+    }
+
+    fn alt_base(b: u8) -> u8 {
+        match b {
+            b'A' => b'C',
+            b'C' => b'G',
+            b'G' => b'T',
+            _ => b'A',
+        }
+    }
+
+    fn mk_rec(
+        name: &str,
+        flags: Flags,
+        pos_1b: usize,
+        ops: &[(usize, Kind)],
+        seq: Vec<u8>,
+        qual: Vec<u8>,
+        mate: Option<(usize, i32)>,
+    ) -> RecordBuf {
+        let cigar: Cigar = ops.iter().map(|&(l, k)| Op::new(k, l)).collect();
+        let (mate_pos_1b, tlen) = mate.map_or((None, 0), |(mp, tl)| (Some(mp), tl));
+        let mut b = RecordBuf::builder()
+            .set_name(name)
+            .set_flags(flags)
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(pos_1b).expect("pos"))
+            .set_mapping_quality(noodles::sam::alignment::record::MappingQuality::new(60).unwrap())
+            .set_cigar(cigar)
+            .set_sequence(seq.into())
+            .set_quality_scores(qual.into())
+            .set_template_length(tlen);
+        if let Some(mp) = mate_pos_1b {
+            b = b
+                .set_mate_reference_sequence_id(0)
+                .set_mate_alignment_start(Position::try_from(mp).expect("mate pos"));
+        }
+        b.build()
+    }
+
+    #[test]
+    fn gap1_split_tile_multi_bam_active_limit_and_tail_validation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ref_len = 605_000usize;
+        let ref_seq = lcg_ref_bytes(ref_len);
+        let ref_fa = write_custom_ref(&dir, "gap1_ref", "chr1", &ref_seq);
+
+        let slice_1b = |pos_1b: usize, len: usize| ref_seq[pos_1b - 1..pos_1b - 1 + len].to_vec();
+        let snv_at = |read_pos_1b: usize, len: usize, var_pos_1b: usize| {
+            let mut s = slice_1b(read_pos_1b, len);
+            let off = var_pos_1b - read_pos_1b;
+            s[off] = alt_base(s[off]);
+            s
+        };
+
+        // --- (A) Simple mode `b1:b2:b3` over 600 kbp (6 tiles of 100 kbp, 3 prescan bands):
+        // b2 has 0 reads in Tile 0 (1..=100_000) and passing reads in Tile 3 (320_000);
+        // b3 has SNV reads in Tile 0 (pos = 200, var at 225).
+        let b1 = dir.path().join("g1_b1.bam");
+        let b2 = dir.path().join("g1_b2.bam");
+        let b3 = dir.path().join("g1_b3.bam");
+        let b2_empty = dir.path().join("g1_b2_empty.bam");
+        let b4_unindexed = dir.path().join("g1_b4_no_bai.bam");
+
+        indexed_bam(
+            &b1,
+            "chr1",
+            ref_len,
+            &[
+                mk_rec(
+                    "b1_t0_1",
+                    Flags::empty(),
+                    200,
+                    &[(50, Kind::Match)],
+                    slice_1b(200, 50),
+                    vec![40; 50],
+                    None,
+                ),
+                mk_rec(
+                    "b1_t3_1",
+                    Flags::empty(),
+                    320_000,
+                    &[(50, Kind::Match)],
+                    slice_1b(320_000, 50),
+                    vec![40; 50],
+                    None,
+                ),
+            ],
+        )
+        .expect("b1");
+
+        indexed_bam(
+            &b2,
+            "chr1",
+            ref_len,
+            &[mk_rec(
+                "b2_t3_only",
+                Flags::empty(),
+                320_100,
+                &[(50, Kind::Match)],
+                slice_1b(320_100, 50),
+                vec![40; 50],
+                None,
+            )],
+        )
+        .expect("b2");
+
+        indexed_bam(
+            &b3,
+            "chr1",
+            ref_len,
+            &[
+                mk_rec(
+                    "b3_t0_v1",
+                    Flags::empty(),
+                    200,
+                    &[(50, Kind::Match)],
+                    snv_at(200, 50, 225),
+                    vec![38; 50],
+                    None,
+                ),
+                mk_rec(
+                    "b3_t0_v2",
+                    Flags::REVERSE_COMPLEMENTED,
+                    202,
+                    &[(50, Kind::Match)],
+                    snv_at(202, 50, 225),
+                    vec![41; 50],
+                    None,
+                ),
+                mk_rec(
+                    "b3_t0_v3",
+                    Flags::empty(),
+                    204,
+                    &[(50, Kind::Match)],
+                    snv_at(204, 50, 225),
+                    vec![39; 50],
+                    None,
+                ),
+            ],
+        )
+        .expect("b3");
+
+        indexed_bam(&b2_empty, "chr1", ref_len, &[]).expect("b2_empty");
+        indexed_bam(&b4_unindexed, "chr1", ref_len, &[]).expect("b4_unindexed");
+        fs::remove_file(b4_unindexed.with_extension("bam.bai")).expect("remove b4 bai");
+
+        let simple_untiled = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            bam: format!("{}:{}:{}", b1.display(), b2.display(), b3.display()),
+            sample: "G1".to_string(),
+            region: Some("chr1:1-600000".to_string()),
+            threads: 1,
+            tile_size: None,
+            ..Config::default()
+        };
+        let expected_simple_vcf = run_core_vcf(&simple_untiled).expect("untiled simple vcf");
+        let expected_simple_var = run_core_var(&simple_untiled).expect("untiled simple var");
+        assert!(
+            expected_simple_vcf.contains("chr1\t225\t"),
+            "untiled b1:b2:b3 must retain b3 SNV at pos 225, got:\n{expected_simple_vcf}"
+        );
+
+        for threads in [1usize, 4] {
+            let mut tiled_cfg = simple_untiled.clone();
+            tiled_cfg.tile_size = Some(100_000);
+            tiled_cfg.threads = threads;
+            let mut vcf_buf = Vec::new();
+            vardictrust_core::run_with_writer(&tiled_cfg, &mut vcf_buf).expect("tiled simple vcf");
+            assert_eq!(
+                String::from_utf8(vcf_buf).unwrap(),
+                expected_simple_vcf,
+                "tiled simple b1:b2:b3 (threads={threads}) must match untiled VCF"
+            );
+            let mut var_cfg = tiled_cfg.clone();
+            var_cfg.emit_intermediate = true;
+            let mut var_buf = Vec::new();
+            vardictrust_core::run_with_writer(&var_cfg, &mut var_buf).expect("tiled simple var");
+            assert_eq!(
+                String::from_utf8(var_buf).unwrap(),
+                expected_simple_var,
+                "tiled simple b1:b2:b3 (threads={threads}) must match untiled .var"
+            );
+        }
+
+        // When b2 is empty across the ENTIRE parent region (`b1:b2_empty:b3`), active_bam_limit == 2
+        // stops before b3 on both untiled and tiled runs.
+        let mut stopped_untiled = simple_untiled.clone();
+        stopped_untiled.bam = format!("{}:{}:{}", b1.display(), b2_empty.display(), b3.display());
+        let stopped_vcf = run_core_vcf(&stopped_untiled).expect("stopped untiled");
+        assert!(
+            extract_variants(&stopped_vcf).is_empty(),
+            "empty b2 across parent region must stop before b3"
+        );
+        for threads in [1usize, 4] {
+            let mut stopped_tiled = stopped_untiled.clone();
+            stopped_tiled.tile_size = Some(100_000);
+            stopped_tiled.threads = threads;
+            let mut out = Vec::new();
+            vardictrust_core::run_with_writer(&stopped_tiled, &mut out).expect("stopped tiled");
+            assert_eq!(String::from_utf8(out).unwrap(), stopped_vcf);
+        }
+
+        // --- (B) AR-9: Trailing `b4` (`idx = 3 >= limit = 2`) with missing `.bai` still fails fast (#187)
+        let mut missing_bai_cfg = stopped_untiled.clone();
+        missing_bai_cfg.bam = format!(
+            "{}:{}:{}:{}",
+            b1.display(),
+            b2_empty.display(),
+            b3.display(),
+            b4_unindexed.display()
+        );
+        missing_bai_cfg.tile_size = Some(100_000);
+        missing_bai_cfg.threads = 2;
+        let mut err_buf = Vec::new();
+        assert!(
+            vardictrust_core::run_with_writer(&missing_bai_cfg, &mut err_buf).is_err(),
+            "trailing unindexed BAM beyond active_bam_limit must still fail fast (#187)"
+        );
+
+        // AR-9: Out-of-region SV & large-indel `partial_pipeline` still inspect full `bam_paths`
+        // (`idx >= active_bam_limit`): region `chr1:1-2100` (`tile_size = Some(1000)`),
+        // `sv_b1` has forward discordant+5'-matched split reads at pos 500 -> mate window ~10001
+        // (outside loaded reference!) AND a 5'-clipped 400 bp `realignlgdel` anchor at pos 2020 -> 2470,
+        // `sv_b2` has 0 reads in 1..=2100 (`active_bam_limit = 2`) and ref reads at 2480 & 10030,
+        // `sv_b3` (`idx = 2 >= 2`) has 0 reads in 1..=2100 and reverse mate/3'-clip reads at 2470 & 10001!
+        let sv_b1 = dir.path().join("g1_sv_b1.bam");
+        let sv_b2 = dir.path().join("g1_sv_b2.bam");
+        let sv_b3 = dir.path().join("g1_sv_b3.bam");
+        let mut sv_b1_recs = Vec::new();
+        for i in 0..4usize {
+            let mut seq = slice_1b(500 + i, 50 - i);
+            seq.extend_from_slice(&slice_1b(10_001, 20));
+            sv_b1_recs.push(mk_rec(
+                &format!("sv_f_{i}"),
+                Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                500 + i,
+                &[(50 - i, Kind::Match), (20, Kind::SoftClip)],
+                seq,
+                vec![40; 70 - i],
+                Some((10_001, 9551 - i as i32)),
+            ));
+        }
+        for i in 0..3usize {
+            let mut seq = slice_1b(2020 + i, 50 - i);
+            seq.extend_from_slice(&slice_1b(2470, 20));
+            sv_b1_recs.push(mk_rec(
+                &format!("lgdel_5p_{i}"),
+                Flags::empty(),
+                2020 + i,
+                &[(50 - i, Kind::Match), (20, Kind::SoftClip)],
+                seq,
+                vec![40; 70 - i],
+                None,
+            ));
+        }
+        sv_b1_recs.sort_by_key(|r| r.alignment_start());
+        indexed_bam(&sv_b1, "chr1", ref_len, &sv_b1_recs).expect("sv_b1");
+        indexed_bam(
+            &sv_b2,
+            "chr1",
+            ref_len,
+            &[
+                mk_rec(
+                    "sv_b2_lgdel_ref",
+                    Flags::empty(),
+                    2480,
+                    &[(50, Kind::Match)],
+                    slice_1b(2480, 50),
+                    vec![40; 50],
+                    None,
+                ),
+                mk_rec(
+                    "sv_b2_mate_ref",
+                    Flags::empty(),
+                    10_030,
+                    &[(50, Kind::Match)],
+                    slice_1b(10_030, 50),
+                    vec![40; 50],
+                    None,
+                ),
+            ],
+        )
+        .expect("sv_b2");
+        let mut sv_b3_recs = Vec::new();
+        for i in 0..3usize {
+            let mut seq = slice_1b(2050, 20);
+            seq.extend_from_slice(&slice_1b(2470, 50));
+            sv_b3_recs.push(mk_rec(
+                &format!("lgdel_3p_{i}"),
+                Flags::REVERSE_COMPLEMENTED,
+                2470,
+                &[(20, Kind::SoftClip), (50, Kind::Match)],
+                seq,
+                vec![40; 70],
+                None,
+            ));
+        }
+        for i in 0..4usize {
+            let mut seq = slice_1b(530, 20);
+            seq.extend_from_slice(&slice_1b(10_001, 50));
+            sv_b3_recs.push(mk_rec(
+                &format!("sv_r_{i}"),
+                Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED | Flags::REVERSE_COMPLEMENTED,
+                10_001,
+                &[(20, Kind::SoftClip), (50, Kind::Match)],
+                seq,
+                vec![40; 70],
+                Some((500 + i, -(9551 - i as i32))),
+            ));
+        }
+        sv_b3_recs.sort_by_key(|r| r.alignment_start());
+        indexed_bam(&sv_b3, "chr1", ref_len, &sv_b3_recs).expect("sv_b3");
+
+        let sv_untiled_cfg = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            bam: format!(
+                "{}:{}:{}",
+                sv_b1.display(),
+                sv_b2.display(),
+                sv_b3.display()
+            ),
+            sample: "G1SV".to_string(),
+            region: Some("chr1:1-2100".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            threads: 1,
+            tile_size: None,
+            ..Config::default()
+        };
+        let sv_untiled_vcf = run_core_vcf(&sv_untiled_cfg).expect("sv untiled vcf");
+        let mut sv_without_b3_cfg = sv_untiled_cfg.clone();
+        sv_without_b3_cfg.bam = format!("{}:{}", sv_b1.display(), sv_b2.display());
+        let sv_without_b3_vcf = run_core_vcf(&sv_without_b3_cfg).expect("sv without b3 vcf");
+        assert_ne!(
+            sv_untiled_vcf, sv_without_b3_vcf,
+            "sv_b3 out-of-region reads at 2470 & 10001 must alter SV/indel calls vs b1:b2 alone"
+        );
+        let mut sv_tiled_cfg = sv_untiled_cfg.clone();
+        sv_tiled_cfg.tile_size = Some(1_000);
+        sv_tiled_cfg.threads = 2;
+        let mut sv_tiled_buf = Vec::new();
+        vardictrust_core::run_with_writer(&sv_tiled_cfg, &mut sv_tiled_buf).expect("sv tiled vcf");
+        assert_eq!(
+            String::from_utf8(sv_tiled_buf).unwrap(),
+            sv_untiled_vcf,
+            "tiled SV & realign_indels partial_pipeline must still inspect full bam_paths beyond active_bam_limit"
+        );
+
+        // --- (C) Somatic mode (`bam1 = t1:t2:t3`, `bam2 = n1:n2:n3`) across 600 kbp:
+        // Both t2 and n2 have 0 reads in Tile 0 and passing reads in Tile 3;
+        // t3 has tumor SNV reads at pos 225 in Tile 0, and n3 has normal SNV reads at pos 225
+        // (turning Status into Germline and increasing normal DP!).
+        let n1 = dir.path().join("g1_n1.bam");
+        let n2 = dir.path().join("g1_n2.bam");
+        let n3 = dir.path().join("g1_n3.bam");
+        fs::copy(&b1, &n1).unwrap();
+        fs::copy(b1.with_extension("bam.bai"), n1.with_extension("bam.bai")).unwrap();
+        fs::copy(&b2, &n2).unwrap();
+        fs::copy(b2.with_extension("bam.bai"), n2.with_extension("bam.bai")).unwrap();
+        fs::copy(&b3, &n3).unwrap();
+        fs::copy(b3.with_extension("bam.bai"), n3.with_extension("bam.bai")).unwrap();
+
+        let som_untiled = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            bam: format!(
+                "{}:{}:{}|{}:{}:{}",
+                b1.display(),
+                b2.display(),
+                b3.display(),
+                n1.display(),
+                n2.display(),
+                n3.display()
+            ),
+            sample: "TUM|NRM".to_string(),
+            region: Some("chr1:1-600000".to_string()),
+            threads: 1,
+            tile_size: None,
+            ..Config::default()
+        };
+        let expected_som_vcf = run_core_vcf(&som_untiled).expect("untiled somatic vcf");
+        let expected_som_var = run_core_var(&som_untiled).expect("untiled somatic var");
+        assert!(
+            expected_som_vcf.contains("chr1\t225\t") && expected_som_vcf.contains("STATUS=Germline;"),
+            "untiled somatic t1:t2:t3|n1:n2:n3 must retain both t3 and n3 at pos 225 as Germline, got:\n{expected_som_vcf}"
+        );
+        for threads in [1usize, 4] {
+            let mut som_tiled = som_untiled.clone();
+            som_tiled.tile_size = Some(100_000);
+            som_tiled.threads = threads;
+            let mut vcf_buf = Vec::new();
+            vardictrust_core::run_with_writer(&som_tiled, &mut vcf_buf).expect("tiled somatic vcf");
+            assert_eq!(
+                String::from_utf8(vcf_buf).unwrap(),
+                expected_som_vcf,
+                "tiled somatic t1:t2:t3|n1:n2:n3 (threads={threads}) must match untiled VCF"
+            );
+            let mut var_cfg = som_tiled.clone();
+            var_cfg.emit_intermediate = true;
+            let mut var_buf = Vec::new();
+            vardictrust_core::run_with_writer(&var_cfg, &mut var_buf).expect("tiled somatic var");
+            assert_eq!(
+                String::from_utf8(var_buf).unwrap(),
+                expected_som_var,
+                "tiled somatic t1:t2:t3|n1:n2:n3 (threads={threads}) must match untiled .var"
+            );
+        }
+    }
+
+    #[test]
+    fn gap2_amplicon_bam_feed_uses_region_bounds_without_halo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ref_len = 2_000usize;
+        let ref_seq = lcg_ref_bytes(ref_len);
+        let ref_fa = write_custom_ref(&dir, "gap2_ref", "chr1", &ref_seq);
+        let slice_1b = |pos_1b: usize, len: usize| ref_seq[pos_1b - 1..pos_1b - 1 + len].to_vec();
+        let snv_at = |read_pos_1b: usize, len: usize, var_pos_1b: usize| {
+            let mut s = slice_1b(read_pos_1b, len);
+            let off = var_pos_1b - read_pos_1b;
+            s[off] = alt_base(s[off]);
+            s
+        };
+
+        // 8-column 0-based amplicon BED -> 1-based [600, 700], insert [600, 700]
+        let amp_bed = dir.path().join("gap2_amp.bed");
+        fs::write(&amp_bed, "chr1\t599\t700\tAMP1\t0\t+\t599\t700\n").expect("write amp bed");
+
+        // (A) Multi-BAM `-a` (`b1:b2:b3`): `b2` has a read ONLY in `[region.start - 500, region.start - 1]`
+        // (`200..=249`) and 0 reads overlapping `[600, 700]`, so `SamView.java:20-21` stops before `b3`.
+        let b1 = dir.path().join("g2_b1.bam");
+        let b2_halo = dir.path().join("g2_b2_halo.bam");
+        let b3_snv = dir.path().join("g2_b3_snv.bam");
+
+        indexed_bam(
+            &b1,
+            "chr1",
+            ref_len,
+            &[
+                mk_rec(
+                    "a_ref_1",
+                    Flags::empty(),
+                    600,
+                    &[(101, Kind::Match)],
+                    slice_1b(600, 101),
+                    vec![40; 101],
+                    None,
+                ),
+                mk_rec(
+                    "a_ref_2",
+                    Flags::REVERSE_COMPLEMENTED,
+                    600,
+                    &[(101, Kind::Match)],
+                    slice_1b(600, 101),
+                    vec![40; 101],
+                    None,
+                ),
+            ],
+        )
+        .expect("g2_b1");
+
+        indexed_bam(
+            &b2_halo,
+            "chr1",
+            ref_len,
+            &[mk_rec(
+                "b2_upstream_halo_only",
+                Flags::empty(),
+                200,
+                &[(50, Kind::Match)],
+                slice_1b(200, 50),
+                vec![40; 50],
+                None,
+            )],
+        )
+        .expect("g2_b2_halo");
+
+        indexed_bam(
+            &b3_snv,
+            "chr1",
+            ref_len,
+            &[
+                mk_rec(
+                    "b3_amp_v1",
+                    Flags::empty(),
+                    600,
+                    &[(101, Kind::Match)],
+                    snv_at(600, 101, 630),
+                    vec![39; 101],
+                    None,
+                ),
+                mk_rec(
+                    "b3_amp_v2",
+                    Flags::REVERSE_COMPLEMENTED,
+                    601,
+                    &[(100, Kind::Match)],
+                    snv_at(601, 100, 630),
+                    vec![41; 100],
+                    None,
+                ),
+                mk_rec(
+                    "b3_amp_v3",
+                    Flags::empty(),
+                    602,
+                    &[(99, Kind::Match)],
+                    snv_at(602, 99, 630),
+                    vec![40; 99],
+                    None,
+                ),
+            ],
+        )
+        .expect("g2_b3_snv");
+
+        let amp_multi_cfg = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            bam: format!(
+                "{}:{}:{}",
+                b1.display(),
+                b2_halo.display(),
+                b3_snv.display()
+            ),
+            sample: "AMP_MULTI".to_string(),
+            bed: Some(amp_bed.to_string_lossy().into_owned()),
+            amplicon: Some("10:0.95".to_string()),
+            zero_based: true,
+            zero_based_defined: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            threads: 1,
+            ..Config::default()
+        };
+        let multi_vcf = run_core_vcf(&amp_multi_cfg).expect("amplicon multi-bam vcf");
+        assert!(
+            extract_variants(&multi_vcf).is_empty(),
+            "amplicon b2 with reads only in upstream 500bp halo must stop before b3 (SamView.java:20-21), got:\n{multi_vcf}"
+        );
+
+        // (B) `-a -t` (`dedup`): an SE upstream-halo read at `pos = 595` (`3M`, `595..=597` < `600`)
+        // must NOT enter `SamView.queryOverlapping(chr, 600, 700)` and must NOT deduplicate a valid
+        // amplicon read starting at `pos = 595` (`106M`, `595..=700`, overlap 101/106 = 0.9528 >= 0.95)!
+        let b_dedup = dir.path().join("g2_dedup.bam");
+        indexed_bam(
+            &b_dedup,
+            "chr1",
+            ref_len,
+            &[
+                mk_rec(
+                    "halo_short_non_ov",
+                    Flags::empty(),
+                    595,
+                    &[(3, Kind::Match)],
+                    slice_1b(595, 3),
+                    vec![40; 3],
+                    None,
+                ),
+                mk_rec(
+                    "amp_snv_pos595",
+                    Flags::empty(),
+                    595,
+                    &[(106, Kind::Match)],
+                    snv_at(595, 106, 630),
+                    vec![39; 106],
+                    None,
+                ),
+                mk_rec(
+                    "amp_snv_pos596",
+                    Flags::REVERSE_COMPLEMENTED,
+                    596,
+                    &[(105, Kind::Match)],
+                    snv_at(596, 105, 630),
+                    vec![41; 105],
+                    None,
+                ),
+                mk_rec(
+                    "amp_ref_pos600",
+                    Flags::empty(),
+                    600,
+                    &[(101, Kind::Match)],
+                    slice_1b(600, 101),
+                    vec![40; 101],
+                    None,
+                ),
+            ],
+        )
+        .expect("g2_dedup");
+
+        let mut amp_dedup_cfg = amp_multi_cfg.clone();
+        amp_dedup_cfg.bam = b_dedup.to_string_lossy().into_owned();
+        amp_dedup_cfg.dedup = true;
+        amp_dedup_cfg.min_reads = 2;
+        let dedup_vcf = run_core_vcf(&amp_dedup_cfg).expect("amplicon -t vcf");
+        let dedup_vars = extract_variants(&dedup_vcf);
+        assert_eq!(
+            dedup_vars.len(),
+            1,
+            "upstream non-overlapping read 595..=597 must not -t dedup amplicon read at pos=595, got:\n{dedup_vcf}"
+        );
+        assert!(dedup_vars[0].starts_with("chr1\t630\t"));
+    }
+
+    #[test]
+    fn gap3_crispr_filter_counts_eqx_cigar_ops() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ref_fa = write_ref(&dir, "chr1", 400, true);
+        let mut seq_125 = vec![b'A'; 150];
+        seq_125[75] = b'C'; // 1-based pos 200
+        let mut seq_126 = vec![b'A'; 150];
+        seq_126[74] = b'C'; // 1-based pos 200
+
+        let eqx_bam = dir.path().join("gap3_eqx.bam");
+        indexed_bam(
+            &eqx_bam,
+            "chr1",
+            400,
+            &[
+                // Boundary read at pos = 75: 75 + 150 - 200 = 25 (NOT > 25 -> must be skipped!)
+                mk_rec(
+                    "eqx_skip_75",
+                    Flags::empty(),
+                    75,
+                    &[
+                        (125, Kind::SequenceMatch),
+                        (1, Kind::SequenceMismatch),
+                        (24, Kind::SequenceMatch),
+                    ],
+                    {
+                        let mut s = vec![b'A'; 150];
+                        s[125] = b'G';
+                        s
+                    },
+                    vec![40; 150],
+                    None,
+                ),
+                // Target read 1 at pos = 125: 75=1X74= -> rlen3 = 150, 200-125=75>25 && 125+150-200=75>25
+                mk_rec(
+                    "eqx_keep_125",
+                    Flags::empty(),
+                    125,
+                    &[
+                        (75, Kind::SequenceMatch),
+                        (1, Kind::SequenceMismatch),
+                        (74, Kind::SequenceMatch),
+                    ],
+                    seq_125,
+                    vec![38; 150],
+                    None,
+                ),
+                // Target read 2 at pos = 126: 74=1X75= -> rlen3 = 150, 200-126=74>25 && 126+150-200=76>25
+                mk_rec(
+                    "eqx_keep_126",
+                    Flags::REVERSE_COMPLEMENTED,
+                    126,
+                    &[
+                        (74, Kind::SequenceMatch),
+                        (1, Kind::SequenceMismatch),
+                        (75, Kind::SequenceMatch),
+                    ],
+                    seq_126,
+                    vec![41; 150],
+                    None,
+                ),
+            ],
+        )
+        .expect("gap3_eqx.bam");
+
+        for realign in [0, 1] {
+            let cfg = Config {
+                reference: ref_fa.to_string_lossy().into_owned(),
+                bam: eqx_bam.to_string_lossy().into_owned(),
+                sample: "CRISPR_EQX".to_string(),
+                region: Some("chr1:100-300".to_string()),
+                crispr_cutting_site: Some(200),
+                crispr_flanking_size: Some(25),
+                realign,
+                read_pos: -100.0,
+                min_reads: 2,
+                freq: 0.01,
+                af_threshold: 0.01,
+                threads: 1,
+                ..Config::default()
+            };
+            let var_out = run_core_var(&cfg).expect("crispr =/X .var");
+            let rows = normalize_var_rows(&var_out, 37); // 36 + 1 CRISPR column
+            assert_eq!(
+                rows.len(),
+                1,
+                "CRISPR -J 200 -j 25 -k {realign} must retain 75=1X74= variant at pos 200 and skip pos 75, got:\n{var_out}"
+            );
+            assert!(
+                rows[0].contains("\tchr1\t200\t200\tA\tC\t"),
+                "expected SNV A->C at pos 200 under -k {realign}, got: {}",
+                rows[0]
+            );
+        }
+    }
+
+    #[test]
+    fn gap4_tiled_splice_prescan_halo_max_rl_and_boundary_dedup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ref_len = 265_000usize;
+        let ref_seq = lcg_ref_bytes(ref_len);
+        let ref_fa = write_custom_ref(&dir, "gap4_ref", "chr1", &ref_seq);
+        let slice_1b = |pos_1b: usize, len: usize| ref_seq[pos_1b - 1..pos_1b - 1 + len].to_vec();
+
+        let rc12 = |pos_1b: usize| -> Vec<u8> {
+            let mut v = slice_1b(pos_1b, 12);
+            vardictrust_core::util::reverse_complement(&mut v);
+            v
+        };
+
+        // Region `chr1:1001-261000`, `tile_size = Some(1000)` (260 tiles, 2 `250 kbp` prescan bands!):
+        // Tile 0: start=1001..=2000 (halo 1001..=2500)
+        // Tile 1: start=2001..=3000 (halo 1501..=3500)
+        let mut recs = Vec::new();
+
+        // 1. Seed initial `max_read_length = 150` at pos = 1100 in Tile 0.
+        recs.push(mk_rec(
+            "t0_seed_150m",
+            Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED,
+            1100,
+            &[(150, Kind::Match)],
+            slice_1b(1100, 150),
+            vec![40; 150],
+            Some((20, 150)),
+        ));
+
+        // 2. Boundary `-i -t` (`dedup`) test at `pos = 1400 < tile1.halo_start (1501)`:
+        //    - `early_non_ov`: SE read at pos = 1400, 50M (`1400..=1449`, ends < 1501!)
+        //    - `spliced_dup`: SE read at pos = 1400, 40M600N40M200N40M (M=120 <= 150; introns `1439-2039` in Tile 0
+        //      and `2079-2279` owned by Tile 1!)
+        //    - `spliced_unique`: SE read at pos = 1405, 35M600N40M200N40M (M=115 <= 150; introns `1439-2039` and `2079-2279`, count = 1!)
+        recs.push(mk_rec(
+            "early_non_ov_1400",
+            Flags::empty(),
+            1400,
+            &[(50, Kind::Match)],
+            slice_1b(1400, 50),
+            vec![40; 50],
+            None,
+        ));
+        {
+            let mut seq = slice_1b(1400, 40);
+            seq.extend_from_slice(&slice_1b(2040, 40));
+            seq.extend_from_slice(&slice_1b(2280, 40));
+            recs.push(mk_rec(
+                "spliced_dup_1400",
+                Flags::empty(),
+                1400,
+                &[
+                    (40, Kind::Match),
+                    (600, Kind::Skip),
+                    (40, Kind::Match),
+                    (200, Kind::Skip),
+                    (40, Kind::Match),
+                ],
+                seq,
+                vec![40; 120],
+                None,
+            ));
+        }
+        {
+            let mut seq = slice_1b(1405, 35);
+            seq.extend_from_slice(&slice_1b(2040, 40));
+            seq.extend_from_slice(&slice_1b(2280, 40));
+            recs.push(mk_rec(
+                "spliced_unique_1405",
+                Flags::empty(),
+                1405,
+                &[
+                    (35, Kind::Match),
+                    (600, Kind::Skip),
+                    (40, Kind::Match),
+                    (200, Kind::Skip),
+                    (40, Kind::Match),
+                ],
+                seq,
+                vec![40; 115],
+                None,
+            ));
+        }
+
+        // 3. AR-2 halo `MaxRlStep` alignment test at `pos = 1600` inside `[tile1.halo_start (1501), tile1.start (2001))`:
+        //    All three reads are paired with distinct mapped `PNEXT >= 10` so `-t` keeps all three:
+        //    - Read 0 (`pos = 1600`, `50M`, `read_end = 1650`): overlaps halo `1501..=3500`, NOT core `2001..=3000`.
+        //    - Read 1 (`pos = 1600`, `12S40M400N40M300N40M12S`, `[MIS] = 144 <= 150`, `read_end = 2420`,
+        //      introns `1639-2039` and `2079-2379` owned by Tile 1):
+        //      5' `12S` is RC of unique 12-mer at `ref_pos = 2000` (`|1600 - 2000| = 400`).
+        //      Before Read 2, `max_read_length == 150` (`2 * 150 = 300 <= 400`), so `is_chimeric_seed_hit` is FALSE
+        //      and `12S...12S` drops Read 1! (If Read 2's `new_max = 300` step misfires early because `eff_start`
+        //      used `2001` instead of `1501`, `2 * 300 = 600 > 400` strips 5' `12S` and emits phantom `2079-2379`!)
+        //    - Read 2 (`pos = 1600`, `300M`, `read_end = 1900`): overlaps halo `1501..=3500`, NOT core `2001..=3000`,
+        //      raising `max_read_length` to `300` AFTER Read 1!
+        recs.push(mk_rec(
+            "halo_r0_50m",
+            Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED,
+            1600,
+            &[(50, Kind::Match)],
+            slice_1b(1600, 50),
+            vec![40; 50],
+            Some((25, 50)),
+        ));
+        {
+            let mut seq = rc12(2000);
+            seq.extend_from_slice(&slice_1b(1600, 40));
+            seq.extend_from_slice(&slice_1b(2040, 40));
+            seq.extend_from_slice(&slice_1b(2380, 40));
+            seq.extend_from_slice(b"AAAAAAAAAAAA");
+            recs.push(mk_rec(
+                "halo_r1_chimeric_12s_12s",
+                Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED,
+                1600,
+                &[
+                    (12, Kind::SoftClip),
+                    (40, Kind::Match),
+                    (400, Kind::Skip),
+                    (40, Kind::Match),
+                    (300, Kind::Skip),
+                    (40, Kind::Match),
+                    (12, Kind::SoftClip),
+                ],
+                seq,
+                vec![40; 144],
+                Some((35, 820)),
+            ));
+        }
+        recs.push(mk_rec(
+            "halo_r2_300m",
+            Flags::SEGMENTED | Flags::PROPERLY_SEGMENTED,
+            1600,
+            &[(300, Kind::Match)],
+            slice_1b(1600, 300),
+            vec![40; 300],
+            Some((45, 300)),
+        ));
+
+        recs.sort_by_key(|r| r.alignment_start());
+        let splice_bam = dir.path().join("gap4_splice.bam");
+        indexed_bam(&splice_bam, "chr1", ref_len, &recs).expect("gap4_splice.bam");
+
+        // Decoy normal BAM for `-b "t|n" -i` routing test (`VarDictLauncher.java:54-55` -> `bam1` only).
+        let decoy_normal = dir.path().join("gap4_normal_decoy.bam");
+        {
+            let mut dseq = slice_1b(2500, 50);
+            dseq.extend_from_slice(&slice_1b(2700, 50));
+            indexed_bam(
+                &decoy_normal,
+                "chr1",
+                ref_len,
+                &[mk_rec(
+                    "decoy_intron",
+                    Flags::empty(),
+                    2500,
+                    &[(50, Kind::Match), (150, Kind::Skip), (50, Kind::Match)],
+                    dseq,
+                    vec![40; 100],
+                    None,
+                )],
+            )
+            .expect("decoy_normal");
+        }
+
+        let untiled_cfg = Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            bam: splice_bam.to_string_lossy().into_owned(),
+            sample: "SPLICE_S".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:1001-261000".to_string()),
+            splice: true,
+            dedup: true,
+            realign: 1,
+            threads: 1,
+            tile_size: None,
+            ..Config::default()
+        };
+        let expected_splice = run_core_var(&untiled_cfg).expect("untiled -i -t");
+        assert_eq!(
+            expected_splice.trim(),
+            "SPLICE_S\tchr1\t1439-2039\t1\nSPLICE_S\tchr1\t2079-2279\t1",
+            "untiled -i -t must count 1439-2039 and 2079-2279 once (deduping pos=1400) and drop 1639-2039 / 2079-2379 (max_rl=150 before halo_r2_300m)"
+        );
+
+        for bam_spec in [
+            splice_bam.to_string_lossy().into_owned(),
+            format!("{}|{}", splice_bam.display(), decoy_normal.display()),
+        ] {
+            for threads in [1usize, 4] {
+                let mut tiled_cfg = untiled_cfg.clone();
+                tiled_cfg.bam = bam_spec.clone();
+                tiled_cfg.tile_size = Some(1_000);
+                tiled_cfg.threads = threads;
+                let mut out = Vec::new();
+                vardictrust_core::run_with_writer(&tiled_cfg, &mut out).expect("tiled -i -t");
+                assert_eq!(
+                    String::from_utf8(out).unwrap(),
+                    expected_splice,
+                    "tiled -i -t (threads={threads}, bam={bam_spec}) must match untiled byte-for-byte"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gap5_vcf_chrom_spaces_unicode_linesep_and_debug_half_even() {
+        // --- (A) Single-sample `-N "My Sample"` + hostile Unicode line separators (`\u{0085}`, `\u{2028}`, `\u{2029}`)
+        let mut single_cfg = base_micro_config();
+        single_cfg.sample = "My Sample".to_string();
+        single_cfg.sample_explicit = true;
+        let single_vcf = run_core_vcf(&single_cfg).expect("single vcf with space");
+        let single_chrom = single_vcf
+            .lines()
+            .find(|l| l.starts_with("#CHROM\t"))
+            .expect("#CHROM line");
+        assert_eq!(
+            single_chrom,
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tMy Sample"
+        );
+        let single_vars = extract_variants(&single_vcf);
+        assert!(!single_vars.is_empty());
+        assert!(
+            single_vars[0].contains("\tSAMPLE=My_Sample;TYPE="),
+            "INFO/SAMPLE must translate spaces to underscores (var2vcf_valid.pl:44,236), got: {}",
+            single_vars[0]
+        );
+
+        let mut unicode_single_cfg = single_cfg.clone();
+        unicode_single_cfg.sample = "My Sample\u{0085}A\u{2028}B\u{2029}C".to_string();
+        let unicode_single_vcf = run_core_vcf(&unicode_single_cfg).expect("unicode single vcf");
+        let unicode_chrom_lines: Vec<&str> = unicode_single_vcf
+            .lines()
+            .filter(|l| l.starts_with("#CHROM\t"))
+            .collect();
+        assert_eq!(
+            unicode_chrom_lines,
+            vec!["#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tMy Sample_A_B_C"],
+            "Unicode NEL/LS/PS must be replaced with '_' while preserving ASCII space in #CHROM"
+        );
+        assert!(
+            extract_variants(&unicode_single_vcf)[0].contains("\tSAMPLE=My_Sample_A_B_C;TYPE="),
+            "INFO/SAMPLE must replace both ASCII space and Unicode whitespace with '_'"
+        );
+
+        // --- (B) Paired somatic `-N "Tumor A|Normal B"` and `-N "Tumor A"` -> `Tumor A-match`
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ref_fa = write_ref(&dir, "chr1", 400, true);
+        let t_bam = dir.path().join("t_space.bam");
+        let n_bam = dir.path().join("n_space.bam");
+        let mk_snv_125 = |name: &str, flags: Flags, start_1b: usize, q: u8| {
+            let mut seq = vec![b'A'; 50];
+            seq[125 - start_1b] = b'C';
+            mk_rec(
+                name,
+                flags,
+                start_1b,
+                &[(50, Kind::Match)],
+                seq,
+                vec![q; 50],
+                None,
+            )
+        };
+        indexed_bam(
+            &t_bam,
+            "chr1",
+            400,
+            &[
+                mk_snv_125("t1", Flags::empty(), 100, 38),
+                mk_snv_125("t2", Flags::REVERSE_COMPLEMENTED, 102, 40),
+                mk_snv_125("t3", Flags::empty(), 104, 41),
+                mk_snv_125("t4", Flags::REVERSE_COMPLEMENTED, 106, 39),
+            ],
+        )
+        .expect("t_bam");
+        indexed_bam(
+            &n_bam,
+            "chr1",
+            400,
+            &[
+                mk_rec(
+                    "n1",
+                    Flags::empty(),
+                    100,
+                    &[(50, Kind::Match)],
+                    vec![b'A'; 50],
+                    vec![40; 50],
+                    None,
+                ),
+                mk_rec(
+                    "n2",
+                    Flags::REVERSE_COMPLEMENTED,
+                    102,
+                    &[(50, Kind::Match)],
+                    vec![b'A'; 50],
+                    vec![40; 50],
+                    None,
+                ),
+            ],
+        )
+        .expect("n_bam");
+
+        for (sample_arg, expected_tail, expected_info_sample) in [
+            (
+                "Tumor A|Normal B",
+                "\tFORMAT\tTumor A\tNormal B",
+                ";SAMPLE=Tumor_A;TYPE=",
+            ),
+            (
+                "Tumor A",
+                "\tFORMAT\tTumor A\tTumor A-match",
+                ";SAMPLE=Tumor_A;TYPE=",
+            ),
+            (
+                "Tumor A\u{2028}X|Normal B\u{2029}Y\u{0085}Z",
+                "\tFORMAT\tTumor A_X\tNormal B_Y_Z",
+                ";SAMPLE=Tumor_A_X;TYPE=",
+            ),
+        ] {
+            let som_cfg = Config {
+                reference: ref_fa.to_string_lossy().into_owned(),
+                bam: format!("{}|{}", t_bam.display(), n_bam.display()),
+                sample: sample_arg.to_string(),
+                sample_explicit: true,
+                region: Some("chr1:80-200".to_string()),
+                min_reads: 2,
+                freq: 0.01,
+                af_threshold: 0.01,
+                threads: 1,
+                ..Config::default()
+            };
+            let som_vcf = run_core_vcf(&som_cfg).expect("paired space vcf");
+            let som_chrom = som_vcf
+                .lines()
+                .find(|l| l.starts_with("#CHROM\t"))
+                .expect("paired #CHROM");
+            assert!(
+                som_chrom.ends_with(expected_tail),
+                "expected paired #CHROM ending with {expected_tail:?} for -N {sample_arg:?}, got: {som_chrom:?}"
+            );
+            let som_vars = extract_variants(&som_vcf);
+            assert!(!som_vars.is_empty());
+            assert!(
+                som_vars[0].contains(expected_info_sample),
+                "expected {expected_info_sample:?} in paired INFO, got: {}",
+                som_vars[0]
+            );
+        }
+
+        // --- (C) Gap 5b: `Variant::debug_variants_content` (`Variant.java:268-282`) `round_half_even`
+        // including `1.0 / 20_000.0` (`5e-5` `DecimalFormat("0.0000")` underflow tie `M-D1`) -> `"0.0000"`
+        let mut v = Variant::new();
+        v.description = "C".to_string();
+        v.fwd = 1;
+        v.rev = 0;
+        v.frequency = 1.0 / 20_000.0;
+        v.bias = "0;1".to_string();
+        v.mean_position = 12.25; // exact binary half-way tie -> HALF_EVEN rounds to 12.2 (not 12.3!)
+        v.pstd = true;
+        v.mean_quality = 30.25; // exact binary half-way tie -> HALF_EVEN rounds to 30.2 (not 30.3!)
+        v.qstd = true;
+        v.hi_freq = 1.0 / 20_000.0;
+        v.mean_mapping_quality = 60.0;
+        v.hq_lq_ratio = 1.0 / 2_000.0; // 5e-4 underflow tie for "0.000" -> "0.000" (not "0.001"!)
+        assert_eq!(
+            v.debug_variants_content(),
+            "C:1:F-1:R-0:0.0000:0;1:12.2:1:30.2:1:0.0000:60.0:0.000"
         );
     }
 }

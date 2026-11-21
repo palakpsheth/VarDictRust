@@ -668,7 +668,8 @@ impl<'a> CigarParser<'a> {
             if cut_site != 0 {
                 if let Some(filter_bp) = self.config.crispr_flanking_size {
                     if filter_bp != 0 {
-                        let rlen3 = i64::from(get_aligned_length_amp(&cigar_elements));
+                        // Ports Patterns.java:152 (`ALIGNED_LENGTH_MD = "(\\d+)[MD=X]"`) + CigarParser.java:639.
+                        let rlen3 = i64::from(get_aligned_length_md_eqx(&cigar_elements));
                         let cut_site = i64::from(cut_site);
                         let start_pos_64 = i64::from(start_pos);
                         let filter_bp = i64::from(filter_bp);
@@ -3849,7 +3850,8 @@ fn parse_amp_param(param: &str) -> (i32, f64) {
     }
 }
 
-/// Sum of matched and deleted segment lengths (Java getAlignedLength: M + D).
+/// Sum of matched and deleted segment lengths (`CigarParser.getAlignedLength` at
+/// `CigarParser.java:1590-1597`: `M + D`).
 fn get_aligned_length_amp(cigar: &[(u32, CigarKind)]) -> i32 {
     cigar
         .iter()
@@ -3857,6 +3859,23 @@ fn get_aligned_length_amp(cigar: &[(u32, CigarKind)]) -> i32 {
         .fold(0i32, |acc, &(len, _)| {
             acc.saturating_add(i32::try_from(len).unwrap_or(i32::MAX))
         })
+}
+
+/// Sum of `[MD=X]` segment lengths (`Patterns.java:152` `ALIGNED_LENGTH_MD = "(\\d+)[MD=X]"`,
+/// used by `CigarParser.skipSitesOutRegionOfInterest` at `CigarParser.java:639`).
+fn get_aligned_length_md_eqx(elements: &[(u32, CigarKind)]) -> u32 {
+    elements
+        .iter()
+        .filter(|(_, kind)| {
+            matches!(
+                kind,
+                CigarKind::Match
+                    | CigarKind::Deletion
+                    | CigarKind::SequenceMatch
+                    | CigarKind::SequenceMismatch
+            )
+        })
+        .fold(0u32, |acc, &(len, _)| acc.saturating_add(len))
 }
 
 /// Ports `CigarParser.parseCigarWithAmpCase`. Returns true if the read should be
@@ -4957,7 +4976,7 @@ mod tests {
         //    `skipSitesOutRegionOfInterest` evaluates
         //    `cutSite - start > filterBp && start + rlen3 - cutSite > filterBp`
         //    without adding an extra +1 to `start`.
-        // 2. `rlen3` uses `ALIGNED_LENGTH_MD` (`[MD]` only, excluding `N`/Skip).
+        // 2. `rlen3` uses `ALIGNED_LENGTH_MD` (`[MD=X]`, excluding `N`/Skip).
         // 3. The filter runs after `maxReadLength` is updated (:309-318).
         let mut reference = Reference::new();
         reference
@@ -5047,7 +5066,7 @@ mod tests {
         );
 
         // Case 3: Spliced CIGAR (15M20N15M at start=30, end=79).
-        // Java ALIGNED_LENGTH_MD ([MD] only) gives rlen3 = 30 -> 30 + 30 - 50 = 10 -> SKIPPED.
+        // Java ALIGNED_LENGTH_MD ([MD=X], excluding N/Skip) gives rlen3 = 30 -> 30 + 30 - 50 = 10 -> SKIPPED.
         // Including N (get_reference_length = 50) gives 30 + 50 - 50 = 30 > 10 -> ACCEPTED.
         let mut parser_spliced = CigarParser::new(&reference, &region, &config, false, 0, 0, 0);
         let read_spliced = SamRecord {
@@ -5065,6 +5084,64 @@ mod tests {
             "spliced read 15M20N15M has ALIGNED_LENGTH_MD = 30 (not 50) and must be skipped"
         );
         assert_eq!(parser_spliced.max_read_length, 30);
+
+        // Case 4: `=`/`X` CIGAR (`75=1X74=` at start=125 under -J 200 -j 25).
+        // Ports Patterns.java:152 (`ALIGNED_LENGTH_MD = "(\\d+)[MD=X]"`) + CigarParser.java:639:
+        // rlen3 = 150 -> 200 - 125 = 75 > 25 && 125 + 150 - 200 = 75 > 25 -> ACCEPTED.
+        let mut ref_eqx = Reference::new();
+        ref_eqx.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: 300,
+        });
+        ref_eqx.region_sequences.push(vec![b'A'; 300]);
+        ref_eqx
+            .reference_sequences
+            .insert("chr1".to_string(), vec![b'A'; 300]);
+        let reg_eqx = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(300),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let mut cfg_eqx = Config::default();
+        cfg_eqx.realign = 0;
+        cfg_eqx.crispr_cutting_site = Some(200);
+        cfg_eqx.crispr_flanking_size = Some(25);
+        let mut parser_eqx = CigarParser::new(&ref_eqx, &reg_eqx, &cfg_eqx, false, 0, 0, 0);
+        let mut seq_eqx = vec![b'A'; 150];
+        seq_eqx[75] = b'C';
+        let read_eqx = SamRecord {
+            name: b"read_eqx".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(125)),
+            alignment_end: Some(Pos1(274)),
+            mapping_quality: Some(60),
+            cigar: vec![
+                (75, CigarKind::SequenceMatch),
+                (1, CigarKind::SequenceMismatch),
+                (74, CigarKind::SequenceMatch),
+            ],
+            sequence: seq_eqx,
+            quality_scores: vec![60; 150],
+            mate_reference_name: None,
+            mate_alignment_start: None,
+            template_length: 0,
+            nm: Some(1),
+            sa: None,
+            mc: None,
+            mq: None,
+        };
+        parser_eqx.parse_cigar(&read_eqx).unwrap();
+        assert!(
+            parser_eqx
+                .non_insertion_variants
+                .get(&200)
+                .is_some_and(|vm| vm.map.contains_key("C")),
+            "75=1X74= read at start=125 has ALIGNED_LENGTH_MD = 150 and must retain SNV at pos 200"
+        );
     }
 
     #[test]

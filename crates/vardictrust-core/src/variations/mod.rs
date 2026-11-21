@@ -493,28 +493,27 @@ impl Variant {
     /// `n:cnt:F-fwd:R-rev:freq:bias:meanPos:pstd:meanQual:qstd:hifreq:mapq:qratio`.
     /// Note mapq is printed via raw Java `Double.toString` semantics, not DecimalFormat.
     pub fn debug_variants_content(&self) -> String {
-        let freq = format!("{:.4}", self.frequency);
-        let mean_pos = format!("{:.1}", self.mean_position);
-        let mean_qual = format!("{:.1}", self.mean_quality);
-        let hi_freq = format!("{:.4}", self.hi_freq);
+        use std::fmt::Write as _;
         let mapq = java_double_to_string(self.mean_mapping_quality);
-        let qratio = format!("{:.3}", self.hq_lq_ratio);
-        format!(
-            "{}:{}:F-{}:R-{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        let mut out = String::with_capacity(96);
+        let _ = write!(
+            out,
+            "{}:{}:F-{}:R-{}:{:.4}:{}:{:.1}:{}:{:.1}:{}:{:.4}:{}:{:.3}",
             self.description,
             i64::from(self.fwd) + i64::from(self.rev),
             self.fwd,
             self.rev,
-            freq,
+            crate::types::round_half_even(self.frequency, 4),
             self.bias,
-            mean_pos,
+            crate::types::round_half_even(self.mean_position, 1),
             if self.pstd { "1" } else { "0" },
-            mean_qual,
+            crate::types::round_half_even(self.mean_quality, 1),
             if self.qstd { "1" } else { "0" },
-            hi_freq,
+            crate::types::round_half_even(self.hi_freq, 4),
             mapq,
-            qratio,
-        )
+            crate::types::round_half_even(self.hq_lq_ratio, 3),
+        );
+        out
     }
 
     /// Check if this variant is noise.
@@ -2165,5 +2164,26 @@ mod debug_tests {
         );
         v_good.hicnt = i32::MAX;
         assert!(v_good.is_good_var(None, "SNV", &splice, &cfg));
+    }
+
+    #[test]
+    fn debug_variants_content_uses_round_half_even() {
+        let mut v = Variant::new();
+        v.description = "T".to_string();
+        v.fwd = 1;
+        v.rev = 0;
+        v.frequency = 1.0 / 20_000.0; // 5e-5 DecimalFormat("0.0000") underflow tie (M-D1)
+        v.bias = "0;1".to_string();
+        v.mean_position = 12.25; // HALF_EVEN -> 12.2
+        v.pstd = false;
+        v.mean_quality = 34.25; // HALF_EVEN -> 34.2
+        v.qstd = true;
+        v.hi_freq = 1.0 / 20_000.0;
+        v.mean_mapping_quality = 60.0;
+        v.hq_lq_ratio = 1.0 / 2_000.0; // 5e-4 DecimalFormat("0.000") underflow tie (M-D1)
+        assert_eq!(
+            v.debug_variants_content(),
+            "T:1:F-1:R-0:0.0000:0;1:12.2:0:34.2:1:0.0000:60.0:0.000"
+        );
     }
 }
