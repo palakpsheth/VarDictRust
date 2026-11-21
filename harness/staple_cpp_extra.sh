@@ -12,7 +12,7 @@ case "$cpp_line" in
   *)
     cpp_key="cpp_version"
     cpp_val=$(conda list -n vardict-oracle vardictcpp 2>/dev/null | awk '/^vardictcpp[[:space:]]/{print "vardictcpp " $2 " " $3 " bioconda"}')
-    [ -n "$cpp_val" ] || cpp_val=$(conda run -n vardict-oracle vardictcpp --version 2>/dev/null | head -n 1) ;;
+    [ -n "$cpp_val" ] || cpp_val=$(conda run -n vardict-oracle vardictcpp --version 2>/dev/null | awk 'NR == 1 { print }') ;;
 esac
 if [ -n "${cpp_val:-}" ]; then
   # CPP-5 chunk pin: record the effective --chunk beside the version key

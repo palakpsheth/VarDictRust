@@ -87,7 +87,7 @@ done
 # 7. Git-2.34-compatible 3-way merge-tree conflict guard in pre-push and pr_check.sh
 for f in .githooks/pre-push harness/pr_check.sh; do
   ck "$f uses 3-way git merge-tree conflict check" grep -q 'git merge-tree "\$base" origin/main HEAD' "$f"
-  ck "$f checks for ^+<<<<<<< \\.our$" grep -q '\^+<<<<<<< \\\.our\$' "$f"
+  ck "$f checks for /^\\+<<<<<<< \\.our$/" grep -qF '/^\+<<<<<<< \.our$/' "$f"
   ck "$f instructs git fetch origin main && git rebase origin/main" grep -q 'git fetch origin main && git rebase origin/main' "$f"
 done
 
@@ -120,7 +120,7 @@ trap 'rm -rf "$TMP_REPO"' EXIT
   # Switch back to feat/conflict and verify 3-way git merge-tree detects conflict
   git checkout -q feat/conflict
   base=$(git merge-base origin/main HEAD)
-  if ! git merge-tree "$base" origin/main HEAD | grep -q '^+<<<<<<< \.our$'; then
+  if ! git merge-tree "$base" origin/main HEAD | awk '/^\+<<<<<<< \.our$/ { found=1 } END { exit !found }'; then
     echo "FAIL: git merge-tree did not detect expected conflict" >&2
     exit 1
   fi
@@ -138,6 +138,45 @@ trap 'rm -rf "$TMP_REPO"' EXIT
   fi
   if ! grep -q 'git fetch origin main && git rebase origin/main' <<<"$push_out"; then
     echo "FAIL: pre-push conflict output missing rebase instruction: $push_out" >&2
+    exit 1
+  fi
+
+  # 8b. > 256 KiB conflicting payload after <<<<<<< .our must not mask exit 141 (SIGPIPE) under pipefail
+  git checkout -q main
+  git checkout -q -b feat/large-conflict
+  {
+    echo "feature-large-header"
+    awk 'BEGIN { line = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"; for (i = 0; i < 5000; i++) print line }'
+  } > file.txt
+  git commit -q -a -m "feature >256KiB change"
+
+  git checkout -q main
+  echo "main-conflicting-header" > file.txt
+  git commit -q -a -m "main conflicting header"
+  git push -q origin main
+
+  git checkout -q feat/large-conflict
+  base_lg=$(git merge-base origin/main HEAD)
+  lg_bytes=$(git merge-tree "$base_lg" origin/main HEAD | wc -c | tr -d '[:space:]')
+  if [ "$lg_bytes" -le 262144 ]; then
+    echo "FAIL: expected > 256 KiB merge-tree output, got ${lg_bytes} bytes" >&2
+    exit 1
+  fi
+  if ! git merge-tree "$base_lg" origin/main HEAD | awk '/^\+<<<<<<< \.our$/ { found=1 } END { exit !found }'; then
+    echo "FAIL: awk merge-tree check did not detect > 256 KiB conflict" >&2
+    exit 1
+  fi
+  lg_local_oid=$(git rev-parse HEAD)
+  set +e
+  lg_push_out=$(printf "refs/heads/feat/large-conflict %s refs/heads/feat/large-conflict %s\n" "$lg_local_oid" "$zero_oid" | bash "$ROOT_DIR/.githooks/pre-push" 2>&1)
+  lg_push_rc=$?
+  set -e
+  if [ "$lg_push_rc" -eq 0 ]; then
+    echo "FAIL: pre-push masked > 256 KiB merge conflict via SIGPIPE (exit 141)" >&2
+    exit 1
+  fi
+  if ! grep -q 'git fetch origin main && git rebase origin/main' <<<"$lg_push_out"; then
+    echo "FAIL: pre-push > 256 KiB conflict output missing rebase instruction: $lg_push_out" >&2
     exit 1
   fi
 ) || fail=1

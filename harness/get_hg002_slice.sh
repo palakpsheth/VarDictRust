@@ -90,7 +90,7 @@ else
   bcftools view -r "$REGION" "$LOCAL_VCF" -Oz -o "${TRUTH_VCF}.tmp"
   mv "${TRUTH_VCF}.tmp" "$TRUTH_VCF"
   tabix -f -p vcf "$TRUTH_VCF"
-  [ "$(bcftools view -H "$TRUTH_VCF" | head -n 1 | wc -l | tr -d '[:space:]')" -gt 0 ] || { echo "FAIL: truth.vcf.gz is empty" >&2; exit 1; }
+  bcftools view -H "$TRUTH_VCF" | awk 'NF { found=1 } END { exit !found }' || { echo "FAIL: truth.vcf.gz is empty" >&2; exit 1; }
   echo "Created $TRUTH_VCF"
 fi
 

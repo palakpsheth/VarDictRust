@@ -70,6 +70,7 @@ fuzz_target!(|data: &[u8]| {
 
     let bases = [b'A', b'C', b'G', b'T', b'N'];
     config.splice = (extra_bits & 1) != 0;
+    config.debug = (extra_bits & 64) != 0;
     if (extra_bits & 2) != 0 {
         let cut_site = if (extra_bits & 16) != 0 {
             match extra_param & 3 {

@@ -34,7 +34,7 @@ runs:
         set -euo pipefail
         CONDA_ROOT="${CONDA:-$(conda info --base)}"
         solver_arg=""
-        if conda create --help 2>&1 | grep -q -- '--solver'; then
+        if conda create --help 2>&1 | awk '/--solver/ { found=1 } END { exit !found }'; then
           solver_arg="--solver=libmamba"
         fi
 

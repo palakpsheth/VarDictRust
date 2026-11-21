@@ -128,7 +128,7 @@ function run_vcf_compare() {
         else
             echo "MISMATCH"
             echo "$cmp_out"
-            diff -u "$out_j" "$out_r" | head -40 || true
+            (diff -u "$out_j" "$out_r" || true) | awk 'NR <= 40 { print }'
             exit 1
         fi
 
@@ -151,7 +151,7 @@ function run_vcf_compare() {
         else
             cpp_rc=$?
             local first_err
-            first_err=$(grep -vE '^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)' "$err_c" 2>/dev/null | head -n 1 | tr -d '\r' | cut -c 1-140 || true)
+            first_err=$(awk '!/^(ERROR conda\.cli|cpp_chunk=|[[:space:]]*$)/ { gsub(/\r/, ""); print substr($0, 1, 140); exit }' "$err_c" 2>/dev/null || true)
             echo "  CPP: SKIP: $slice_id (cpp engine exit $cpp_rc${first_err:+: $first_err})"
         fi
     ) > "$TMPDIR/slice_${slice_idx}.log" 2>&1
@@ -199,7 +199,7 @@ function run_rna_slice() {
                 "$slice_id" "$dataset" "$region" "$rows" "$elapsed_ms" > "$TMPDIR/slice_${slice_idx}.json"
         else
             echo "MISMATCH: $diff_lines diff lines"
-            diff -u <(sort "$out_j") <(sort "$out_r") | head -40
+            (diff -u <(sort "$out_j") <(sort "$out_r") || true) | awk 'NR <= 40 { print }'
             exit 1
         fi
 

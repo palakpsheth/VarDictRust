@@ -50,9 +50,9 @@ if diff -q "$TMP/java.var" "$TMP/rust.var" > /dev/null 2>&1; then
 else
   echo "OUTPUT: MISMATCH"
   echo "--- Java-only lines (first 10):"
-  comm -23 <(sort "$TMP/java.var") <(sort "$TMP/rust.var") | head -10
+  comm -23 <(sort "$TMP/java.var") <(sort "$TMP/rust.var") | awk 'NR <= 10 { print }'
   echo "--- Rust-only lines (first 10):"
-  comm -13 <(sort "$TMP/java.var") <(sort "$TMP/rust.var") | head -10
+  comm -13 <(sort "$TMP/java.var") <(sort "$TMP/rust.var") | awk 'NR <= 10 { print }'
 fi
 
 echo ""

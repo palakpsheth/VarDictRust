@@ -119,14 +119,13 @@ fn init_templates() -> Option<FuzzTemplates> {
     let header = Header::builder().add_reference_sequence("chr1", rs).build();
 
     let mut records = Vec::new();
-    for (idx, start_1) in [(0usize, 40usize), (1usize, 140usize)] {
+    for (idx, start_1) in [(0usize, 40usize), (1usize, 140usize), (2usize, 240usize)] {
         let read_len = 40usize;
         let mut seq = ref_seq[start_1 - 1..start_1 - 1 + read_len].to_vec();
         seq[10] = if seq[10] == b'A' { b'G' } else { b'A' };
-        let cigar: Cigar = if idx == 0 {
-            [Op::new(Kind::Match, read_len)].into_iter().collect()
-        } else {
-            [
+        let cigar: Cigar = match idx {
+            0 => [Op::new(Kind::Match, read_len)].into_iter().collect(),
+            1 => [
                 Op::new(Kind::Match, 15),
                 Op::new(Kind::Insertion, 2),
                 Op::new(Kind::Match, 15),
@@ -134,7 +133,14 @@ fn init_templates() -> Option<FuzzTemplates> {
                 Op::new(Kind::Match, 8),
             ]
             .into_iter()
-            .collect()
+            .collect(),
+            _ => [
+                Op::new(Kind::Match, 20),
+                Op::new(Kind::Skip, 20),
+                Op::new(Kind::Match, 20),
+            ]
+            .into_iter()
+            .collect(),
         };
         let data: Data = [
             (Tag::EDIT_DISTANCE, BufValue::from(1i32)),
@@ -170,15 +176,13 @@ fn init_templates() -> Option<FuzzTemplates> {
         let mut bam_writer = noodles::bam::io::Writer::from(bgzf);
         bam_writer.write_alignment_header(&header).ok()?;
         let mut indexer = Indexer::<LinearIndex>::new(14, 5)?;
-        for (rec, &(start_1, span)) in records
-            .iter()
-            .zip([(40usize, 40usize), (140usize, 40usize)].iter())
-        {
+        for rec in &records {
             let s_vp = bam_writer.get_ref().virtual_position();
             bam_writer.write_alignment_record(&header, rec).ok()?;
             let e_vp = bam_writer.get_ref().virtual_position();
-            let s = noodles::core::Position::try_from(start_1).ok()?;
-            let e = noodles::core::Position::try_from(start_1 + span - 1).ok()?;
+            let s = rec.alignment_start()?;
+            let span = rec.cigar().alignment_span().max(1);
+            let e = noodles::core::Position::new(s.get() + span - 1)?;
             indexer
                 .add_record(Some((0, s, e, true)), Chunk::new(s_vp, e_vp))
                 .ok()?;
@@ -324,6 +328,7 @@ fn exercise_alignment_and_runner(
     start_1: u32,
     end_1: u32,
     ctrl: u8,
+    sub_mode: u8,
 ) {
     debug_assert!(end_1.saturating_sub(start_1) <= MAX_REGION_SPAN_BP);
 
@@ -340,6 +345,7 @@ fn exercise_alignment_and_runner(
         fisher: (ctrl & 64) != 0,
         ..Default::default()
     };
+    config.debug = (sub_mode & 0x40) != 0;
 
     let q_start = Pos1(start_1.max(1)).to_zero_based();
     let q_end_val = q_start.0.saturating_add(end_1.saturating_sub(start_1));
@@ -396,6 +402,10 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
 
+    assert!(
+        TEMPLATES.get_or_init(init_templates).is_some(),
+        "init_templates failed"
+    );
     let Some(tpl) = TEMPLATES.get_or_init(init_templates).as_ref() else {
         return;
     };
@@ -542,7 +552,7 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             exercise_alignment_and_runner(
-                &fuzz_bam, &clean_fa, &fuzz_bed, chr, start_1, end_1, ctrl,
+                &fuzz_bam, &clean_fa, &fuzz_bed, chr, start_1, end_1, ctrl, sub_mode,
             );
         }
         _ => {
@@ -604,7 +614,7 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             exercise_alignment_and_runner(
-                &fuzz_cram, active_ref, &fuzz_bed, chr, start_1, end_1, ctrl,
+                &fuzz_cram, active_ref, &fuzz_bed, chr, start_1, end_1, ctrl, sub_mode,
             );
         }
     }

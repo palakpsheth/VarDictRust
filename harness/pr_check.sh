@@ -26,7 +26,7 @@ git fetch origin main --quiet 2>/dev/null || true
 if git rev-parse --verify origin/main >/dev/null 2>&1; then
   if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
     base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
-    if [[ -n "$base" ]] && git merge-tree "$base" origin/main HEAD | grep -q '^+<<<<<<< \.our$'; then
+    if [[ -n "$base" ]] && git merge-tree "$base" origin/main HEAD | awk '/^\+<<<<<<< \.our$/ { found=1 } END { exit !found }'; then
       echo "ERROR: Branch has merge conflicts with 'origin/main' (causes GitHub Actions pull_request workflows to be skipped)." >&2
       echo "Run: git fetch origin main && git rebase origin/main" >&2
       exit 1

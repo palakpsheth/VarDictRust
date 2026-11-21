@@ -8,7 +8,25 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 export PATH="$HOME/.local/bin:$PATH"
-UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo /home/palak/.local/bin/uv)}"
+UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")}"
+
+SYNC_GCS=0
+REQUIRE_HEAD_FP=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --sync-gcs)
+      SYNC_GCS=1
+      ;;
+    --require-head-fingerprint)
+      REQUIRE_HEAD_FP=1
+      ;;
+    *)
+      echo "ERROR: unknown flag '$1'" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
 
 if [[ ! -x "$ROOT/.venv/bin/pytest" || ! -x "$ROOT/.venv/bin/python" ]]; then
   if [[ ! -x "$UV_BIN" ]]; then
@@ -34,7 +52,7 @@ if [[ "${PAPER_ALLOW_STALE_PDF:-0}" != "1" ]]; then
   fi
 fi
 
-if [[ "${1:-}" == "--sync-gcs" ]]; then
+if [[ "$SYNC_GCS" -eq 1 ]]; then
   echo "Syncing raw GCP study cell results from GCS..."
   mkdir -p benchmarks/data/gcp-study-v106
   if command -v gcloud >/dev/null 2>&1; then
@@ -79,8 +97,14 @@ echo "Generating LinkedIn carousel slides..."
 
 echo "Running paper, carousel, release-consistency, docs-UI, and evidence-sync gates..."
 "$PY" -m pytest paper/tests/ harness/tests/test_linkedin_carousel.py harness/tests/test_docs_ui.py -v
-"$PY" .agents/skills/vardictrust-release/scripts/check_release_consistency.py \
-  --phase pre-tag --require-head-fingerprint
+cur_branch="$(git symbolic-ref -q --short HEAD 2>/dev/null || true)"
+if [[ "$REQUIRE_HEAD_FP" -eq 1 || "${GITHUB_HEAD_REF:-}" == release/* || "${GITHUB_REF:-}" == refs/tags/v* || "$cur_branch" == release/* ]]; then
+  "$PY" .agents/skills/vardictrust-release/scripts/check_release_consistency.py \
+    --phase pre-tag --require-head-fingerprint
+else
+  "$PY" .agents/skills/vardictrust-release/scripts/check_release_consistency.py \
+    --phase pre-tag
+fi
 bash harness/gcp_paper_runner.sh --plan-check
 "$PY" harness/sync_evidence_docs.py --check
 

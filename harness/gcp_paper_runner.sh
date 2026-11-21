@@ -235,7 +235,7 @@ any_cell_pending() {
   local done_list
   done_list="$(setsid gsutil ls "${GCS_CKPT}/*.done" 2>/dev/null || true)"
   for cid in "$@"; do
-    if ! printf '%s\n' "$done_list" | grep -q "/${cid}\\.done$"; then
+    if ! grep -q "/${cid}\\.done$" <<< "$done_list"; then
       return 0
     fi
   done

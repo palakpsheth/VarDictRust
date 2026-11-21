@@ -36,11 +36,12 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
 1. Create branch `git checkout -b release/vX.Y.Z origin/main`.
 2. Update all 17 pre-tag files listed in [`references/version-surface-map.md`](references/version-surface-map.md) and run `cargo update -w`.
 3. Create `docs/release/vX.Y.Z-pr.md` and add a superseded note at the top of the prior `docs/release/v*-pr.md`.
-4. Commit the version surfaces (`git commit -m "release: prepare VarDictRust vX.Y.Z"`, zero `Co-Authored-By` trailers), then run `bash harness/recertify.sh` to refresh all 15 non-scale `benchmarks/evidence/*.json` files to the release `FP`, auto-sync `omnibus-empirical-validation.md` / `DIVERGENCES.md` / `test-matrix-and-ci-audit.md` / `benchmarks/README.md` / `docs/release/vX.Y.Z-pr.md` via `python3 harness/sync_evidence_docs.py`, and verify the full gate suite:
+4. Commit the version surfaces (`git commit -m "release: prepare VarDictRust vX.Y.Z"`, zero `Co-Authored-By` trailers), then run `bash harness/recertify.sh` to refresh all 15 non-scale `benchmarks/evidence/*.json` files to the release `FP`, auto-sync `omnibus-empirical-validation.md` / `DIVERGENCES.md` / `test-matrix-and-ci-audit.md` / `benchmarks/README.md` / `docs/release/vX.Y.Z-pr.md` via `python3 harness/sync_evidence_docs.py`, re-compile `paper/` manuscript artifacts via `python3 paper/build_manuscript.py`, and verify the full gate suite:
    ```bash
-   # 1. Recertify all 15 non-scale evidence JSONs + sync documentation SHA-256/FP tables + run acceptance.sh (8/8)
+   # 1. Recertify all 15 non-scale evidence JSONs + sync documentation SHA-256/FP tables + rebuild paper/ + run acceptance.sh (8/8)
    bash harness/recertify.sh
-   git add benchmarks/evidence/ docs/ DIVERGENCES.md benchmarks/README.md
+   python3 paper/build_manuscript.py
+   git add benchmarks/evidence/ docs/ DIVERGENCES.md benchmarks/README.md paper/
    git commit --amend --no-edit
 
    # 2. Run bundled consistency checker across all 17 pre-tag surfaces + 16 evidence JSONs + live HEAD fingerprint

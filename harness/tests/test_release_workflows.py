@@ -1156,6 +1156,190 @@ esac
             mod.configure_tag_ruleset(dry_run=False)
         self.assertEqual(ctx_500.exception.code, 500)
 
+    def test_all_six_workflows_declare_explicit_job_timeouts(self):
+        """Verify AR-5: every job across all 6 .github/workflows/*.yml files declares an integer timeout-minutes."""
+        workflows_dir = ROOT_DIR / ".github" / "workflows"
+        expected_timeouts = {
+            "ci.yml": {"build-and-test": 45},
+            "differential.yml": {"differential": 15},
+            "docs.yml": {"build-docs": 20},
+            "release.yml": {
+                "plan": 15,
+                "build-local-artifacts": 45,
+                "build-global-artifacts": 20,
+                "host": 20,
+                "publish-crates": 20,
+            },
+            "security.yml": {"security-scan": 30},
+            "wiki.yml": {"sync": 10},
+        }
+        actual_wf_names = {p.name for p in workflows_dir.glob("*.yml")}
+        self.assertEqual(
+            actual_wf_names,
+            set(expected_timeouts.keys()),
+            f"Unexpected .github/workflows/*.yml file set: {sorted(actual_wf_names)}",
+        )
+
+        for wf_name, expected_jobs in sorted(expected_timeouts.items()):
+            wf_text = (workflows_dir / wf_name).read_text(encoding="utf-8")
+            jobs_m = re.search(r"^jobs:\s*\n((?:[ \t]+.*\n|#.*\n|\n)+)", wf_text, re.MULTILINE)
+            self.assertIsNotNone(jobs_m, f"{wf_name} missing top-level jobs: block")
+            jobs_body = jobs_m.group(1)
+            job_matches = list(
+                re.finditer(
+                    r"^  ([A-Za-z0-9_-]+):\s*(?:#.*)?\n((?:  (?![A-Za-z0-9_-]+:).*\n|\n)+?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+                    jobs_body,
+                    re.MULTILINE,
+                )
+            )
+            self.assertTrue(job_matches, f"{wf_name} parsed zero jobs under jobs:")
+            parsed_timeouts: dict[str, int] = {}
+            for jm in job_matches:
+                job_id = jm.group(1)
+                job_body = jm.group(2)
+                job_header = job_body.split("    steps:\n", 1)[0]
+                tm_m = re.search(r"^    timeout-minutes:\s*([0-9]+)\s*(?:#.*)?$", job_header, re.MULTILINE)
+                self.assertIsNotNone(
+                    tm_m,
+                    f"{wf_name} job {job_id!r} missing explicit integer job-level 'timeout-minutes:'",
+                )
+                timeout_val = int(tm_m.group(1))
+                self.assertGreater(timeout_val, 0, f"{wf_name} job {job_id!r} timeout-minutes must be > 0")
+                parsed_timeouts[job_id] = timeout_val
+            self.assertEqual(
+                parsed_timeouts,
+                expected_jobs,
+                f"{wf_name} job timeout-minutes mismatch: got {parsed_timeouts}, expected {expected_jobs}",
+            )
+
+    def test_paper_reproduce_all_two_tier_gate_and_portability(self):
+        """Verify AR-10b/AR-14: paper/reproduce_all.sh has zero hardcoded user-home literals, handles detached HEAD, and parses flags in any order."""
+        repro_path = ROOT_DIR / "paper" / "reproduce_all.sh"
+        self.assertTrue(repro_path.is_file(), f"Missing {repro_path}")
+        repro_text = repro_path.read_text(encoding="utf-8")
+        forbidden_home = "/" + "home/" + "palak"
+        self.assertNotIn(forbidden_home, repro_text, "paper/reproduce_all.sh must not hardcode user home path")
+        self.assertIn("$HOME/.local/bin/uv", repro_text)
+        self.assertIn(
+            "git symbolic-ref -q --short HEAD 2>/dev/null || true",
+            repro_text,
+            "paper/reproduce_all.sh must guard git symbolic-ref for detached-HEAD checkouts",
+        )
+
+        skill_path = ROOT_DIR / ".agents" / "skills" / "vardictrust-release" / "SKILL.md"
+        skill_text = skill_path.read_text(encoding="utf-8")
+        self.assertIn("python3 paper/build_manuscript.py", skill_text)
+        self.assertIn("19 version-bearing files", skill_text)
+        self.assertIn("17 pre-tag files", skill_text)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = pathlib.Path(tmpdir) / "repo"
+            (tmp_root / "paper").mkdir(parents=True)
+            (tmp_root / "harness").mkdir(parents=True)
+            (tmp_root / ".venv" / "bin").mkdir(parents=True)
+            (tmp_root / "mock_bin").mkdir(parents=True)
+            raw_cells = tmp_root / "benchmarks" / "data" / "gcp-study-v106"
+            for idx in range(60):
+                (raw_cells / f"cell_{idx:02d}").mkdir(parents=True)
+
+            copied_repro = tmp_root / "paper" / "reproduce_all.sh"
+            shutil.copy2(repro_path, copied_repro)
+            copied_repro.chmod(0o755)
+
+            inv_log = pathlib.Path(tmpdir) / "invocations.log"
+            stub_py = tmp_root / ".venv" / "bin" / "python"
+            stub_py.write_text(
+                f"#!{sys.executable}\n"
+                "import pathlib, sys\n"
+                f"log = pathlib.Path({str(inv_log)!r})\n"
+                "with log.open('a', encoding='utf-8') as fh:\n"
+                "    fh.write('PY ' + ' '.join(sys.argv[1:]) + '\\n')\n",
+                encoding="utf-8",
+            )
+            stub_py.chmod(0o755)
+
+            stub_pytest = tmp_root / ".venv" / "bin" / "pytest"
+            stub_pytest.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            stub_pytest.chmod(0o755)
+
+            stub_gcloud = tmp_root / "mock_bin" / "gcloud"
+            stub_gcloud.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf 'GCLOUD %s\\n' \"$*\" >> {str(inv_log)!r}\n",
+                encoding="utf-8",
+            )
+            stub_gcloud.chmod(0o755)
+
+            stub_runner = tmp_root / "harness" / "gcp_paper_runner.sh"
+            stub_runner.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            stub_runner.chmod(0o755)
+
+            git_env = {
+                k: v
+                for k, v in os.environ.items()
+                if not k.startswith("GIT_") and k not in ("GITHUB_HEAD_REF", "GITHUB_REF")
+            }
+            subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(tmp_root), env=git_env, check=True)
+            subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=str(tmp_root), env=git_env, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_root), env=git_env, check=True)
+            (tmp_root / "README.md").write_text("init\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=str(tmp_root), env=git_env, check=True)
+            subprocess.run(["git", "commit", "-qm", "init"], cwd=str(tmp_root), env=git_env, check=True)
+            subprocess.run(["git", "checkout", "-q", "--detach", "HEAD"], cwd=str(tmp_root), env=git_env, check=True)
+
+            def run_repro(*flags: str, extra_env: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], str]:
+                inv_log.write_text("", encoding="utf-8")
+                run_env = dict(git_env)
+                run_env["PATH"] = f"{tmp_root / 'mock_bin'}:{run_env.get('PATH', '')}"
+                run_env["PAPER_ALLOW_STALE_PDF"] = "1"
+                if extra_env:
+                    run_env.update(extra_env)
+                res = subprocess.run(
+                    ["bash", str(copied_repro), *flags],
+                    cwd=str(tmp_root),
+                    env=run_env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                return res, inv_log.read_text(encoding="utf-8")
+
+            # 1) Detached HEAD without release env/flags: exits 0 and omits --require-head-fingerprint
+            r_det, log_det = run_repro()
+            self.assertEqual(r_det.returncode, 0, f"Detached HEAD run failed:\n{r_det.stderr}\n{r_det.stdout}")
+            self.assertNotIn("GCLOUD ", log_det)
+            self.assertIn("check_release_consistency.py --phase pre-tag", log_det)
+            self.assertNotIn("--require-head-fingerprint", log_det)
+
+            # 2) Both flag orders (--sync-gcs + --require-head-fingerprint) work identically
+            for flags in (
+                ("--sync-gcs", "--require-head-fingerprint"),
+                ("--require-head-fingerprint", "--sync-gcs"),
+            ):
+                r_both, log_both = run_repro(*flags)
+                self.assertEqual(r_both.returncode, 0, f"Flags {flags} failed:\n{r_both.stderr}")
+                self.assertIn("GCLOUD storage rsync", log_both)
+                self.assertIn("check_release_consistency.py --phase pre-tag --require-head-fingerprint", log_both)
+
+            # 3) Release env vars and release/* local branch automatically enable --require-head-fingerprint
+            for env_case in (
+                {"GITHUB_HEAD_REF": "release/v1.0.11"},
+                {"GITHUB_REF": "refs/tags/v1.0.11"},
+            ):
+                r_env, log_env = run_repro(extra_env=env_case)
+                self.assertEqual(r_env.returncode, 0, f"Env {env_case} failed:\n{r_env.stderr}")
+                self.assertIn("check_release_consistency.py --phase pre-tag --require-head-fingerprint", log_env)
+
+            subprocess.run(["git", "checkout", "-q", "-b", "release/v1.0.11"], cwd=str(tmp_root), env=git_env, check=True)
+            r_rel_br, log_rel_br = run_repro()
+            self.assertEqual(r_rel_br.returncode, 0, f"release/* branch failed:\n{r_rel_br.stderr}")
+            self.assertIn("check_release_consistency.py --phase pre-tag --require-head-fingerprint", log_rel_br)
+
+            # 4) Unknown flag fails fast with exit 2
+            r_bad, _ = run_repro("--bogus-flag")
+            self.assertEqual(r_bad.returncode, 2, f"Expected exit 2 on unknown flag, got {r_bad.returncode}")
+            self.assertIn("ERROR: unknown flag '--bogus-flag'", r_bad.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

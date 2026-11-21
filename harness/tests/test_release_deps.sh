@@ -19,7 +19,7 @@ DEFAULT_FEATURES=$(awk '
   END { print buf }
 ' crates/vardictrust/Cargo.toml)
 
-if echo "$DEFAULT_FEATURES" | grep -q 'profile-'; then
+if grep -q 'profile-' <<< "$DEFAULT_FEATURES"; then
   echo "FAIL test_release_deps: default features contains profile-* feature: $DEFAULT_FEATURES" >&2
   exit 1
 fi
@@ -35,35 +35,35 @@ CORE_DEFAULT_FEATURES=$(awk '
   END { print buf }
 ' crates/vardictrust-core/Cargo.toml)
 
-if echo "$CORE_DEFAULT_FEATURES" | grep -q 'profile-'; then
+if grep -q 'profile-' <<< "$CORE_DEFAULT_FEATURES"; then
   echo "FAIL test_release_deps: vardictrust-core default features contains profile-* feature: $CORE_DEFAULT_FEATURES" >&2
   exit 1
 fi
 
 # 2. Check default dependency tree (normal and build dependencies)
 DEFAULT_TREE=$(cargo tree -p vardictrust -e normal,build)
-if echo "$DEFAULT_TREE" | grep -E -q "$FORBIDDEN_REGEX"; then
+if grep -E -q "$FORBIDDEN_REGEX" <<< "$DEFAULT_TREE"; then
   echo "FAIL test_release_deps: forbidden profiling dependency found in default dependency tree:" >&2
-  echo "$DEFAULT_TREE" | grep -E "$FORBIDDEN_REGEX" >&2
+  grep -E "$FORBIDDEN_REGEX" <<< "$DEFAULT_TREE" >&2
   exit 1
 fi
 
 DEFAULT_FEAT_TREE=$(cargo tree -p vardictrust -e features)
-if echo "$DEFAULT_FEAT_TREE" | grep -q 'profile-counters'; then
+if grep -q 'profile-counters' <<< "$DEFAULT_FEAT_TREE"; then
   echo "FAIL test_release_deps: profile-counters enabled in default feature tree" >&2
   exit 1
 fi
 
 # 3. Check --no-default-features dependency tree
 NO_DEFAULT_TREE=$(cargo tree -p vardictrust -e normal,build --no-default-features)
-if echo "$NO_DEFAULT_TREE" | grep -E -q "$FORBIDDEN_REGEX"; then
+if grep -E -q "$FORBIDDEN_REGEX" <<< "$NO_DEFAULT_TREE"; then
   echo "FAIL test_release_deps: forbidden profiling dependency found in --no-default-features tree:" >&2
-  echo "$NO_DEFAULT_TREE" | grep -E "$FORBIDDEN_REGEX" >&2
+  grep -E "$FORBIDDEN_REGEX" <<< "$NO_DEFAULT_TREE" >&2
   exit 1
 fi
 
 NO_DEFAULT_FEAT_TREE=$(cargo tree -p vardictrust -e features --no-default-features)
-if echo "$NO_DEFAULT_FEAT_TREE" | grep -q 'profile-counters'; then
+if grep -q 'profile-counters' <<< "$NO_DEFAULT_FEAT_TREE"; then
   echo "FAIL test_release_deps: profile-counters enabled in --no-default-features feature tree" >&2
   exit 1
 fi

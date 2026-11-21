@@ -168,7 +168,7 @@ man_hdr=$(head -n 1 "$TMPDIR/fresh_MANIFEST")
 # Idempotency test: second run prints 'have:' and does not duplicate manifest line
 out_second=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
   bash harness/fetch_data.sh testgrp)
-echo "$out_second" | grep -q "have: test1" || { echo "FAIL: second run did not report have: test1" >&2; exit 1; }
+grep -q "have: test1" <<< "$out_second" || { echo "FAIL: second run did not report have: test1" >&2; exit 1; }
 manifest_lines_after=$(grep -v '^#' "$TMPDIR/benchmarks/MANIFEST" | wc -l | tr -d '[:space:]')
 [ "$manifest_lines_after" -eq 2 ] || { echo "FAIL: second run modified manifest" >&2; exit 1; }
 
@@ -176,7 +176,7 @@ manifest_lines_after=$(grep -v '^#' "$TMPDIR/benchmarks/MANIFEST" | wc -l | tr -
 printf 'TAMPERED_AFTER_SHA256\n' > "$TMPDIR/data/test/file1.txt"
 out_repair_sha=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
   bash harness/fetch_data.sh testgrp)
-echo "$out_repair_sha" | grep -q "fetch: test1" || {
+grep -q "fetch: test1" <<< "$out_repair_sha" || {
   echo "FAIL: modified cached SHA-256 payload was blindly accepted via .sha256 sidecar" >&2; exit 1;
 }
 [ "$(portable_sha256 "$TMPDIR/data/test/file1.txt")" = "$test_sha" ] || {
@@ -214,7 +214,7 @@ DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPD
 printf 'TAMPERED_AFTER_LEGACY_MD5\n' > "$TMPDIR/data/test/legacy.txt"
 out_repair_md5=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
   bash harness/fetch_data.sh --allow-legacy-md5 legacymd5)
-echo "$out_repair_md5" | grep -q "fetch: leg1" || {
+grep -q "fetch: leg1" <<< "$out_repair_md5" || {
   echo "FAIL: modified legacy-MD5 payload was blindly accepted via .legacy_md5 sidecar" >&2; exit 1;
 }
 [ "$(portable_md5 "$TMPDIR/data/test/legacy.txt")" = "$test_md5" ] || {
@@ -255,7 +255,7 @@ mkdir -p "$TMPDIR/data/test"
 cp "$TMPDIR/src/testfile.txt" "$TMPDIR/data/test/preexisting.txt"
 out_promote=$(DATA_DIR="$TMPDIR/data" MANIFEST="$TMPDIR/benchmarks/MANIFEST" ASSETS_TSV="$TMPDIR/test_assets.tsv" \
   bash harness/fetch_data.sh promotegrp)
-echo "$out_promote" | grep -q "have: promote1" || { echo "FAIL: in-place promotion did not print have: promote1" >&2; exit 1; }
+grep -q "have: promote1" <<< "$out_promote" || { echo "FAIL: in-place promotion did not print have: promote1" >&2; exit 1; }
 [ -f "$TMPDIR/data/test/preexisting.txt.done" ] || { echo "FAIL: in-place promotion did not touch .done" >&2; exit 1; }
 [ -f "$TMPDIR/data/test/preexisting.txt.sha256" ] || { echo "FAIL: in-place promotion did not write .sha256" >&2; exit 1; }
 
@@ -296,7 +296,7 @@ set -e
 [ "$rc_fake_gv" -ne 0 ] || { echo "FAIL: 4-base dummy GRCh38_GIABv3.fasta bypassed transformed-ref SHA-256 check" >&2; exit 1; }
 
 # 4. Test stage_g4.sh usage & get_hg008_slice.sh --beds-only SHA-256 validation + r1..r3 mtime/staleness
-bash harness/stage_g4.sh --help | grep -q "stage_g4.sh" || { echo "FAIL: stage_g4.sh --help failed" >&2; exit 1; }
+bash harness/stage_g4.sh --help | awk '/stage_g4\.sh/ { found=1 } END { exit !found }' || { echo "FAIL: stage_g4.sh --help failed" >&2; exit 1; }
 set +e
 bash harness/stage_g4.sh unknown_target >/dev/null 2>&1
 rc_unk=$?

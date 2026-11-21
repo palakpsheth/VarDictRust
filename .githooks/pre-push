@@ -94,7 +94,7 @@ done
 if git rev-parse --verify origin/main >/dev/null 2>&1; then
     if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
         base="$(git merge-base origin/main HEAD 2>/dev/null || true)"
-        if [[ -n "$base" ]] && git merge-tree "$base" origin/main HEAD | grep -q '^+<<<<<<< \.our$'; then
+        if [[ -n "$base" ]] && git merge-tree "$base" origin/main HEAD | awk '/^\+<<<<<<< \.our$/ { found=1 } END { exit !found }'; then
             echo "================================================================================" >&2
             echo " ERROR: Branch has merge conflicts with 'origin/main'!" >&2
             echo " GitHub Actions skips all 'on: pull_request:' workflows when a PR cannot merge." >&2

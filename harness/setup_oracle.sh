@@ -2,13 +2,13 @@
 set -euo pipefail
 # Provision the VarDictJava 1.8.3 reference oracle via conda-forge + bioconda.
 solver_arg=""
-if conda create --help 2>&1 | grep -q -- '--solver'; then
+if conda create --help 2>&1 | awk '/--solver/ { found=1 } END { exit !found }'; then
   solver_arg="--solver=libmamba"
 fi
-if ! conda env list | grep -q vardict-oracle; then
+if ! conda env list | awk '/vardict-oracle/ { found=1 } END { exit !found }'; then
   conda create -y -n vardict-oracle $solver_arg --override-channels -c conda-forge -c bioconda \
     vardict-java=1.8.3 vardict=2019.06.04 vardictcpp=3=hc52dbad_0 r-base=4.6.0 samtools bcftools
-elif ! conda run -n vardict-oracle Rscript --version 2>&1 | grep -q '4\.6\.'; then
+elif ! conda run -n vardict-oracle Rscript --version 2>&1 | awk '/4\.6\./ { found=1 } END { exit !found }'; then
   conda install -y -n vardict-oracle $solver_arg --override-channels -c conda-forge -c bioconda \
     vardict-java=1.8.3 vardict=2019.06.04 vardictcpp=3=hc52dbad_0 r-base=4.6.0
 fi
