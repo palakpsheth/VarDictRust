@@ -118,6 +118,7 @@ pub struct Iter<'a, K, V> {
     nodes: &'a [Node<K, V>],
     bucket_idx: usize,
     curr: u32,
+    remaining: usize,
 }
 
 impl<K, V> Clone for Iter<'_, K, V> {
@@ -128,6 +129,7 @@ impl<K, V> Clone for Iter<'_, K, V> {
             nodes: self.nodes,
             bucket_idx: self.bucket_idx,
             curr: self.curr,
+            remaining: self.remaining,
         }
     }
 }
@@ -135,15 +137,39 @@ impl<K, V> Clone for Iter<'_, K, V> {
 impl<'a, K, V> Iterator for Iter<'a, K, V> {
     type Item = (&'a K, &'a V);
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
         while self.curr == NONE {
-            let &head = self.buckets.get(self.bucket_idx)?;
+            let Some(&head) = self.buckets.get(self.bucket_idx) else {
+                self.remaining = 0;
+                return None;
+            };
             self.bucket_idx += 1;
             self.curr = head;
         }
-        let node = self.nodes.get(self.curr as usize)?;
+        let Some(node) = self.nodes.get(self.curr as usize) else {
+            self.curr = NONE;
+            self.remaining = 0;
+            return None;
+        };
         self.curr = node.next;
+        self.remaining -= 1;
         Some((&node.key, &node.val))
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<K, V> ExactSizeIterator for Iter<'_, K, V> {
+    #[inline]
+    fn len(&self) -> usize {
+        self.remaining
     }
 }
 
@@ -1917,7 +1943,7 @@ where
         }
     }
 
-    pub fn keys(&self) -> impl Iterator<Item = &K> {
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &K> {
         self.iter().map(|(k, _)| k)
     }
 
@@ -1927,6 +1953,7 @@ where
             nodes: &self.nodes,
             bucket_idx: 0,
             curr: NONE,
+            remaining: self.size,
         }
     }
 
@@ -4127,6 +4154,7 @@ public class BatchJavaMapOracle {
             nodes: &nodes,
             bucket_idx: 0,
             curr: NONE,
+            remaining: 3,
         };
         assert_eq!(iter.next(), Some((&10, &NonCloneVal(100))));
         let cloned = iter.clone();
@@ -4221,5 +4249,97 @@ public class BatchJavaMapOracle {
             tree.clone().into_entries().collect::<Vec<_>>(),
             tree.into_iter().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn iter_and_keys_exact_size_tracks_remaining_across_next_clone_and_remove() {
+        fn assert_exact_iter_and_keys<K, V>(map: &JavaHashMap<K, V>, expected_len: usize)
+        where
+            K: Clone + JavaHash + Eq + PartialEq + Hash + Debug,
+            V: Clone + Debug + Default + PartialEq,
+        {
+            let mut it = map.iter();
+            let mut keys_it = map.keys();
+            assert_eq!(it.len(), expected_len);
+            assert_eq!(it.size_hint(), (expected_len, Some(expected_len)));
+            assert_eq!(keys_it.len(), expected_len);
+            assert_eq!(keys_it.size_hint(), (expected_len, Some(expected_len)));
+
+            let mut rem = expected_len;
+            while rem > 0 {
+                let mut cloned_it = it.clone();
+                assert_eq!(cloned_it.len(), rem);
+                assert_eq!(cloned_it.size_hint(), (rem, Some(rem)));
+
+                let (k1, v1) = it.next().expect("iter item while rem > 0");
+                let k2 = keys_it.next().expect("keys item while rem > 0");
+                assert_eq!(k1, k2);
+                rem -= 1;
+
+                assert_eq!(it.len(), rem);
+                assert_eq!(it.size_hint(), (rem, Some(rem)));
+                assert_eq!(keys_it.len(), rem);
+                assert_eq!(keys_it.size_hint(), (rem, Some(rem)));
+                // Cloned iterator retains pre-step remaining count independently and advances identically.
+                assert_eq!(cloned_it.len(), rem + 1);
+                assert_eq!(cloned_it.next(), Some((k1, v1)));
+                assert_eq!(cloned_it.len(), rem);
+            }
+
+            for _ in 0..3 {
+                assert_eq!(it.next(), None);
+                assert_eq!(keys_it.next(), None);
+                assert_eq!(it.len(), 0);
+                assert_eq!(it.size_hint(), (0, Some(0)));
+                assert_eq!(keys_it.len(), 0);
+                assert_eq!(keys_it.size_hint(), (0, Some(0)));
+            }
+        }
+
+        // 1. Empty map
+        let mut map: JavaHashMap<i32, i32> = JavaHashMap::new();
+        assert_exact_iter_and_keys(&map, 0);
+
+        // 2. Linked-bucket map before and after remove()
+        for k in [3, 19, 35, 7, 23, 100, 200, 300] {
+            map.insert(k, k * 10);
+        }
+        assert_exact_iter_and_keys(&map, 8);
+        assert_eq!(map.remove(&19), Some(190));
+        assert_eq!(map.remove(&300), Some(3000));
+        assert_eq!(map.remove(&9999), None);
+        assert_exact_iter_and_keys(&map, 6);
+
+        // 3. Treeified map before and after remove()
+        let mut tree: JavaHashMap<i32, i32> = JavaHashMap::new();
+        for i in 0..20i32 {
+            tree.insert((i << 16) | i, i * 100);
+        }
+        assert!(tree.treeified());
+        assert_exact_iter_and_keys(&tree, 20);
+        assert_eq!(tree.remove(&((3 << 16) | 3)), Some(300));
+        assert_eq!(tree.remove(&((17 << 16) | 17)), Some(1700));
+        assert_exact_iter_and_keys(&tree, 18);
+
+        // 4. Defensive fallback zeroing when `buckets` or `nodes` runs out unexpectedly
+        let mut short_buckets: Iter<'_, i32, i32> = Iter {
+            buckets: &[NONE],
+            nodes: &[],
+            bucket_idx: 0,
+            curr: NONE,
+            remaining: 2,
+        };
+        assert_eq!(short_buckets.next(), None);
+        assert_eq!(short_buckets.len(), 0);
+
+        let mut bad_node: Iter<'_, i32, i32> = Iter {
+            buckets: &[42],
+            nodes: &[],
+            bucket_idx: 0,
+            curr: NONE,
+            remaining: 2,
+        };
+        assert_eq!(bad_node.next(), None);
+        assert_eq!(bad_node.len(), 0);
     }
 }

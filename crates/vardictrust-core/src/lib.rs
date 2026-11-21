@@ -5315,6 +5315,8 @@ fn run_with_writer_inner<W: EngineWriter>(
         move |tile| -> Result<SimpleTileOutput, VardictError> {
             let _region_guard =
                 crate::runner::enter_worker_region(&tile.chr, tile.start.0, tile.end.0);
+            let _cram_contig_pin =
+                crate::bam::pin_cram_contig_for_spec(&config_clone.bam, &tile.chr, &config_clone);
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),
                 start: tile.halo_start,
@@ -6158,6 +6160,8 @@ fn run_somatic<W: EngineWriter>(
         move |tile| -> Result<SomaticTileOutput, VardictError> {
             let _region_guard =
                 crate::runner::enter_worker_region(&tile.chr, tile.start.0, tile.end.0);
+            let _cram_contig_pin =
+                crate::bam::pin_cram_contig_for_spec(&config_clone.bam, &tile.chr, &config_clone);
             // Process BAM1 (tumor)
             let bed_region = crate::regions::Region {
                 chr: tile.chr.clone(),

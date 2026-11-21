@@ -1604,7 +1604,7 @@ fn find_del_paths(
     // 5' deletion softclips
     let n_svfdel = var_data.sv_structures.svfdel.len();
     for idx in 0..n_svfdel {
-        let (used, vars_count, start, end, mstart, mend, softp_cand, del_variation) = {
+        let (vars_count, start, end, mstart, mend, softp_cand, del_variation) = {
             let Some(del) = var_data.sv_structures.svfdel.get(idx) else {
                 continue;
             };
@@ -1613,7 +1613,6 @@ fn find_del_paths(
             }
             let softp = best_soft_pos(&del.soft).unwrap_or(0);
             (
-                del.used,
                 del.variation.cnt,
                 del.start,
                 del.end,
@@ -1623,10 +1622,6 @@ fn find_del_paths(
                 del.variation.clone(),
             )
         };
-
-        if used || vars_count < minr {
-            continue;
-        }
 
         if softp_cand != 0 {
             let (seq_len, scv_var) = {
@@ -1942,7 +1937,7 @@ fn find_del_paths(
     // 3' deletion softclips
     let n_svrdel = var_data.sv_structures.svrdel.len();
     for idx in 0..n_svrdel {
-        let (used, vars_count, start, end, mstart, mend, softp_cand, del_variation) = {
+        let (vars_count, start, end, mstart, mend, softp_cand, del_variation) = {
             let Some(del) = var_data.sv_structures.svrdel.get(idx) else {
                 continue;
             };
@@ -1951,7 +1946,6 @@ fn find_del_paths(
             }
             let softp = best_soft_pos(&del.soft).unwrap_or(0);
             (
-                del.used,
                 del.variation.cnt,
                 del.start,
                 del.end,
@@ -1961,10 +1955,6 @@ fn find_del_paths(
                 del.variation.clone(),
             )
         };
-
-        if used || vars_count < minr {
-            continue;
-        }
 
         if softp_cand != 0 {
             let (seq_len, scv_var) = {
@@ -2790,7 +2780,7 @@ pub fn find_del_disc(
     // svfdel (5' candidate deletions)
     let n_svfdel = var_data.sv_structures.svfdel.len();
     for idx in 0..n_svfdel {
-        let (used, vars_count, start, end, mstart, mend, softp) = {
+        let (vars_count, start, end, mstart, mend, softp, mlen) = {
             let Some(del) = var_data.sv_structures.svfdel.get(idx) else {
                 continue;
             };
@@ -2823,23 +2813,16 @@ pub fn find_del_disc(
                 )
             };
             (
-                del.used,
                 del.variation.cnt,
                 del.start,
                 del.end,
                 del.mstart,
                 del.mend,
                 bp,
+                mlen,
             )
         };
 
-        if used {
-            continue;
-        }
-
-        let mlen = mstart
-            .saturating_sub(end)
-            .saturating_sub(var_data.max_read_length / vars_count.saturating_add(1));
         if reference.get_base(chr, softp as u32).is_none() {
             let mod_region = crate::regions::Region {
                 chr: chr.to_string(),
@@ -2918,7 +2901,7 @@ pub fn find_del_disc(
     // svrdel (3' candidate deletions)
     let n_svrdel = var_data.sv_structures.svrdel.len();
     for idx in 0..n_svrdel {
-        let (used, vars_count, start, end, mstart, mend, softp, del_softp) = {
+        let (vars_count, start, end, mstart, mend, softp, del_softp, mlen) = {
             let Some(del) = var_data.sv_structures.svrdel.get(idx) else {
                 continue;
             };
@@ -2946,7 +2929,6 @@ pub fn find_del_disc(
                 (var_data.max_read_length / del.variation.cnt.saturating_add(1)) / 2,
             );
             (
-                del.used,
                 del.variation.cnt,
                 del.start,
                 del.end,
@@ -2954,16 +2936,10 @@ pub fn find_del_disc(
                 del.mend,
                 bp,
                 del.softp,
+                mlen,
             )
         };
 
-        if used {
-            continue;
-        }
-
-        let mlen = start
-            .saturating_sub(mend)
-            .saturating_sub(var_data.max_read_length / vars_count.saturating_add(1));
         if reference.get_base(chr, softp as u32).is_none() {
             let mod_region = crate::regions::Region {
                 chr: chr.to_string(),
@@ -3435,7 +3411,7 @@ fn find_dup_disc_paths(
 
     let n_svfdup = var_data.sv_structures.svfdup.len();
     for idx in 0..n_svfdup {
-        let (used, vars_count, start, mut end, mstart, mend, qmean, Qmean, pmean, nm) = {
+        let (vars_count, start, mut end, mstart, mend, qmean, Qmean, pmean, nm) = {
             let Some(dup) = var_data.sv_structures.svfdup.get(idx) else {
                 continue;
             };
@@ -3447,7 +3423,6 @@ fn find_dup_disc_paths(
                 continue;
             }
             (
-                dup.used,
                 dup.variation.cnt,
                 dup.start,
                 dup.end,
@@ -3459,10 +3434,6 @@ fn find_dup_disc_paths(
                 dup.variation.nm,
             )
         };
-
-        if used {
-            continue;
-        }
 
         let mut mlen = end
             .saturating_sub(mstart)
@@ -3655,7 +3626,7 @@ fn find_dup_disc_paths(
     // svrdup loop
     let n_svrdup = var_data.sv_structures.svrdup.len();
     for idx in 0..n_svrdup {
-        let (used, vars_count, start, end, mstart, mend) = {
+        let (vars_count, start, end, mstart, mend) = {
             let Some(dup) = var_data.sv_structures.svrdup.get(idx) else {
                 continue;
             };
@@ -3666,19 +3637,8 @@ fn find_dup_disc_paths(
             {
                 continue;
             }
-            (
-                dup.used,
-                dup.variation.cnt,
-                dup.start,
-                dup.end,
-                dup.mstart,
-                dup.mend,
-            )
+            (dup.variation.cnt, dup.start, dup.end, dup.mstart, dup.mend)
         };
-
-        if used {
-            continue;
-        }
 
         let mut mlen = mend
             .saturating_sub(start)
