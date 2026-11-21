@@ -24,6 +24,10 @@ Verified Parity Baseline (release/v1.0.10, commit a504e85):
 - [Tier-3](docs/testing/test-matrix-and-ci-audit.md#tier-3) Truth Concordance:  5/5 EQUAL (GIAB HG002 NIST v4.2.1, SEQC2 v1.2.1, GIAB HG008 NIST Draft v0.3, GIAB HG005 NIST v4.2.1, GIAB NA24385 b37 NIST v4.2.1)
 - Scaling Budget:     PASS (3.20x speedup, 1.34x flat RSS scaling across 249 Mbp chromosome 1)
 - Final Acceptance:   8/8 PASS under release engine fingerprint `2d82664ff81000f7`
+
+Current Workspace Test Suite (main / pre-v1.0.11):
+- Core Library Tests: 499 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    705 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>
