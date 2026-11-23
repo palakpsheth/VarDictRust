@@ -113,6 +113,12 @@ impl<'a> ByteCursor<'a> {
         out
     }
 
+    /// UTF-8 token up to `max_bytes` bytes without `\t`, `\r`, `\n`, or `;` (for non-SAMPLE VCF INFO values).
+    fn utf8_no_semi(&mut self, max_bytes: usize) -> String {
+        let s = self.utf8_capped(max_bytes, false);
+        s.replace(';', "_")
+    }
+
     /// Synthesizes an allele `<= 256` bytes covering empty/0 Perl-skip tokens, SNVs, indels,
     /// symbolic SV alleles (`<DUP>`, `<INV>`, `<DEL>`, `<INS>`, `<dup-N>`), and UTF-8 tokens.
     fn allele_256(&mut self) -> String {
@@ -134,7 +140,7 @@ impl<'a> ByteCursor<'a> {
                 }
                 s
             }
-            _ => self.utf8_capped(MAX_ALLELE_BYTES, false),
+            _ => self.utf8_no_semi(MAX_ALLELE_BYTES),
         }
     }
 
@@ -189,7 +195,79 @@ fn assert_tsv_cols(kind: &str, line: &str, expected_cols: usize) {
     );
 }
 
-fn assert_vcf_header(kind: &str, hdr_bytes: &[u8], expected_chrom_cols: usize) {
+fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: &Config) {
+    assert_tsv_cols(kind, line, expected_cols);
+    if !config.compat.sanitize_sample_info || line.starts_with('#') {
+        return;
+    }
+    let cols: Vec<&str> = line.split('\t').collect();
+    let alt = cols.get(4).copied().unwrap_or("");
+    let info = cols.get(7).copied().unwrap_or("");
+    let entries: Vec<&str> = info.split(';').collect();
+
+    let sample_idx = if expected_cols == 10 { 0usize } else { 1usize };
+    let sample_kv = entries.get(sample_idx).copied().unwrap_or("");
+    let Some(sample_val) = sample_kv.strip_prefix("SAMPLE=") else {
+        panic!("{kind} missing SAMPLE= at INFO index {sample_idx}: {info:?}");
+    };
+    assert!(
+        !sample_val.is_empty() && sample_val != ".",
+        "{kind} has empty or '.' INFO/SAMPLE value: {sample_val:?}"
+    );
+    assert!(
+        !sample_val.contains(',')
+            && !sample_val.contains('=')
+            && !sample_val.contains(';')
+            && !sample_val.chars().any(char::is_whitespace),
+        "{kind} has unescaped VCF delimiter or whitespace in INFO/SAMPLE: {sample_val:?}"
+    );
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|kv| kv.starts_with("SAMPLE="))
+            .count(),
+        1,
+        "{kind} must contain exactly one SAMPLE= key in INFO: {info:?}"
+    );
+    assert!(
+        entries
+            .get(sample_idx + 1)
+            .is_some_and(|kv| kv.starts_with("TYPE=")),
+        "{kind} INFO key immediately after SAMPLE= must be TYPE=: {info:?}"
+    );
+
+    let expected_keys = if expected_cols == 10 {
+        let base_end = 26 + usize::from(!config.omit_end_tag);
+        if entries.iter().any(|kv| kv.starts_with("GDAMP=")) {
+            base_end + 4
+        } else {
+            let has_crispr = usize::from(matches!(config.crispr_cutting_site, Some(n) if n != 0));
+            let sv_extra = if alt != "." && alt.contains('<') {
+                2
+            } else {
+                0
+            };
+            base_end + 3 + has_crispr + sv_extra
+        }
+    } else {
+        let flag_extra = usize::from(
+            config.vcf_paired_strict
+                && matches!(
+                    entries.last().copied(),
+                    Some("P0.01Likely" | "InDelLikely")
+                ),
+        );
+        13 + flag_extra
+    };
+    assert_eq!(
+        entries.len(),
+        expected_keys,
+        "{kind} INFO key count mismatch: got {}, expected {expected_keys} in {info:?}",
+        entries.len()
+    );
+}
+
+fn assert_vcf_header(kind: &str, hdr_bytes: &[u8], expected_chrom_cols: usize, compat_off: bool) {
     let hdr_str = std::str::from_utf8(hdr_bytes).expect("VCF header must be valid UTF-8");
     assert!(
         !hdr_str
@@ -226,6 +304,22 @@ fn assert_vcf_header(kind: &str, hdr_bytes: &[u8], expected_chrom_cols: usize) {
         chrom_count, 1,
         "{kind} must contain exactly one #CHROM line, got {chrom_count}"
     );
+    if compat_off {
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|&&l| l == "##VarDictRustCompat=off")
+                .count(),
+            1,
+            "{kind} must emit ##VarDictRustCompat=off once when compat=off"
+        );
+        assert_eq!(lines.get(2), Some(&"##VarDictRustCompat=off"));
+    } else {
+        assert!(
+            !lines.iter().any(|l| l.starts_with("##VarDictRustCompat")),
+            "{kind} must not emit ##VarDictRustCompat under default compat"
+        );
+    }
 }
 
 fn synth_variant(
@@ -318,7 +412,7 @@ fn synth_variant(
         5 => "MNV".to_string(),
         6 => "DUP".to_string(),
         7 => "INV".to_string(),
-        _ => cur.utf8_capped(12, false),
+        _ => cur.utf8_no_semi(12),
     };
     v.genotype = match cur.u8() % 6 {
         0 => None,
@@ -339,13 +433,13 @@ fn synth_variant(
         0 => String::new(),
         1 => "A".repeat(16), // LongAT trigger (>= 14)
         2 => "ACGTACGT".to_string(),
-        _ => cur.utf8_capped(32, false),
+        _ => cur.utf8_no_semi(32),
     };
     v.right_seq = match cur.u8() % 4 {
         0 => String::new(),
         1 => "T".repeat(16),
         2 => "TGCATGCA".to_string(),
-        _ => cur.utf8_capped(32, false),
+        _ => cur.utf8_no_semi(32),
     };
 
     v.frequency = cur.metric_f64(1.05);
@@ -396,10 +490,14 @@ fuzz_target!(|data: &[u8]| {
             1 => Some(0),
             _ => Some(cur.i32()),
         },
-        sample: match cur.u8() % 4 {
+        sample: match cur.u8() % 8 {
             0 => "SAMPLE".to_string(),
             1 => "TUMOR|NORMAL".to_string(),
             2 => "TUMOR|".to_string(),
+            3 => String::new(),
+            4 => ".".to_string(),
+            5 => "..|.".to_string(),
+            6 => "a;FOO=1,bar%20baz\tq|NORM;X=2".to_string(),
             _ => cur.utf8_capped(48, true),
         },
         vcf_pval: cur.metric_f64(0.5),
@@ -423,6 +521,12 @@ fuzz_target!(|data: &[u8]| {
         vcf_max_nm: cur.opt_float_threshold(12.0),
         vcf_msi: cur.opt_float_threshold(20.0),
         vcf_cluster_dist: cur.opt_int_threshold(50),
+        compat: if cur.bool() {
+            vardictrust_core::config::COMPAT_OFF
+        } else {
+            vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3
+        },
+        vcf_all_alleles: cur.bool(),
         ..Default::default()
     };
 
@@ -570,7 +674,7 @@ fuzz_target!(|data: &[u8]| {
             oddratio_tok,
             amp_opt,
         );
-        assert_tsv_cols("single_vcf_direct", &vcf_scratch, 10);
+        assert_vcf_data_record("single_vcf_direct", &vcf_scratch, 10, &config);
 
         // Fuzz SingleVcfRecord::from_parts_checked with arbitrary byte indices.
         let f_start = usize::from(cur.u16()) % (vcf_scratch.len().saturating_add(4));
@@ -584,20 +688,20 @@ fuzz_target!(|data: &[u8]| {
             cur.bool(),
             cur.bool(),
         ) {
-            assert_tsv_cols("single_vcf_checked", checked.as_str(), 10);
+            assert_vcf_data_record("single_vcf_checked", checked.as_str(), 10, &config);
             let _ = single_streamer_raw.push_event(SingleVcfEvent::Record(checked), |line| {
-                assert_tsv_cols("single_vcf_stream_checked", line, 10);
+                assert_vcf_data_record("single_vcf_stream_checked", line, 10, &config);
                 Ok(())
             });
         }
 
         let ev = build_single_vcf_event(&mut vcf_scratch, &v1, &vcf_region, &config, amp_opt);
         let _ = single_streamer_cfg.push_event(ev.clone(), |line| {
-            assert_tsv_cols("single_vcf_stream_cfg", line, 10);
+            assert_vcf_data_record("single_vcf_stream_cfg", line, 10, &config);
             Ok(())
         });
         let _ = single_streamer_raw.push_event(ev, |line| {
-            assert_tsv_cols("single_vcf_stream_raw", line, 10);
+            assert_vcf_data_record("single_vcf_stream_raw", line, 10, &config);
             Ok(())
         });
 
@@ -621,7 +725,7 @@ fuzz_target!(|data: &[u8]| {
             5 => "AFDiff".to_string(),
             6 => "SampleSpecific".to_string(),
             7 => "Deletion".to_string(),
-            _ => cur.utf8_capped(16, false),
+            _ => cur.utf8_no_semi(16),
         };
         let sv2_str = match cur.u8() % 3 {
             0 => String::new(),
@@ -665,32 +769,32 @@ fuzz_target!(|data: &[u8]| {
             end_is_variant2,
         };
         let paired_rec = format_paired_vcf_record(&som_var, &vcf_chr, &config);
-        assert_tsv_cols("paired_vcf_direct", paired_rec.as_str(), 11);
+        assert_vcf_data_record("paired_vcf_direct", paired_rec.as_str(), 11, &config);
 
         let _ = paired_streamer_cfg.push(paired_rec.clone(), |line| -> Result<(), ()> {
-            assert_tsv_cols("paired_vcf_stream_cfg", line, 11);
+            assert_vcf_data_record("paired_vcf_stream_cfg", line, 11, &config);
             Ok(())
         });
         let _ = paired_streamer_raw.push(paired_rec, |line| -> Result<(), ()> {
-            assert_tsv_cols("paired_vcf_stream_raw", line, 11);
+            assert_vcf_data_record("paired_vcf_stream_raw", line, 11, &config);
             Ok(())
         });
     }
 
     let _ = single_streamer_cfg.finish(|line| {
-        assert_tsv_cols("single_vcf_finish_cfg", line, 10);
+        assert_vcf_data_record("single_vcf_finish_cfg", line, 10, &config);
         Ok(())
     });
     let _ = single_streamer_raw.finish(|line| {
-        assert_tsv_cols("single_vcf_finish_raw", line, 10);
+        assert_vcf_data_record("single_vcf_finish_raw", line, 10, &config);
         Ok(())
     });
     let _ = paired_streamer_cfg.finish(|line| -> Result<(), ()> {
-        assert_tsv_cols("paired_vcf_finish_cfg", line, 11);
+        assert_vcf_data_record("paired_vcf_finish_cfg", line, 11, &config);
         Ok(())
     });
     let _ = paired_streamer_raw.finish(|line| -> Result<(), ()> {
-        assert_tsv_cols("paired_vcf_finish_raw", line, 11);
+        assert_vcf_data_record("paired_vcf_finish_raw", line, 11, &config);
         Ok(())
     });
 
@@ -725,11 +829,12 @@ fuzz_target!(|data: &[u8]| {
         };
     }
 
+    let compat_off = hdr_cfg.compat.target == vardictrust_core::config::CompatTarget::Off;
     let mut hdr_buf: Vec<u8> = Vec::with_capacity(4096);
     if vardictrust_core::output::vcf::print_vcf_header(&mut hdr_buf, &hdr_cfg, &fuzz_chrom_lengths)
         .is_ok()
     {
-        assert_vcf_header("single_vcf_header", &hdr_buf, 10);
+        assert_vcf_header("single_vcf_header", &hdr_buf, 10, compat_off);
     }
     hdr_buf.clear();
     if vardictrust_core::output::vcf::print_paired_vcf_header(
@@ -739,6 +844,6 @@ fuzz_target!(|data: &[u8]| {
     )
     .is_ok()
     {
-        assert_vcf_header("paired_vcf_header", &hdr_buf, 11);
+        assert_vcf_header("paired_vcf_header", &hdr_buf, 11, compat_off);
     }
 });

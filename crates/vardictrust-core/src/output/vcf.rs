@@ -240,23 +240,34 @@ fn chrom_compare(a: &str, b: &str) -> std::cmp::Ordering {
             }
         }
     }
+    .then_with(|| a.cmp(b))
 }
 
-/// Ports `var2vcf_valid.pl:254-288` and `var2vcf_paired.pl:260-294` (`sub reorder`):
+/// Ports `var2vcf_valid.pl:254-288` and `var2vcf_paired.pl:260-294` (`sub reorder`).
+/// Delegates to [`reorder_chromosomes_with_compat`] with `preserve_mixed = false`.
+pub fn perl_reorder_chromosomes<S: AsRef<str>>(chrs: &[S]) -> Vec<String> {
+    reorder_chromosomes_with_compat(chrs, false)
+}
+
+/// Chromosome ordering helper parameterized by `preserve_mixed`:
 /// - Deduplicates input chromosomes preserving first-seen order (`unique_chrs`).
 /// - `@chrn`: chromosomes containing at least one ASCII digit (`\d`) and NO `'_'`,
 ///   paired with their digits-only string (`$t =~ s/\D//g`), stable-sorted ascending
 ///   by exact non-negative integer value of the digits string (without `u64` overflow).
 /// - `@nonchrn`: chromosomes without digits or containing `'_'`, excluding
 ///   `"X"`, `"chrX"`, `"Y"`, `"chrY"`, `"MT"`, `"chrM"` (note `"M"` is NOT excluded).
-/// - Sex and mitochondrial chromosomes appended via Perl's `if ... elsif` chain
-///   (replicating upstream v1.8.3's `chrX`/`chrY`/`chrM` drop when both unprefixed
-///   and `chr`-prefixed names are present; tracked as `--fix var2vcf-chrx-drop`):
-///   - `X` else `chrX`
-///   - `Y` else `chrY`
-///   - `MT` else `chrM`
+/// - When `!preserve_mixed` (`COMPAT_VARDICTJAVA_1_8_3`): appends sex and mitochondrial
+///   chromosomes via Perl's `if ... elsif` chain (`X` else `chrX`, `Y` else `chrY`,
+///   `MT` else `chrM`), replicating upstream v1.8.3's drop when both unprefixed and
+///   `chr`-prefixed names are present.
+/// - When `preserve_mixed` (`COMPAT_OFF`): appends all present sex and mitochondrial
+///   chromosomes via independent `if` checks in canonical order
+///   (`X`, `chrX`, `Y`, `chrY`, `MT`, `chrM`) so zero chromosomes are dropped.
 /// - Followed by `@nonchrn` in first-seen order.
-pub fn perl_reorder_chromosomes<S: AsRef<str>>(chrs: &[S]) -> Vec<String> {
+pub fn reorder_chromosomes_with_compat<S: AsRef<str>>(
+    chrs: &[S],
+    preserve_mixed: bool,
+) -> Vec<String> {
     let mut seen = std::collections::HashSet::with_capacity(chrs.len());
     let mut unique_chrs = Vec::with_capacity(chrs.len());
     for c in chrs {
@@ -284,34 +295,46 @@ pub fn perl_reorder_chromosomes<S: AsRef<str>>(chrs: &[S]) -> Vec<String> {
     });
 
     let mut order: Vec<String> = chrn.into_iter().map(|(_, c)| c.to_string()).collect();
-    if seen.contains("X") {
-        order.push("X".to_string());
-    } else if seen.contains("chrX") {
-        order.push("chrX".to_string());
-    }
-    if seen.contains("Y") {
-        order.push("Y".to_string());
-    } else if seen.contains("chrY") {
-        order.push("chrY".to_string());
-    }
-    if seen.contains("MT") {
-        order.push("MT".to_string());
-    } else if seen.contains("chrM") {
-        order.push("chrM".to_string());
+    if preserve_mixed {
+        if seen.contains("X") {
+            order.push("X".to_string());
+        }
+        if seen.contains("chrX") {
+            order.push("chrX".to_string());
+        }
+        if seen.contains("Y") {
+            order.push("Y".to_string());
+        }
+        if seen.contains("chrY") {
+            order.push("chrY".to_string());
+        }
+        if seen.contains("MT") {
+            order.push("MT".to_string());
+        }
+        if seen.contains("chrM") {
+            order.push("chrM".to_string());
+        }
+    } else {
+        if seen.contains("X") {
+            order.push("X".to_string());
+        } else if seen.contains("chrX") {
+            order.push("chrX".to_string());
+        }
+        if seen.contains("Y") {
+            order.push("Y".to_string());
+        } else if seen.contains("chrY") {
+            order.push("chrY".to_string());
+        }
+        if seen.contains("MT") {
+            order.push("MT".to_string());
+        } else if seen.contains("chrM") {
+            order.push("chrM".to_string());
+        }
     }
     for c in nonchrn {
         order.push(c.to_string());
     }
     order
-}
-
-/// Chromosome ordering helper parameterized by `preserve_mixed` (`COMPAT_OFF` sex/mito
-/// contig preservation; full implementation lands in Wave 2B).
-pub fn reorder_chromosomes_with_compat<S: AsRef<str>>(
-    chrs: &[S],
-    _preserve_mixed: bool,
-) -> Vec<String> {
-    perl_reorder_chromosomes(chrs)
 }
 
 /// Ports `var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`:
@@ -534,6 +557,9 @@ fn write_common_vcf_header_prefix<W: Write>(
 
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=VarDict_v1.8.2")?;
+    if config.compat.target == crate::config::CompatTarget::Off {
+        writeln!(w, "##VarDictRustCompat=off")?;
+    }
     writeln!(w, "##reference={}", config.reference)?;
 
     for (name, len) in contigs {
@@ -1214,6 +1240,34 @@ fn perl_num_str(x: f64) -> String {
     out
 }
 
+#[inline]
+fn push_vcf_info_sample(buf: &mut String, raw_sample: &str, sanitize: bool) {
+    if !sanitize {
+        for c in raw_sample.chars() {
+            buf.push(if c.is_whitespace() { '_' } else { c });
+        }
+        return;
+    }
+    if raw_sample.is_empty() {
+        buf.push('_');
+        return;
+    }
+    if raw_sample == "." {
+        buf.push_str("%2E");
+        return;
+    }
+    for c in raw_sample.chars() {
+        match c {
+            c if c.is_whitespace() => buf.push('_'),
+            '%' => buf.push_str("%25"),
+            ';' => buf.push_str("%3B"),
+            '=' => buf.push_str("%3D"),
+            ',' => buf.push_str("%2C"),
+            other => buf.push(other),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     buf: &mut String,
@@ -1290,9 +1344,7 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     // INFO (field order mirrors var2vcf_valid.pl:236; values contain no
     // spaces so the perl post-strip is a no-op here).
     buf.push_str("SAMPLE=");
-    for c in config.sample.chars() {
-        buf.push(if c.is_whitespace() { '_' } else { c });
-    }
+    push_vcf_info_sample(buf, &config.sample, config.compat.sanitize_sample_info);
     buf.push_str(";TYPE=");
     buf.push_str(var_type);
     buf.push_str(";DP=");
@@ -2845,9 +2897,7 @@ pub fn format_paired_vcf_record(
     line.push_str("STATUS=");
     line.push_str(status);
     line.push_str(";SAMPLE=");
-    for c in sample_tumor.chars() {
-        line.push(if c.is_whitespace() { '_' } else { c });
-    }
+    push_vcf_info_sample(&mut line, sample_tumor, config.compat.sanitize_sample_info);
     line.push_str(";TYPE=");
     line.push_str(var_type);
     line.push_str(";DP=");
@@ -5840,5 +5890,278 @@ mod tests {
         let mut sq_out = Vec::new();
         assert!(print_vcf_header(&mut sq_out, &Config::default(), &bad_bam_lengths).is_err());
         assert!(sq_out.is_empty());
+    }
+
+    #[test]
+    fn test_vcf_header_compat_off_provenance_single_and_paired() {
+        let mut lengths = HashMap::new();
+        lengths.insert("chr1".to_string(), 1000usize);
+
+        // Default COMPAT_VARDICTJAVA_1_8_3: zero extra header lines (100% byte-identical)
+        let vj_cfg = Config::default();
+        let mut single_vj = Vec::new();
+        print_vcf_header(&mut single_vj, &vj_cfg, &lengths).unwrap();
+        let single_vj_str = String::from_utf8(single_vj).unwrap();
+        assert!(!single_vj_str.contains("##VarDictRustCompat"));
+        assert!(single_vj_str
+            .starts_with("##fileformat=VCFv4.2\n##source=VarDict_v1.8.2\n##reference="));
+
+        let mut paired_vj = Vec::new();
+        print_paired_vcf_header(&mut paired_vj, &vj_cfg, &lengths).unwrap();
+        let paired_vj_str = String::from_utf8(paired_vj).unwrap();
+        assert!(!paired_vj_str.contains("##VarDictRustCompat"));
+        assert!(paired_vj_str
+            .starts_with("##fileformat=VCFv4.2\n##source=VarDict_v1.8.2\n##reference="));
+
+        // COMPAT_OFF: ##VarDictRustCompat=off right after ##source=VarDict_v1.8.2, emitted once
+        let mut off_cfg = Config::default();
+        off_cfg.compat = crate::config::COMPAT_OFF;
+
+        let mut single_off = Vec::new();
+        print_vcf_header(&mut single_off, &off_cfg, &lengths).unwrap();
+        let single_off_str = String::from_utf8(single_off).unwrap();
+        assert!(single_off_str.starts_with(
+            "##fileformat=VCFv4.2\n##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n##reference="
+        ));
+        assert_eq!(single_off_str.matches("##VarDictRustCompat").count(), 1);
+
+        let mut paired_off = Vec::new();
+        print_paired_vcf_header(&mut paired_off, &off_cfg, &lengths).unwrap();
+        let paired_off_str = String::from_utf8(paired_off).unwrap();
+        assert!(paired_off_str.starts_with(
+            "##fileformat=VCFv4.2\n##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n##reference="
+        ));
+        assert_eq!(paired_off_str.matches("##VarDictRustCompat").count(), 1);
+    }
+
+    #[test]
+    fn test_vcf_info_sample_bijective_sanitization_single_and_paired() {
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(300),
+            gene: "TP53".to_string(),
+            amplicon: None,
+        };
+        let var = amplicon_passing_variant();
+        let norm = clean_normal();
+
+        let cases = [
+            ("", "_", ""),
+            (".", "%2E", "."),
+            ("..", "..", ".."),
+            (
+                "a;FOO=1,bar%20baz\tq",
+                "a%3BFOO%3D1%2Cbar%2520baz_q",
+                "a;FOO=1,bar%20baz_q",
+            ),
+            ("a;b", "a%3Bb", "a;b"),
+            ("a%3Bb", "a%253Bb", "a%3Bb"),
+            ("a=b", "a%3Db", "a=b"),
+            ("a%3Db", "a%253Db", "a%3Db"),
+            ("a,b", "a%2Cb", "a,b"),
+            ("a%2Cb", "a%252Cb", "a%2Cb"),
+            ("%2E", "%252E", "%2E"),
+        ];
+
+        for (raw, expected_off, expected_vj) in cases {
+            let mut direct_vj = String::new();
+            push_vcf_info_sample(&mut direct_vj, raw, false);
+            assert_eq!(direct_vj, expected_vj, "helper VJ mismatch for {raw:?}");
+            let mut direct_off = String::new();
+            push_vcf_info_sample(&mut direct_off, raw, true);
+            assert_eq!(direct_off, expected_off, "helper OFF mismatch for {raw:?}");
+
+            // Single-sample COMPAT_VARDICTJAVA_1_8_3
+            let mut vj_cfg = Config::default();
+            vj_cfg.sample = raw.to_string();
+            let rec_vj = format_vcf_record(&var, &region, &vj_cfg, &[], 1.0, "1.0", None);
+            let info_vj = rec_vj.split('\t').nth(7).unwrap();
+            assert!(
+                info_vj.starts_with(&format!("SAMPLE={expected_vj};TYPE=")),
+                "single VJ mismatch for {raw:?}: {info_vj}"
+            );
+
+            // Single-sample COMPAT_OFF (direct + streamer event builder)
+            let mut off_cfg = Config::default();
+            off_cfg.compat = crate::config::COMPAT_OFF;
+            off_cfg.sample = raw.to_string();
+            let rec_off = format_vcf_record(&var, &region, &off_cfg, &[], 1.0, "1.0", None);
+            let info_off = rec_off.split('\t').nth(7).unwrap();
+            assert!(
+                info_off.starts_with(&format!("SAMPLE={expected_off};TYPE=")),
+                "single OFF mismatch for {raw:?}: {info_off}"
+            );
+            let sample_entry_off = info_off.split(';').next().unwrap();
+            assert_eq!(sample_entry_off, format!("SAMPLE={expected_off}"));
+
+            let mut scratch = String::new();
+            let SingleVcfEvent::Record(ev_rec) =
+                build_single_vcf_event(&mut scratch, &var, &region, &off_cfg, None)
+            else {
+                panic!("expected SingleVcfEvent::Record");
+            };
+            let ev_info_off = ev_rec.as_str().split('\t').nth(7).unwrap();
+            assert!(
+                ev_info_off.starts_with(&format!("SAMPLE={expected_off};TYPE=")),
+                "event builder OFF mismatch for {raw:?}: {ev_info_off}"
+            );
+
+            // Paired somatic COMPAT_VARDICTJAVA_1_8_3 & COMPAT_OFF
+            vj_cfg.sample = format!("{raw}|NORM;X=1");
+            let prec_vj = format_paired_vcf_record(
+                &somatic_sv(var.clone(), Some(norm.clone()), "StrongSomatic"),
+                "chr1",
+                &vj_cfg,
+            );
+            let pinfo_vj = prec_vj.as_str().split('\t').nth(7).unwrap();
+            assert!(
+                pinfo_vj.starts_with(&format!("STATUS=StrongSomatic;SAMPLE={expected_vj};TYPE=")),
+                "paired VJ mismatch for {raw:?}: {pinfo_vj}"
+            );
+
+            off_cfg.sample = format!("{raw}|NORM;X=1");
+            let prec_off = format_paired_vcf_record(
+                &somatic_sv(var.clone(), Some(norm.clone()), "StrongSomatic"),
+                "chr1",
+                &off_cfg,
+            );
+            let pinfo_off = prec_off.as_str().split('\t').nth(7).unwrap();
+            assert!(
+                pinfo_off.starts_with(&format!("STATUS=StrongSomatic;SAMPLE={expected_off};TYPE=")),
+                "paired OFF mismatch for {raw:?}: {pinfo_off}"
+            );
+            let psample_entry_off = pinfo_off.split(';').nth(1).unwrap();
+            assert_eq!(psample_entry_off, format!("SAMPLE={expected_off}"));
+        }
+
+        // Explicit bijectivity collision checks under COMPAT_OFF
+        let mut cfg_semi = Config::default();
+        cfg_semi.compat = crate::config::COMPAT_OFF;
+        cfg_semi.sample = "a;b".to_string();
+        let mut cfg_lit = cfg_semi.clone();
+        cfg_lit.sample = "a%3Bb".to_string();
+        let r_semi = format_vcf_record(&var, &region, &cfg_semi, &[], 1.0, "1.0", None);
+        let r_lit = format_vcf_record(&var, &region, &cfg_lit, &[], 1.0, "1.0", None);
+        assert_ne!(
+            r_semi.split('\t').nth(7),
+            r_lit.split('\t').nth(7),
+            "encoding must be bijective on literal %3B vs ';'"
+        );
+
+        // #CHROM header sample columns remain untouched raw names even under COMPAT_OFF
+        let mut hdr_cfg = Config::default();
+        hdr_cfg.compat = crate::config::COMPAT_OFF;
+        hdr_cfg.sample = "TUM;FOO=1,bar%20baz|NORM;BAR=2,qux%20".to_string();
+        let empty = HashMap::new();
+        let mut shdr = Vec::new();
+        print_vcf_header(&mut shdr, &hdr_cfg, &empty).unwrap();
+        assert!(String::from_utf8(shdr)
+            .unwrap()
+            .ends_with("\tTUM;FOO=1,bar%20baz|NORM;BAR=2,qux%20\n"));
+        let mut phdr = Vec::new();
+        print_paired_vcf_header(&mut phdr, &hdr_cfg, &empty).unwrap();
+        assert!(String::from_utf8(phdr)
+            .unwrap()
+            .ends_with("\tTUM;FOO=1,bar%20baz\tNORM;BAR=2,qux%20\n"));
+    }
+
+    #[test]
+    fn test_chrom_compare_strict_total_order_and_mixed_sex_contig_reorder() {
+        use std::cmp::Ordering;
+
+        assert_eq!(chrom_compare("1", "chr1"), Ordering::Less);
+        assert_eq!(chrom_compare("chr1", "1"), Ordering::Greater);
+        assert_eq!(chrom_compare("X", "chrX"), Ordering::Less);
+        assert_eq!(chrom_compare("chrX", "X"), Ordering::Greater);
+        assert_eq!(chrom_compare("M", "chrM"), Ordering::Less);
+        assert_eq!(chrom_compare("chrM", "M"), Ordering::Greater);
+
+        // Verify strict total order axioms across mixed contigs
+        let probes = [
+            "1",
+            "chr1",
+            "01",
+            "2",
+            "chr2",
+            "10",
+            "chr10",
+            "X",
+            "chrX",
+            "Y",
+            "chrY",
+            "M",
+            "chrM",
+            "MT",
+            "chrMT",
+            "GL000192.1",
+            "chrUn_gl000220",
+        ];
+        for (i, &a) in probes.iter().enumerate() {
+            assert_eq!(chrom_compare(a, a), Ordering::Equal);
+            for (j, &b) in probes.iter().enumerate() {
+                if i != j {
+                    let ab = chrom_compare(a, b);
+                    let ba = chrom_compare(b, a);
+                    assert_ne!(ab, Ordering::Equal, "tie on distinct {a:?} vs {b:?}");
+                    assert_eq!(ab.reverse(), ba, "antisymmetry broken for {a:?} vs {b:?}");
+                }
+            }
+        }
+        for &a in &probes {
+            for &b in &probes {
+                for &c in &probes {
+                    if chrom_compare(a, b) == Ordering::Less
+                        && chrom_compare(b, c) == Ordering::Less
+                    {
+                        assert_eq!(
+                            chrom_compare(a, c),
+                            Ordering::Less,
+                            "transitivity broken for ({a:?}, {b:?}, {c:?})"
+                        );
+                    }
+                }
+            }
+        }
+
+        let mixed = [
+            "chrX",
+            "X",
+            "chrY",
+            "Y",
+            "chrM",
+            "MT",
+            "chr1",
+            "1",
+            "GL000192.1",
+            "chrUn_gl000220",
+        ];
+        assert_eq!(
+            reorder_chromosomes_with_compat(&mixed, false),
+            vec!["chr1", "1", "GL000192.1", "X", "Y", "MT", "chrUn_gl000220"]
+        );
+        assert_eq!(
+            perl_reorder_chromosomes(&mixed),
+            reorder_chromosomes_with_compat(&mixed, false)
+        );
+        assert_eq!(
+            reorder_chromosomes_with_compat(&mixed, true),
+            vec![
+                "chr1",
+                "1",
+                "GL000192.1",
+                "X",
+                "chrX",
+                "Y",
+                "chrY",
+                "MT",
+                "chrM",
+                "chrUn_gl000220"
+            ]
+        );
+        assert_eq!(
+            reorder_chromosomes_with_compat(&["chrX", "X", "chrX", "X"], true),
+            vec!["X", "chrX"]
+        );
     }
 }
