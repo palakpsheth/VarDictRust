@@ -83,8 +83,65 @@ pub const MAX_TILE_SIZE: u32 = 500_000_000;
 /// whole-chromosome split runs without an arbitrary row-count cutoff.
 const SPLIT_VAR_RETENTION_WINDOW_BP: i32 = 200_000;
 
-/// Stable cross-tile variant identity for `.var` deduplication (independent of
-/// tile-local depth, AF, status, SV counts, or debug measurements).
+/// Merge 1-based closed genomic intervals `(lo, hi)`, clamping `lo >= 1` and discarding
+/// degenerate intervals (`hi < 1` or `lo > hi`), into sorted disjoint non-adjacent ranges.
+pub(crate) fn merge_i32_intervals(mut ranges: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
+    ranges.retain(|&(lo, hi)| hi >= 1 && lo <= hi);
+    for (lo, _) in &mut ranges {
+        if *lo < 1 {
+            *lo = 1;
+        }
+    }
+    ranges.sort_unstable();
+    let mut merged: Vec<(i32, i32)> = Vec::with_capacity(ranges.len());
+    for (lo, hi) in ranges {
+        if let Some(last) = merged.last_mut() {
+            if lo <= last.1.saturating_add(1) {
+                last.1 = last.1.max(hi);
+                continue;
+            }
+        }
+        merged.push((lo, hi));
+    }
+    merged
+}
+
+/// Binary-search whether 1-based coordinate `pos` (`pos >= 1`) lies inside `merged`
+/// (as produced by [`merge_i32_intervals`]).
+#[inline]
+pub(crate) fn interval_set_contains(merged: &[(i32, i32)], pos: i32) -> bool {
+    if pos < 1 || merged.is_empty() {
+        return false;
+    }
+    let idx = merged.partition_point(|&(lo, _)| lo <= pos);
+    let Some(cand_idx) = idx.checked_sub(1) else {
+        return false;
+    };
+    merged
+        .get(cand_idx)
+        .is_some_and(|&(lo, hi)| lo <= pos && pos <= hi)
+}
+
+type StrictChrIntervals = Option<std::sync::Arc<HashMap<String, Vec<(i32, i32)>>>>;
+
+fn build_strict_chr_target_intervals(
+    regions: &[Vec<crate::regions::Region>],
+) -> HashMap<String, Vec<(i32, i32)>> {
+    let mut raw: HashMap<String, Vec<(i32, i32)>> = HashMap::new();
+    for seg in regions {
+        for reg in seg {
+            let lo = i32::try_from(reg.start.0.max(1)).unwrap_or(i32::MAX);
+            let hi = i32::try_from(reg.end.0).unwrap_or(i32::MAX);
+            raw.entry(reg.chr.clone()).or_default().push((lo, hi));
+        }
+    }
+    raw.into_iter()
+        .map(|(chr, ranges)| (chr, merge_i32_intervals(ranges)))
+        .collect()
+}
+
+/// Stable cross-tile variant identity for `.var` and `--vcf-all-alleles` deduplication
+/// (independent of tile-local depth, AF, status, SV counts, or debug measurements).
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 struct SplitVarIdentity {
     origin_pos: i32,
@@ -99,25 +156,35 @@ struct SplitVarIdentity {
 }
 
 #[derive(Debug, Clone)]
-struct SplitVarRow {
+struct SplitVarRow<P = String> {
     id: SplitVarIdentity,
     is_sv: bool,
-    line: String,
+    payload: P,
 }
 
-impl SplitVarRow {
+impl<P> SplitVarRow<P> {
     #[inline]
     fn anchor_pos(&self) -> i32 {
         self.id.origin_pos
     }
 
     #[inline]
-    fn approx_heap_bytes(&self) -> usize {
+    fn approx_heap_bytes_with<F>(&self, payload_bytes: F) -> usize
+    where
+        F: FnOnce(&P) -> usize,
+    {
         self.id
             .ref_allele
             .capacity()
             .saturating_add(self.id.var_allele.capacity())
-            .saturating_add(self.line.capacity())
+            .saturating_add(payload_bytes(&self.payload))
+    }
+}
+
+impl SplitVarRow<String> {
+    #[inline]
+    fn approx_heap_bytes(&self) -> usize {
+        self.approx_heap_bytes_with(String::capacity)
     }
 }
 
@@ -178,18 +245,27 @@ fn build_simple_split_var_identities(
     out
 }
 
-/// Cross-tile `.var` intermediate deduplicator using stable variant identity,
+/// Cross-tile `.var` and `--vcf-all-alleles` deduplicator using stable variant identity,
 /// tile ownership (`tile.start..=tile.end`), within-tile multiplicity preservation,
 /// and a sliding boundary-retention window (`SPLIT_VAR_RETENTION_WINDOW_BP`).
-#[derive(Default)]
-struct SplitVarDeduper {
+struct SplitVarDeduper<P = String> {
     emitted_by_pos: std::collections::BTreeMap<i32, Vec<SplitVarIdentity>>,
     emitted_sv: rustc_hash::FxHashSet<SplitVarIdentity>,
-    pending_forward: Vec<SplitVarRow>,
+    pending_forward: Vec<SplitVarRow<P>>,
 }
 
-impl SplitVarDeduper {
-    fn is_emitted(&self, row: &SplitVarRow) -> bool {
+impl<P> Default for SplitVarDeduper<P> {
+    fn default() -> Self {
+        Self {
+            emitted_by_pos: std::collections::BTreeMap::new(),
+            emitted_sv: rustc_hash::FxHashSet::default(),
+            pending_forward: Vec::new(),
+        }
+    }
+}
+
+impl<P> SplitVarDeduper<P> {
+    fn is_emitted(&self, row: &SplitVarRow<P>) -> bool {
         if row.is_sv && self.emitted_sv.contains(&row.id) {
             return true;
         }
@@ -210,13 +286,16 @@ impl SplitVarDeduper {
 
     fn flush_all_pending<F>(&mut self, mut emit: F) -> Result<(), VardictError>
     where
-        F: FnMut(&str) -> Result<(), VardictError>,
+        F: FnMut(P) -> Result<(), VardictError>,
     {
         let pending = std::mem::take(&mut self.pending_forward);
         for p in pending {
             if !self.is_emitted(&p) {
-                emit(&p.line)?;
-                self.record_emitted(p.anchor_pos(), p.is_sv, p.id);
+                let anchor = p.anchor_pos();
+                let is_sv = p.is_sv;
+                let id = p.id;
+                emit(p.payload)?;
+                self.record_emitted(anchor, is_sv, id);
             }
         }
         Ok(())
@@ -224,7 +303,7 @@ impl SplitVarDeduper {
 
     fn flush_before_unsplit_tile<F>(&mut self, emit: F) -> Result<(), VardictError>
     where
-        F: FnMut(&str) -> Result<(), VardictError>,
+        F: FnMut(P) -> Result<(), VardictError>,
     {
         self.flush_all_pending(emit)?;
         self.emitted_by_pos.clear();
@@ -235,7 +314,7 @@ impl SplitVarDeduper {
     #[allow(clippy::too_many_arguments)]
     fn accept_tile<F>(
         &mut self,
-        rows: Vec<SplitVarRow>,
+        rows: Vec<SplitVarRow<P>>,
         is_split_tile: bool,
         tile_start: crate::types::Pos1,
         tile_end: crate::types::Pos1,
@@ -244,12 +323,12 @@ impl SplitVarDeduper {
         mut emit: F,
     ) -> Result<(), VardictError>
     where
-        F: FnMut(&str) -> Result<(), VardictError>,
+        F: FnMut(P) -> Result<(), VardictError>,
     {
         if !is_split_tile {
             self.flush_before_unsplit_tile(&mut emit)?;
             for row in rows {
-                emit(&row.line)?;
+                emit(row.payload)?;
             }
             return Ok(());
         }
@@ -273,8 +352,11 @@ impl SplitVarDeduper {
                         r.id == p.id && (r.anchor_pos() <= tile_end.0 as i32 || is_last_split_tile)
                     });
                     if !owned_by_current && !self.is_emitted(&p) {
-                        emit(&p.line)?;
-                        self.record_emitted(p.anchor_pos(), p.is_sv, p.id);
+                        let anchor = p.anchor_pos();
+                        let is_sv = p.is_sv;
+                        let id = p.id;
+                        emit(p.payload)?;
+                        self.record_emitted(anchor, is_sv, id);
                     }
                 } else {
                     self.pending_forward.push(p);
@@ -283,7 +365,7 @@ impl SplitVarDeduper {
         }
 
         let mut newly_emitted: Vec<(i32, bool, SplitVarIdentity)> = Vec::new();
-        let mut newly_pending: Vec<SplitVarRow> = Vec::new();
+        let mut newly_pending: Vec<SplitVarRow<P>> = Vec::new();
         for row in rows {
             if self.is_emitted(&row) {
                 continue;
@@ -292,8 +374,11 @@ impl SplitVarDeduper {
                 self.pending_forward.retain(|p| p.id != row.id);
                 newly_pending.push(row);
             } else {
-                emit(&row.line)?;
-                newly_emitted.push((row.anchor_pos(), row.is_sv, row.id));
+                let anchor = row.anchor_pos();
+                let is_sv = row.is_sv;
+                let id = row.id;
+                emit(row.payload)?;
+                newly_emitted.push((anchor, is_sv, id));
             }
         }
         self.pending_forward.extend(newly_pending);
@@ -435,6 +520,7 @@ fn run_pipeline_on_records(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -490,6 +576,7 @@ fn run_pipeline_on_records_ext(
     post_pileup_max_read_length: Option<i32>,
     parent_original_start: Option<crate::types::Pos1>,
     parent_active_bam_limit: Option<usize>,
+    parent_live_read_counts: Option<(u64, u64)>,
 ) -> Result<crate::variations::VariationData, VardictError> {
     // Task 4 (streaming feed): one lazy pass per BAM, BAM1-then-BAM2, through
     // a single sequential preprocessor into a single CigarParser. Records are
@@ -636,6 +723,16 @@ fn run_pipeline_on_records_ext(
         // already computed the active reader limit across the full parent region (`AR-9`).
         if parent_active_bam_limit.is_none() && idx > 0 && !any_passed {
             break;
+        }
+    }
+    if config.compat.live_duprate {
+        if let Some((parent_total, parent_dup)) = parent_live_read_counts {
+            parser.set_live_read_counts(parent_total, parent_dup);
+        } else {
+            parser.set_live_read_counts(
+                preprocessor.total_reads as u64,
+                preprocessor.duplicate_reads as u64,
+            );
         }
     }
     let mut var_data = parser.into_variation_data();
@@ -1436,7 +1533,7 @@ fn stream_band_sequential(
     cigar_elements: &mut Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,
     cigar_str: &mut String,
     config: &config::Config,
-) -> Result<bool, VardictError> {
+) -> Result<(bool, u64, u64), VardictError> {
     let query_start = if band_idx == 0 {
         reg.start.to_zero_based()
     } else {
@@ -1527,7 +1624,15 @@ fn stream_band_sequential(
         )?;
         same_start_ends.push(read_end);
     }
-    Ok(any_passed)
+    let (tot, dup) = if config.dedup {
+        (
+            preprocessor.total_reads as u64,
+            preprocessor.duplicate_reads as u64,
+        )
+    } else {
+        (0, 0)
+    };
+    Ok((any_passed, tot, dup))
 }
 
 #[derive(Debug)]
@@ -1559,6 +1664,8 @@ impl BandCandidate {
 enum BandScan {
     Candidates {
         any_passed: bool,
+        total_reads: u64,
+        duplicate_reads: u64,
         groups: Vec<Vec<i32>>,
         candidates: Vec<BandCandidate>,
     },
@@ -1842,8 +1949,18 @@ fn scan_band_candidates(
         }
     }
 
+    let (total_reads, duplicate_reads) = if config.dedup {
+        (
+            preprocessor.total_reads as u64,
+            preprocessor.duplicate_reads as u64,
+        )
+    } else {
+        (0, 0)
+    };
     Ok(BandScan::Candidates {
         any_passed: band_any_passed,
+        total_reads,
+        duplicate_reads,
         groups,
         candidates,
     })
@@ -1864,7 +1981,7 @@ fn build_region_bands(reg: &crate::regions::Region, band_bp: u32) -> Vec<(u32, u
     bands
 }
 
-type MultiTilePrescanOut = (Vec<Vec<MaxRlStep>>, i32, usize);
+type MultiTilePrescanOut = (Vec<Vec<MaxRlStep>>, i32, usize, u64, u64);
 
 #[cfg(test)]
 thread_local! {
@@ -1977,6 +2094,8 @@ fn scan_multi_regions_max_read_lengths(
         active: bool,
         bam_any_passed: bool,
         active_bams: usize,
+        total_reads: u64,
+        duplicate_reads: u64,
     }
 
     let mut states: Vec<MultiRegState> = Vec::with_capacity(multi_idxs.len());
@@ -1995,6 +2114,8 @@ fn scan_multi_regions_max_read_lengths(
             active: !reg_tiles.is_empty(),
             bam_any_passed: false,
             active_bams: 0,
+            total_reads: 0,
+            duplicate_reads: 0,
         });
     }
 
@@ -2083,10 +2204,14 @@ fn scan_multi_regions_max_read_lengths(
                     match scan {
                         BandScan::Candidates {
                             any_passed,
+                            total_reads,
+                            duplicate_reads,
                             groups,
                             candidates,
                         } => {
                             st.bam_any_passed |= any_passed;
+                            st.total_reads = st.total_reads.saturating_add(total_reads);
+                            st.duplicate_reads = st.duplicate_reads.saturating_add(duplicate_reads);
                             for mut cand in candidates {
                                 if crate::cigar::parse::get_soft_clipped_length(&cand.cigar)
                                     <= st.cur_max.max(0) as u32
@@ -2118,28 +2243,31 @@ fn scan_multi_regions_max_read_lengths(
                             }
                         }
                         BandScan::FallbackSequential => {
-                            let seq_passed = crate::runner::run_with_worker_stack_for_bam(
-                                bam_spec_for_stack,
-                                || {
-                                    stream_band_sequential(
-                                        bam_path,
-                                        bam_idx,
-                                        total_bams,
-                                        reg,
-                                        reg_tiles,
-                                        band_idx,
-                                        band_lo,
-                                        band_hi,
-                                        &mut st.steps_per_tile,
-                                        &mut st.cur_max,
-                                        &mut st.scanner,
-                                        &mut cigar_elements,
-                                        &mut cigar_str,
-                                        config,
-                                    )
-                                },
-                            )?;
+                            let (seq_passed, seq_tot, seq_dup) =
+                                crate::runner::run_with_worker_stack_for_bam(
+                                    bam_spec_for_stack,
+                                    || {
+                                        stream_band_sequential(
+                                            bam_path,
+                                            bam_idx,
+                                            total_bams,
+                                            reg,
+                                            reg_tiles,
+                                            band_idx,
+                                            band_lo,
+                                            band_hi,
+                                            &mut st.steps_per_tile,
+                                            &mut st.cur_max,
+                                            &mut st.scanner,
+                                            &mut cigar_elements,
+                                            &mut cigar_str,
+                                            config,
+                                        )
+                                    },
+                                )?;
                             st.bam_any_passed |= seq_passed;
+                            st.total_reads = st.total_reads.saturating_add(seq_tot);
+                            st.duplicate_reads = st.duplicate_reads.saturating_add(seq_dup);
                         }
                     }
                 }
@@ -2181,7 +2309,15 @@ fn scan_multi_regions_max_read_lengths(
 
     Ok(states
         .into_iter()
-        .map(|st| (st.steps_per_tile, st.cur_max, st.active_bams))
+        .map(|st| {
+            (
+                st.steps_per_tile,
+                st.cur_max,
+                st.active_bams,
+                st.total_reads,
+                st.duplicate_reads,
+            )
+        })
         .collect())
 }
 
@@ -2195,6 +2331,7 @@ fn scan_multi_regions_max_read_lengths(
 ///    BAM2 in Somatic mode (`SomaticMode.java:104-122`).
 /// 3. `active_bam_limit`: count of colon-separated BAM readers visited across the full parent
 ///    region before `RecordPreprocessor.java:57-64` (`idx > 0 && !any_passed`) stops (`AR-9`).
+/// 4. `(total_reads, duplicate_reads)`: exact parent-region `RecordPreprocessor` counts when `-t` is set (`AR-5`).
 fn scan_multi_tile_max_read_lengths(
     bam_paths: &[String],
     reg: &crate::regions::Region,
@@ -2205,7 +2342,7 @@ fn scan_multi_tile_max_read_lengths(
 ) -> Result<MultiTilePrescanOut, VardictError> {
     let mut steps_per_tile = vec![Vec::new(); reg_tiles.len()];
     if reg_tiles.is_empty() {
-        return Ok((steps_per_tile, initial_max_rl, 0));
+        return Ok((steps_per_tile, initial_max_rl, 0, 0, 0));
     }
     let mut cur_max = initial_max_rl;
     let query_start = reg.start.to_zero_based();
@@ -2310,7 +2447,15 @@ fn scan_multi_tile_max_read_lengths(
         }
     }
 
-    Ok((steps_per_tile, cur_max, active_bam_limit))
+    let (tot, dup) = if config.dedup {
+        (
+            preprocessor.total_reads as u64,
+            preprocessor.duplicate_reads as u64,
+        )
+    } else {
+        (0, 0)
+    };
+    Ok((steps_per_tile, cur_max, active_bam_limit, tot, dup))
 }
 
 const DEFAULT_VCF_SPILL_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
@@ -2434,18 +2579,87 @@ fn read_spill_str<R: std::io::Read>(r: &mut R) -> std::io::Result<String> {
     String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+#[inline]
+fn canonical_af_4dp(af: f64) -> f64 {
+    let r = crate::types::round_half_even(af, 4);
+    if !r.is_finite() || r == 0.0 {
+        0.0
+    } else {
+        r
+    }
+}
+
+#[inline]
+fn normalize_af_value(af: f64) -> f64 {
+    if !af.is_finite() || af == 0.0 {
+        0.0
+    } else {
+        af
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AllAllelesMeta {
+    end_pos: i32,
+    ref_allele: String,
+    var_allele: String,
+    seq: u64,
+}
+
+fn write_all_alleles_meta<W: std::io::Write>(
+    w: &mut W,
+    meta: Option<&AllAllelesMeta>,
+) -> std::io::Result<()> {
+    match meta {
+        None => write_spill_u8(w, 0),
+        Some(m) => {
+            write_spill_u8(w, 1)?;
+            write_spill_i32(w, m.end_pos)?;
+            write_spill_str(w, &m.ref_allele)?;
+            write_spill_str(w, &m.var_allele)?;
+            write_spill_u64(w, m.seq)
+        }
+    }
+}
+
+fn read_all_alleles_meta<R: std::io::Read>(
+    r: &mut R,
+) -> std::io::Result<Option<Box<AllAllelesMeta>>> {
+    if !read_spill_bool(r)? {
+        return Ok(None);
+    }
+    let end_pos = read_spill_i32(r)?;
+    let ref_allele = read_spill_str(r)?;
+    let var_allele = read_spill_str(r)?;
+    let seq = read_spill_u64(r)?;
+    Ok(Some(Box::new(AllAllelesMeta {
+        end_pos,
+        ref_allele,
+        var_allele,
+        seq,
+    })))
+}
+
 trait SpillableCandidate: Sized {
     fn start_pos(&self) -> i32;
     fn af_4dp(&self) -> f64;
+    fn normalize_af(&mut self);
+    fn all_alleles_meta(&self) -> Option<&AllAllelesMeta>;
+    fn all_alleles_seq(&self) -> u64 {
+        self.all_alleles_meta().map_or(0, |m| m.seq)
+    }
+    fn set_all_alleles_seq(&mut self, seq: u64);
     fn approx_heap_bytes(&self) -> usize;
     fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()>;
     fn read_from<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Self>>;
 }
 
+#[derive(Clone, Debug)]
 struct RawVcfCandidate {
     start_pos: i32,
     af_4dp: f64,
     event: crate::output::vcf::SingleVcfEvent,
+    all_alleles: Option<Box<AllAllelesMeta>>,
 }
 
 impl SpillableCandidate for RawVcfCandidate {
@@ -2460,32 +2674,62 @@ impl SpillableCandidate for RawVcfCandidate {
     }
 
     #[inline]
+    fn normalize_af(&mut self) {
+        self.af_4dp = normalize_af_value(self.af_4dp);
+    }
+
+    #[inline]
+    fn all_alleles_meta(&self) -> Option<&AllAllelesMeta> {
+        self.all_alleles.as_deref()
+    }
+
+    #[inline]
+    fn set_all_alleles_seq(&mut self, seq: u64) {
+        match self.all_alleles.as_mut() {
+            Some(m) => m.seq = seq,
+            None => {
+                self.all_alleles = Some(Box::new(AllAllelesMeta {
+                    end_pos: self.start_pos,
+                    ref_allele: String::new(),
+                    var_allele: String::new(),
+                    seq,
+                }));
+            }
+        }
+    }
+
+    #[inline]
     fn approx_heap_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
-            + match &self.event {
+            .saturating_add(match &self.event {
                 crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
                 _ => 0,
-            }
+            })
+            .saturating_add(self.all_alleles.as_ref().map_or(0, |m| {
+                std::mem::size_of::<AllAllelesMeta>()
+                    .saturating_add(m.ref_allele.capacity())
+                    .saturating_add(m.var_allele.capacity())
+            }))
     }
 
     fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
         write_spill_i32(w, self.start_pos)?;
         write_spill_f64(w, self.af_4dp)?;
         match &self.event {
-            crate::output::vcf::SingleVcfEvent::Skip => write_spill_u8(w, 0),
+            crate::output::vcf::SingleVcfEvent::Skip => write_spill_u8(w, 0)?,
             crate::output::vcf::SingleVcfEvent::AmpBiasSnvClusterProbe { start } => {
                 write_spill_u8(w, 1)?;
-                write_spill_i32(w, *start)
+                write_spill_i32(w, *start)?;
             }
             crate::output::vcf::SingleVcfEvent::SvSplitreadFlush {
                 cluster_probe_start,
             } => {
                 write_spill_u8(w, 2)?;
                 match cluster_probe_start {
-                    None => write_spill_u8(w, 0),
+                    None => write_spill_u8(w, 0)?,
                     Some(start) => {
                         write_spill_u8(w, 1)?;
-                        write_spill_i32(w, *start)
+                        write_spill_i32(w, *start)?;
                     }
                 }
             }
@@ -2498,9 +2742,10 @@ impl SpillableCandidate for RawVcfCandidate {
                 write_spill_i32(w, rec.start)?;
                 write_spill_u8(w, u8::from(rec.type_snv))?;
                 write_spill_u8(w, u8::from(rec.pre_cluster_non_amp_empty))?;
-                write_spill_u8(w, u8::from(rec.has_ampbias))
+                write_spill_u8(w, u8::from(rec.has_ampbias))?;
             }
         }
+        write_all_alleles_meta(w, self.all_alleles.as_deref())
     }
 
     fn read_from<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Self>> {
@@ -2558,18 +2803,22 @@ impl SpillableCandidate for RawVcfCandidate {
                 ));
             }
         };
+        let all_alleles = read_all_alleles_meta(r)?;
         Ok(Some(Self {
             start_pos,
             af_4dp,
             event,
+            all_alleles,
         }))
     }
 }
 
+#[derive(Clone, Debug)]
 struct SomaticVcfCandidate {
     start_pos: i32,
     af_4dp: f64,
     record: Option<crate::output::vcf::PairedVcfRecord>,
+    all_alleles: Option<Box<AllAllelesMeta>>,
 }
 
 impl SpillableCandidate for SomaticVcfCandidate {
@@ -2584,15 +2833,46 @@ impl SpillableCandidate for SomaticVcfCandidate {
     }
 
     #[inline]
+    fn normalize_af(&mut self) {
+        self.af_4dp = normalize_af_value(self.af_4dp);
+    }
+
+    #[inline]
+    fn all_alleles_meta(&self) -> Option<&AllAllelesMeta> {
+        self.all_alleles.as_deref()
+    }
+
+    #[inline]
+    fn set_all_alleles_seq(&mut self, seq: u64) {
+        match self.all_alleles.as_mut() {
+            Some(m) => m.seq = seq,
+            None => {
+                self.all_alleles = Some(Box::new(AllAllelesMeta {
+                    end_pos: self.start_pos,
+                    ref_allele: String::new(),
+                    var_allele: String::new(),
+                    seq,
+                }));
+            }
+        }
+    }
+
+    #[inline]
     fn approx_heap_bytes(&self) -> usize {
-        std::mem::size_of::<Self>() + self.record.as_ref().map_or(0, |rec| rec.capacity())
+        std::mem::size_of::<Self>()
+            .saturating_add(self.record.as_ref().map_or(0, |rec| rec.capacity()))
+            .saturating_add(self.all_alleles.as_ref().map_or(0, |m| {
+                std::mem::size_of::<AllAllelesMeta>()
+                    .saturating_add(m.ref_allele.capacity())
+                    .saturating_add(m.var_allele.capacity())
+            }))
     }
 
     fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
         write_spill_i32(w, self.start_pos)?;
         write_spill_f64(w, self.af_4dp)?;
         match &self.record {
-            None => write_spill_u8(w, 0),
+            None => write_spill_u8(w, 0)?,
             Some(rec) => {
                 let (filter_start, filter_end) = rec.filter_offsets();
                 write_spill_u8(w, 1)?;
@@ -2601,9 +2881,10 @@ impl SpillableCandidate for SomaticVcfCandidate {
                 write_spill_u64(w, filter_end as u64)?;
                 write_spill_i32(w, rec.start)?;
                 write_spill_u8(w, u8::from(rec.type_snv))?;
-                write_spill_u8(w, u8::from(rec.status_somatic))
+                write_spill_u8(w, u8::from(rec.status_somatic))?;
             }
         }
+        write_all_alleles_meta(w, self.all_alleles.as_deref())
     }
 
     fn read_from<R: std::io::Read>(r: &mut R) -> std::io::Result<Option<Self>> {
@@ -2639,10 +2920,12 @@ impl SpillableCandidate for SomaticVcfCandidate {
         } else {
             None
         };
+        let all_alleles = read_all_alleles_meta(r)?;
         Ok(Some(Self {
             start_pos,
             af_4dp,
             record,
+            all_alleles,
         }))
     }
 }
@@ -2725,6 +3008,7 @@ const MAX_SPILL_MERGE_FANIN: usize = 64;
 enum RunSource<T> {
     File(std::io::BufReader<std::fs::File>),
     Mem(std::collections::btree_map::IntoValues<i32, T>),
+    MemVec(std::vec::IntoIter<T>),
 }
 
 impl<T: SpillableCandidate> RunSource<T> {
@@ -2732,8 +3016,117 @@ impl<T: SpillableCandidate> RunSource<T> {
         match self {
             Self::File(r) => T::read_from(r).map_err(VardictError::Io),
             Self::Mem(it) => Ok(it.next()),
+            Self::MemVec(it) => Ok(it.next()),
         }
     }
+}
+
+#[inline]
+fn cmp_all_alleles_emit_order<V: SpillableCandidate>(a: &V, b: &V) -> std::cmp::Ordering {
+    a.start_pos()
+        .cmp(&b.start_pos())
+        .then_with(|| b.af_4dp().total_cmp(&a.af_4dp()))
+        .then_with(|| a.all_alleles_seq().cmp(&b.all_alleles_seq()))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AllAllelesHeapKey {
+    start_pos: i32,
+    af_4dp: f64,
+    seq: u64,
+    run_idx: usize,
+}
+
+impl PartialEq for AllAllelesHeapKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for AllAllelesHeapKey {}
+
+impl PartialOrd for AllAllelesHeapKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for AllAllelesHeapKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .start_pos
+            .cmp(&self.start_pos)
+            .then_with(|| self.af_4dp.total_cmp(&other.af_4dp))
+            .then_with(|| other.seq.cmp(&self.seq))
+            .then_with(|| other.run_idx.cmp(&self.run_idx))
+    }
+}
+
+fn merge_run_sources_all_alleles<V, F>(
+    mut sources: Vec<RunSource<V>>,
+    mut on_winner: F,
+) -> Result<(), VardictError>
+where
+    V: SpillableCandidate,
+    F: FnMut(V) -> Result<(), VardictError>,
+{
+    let mut heads: Vec<Option<V>> = Vec::with_capacity(sources.len());
+    let mut heap: std::collections::BinaryHeap<AllAllelesHeapKey> =
+        std::collections::BinaryHeap::new();
+    for (run_idx, src) in sources.iter_mut().enumerate() {
+        let mut first = src.next_item()?;
+        if let Some(ref mut item) = first {
+            item.normalize_af();
+            heap.push(AllAllelesHeapKey {
+                start_pos: item.start_pos(),
+                af_4dp: item.af_4dp(),
+                seq: item.all_alleles_seq(),
+                run_idx,
+            });
+        }
+        heads.push(first);
+    }
+
+    let mut cur_pos: Option<i32> = None;
+    let mut seen_at_pos: rustc_hash::FxHashSet<(i32, String, String)> =
+        rustc_hash::FxHashSet::default();
+
+    while let Some(top_key) = heap.pop() {
+        let run_idx = top_key.run_idx;
+        let Some(cand) = heads.get_mut(run_idx).and_then(Option::take) else {
+            continue;
+        };
+        if let Some(src) = sources.get_mut(run_idx) {
+            if let Some(mut next_item) = src.next_item()? {
+                next_item.normalize_af();
+                let nk = AllAllelesHeapKey {
+                    start_pos: next_item.start_pos(),
+                    af_4dp: next_item.af_4dp(),
+                    seq: next_item.all_alleles_seq(),
+                    run_idx,
+                };
+                if let Some(slot) = heads.get_mut(run_idx) {
+                    *slot = Some(next_item);
+                }
+                heap.push(nk);
+            }
+        }
+
+        let pos = cand.start_pos();
+        if cur_pos != Some(pos) {
+            seen_at_pos.clear();
+            cur_pos = Some(pos);
+        }
+        let seen_key = match cand.all_alleles_meta() {
+            Some(m) => (m.end_pos, m.ref_allele.clone(), m.var_allele.clone()),
+            None => (pos, String::new(), String::new()),
+        };
+        if !seen_at_pos.insert(seen_key) {
+            continue;
+        }
+        on_winner(cand)?;
+    }
+    Ok(())
 }
 
 fn merge_run_sources<V, F>(
@@ -2806,16 +3199,29 @@ fn resolve_preferred_spill_parent(output_path: Option<&str>) -> Option<std::path
     Some(parent.to_path_buf())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct AllAllelesKey {
+    start_pos: i32,
+    end_pos: i32,
+    ref_allele: String,
+    var_allele: String,
+}
+
 /// Bounded-memory per-chromosome VCF candidate accumulator (`AGENTS.md §10`).
-/// Keeps up to `max_bytes` of per-chromosome sorted `BTreeMap<i32, V>` entries in RAM,
+/// Keeps up to `max_bytes` of per-chromosome sorted `BTreeMap<i32, V>` (default `$ALL = 1`)
+/// or associative `FxHashMap<AllAllelesKey, V>` (`--vcf-all-alleles`) entries in RAM,
 /// spilling sorted runs to a temporary directory when exceeded and k-way merging runs
-/// in chronological tile order on final chromosome emission.
+/// on final chromosome emission.
 struct SpillableVcfAccumulator<V: SpillableCandidate> {
     in_memory: indexmap::IndexMap<String, std::collections::BTreeMap<i32, V>>,
+    in_memory_all_alleles: indexmap::IndexMap<String, rustc_hash::FxHashMap<AllAllelesKey, V>>,
     spilled_runs: indexmap::IndexMap<String, Vec<std::path::PathBuf>>,
     current_bytes: usize,
     max_bytes: usize,
     max_fanin: usize,
+    vcf_all_alleles: bool,
+    preserve_mixed_sex_contigs: bool,
+    next_seq: u64,
     preferred_spill_parent: Option<std::path::PathBuf>,
     temp_dir: Option<SpillTempDir>,
     next_spill_id: usize,
@@ -2839,6 +3245,8 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
         let max_bytes = DEFAULT_VCF_SPILL_BYTES;
 
         let mut acc = Self::with_max_bytes(max_bytes);
+        acc.vcf_all_alleles = config.vcf_all_alleles;
+        acc.preserve_mixed_sex_contigs = config.compat.preserve_mixed_sex_contigs;
         acc.preferred_spill_parent = resolve_preferred_spill_parent(config.output_path.as_deref());
         acc
     }
@@ -2850,17 +3258,83 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
     fn with_limits(max_bytes: usize, max_fanin: usize) -> Self {
         Self {
             in_memory: indexmap::IndexMap::new(),
+            in_memory_all_alleles: indexmap::IndexMap::new(),
             spilled_runs: indexmap::IndexMap::new(),
             current_bytes: 0,
             max_bytes,
             max_fanin: max_fanin.max(2),
+            vcf_all_alleles: false,
+            preserve_mixed_sex_contigs: false,
+            next_seq: 0,
             preferred_spill_parent: None,
             temp_dir: None,
             next_spill_id: 0,
         }
     }
 
-    fn insert(&mut self, chr: &str, cand: V) -> Result<(), VardictError> {
+    fn insert(&mut self, chr: &str, mut cand: V) -> Result<(), VardictError> {
+        if self.vcf_all_alleles {
+            let seq = self.next_seq;
+            self.next_seq = self.next_seq.saturating_add(1);
+            cand.normalize_af();
+            cand.set_all_alleles_seq(seq);
+            let key = match cand.all_alleles_meta() {
+                Some(m) => AllAllelesKey {
+                    start_pos: cand.start_pos(),
+                    end_pos: m.end_pos,
+                    ref_allele: m.ref_allele.clone(),
+                    var_allele: m.var_allele.clone(),
+                },
+                None => AllAllelesKey {
+                    start_pos: cand.start_pos(),
+                    end_pos: cand.start_pos(),
+                    ref_allele: String::new(),
+                    var_allele: String::new(),
+                },
+            };
+            let chr_map = if let Some(m) = self.in_memory_all_alleles.get_mut(chr) {
+                m
+            } else {
+                if !self.spilled_runs.contains_key(chr) {
+                    self.spilled_runs.insert(chr.to_string(), Vec::new());
+                }
+                self.in_memory_all_alleles
+                    .entry(chr.to_string())
+                    .or_default()
+            };
+            match chr_map.entry(key) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let key_bytes = std::mem::size_of::<AllAllelesKey>()
+                        .saturating_add(e.key().ref_allele.capacity())
+                        .saturating_add(e.key().var_allele.capacity())
+                        .saturating_add(32);
+                    let new_bytes = cand.approx_heap_bytes().saturating_add(key_bytes);
+                    self.current_bytes = self.current_bytes.saturating_add(new_bytes);
+                    e.insert(cand);
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let cand_beats = cand
+                        .af_4dp()
+                        .total_cmp(&e.get().af_4dp())
+                        .then_with(|| e.get().all_alleles_seq().cmp(&cand.all_alleles_seq()))
+                        == std::cmp::Ordering::Greater;
+                    if cand_beats {
+                        let new_bytes = cand.approx_heap_bytes();
+                        let old_bytes = e.get().approx_heap_bytes();
+                        self.current_bytes = self
+                            .current_bytes
+                            .saturating_sub(old_bytes)
+                            .saturating_add(new_bytes);
+                        e.insert(cand);
+                    }
+                }
+            }
+            if self.current_bytes >= self.max_bytes {
+                self.spill_to_disk()?;
+            }
+            return Ok(());
+        }
+
         let chr_map = if let Some(m) = self.in_memory.get_mut(chr) {
             m
         } else {
@@ -2894,6 +3368,49 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
     }
 
     fn spill_to_disk(&mut self) -> Result<(), VardictError> {
+        if self.vcf_all_alleles {
+            if self.in_memory_all_alleles.is_empty() {
+                self.current_bytes = 0;
+                return Ok(());
+            }
+            let dir = match &self.temp_dir {
+                Some(d) => d,
+                None => {
+                    let d =
+                        SpillTempDir::new_with_preferred(self.preferred_spill_parent.as_deref())
+                            .map_err(VardictError::Io)?;
+                    #[cfg(test)]
+                    {
+                        assert!(d.path().is_dir(), "spill directory must exist when created");
+                        TEST_LAST_VCF_SPILL_DIR
+                            .with(|slot| *slot.borrow_mut() = Some(d.path().to_path_buf()));
+                    }
+                    self.temp_dir.insert(d)
+                }
+            };
+            for (chr, map) in self.in_memory_all_alleles.drain(..) {
+                if map.is_empty() {
+                    continue;
+                }
+                let mut sorted: Vec<V> = map.into_values().collect();
+                sorted.sort_unstable_by(cmp_all_alleles_emit_order);
+                let path = dir
+                    .path()
+                    .join(format!("vcf_spill_{}.bin", self.next_spill_id));
+                self.next_spill_id += 1;
+                let file = create_private_spill_file(&path).map_err(VardictError::Io)?;
+                let mut writer = std::io::BufWriter::with_capacity(BUFFER_CAPACITY, file);
+                for cand in sorted {
+                    cand.write_to(&mut writer).map_err(VardictError::Io)?;
+                }
+                use std::io::Write as _;
+                writer.flush().map_err(VardictError::Io)?;
+                self.spilled_runs.entry(chr).or_default().push(path);
+            }
+            self.current_bytes = 0;
+            return Ok(());
+        }
+
         if self.in_memory.is_empty() {
             self.current_bytes = 0;
             return Ok(());
@@ -2937,12 +3454,97 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
     where
         F: FnMut(&str, V) -> Result<(), VardictError>,
     {
-        if self.spilled_runs.is_empty() && self.in_memory.is_empty() {
+        if self.spilled_runs.is_empty()
+            && self.in_memory.is_empty()
+            && self.in_memory_all_alleles.is_empty()
+        {
             return Ok(());
         }
         let max_fanin = self.max_fanin.max(2);
         let chr_keys: Vec<String> = self.spilled_runs.keys().cloned().collect();
-        for chr in crate::output::vcf::perl_reorder_chromosomes(&chr_keys) {
+        for chr in crate::output::vcf::reorder_chromosomes_with_compat(
+            &chr_keys,
+            self.preserve_mixed_sex_contigs,
+        ) {
+            if self.vcf_all_alleles {
+                let mem_map = self
+                    .in_memory_all_alleles
+                    .swap_remove(&chr)
+                    .unwrap_or_default();
+                let mut mem_sorted: Vec<V> = mem_map.into_values().collect();
+                mem_sorted.sort_unstable_by(cmp_all_alleles_emit_order);
+                let mut run_paths = self.spilled_runs.swap_remove(&chr).unwrap_or_default();
+                if run_paths.is_empty() {
+                    for cand in mem_sorted {
+                        on_chr_winner(&chr, cand)?;
+                    }
+                    continue;
+                }
+
+                while run_paths.len() > max_fanin {
+                    let mut next_gen = Vec::with_capacity(run_paths.len().div_ceil(max_fanin));
+                    for chunk in run_paths.chunks(max_fanin) {
+                        if let [single] = chunk {
+                            next_gen.push(single.clone());
+                            continue;
+                        }
+                        let dir = match &self.temp_dir {
+                            Some(d) => d,
+                            None => {
+                                let d = SpillTempDir::new_with_preferred(
+                                    self.preferred_spill_parent.as_deref(),
+                                )
+                                .map_err(VardictError::Io)?;
+                                self.temp_dir.insert(d)
+                            }
+                        };
+                        let out_path = dir
+                            .path()
+                            .join(format!("vcf_spill_{}.bin", self.next_spill_id));
+                        self.next_spill_id += 1;
+                        let mut chunk_sources: Vec<RunSource<V>> = Vec::with_capacity(chunk.len());
+                        for p in chunk {
+                            let f = std::fs::File::open(p).map_err(VardictError::Io)?;
+                            chunk_sources.push(RunSource::File(std::io::BufReader::with_capacity(
+                                BUFFER_CAPACITY,
+                                f,
+                            )));
+                        }
+                        let out_file =
+                            create_private_spill_file(&out_path).map_err(VardictError::Io)?;
+                        let mut writer =
+                            std::io::BufWriter::with_capacity(BUFFER_CAPACITY, out_file);
+                        merge_run_sources_all_alleles(chunk_sources, |winner: V| {
+                            winner.write_to(&mut writer).map_err(VardictError::Io)
+                        })?;
+                        use std::io::Write as _;
+                        writer.flush().map_err(VardictError::Io)?;
+                        for p in chunk {
+                            let _ = std::fs::remove_file(p);
+                        }
+                        next_gen.push(out_path);
+                    }
+                    run_paths = next_gen;
+                }
+
+                let mut sources: Vec<RunSource<V>> = Vec::with_capacity(run_paths.len() + 1);
+                for p in &run_paths {
+                    let f = std::fs::File::open(p).map_err(VardictError::Io)?;
+                    sources.push(RunSource::File(std::io::BufReader::with_capacity(
+                        BUFFER_CAPACITY,
+                        f,
+                    )));
+                }
+                if !mem_sorted.is_empty() {
+                    sources.push(RunSource::MemVec(mem_sorted.into_iter()));
+                }
+                merge_run_sources_all_alleles(sources, |winner| on_chr_winner(&chr, winner))?;
+                for p in &run_paths {
+                    let _ = std::fs::remove_file(p);
+                }
+                continue;
+            }
+
             let mem_map = self.in_memory.swap_remove(&chr).unwrap_or_default();
             let mut run_paths = self.spilled_runs.swap_remove(&chr).unwrap_or_default();
             if run_paths.is_empty() {
@@ -5045,9 +5647,11 @@ struct PreparedTileSeed {
     bam1_steps: Vec<MaxRlStep>,
     bam1_final: i32,
     bam1_active_bams: usize,
+    bam1_read_counts: (u64, u64),
     bam2_steps: Vec<MaxRlStep>,
     bam2_final: i32,
     bam2_active_bams: usize,
+    bam2_read_counts: (u64, u64),
 }
 
 fn parse_target_regions(
@@ -5121,7 +5725,7 @@ fn prepare_tiles_and_prescan(
             MAX_BAND_CANDIDATE_BYTES,
         )?;
         if let Some(bam2_list) = bam2_bams {
-            let bam1_finals: Vec<i32> = bam1_scanned.iter().map(|&(_, f, _)| f).collect();
+            let bam1_finals: Vec<i32> = bam1_scanned.iter().map(|&(_, f, _, _, _)| f).collect();
             let bam2_scanned = scan_multi_regions_max_read_lengths(
                 &config.bam,
                 bam2_list,
@@ -5135,8 +5739,8 @@ fn prepare_tiles_and_prescan(
                 MAX_BAND_CANDIDATE_BYTES,
             )?;
             for (
-                (&idx, (bam1_steps, bam1_final, bam1_active_bams)),
-                (bam2_steps, bam2_final, bam2_active_bams),
+                (&idx, (bam1_steps, bam1_final, bam1_active_bams, bam1_tot, bam1_dup)),
+                (bam2_steps, bam2_final, bam2_active_bams, bam2_tot, bam2_dup),
             ) in multi_idxs.iter().zip(bam1_scanned).zip(bam2_scanned)
             {
                 if let Some(reg_tiles) = reg_tiles_list.get(idx) {
@@ -5147,16 +5751,18 @@ fn prepare_tiles_and_prescan(
                                 bam1_steps: s1,
                                 bam1_final,
                                 bam1_active_bams,
+                                bam1_read_counts: (bam1_tot, bam1_dup),
                                 bam2_steps: s2,
                                 bam2_final,
                                 bam2_active_bams,
+                                bam2_read_counts: (bam2_tot, bam2_dup),
                             },
                         );
                     }
                 }
             }
         } else {
-            for (&idx, (bam1_steps, bam1_final, bam1_active_bams)) in
+            for (&idx, (bam1_steps, bam1_final, bam1_active_bams, bam1_tot, bam1_dup)) in
                 multi_idxs.iter().zip(bam1_scanned)
             {
                 if let Some(reg_tiles) = reg_tiles_list.get(idx) {
@@ -5167,9 +5773,11 @@ fn prepare_tiles_and_prescan(
                                 bam1_steps: s1,
                                 bam1_final,
                                 bam1_active_bams,
+                                bam1_read_counts: (bam1_tot, bam1_dup),
                                 bam2_steps: Vec::new(),
                                 bam2_final: 0,
                                 bam2_active_bams: 0,
+                                bam2_read_counts: (0, 0),
                             },
                         );
                     }
@@ -5232,6 +5840,15 @@ fn run_with_writer_inner<W: EngineWriter>(
         return run_amplicon(config, &chromosomes_lengths, regions, writer, telemetry);
     }
 
+    let strict_chr_bounds: StrictChrIntervals =
+        if config.compat.strict_region_bounds && !config.splice {
+            Some(std::sync::Arc::new(build_strict_chr_target_intervals(
+                &regions,
+            )))
+        } else {
+            None
+        };
+
     let (tile_batches, multi_tile_seeds) = prepare_tiles_and_prescan(
         config,
         &bam_list,
@@ -5243,6 +5860,7 @@ fn run_with_writer_inner<W: EngineWriter>(
 
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
+    let strict_chr_bounds_clone = strict_chr_bounds;
 
     // Prevalidate VCF header & contigs before tile execution so malformed `.fai`
     // fails fast, but defer writing VCF header bytes until all tiles succeed so
@@ -5273,6 +5891,15 @@ fn run_with_writer_inner<W: EngineWriter>(
             chr: String,
             records: Vec<RawVcfCandidate>,
         },
+        SplitVcf {
+            chr: String,
+            rows: Vec<SplitVarRow<Option<RawVcfCandidate>>>,
+            is_split_tile: bool,
+            tile_start: crate::types::Pos1,
+            tile_end: crate::types::Pos1,
+            original_start: crate::types::Pos1,
+            original_end: crate::types::Pos1,
+        },
     }
 
     impl SimpleTileOutput {
@@ -5292,24 +5919,40 @@ fn run_with_writer_inner<W: EngineWriter>(
                     .saturating_add(
                         records
                             .capacity()
+                            .saturating_sub(records.len())
                             .saturating_mul(std::mem::size_of::<RawVcfCandidate>()),
                     )
                     .saturating_add(
                         records
                             .iter()
-                            .map(|r| match &r.event {
-                                crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
-                                _ => 0,
-                            })
+                            .map(SpillableCandidate::approx_heap_bytes)
                             .fold(0usize, usize::saturating_add),
                     ),
+                Self::SplitVcf { chr, rows, .. } => {
+                    chr.capacity()
+                        .saturating_add(rows.capacity().saturating_mul(std::mem::size_of::<
+                            SplitVarRow<Option<RawVcfCandidate>>,
+                        >()))
+                        .saturating_add(
+                            rows.iter()
+                                .map(|r| {
+                                    r.approx_heap_bytes_with(|opt| {
+                                        opt.as_ref()
+                                            .map_or(0, SpillableCandidate::approx_heap_bytes)
+                                    })
+                                })
+                                .fold(0usize, usize::saturating_add),
+                        )
+                }
             }
         }
     }
 
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> =
         SpillableVcfAccumulator::from_config(config);
-    let mut split_var_deduper = SplitVarDeduper::default();
+    let mut split_var_deduper: SplitVarDeduper<String> = SplitVarDeduper::default();
+    let mut vcf_tile_deduper: SplitVarDeduper<Option<RawVcfCandidate>> = SplitVarDeduper::default();
+    let mut cur_vcf_dedup_chr: Option<String> = None;
 
     // Process tiles in parallel, print variants in deterministic index order
     crate::runner::run_parallel_batched_for_bam_weighted(
@@ -5347,21 +5990,33 @@ fn run_with_writer_inner<W: EngineWriter>(
                 &region_for_pileup
             };
             let is_split_tile = tile.start != tile.original_start || tile.end != tile.original_end;
-            let (steps_slice, post_max_rl, parent_orig_start, parent_active_bams) =
-                if is_split_tile && !multi_tile_seeds.is_empty() {
-                    if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
-                        (
-                            seed.bam1_steps.as_slice(),
-                            Some(seed.bam1_final),
-                            Some(tile.original_start),
-                            Some(seed.bam1_active_bams),
-                        )
-                    } else {
-                        (&[] as &[MaxRlStep], None, Some(tile.original_start), None)
-                    }
+            let (
+                steps_slice,
+                post_max_rl,
+                parent_orig_start,
+                parent_active_bams,
+                parent_read_counts,
+            ) = if is_split_tile && !multi_tile_seeds.is_empty() {
+                if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
+                    (
+                        seed.bam1_steps.as_slice(),
+                        Some(seed.bam1_final),
+                        Some(tile.original_start),
+                        Some(seed.bam1_active_bams),
+                        Some(seed.bam1_read_counts),
+                    )
                 } else {
-                    (&[] as &[MaxRlStep], None, None, None)
-                };
+                    (
+                        &[] as &[MaxRlStep],
+                        None,
+                        Some(tile.original_start),
+                        None,
+                        None,
+                    )
+                }
+            } else {
+                (&[] as &[MaxRlStep], None, None, None, None)
+            };
             let var_data = run_pipeline_on_records_ext(
                 &bam_list,
                 &tile.chr,
@@ -5383,6 +6038,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                 post_max_rl,
                 parent_orig_start,
                 parent_active_bams,
+                parent_read_counts,
             )?;
 
             if config_clone.splice {
@@ -5398,7 +6054,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                     rows.push(SplitVarRow {
                         id: SplitVarIdentity::default(),
                         is_sv: false,
-                        line: format!(
+                        payload: format!(
                             "{}\t{}\t{}\t{}",
                             config_clone.sample, tile.chr, intron, count
                         ),
@@ -5441,11 +6097,15 @@ fn run_with_writer_inner<W: EngineWriter>(
             } else {
                 builder.build_aligned_variants(&var_data)
             };
-            let variants = crate::postprocess::simple::simple_post_process_owned(
+            let chr_strict_slice = strict_chr_bounds_clone
+                .as_ref()
+                .map(|m| m.get(&builder_region.chr).map_or(&[][..], Vec::as_slice));
+            let variants = crate::postprocess::simple::simple_post_process_owned_with_bounds(
                 &config_clone,
                 &builder_region,
                 aligned_variants,
                 &var_data.splice,
+                chr_strict_slice,
             );
 
             if config_clone.emit_intermediate {
@@ -5513,7 +6173,11 @@ fn run_with_writer_inner<W: EngineWriter>(
                             line.push_str(&v.debug);
                         }
                         let is_sv = !v.sv.is_empty() || v.var_allele.contains('<');
-                        rows.push(SplitVarRow { id, is_sv, line });
+                        rows.push(SplitVarRow {
+                            id,
+                            is_sv,
+                            payload: line,
+                        });
                     }
                     Ok(SimpleTileOutput::Lines {
                         rows,
@@ -5524,14 +6188,71 @@ fn run_with_writer_inner<W: EngineWriter>(
                         original_end: tile.original_end,
                     })
                 }
+            } else if config_clone.vcf_all_alleles && is_split_tile {
+                let mut scratch = String::with_capacity(512);
+                let ids = build_simple_split_var_identities(&variants, true);
+                let mut rows = Vec::with_capacity(variants.len());
+                for (v, id) in variants.into_iter().zip(ids) {
+                    let is_sv = !v.sv.is_empty() || v.var_allele.contains('<');
+                    let payload = if crate::output::vcf::perl_row_skipped(&v.ref_allele) {
+                        None
+                    } else {
+                        let start_pos = v.start_pos;
+                        let af_4dp = canonical_af_4dp(v.frequency);
+                        let all_alleles = Some(Box::new(AllAllelesMeta {
+                            end_pos: v.end_pos,
+                            ref_allele: v.ref_allele.clone(),
+                            var_allele: v.var_allele.clone(),
+                            seq: 0,
+                        }));
+                        let event = crate::output::vcf::build_single_vcf_event(
+                            &mut scratch,
+                            &v,
+                            &builder_region,
+                            &config_clone,
+                            None,
+                        );
+                        Some(RawVcfCandidate {
+                            start_pos,
+                            af_4dp,
+                            event,
+                            all_alleles,
+                        })
+                    };
+                    rows.push(SplitVarRow { id, is_sv, payload });
+                }
+                Ok(SimpleTileOutput::SplitVcf {
+                    chr: builder_region.chr,
+                    rows,
+                    is_split_tile: true,
+                    tile_start: tile.start,
+                    tile_end: tile.end,
+                    original_start: tile.original_start,
+                    original_end: tile.original_end,
+                })
             } else {
-                // `simple_post_process` already selected unique ascending `start_pos` winners
-                // when `!config_clone.emit_intermediate`.
                 let mut scratch = String::with_capacity(512);
                 let mut records = Vec::with_capacity(variants.len());
                 for v in variants {
+                    if config_clone.vcf_all_alleles
+                        && crate::output::vcf::perl_row_skipped(&v.ref_allele)
+                    {
+                        continue;
+                    }
                     let start_pos = v.start_pos;
-                    let af_4dp = crate::types::round_half_even(v.frequency, 4);
+                    let af_4dp = if config_clone.vcf_all_alleles {
+                        canonical_af_4dp(v.frequency)
+                    } else {
+                        crate::types::round_half_even(v.frequency, 4)
+                    };
+                    let all_alleles = config_clone.vcf_all_alleles.then(|| {
+                        Box::new(AllAllelesMeta {
+                            end_pos: v.end_pos,
+                            ref_allele: v.ref_allele.clone(),
+                            var_allele: v.var_allele.clone(),
+                            seq: 0,
+                        })
+                    });
                     let event = crate::output::vcf::build_single_vcf_event(
                         &mut scratch,
                         &v,
@@ -5543,6 +6264,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                         start_pos,
                         af_4dp,
                         event,
+                        all_alleles,
                     });
                 }
                 Ok(SimpleTileOutput::Vcf {
@@ -5555,7 +6277,7 @@ fn run_with_writer_inner<W: EngineWriter>(
             match output {
                 SimpleTileOutput::UnSplitVarBlock(block) => {
                     split_var_deduper
-                        .flush_before_unsplit_tile(|line| write_output_line(&mut writer, line))?;
+                        .flush_before_unsplit_tile(|line| write_output_line(&mut writer, &line))?;
                     if !block.is_empty() {
                         std::io::Write::write_all(&mut writer, block.as_bytes())
                             .map_err(VardictError::Io)?;
@@ -5576,20 +6298,71 @@ fn run_with_writer_inner<W: EngineWriter>(
                         tile_end,
                         original_start,
                         original_end,
-                        |line| write_output_line(&mut writer, line),
+                        |line| write_output_line(&mut writer, &line),
                     )?;
                 }
                 SimpleTileOutput::Vcf { chr, records } => {
+                    if let Some(prev_chr) = cur_vcf_dedup_chr.take() {
+                        vcf_tile_deduper.flush_before_unsplit_tile(|maybe_cand| {
+                            if let Some(cand) = maybe_cand {
+                                vcf_acc.insert(&prev_chr, cand)?;
+                            }
+                            Ok(())
+                        })?;
+                    }
                     for r in records {
                         vcf_acc.insert(&chr, r)?;
                     }
+                }
+                SimpleTileOutput::SplitVcf {
+                    chr,
+                    rows,
+                    is_split_tile,
+                    tile_start,
+                    tile_end,
+                    original_start,
+                    original_end,
+                } => {
+                    if cur_vcf_dedup_chr.as_deref() != Some(chr.as_str()) {
+                        if let Some(prev_chr) = cur_vcf_dedup_chr.take() {
+                            vcf_tile_deduper.flush_before_unsplit_tile(|maybe_cand| {
+                                if let Some(cand) = maybe_cand {
+                                    vcf_acc.insert(&prev_chr, cand)?;
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        cur_vcf_dedup_chr = Some(chr.clone());
+                    }
+                    vcf_tile_deduper.accept_tile(
+                        rows,
+                        is_split_tile,
+                        tile_start,
+                        tile_end,
+                        original_start,
+                        original_end,
+                        |maybe_cand| {
+                            if let Some(cand) = maybe_cand {
+                                vcf_acc.insert(&chr, cand)?;
+                            }
+                            Ok(())
+                        },
+                    )?;
                 }
             }
             Ok(())
         },
         SimpleTileOutput::approx_heap_bytes,
     )?;
-    split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, line))?;
+    split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, &line))?;
+    if let Some(last_chr) = cur_vcf_dedup_chr.take() {
+        vcf_tile_deduper.flush_all_pending(|maybe_cand| {
+            if let Some(cand) = maybe_cand {
+                vcf_acc.insert(&last_chr, cand)?;
+            }
+            Ok(())
+        })?;
+    }
 
     if let Some(ref contigs) = vcf_contigs {
         if config.column_header {
@@ -5742,15 +6515,13 @@ fn run_amplicon<W: EngineWriter>(
                     .saturating_add(
                         records
                             .capacity()
+                            .saturating_sub(records.len())
                             .saturating_mul(std::mem::size_of::<RawVcfCandidate>()),
                     )
                     .saturating_add(
                         records
                             .iter()
-                            .map(|r| match &r.event {
-                                crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
-                                _ => 0,
-                            })
+                            .map(SpillableCandidate::approx_heap_bytes)
                             .fold(0usize, usize::saturating_add),
                     ),
                 Self::Pileup {
@@ -5876,6 +6647,10 @@ fn run_amplicon<W: EngineWriter>(
             // BTreeSet iterates ascending: satisfies the sweep precondition,
             // and each covering list comes out in segment order via cached Arc
             // without materializing an intermediate BTreeMap<i32, Vec<_>>.
+            let strict_seg_bounds = config_clone
+                .compat
+                .strict_region_bounds
+                .then(|| crate::postprocess::amplicon::merge_segment_target_ranges(&segment));
             let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
             let mut results = Vec::new();
             crate::postprocess::amplicon::amplicon_post_process_streaming(
@@ -5888,11 +6663,16 @@ fn run_amplicon<W: EngineWriter>(
                 }),
                 &splice,
                 &mut |av| {
+                    if let Some(ref b) = strict_seg_bounds {
+                        if !interval_set_contains(b, av.variant.start_pos) {
+                            return Ok(());
+                        }
+                    }
                     results.push(av);
                     Ok(())
                 },
             )?;
-            if !config_clone.emit_intermediate {
+            if !config_clone.emit_intermediate && !config_clone.vcf_all_alleles {
                 results = crate::postprocess::amplicon::amplicon_select_vcf_rows(results);
             }
 
@@ -5920,13 +6700,28 @@ fn run_amplicon<W: EngineWriter>(
                 }
                 Ok(AmpliconSegmentOutput::UnSplitVarBlock(block))
             } else {
-                // `amplicon_post_process` already selected unique ascending `start_pos` winners
-                // via `amplicon_select_vcf_rows` when `!config_clone.emit_intermediate`.
                 let mut scratch = String::with_capacity(512);
                 let mut records = Vec::with_capacity(results.len());
                 for av in results {
+                    if config_clone.vcf_all_alleles
+                        && crate::output::vcf::perl_row_skipped(&av.variant.ref_allele)
+                    {
+                        continue;
+                    }
                     let start_pos = av.variant.start_pos;
-                    let af_4dp = crate::types::round_half_even(av.variant.frequency, 4);
+                    let af_4dp = if config_clone.vcf_all_alleles {
+                        canonical_af_4dp(av.variant.frequency)
+                    } else {
+                        crate::types::round_half_even(av.variant.frequency, 4)
+                    };
+                    let all_alleles = config_clone.vcf_all_alleles.then(|| {
+                        Box::new(AllAllelesMeta {
+                            end_pos: av.variant.end_pos,
+                            ref_allele: av.variant.ref_allele.clone(),
+                            var_allele: av.variant.var_allele.clone(),
+                            seq: 0,
+                        })
+                    });
                     let event = crate::output::vcf::build_single_vcf_event(
                         &mut scratch,
                         &av.variant,
@@ -5938,6 +6733,7 @@ fn run_amplicon<W: EngineWriter>(
                         start_pos,
                         af_4dp,
                         event,
+                        all_alleles,
                     });
                 }
                 Ok(AmpliconSegmentOutput::Vcf {
@@ -5967,6 +6763,9 @@ fn run_amplicon<W: EngineWriter>(
                     let Some(current_region) = segment.last() else {
                         return Ok(());
                     };
+                    let strict_seg_bounds = config.compat.strict_region_bounds.then(|| {
+                        crate::postprocess::amplicon::merge_segment_target_ranges(&segment)
+                    });
                     // Position → covering-amplicon pairs (AmpliconMode.java:57-60).
                     //
                     // -p emits a (null/ref) row at EVERY insert position, even with zero
@@ -5984,6 +6783,11 @@ fn run_amplicon<W: EngineWriter>(
                             crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
                             &mut |av| {
+                                if let Some(ref b) = strict_seg_bounds {
+                                    if !interval_set_contains(b, av.variant.start_pos) {
+                                        return Ok(());
+                                    }
+                                }
                                 if config.fisher {
                                     crate::output::table::amplicon_40_into(
                                         &mut row_buf,
@@ -6013,8 +6817,30 @@ fn run_amplicon<W: EngineWriter>(
                             crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
                             &mut |av| {
+                                if let Some(ref b) = strict_seg_bounds {
+                                    if !interval_set_contains(b, av.variant.start_pos) {
+                                        return Ok(());
+                                    }
+                                }
+                                if config.vcf_all_alleles
+                                    && crate::output::vcf::perl_row_skipped(&av.variant.ref_allele)
+                                {
+                                    return Ok(());
+                                }
                                 let start_pos = av.variant.start_pos;
-                                let af_4dp = crate::types::round_half_even(av.variant.frequency, 4);
+                                let af_4dp = if config.vcf_all_alleles {
+                                    canonical_af_4dp(av.variant.frequency)
+                                } else {
+                                    crate::types::round_half_even(av.variant.frequency, 4)
+                                };
+                                let all_alleles = config.vcf_all_alleles.then(|| {
+                                    Box::new(AllAllelesMeta {
+                                        end_pos: av.variant.end_pos,
+                                        ref_allele: av.variant.ref_allele.clone(),
+                                        var_allele: av.variant.var_allele.clone(),
+                                        seq: 0,
+                                    })
+                                });
                                 let event = crate::output::vcf::build_single_vcf_event(
                                     &mut scratch,
                                     &av.variant,
@@ -6028,6 +6854,7 @@ fn run_amplicon<W: EngineWriter>(
                                         start_pos,
                                         af_4dp,
                                         event,
+                                        all_alleles,
                                     },
                                 )
                             },
@@ -6080,6 +6907,13 @@ fn run_somatic<W: EngineWriter>(
     let chromosomes_lengths = crate::bam::read_reference_lengths(Path::new(first_bam1), config)?;
 
     let regions = parse_target_regions(config, preloaded_bed_lines, &chromosomes_lengths)?;
+    let strict_chr_bounds: StrictChrIntervals = if config.compat.strict_region_bounds {
+        Some(std::sync::Arc::new(build_strict_chr_target_intervals(
+            &regions,
+        )))
+    } else {
+        None
+    };
     let (tile_batches, multi_tile_seeds) = prepare_tiles_and_prescan(
         config,
         &bam1_bams,
@@ -6093,6 +6927,7 @@ fn run_somatic<W: EngineWriter>(
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
     let bam1_bams_for_combine = bam1_bams.clone();
     let bam2_bams_for_combine = bam2_bams.clone();
+    let strict_chr_bounds_clone = strict_chr_bounds;
 
     let vcf_contigs = if !config.emit_intermediate {
         Some(
@@ -6121,6 +6956,15 @@ fn run_somatic<W: EngineWriter>(
             chr: String,
             candidates: Vec<SomaticVcfCandidate>,
         },
+        SplitVcf {
+            chr: String,
+            rows: Vec<SplitVarRow<Option<SomaticVcfCandidate>>>,
+            is_split_tile: bool,
+            tile_start: crate::types::Pos1,
+            tile_end: crate::types::Pos1,
+            original_start: crate::types::Pos1,
+            original_end: crate::types::Pos1,
+        },
     }
 
     impl SomaticTileOutput {
@@ -6140,12 +6984,28 @@ fn run_somatic<W: EngineWriter>(
                     .saturating_add(
                         candidates
                             .capacity()
+                            .saturating_sub(candidates.len())
                             .saturating_mul(std::mem::size_of::<SomaticVcfCandidate>()),
                     )
                     .saturating_add(
                         candidates
                             .iter()
-                            .map(|c| c.record.as_ref().map_or(0, |rec| rec.capacity()))
+                            .map(SpillableCandidate::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    ),
+                Self::SplitVcf { chr, rows, .. } => chr
+                    .capacity()
+                    .saturating_add(rows.capacity().saturating_mul(std::mem::size_of::<
+                        SplitVarRow<Option<SomaticVcfCandidate>>,
+                    >()))
+                    .saturating_add(
+                        rows.iter()
+                            .map(|r| {
+                                r.approx_heap_bytes_with(|opt| {
+                                    opt.as_ref()
+                                        .map_or(0, SpillableCandidate::approx_heap_bytes)
+                                })
+                            })
                             .fold(0usize, usize::saturating_add),
                     ),
             }
@@ -6154,7 +7014,10 @@ fn run_somatic<W: EngineWriter>(
 
     let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> =
         SpillableVcfAccumulator::from_config(config);
-    let mut split_var_deduper = SplitVarDeduper::default();
+    let mut split_var_deduper: SplitVarDeduper<String> = SplitVarDeduper::default();
+    let mut vcf_tile_deduper: SplitVarDeduper<Option<SomaticVcfCandidate>> =
+        SplitVarDeduper::default();
+    let mut cur_vcf_dedup_chr: Option<String> = None;
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
     crate::runner::run_parallel_batched_for_bam_weighted(
@@ -6183,40 +7046,55 @@ fn run_somatic<W: EngineWriter>(
             };
 
             let is_split_tile = tile.start != tile.original_start || tile.end != tile.original_end;
-            let (steps1, post1, active1, steps2, post2, active2, parent_orig_start) =
-                if is_split_tile && !multi_tile_seeds.is_empty() {
-                    if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
-                        (
-                            seed.bam1_steps.as_slice(),
-                            Some(seed.bam1_final),
-                            Some(seed.bam1_active_bams),
-                            seed.bam2_steps.as_slice(),
-                            Some(seed.bam2_final),
-                            Some(seed.bam2_active_bams),
-                            Some(tile.original_start),
-                        )
-                    } else {
-                        (
-                            &[] as &[MaxRlStep],
-                            None,
-                            None,
-                            &[] as &[MaxRlStep],
-                            None,
-                            None,
-                            Some(tile.original_start),
-                        )
-                    }
+            let (
+                steps1,
+                post1,
+                active1,
+                counts1,
+                steps2,
+                post2,
+                active2,
+                counts2,
+                parent_orig_start,
+            ) = if is_split_tile && !multi_tile_seeds.is_empty() {
+                if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
+                    (
+                        seed.bam1_steps.as_slice(),
+                        Some(seed.bam1_final),
+                        Some(seed.bam1_active_bams),
+                        Some(seed.bam1_read_counts),
+                        seed.bam2_steps.as_slice(),
+                        Some(seed.bam2_final),
+                        Some(seed.bam2_active_bams),
+                        Some(seed.bam2_read_counts),
+                        Some(tile.original_start),
+                    )
                 } else {
                     (
                         &[] as &[MaxRlStep],
                         None,
                         None,
+                        None,
                         &[] as &[MaxRlStep],
                         None,
                         None,
                         None,
+                        Some(tile.original_start),
                     )
-                };
+                }
+            } else {
+                (
+                    &[] as &[MaxRlStep],
+                    None,
+                    None,
+                    None,
+                    &[] as &[MaxRlStep],
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
 
             let mut reference = crate::reference::Reference::new();
             let mut var_data1 = run_pipeline_on_records_ext(
@@ -6236,6 +7114,7 @@ fn run_somatic<W: EngineWriter>(
                 post1,
                 parent_orig_start,
                 active1,
+                counts1,
             )?;
 
             let max_read_length_bam1 = var_data1.max_read_length;
@@ -6298,6 +7177,7 @@ fn run_somatic<W: EngineWriter>(
                 post_bam2,
                 parent_orig_start,
                 active2,
+                counts2,
             )?;
 
             // Use max of both BAMs' maxReadLength (SomaticPostProcessModule.java:64)
@@ -6391,15 +7271,20 @@ fn run_somatic<W: EngineWriter>(
                     }
                 };
 
-            let somatic_variants = crate::postprocess::somatic::somatic_post_process_owned(
-                &config_clone,
-                &builder_region,
-                aligned1,
-                aligned2,
-                &splice,
-                Some(&pipeline_fn),
-                combined_max_rl,
-            );
+            let chr_strict_slice = strict_chr_bounds_clone
+                .as_ref()
+                .map(|m| m.get(&builder_region.chr).map_or(&[][..], Vec::as_slice));
+            let somatic_variants =
+                crate::postprocess::somatic::somatic_post_process_owned_with_bounds(
+                    &config_clone,
+                    &builder_region,
+                    aligned1,
+                    aligned2,
+                    &splice,
+                    Some(&pipeline_fn),
+                    combined_max_rl,
+                    chr_strict_slice,
+                );
 
             // Output 55-column format (or 61-column with --fisher), or the
             // paired VCF (var2vcf_paired.pl) when not in intermediate mode.
@@ -6487,7 +7372,11 @@ fn run_somatic<W: EngineWriter>(
                         let is_sv = !sv.sv1.is_empty()
                             || !sv.sv2.is_empty()
                             || sv.variant1.var_allele.contains('<');
-                        rows.push(SplitVarRow { id, is_sv, line });
+                        rows.push(SplitVarRow {
+                            id,
+                            is_sv,
+                            payload: line,
+                        });
                     }
                     Ok(SomaticTileOutput::Lines {
                         rows,
@@ -6498,6 +7387,85 @@ fn run_somatic<W: EngineWriter>(
                         original_end: tile.original_end,
                     })
                 }
+            } else if config_clone.vcf_all_alleles && is_split_tile {
+                let mut rows = Vec::with_capacity(somatic_variants.len());
+                for sv in somatic_variants {
+                    let id = SplitVarIdentity {
+                        origin_pos: sv.variant1.start_pos,
+                        start_pos: sv.variant1.start_pos,
+                        end_pos: sv.variant1.end_pos,
+                        ref_allele: sv.variant1.ref_allele.clone(),
+                        var_allele: sv.variant1.var_allele.clone(),
+                        null_record: sv.variant1.null_record,
+                        companion_kind: 0,
+                    };
+                    let is_sv = !sv.sv1.is_empty()
+                        || !sv.sv2.is_empty()
+                        || sv.variant1.var_allele.contains('<');
+                    let payload = if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
+                        None
+                    } else {
+                        let start_pos = sv.variant1.start_pos;
+                        let af_4dp = canonical_af_4dp(sv.variant1.frequency);
+                        let all_alleles = Some(Box::new(AllAllelesMeta {
+                            end_pos: sv.variant1.end_pos,
+                            ref_allele: sv.variant1.ref_allele.clone(),
+                            var_allele: sv.variant1.var_allele.clone(),
+                            seq: 0,
+                        }));
+                        let record = Some(crate::output::vcf::format_paired_vcf_record(
+                            &sv,
+                            &builder_region.chr,
+                            &config_clone,
+                        ));
+                        Some(SomaticVcfCandidate {
+                            start_pos,
+                            af_4dp,
+                            record,
+                            all_alleles,
+                        })
+                    };
+                    rows.push(SplitVarRow { id, is_sv, payload });
+                }
+                Ok(SomaticTileOutput::SplitVcf {
+                    chr: builder_region.chr,
+                    rows,
+                    is_split_tile: true,
+                    tile_start: tile.start,
+                    tile_end: tile.end,
+                    original_start: tile.original_start,
+                    original_end: tile.original_end,
+                })
+            } else if config_clone.vcf_all_alleles {
+                let mut candidates = Vec::with_capacity(somatic_variants.len());
+                for sv in somatic_variants {
+                    if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
+                        continue;
+                    }
+                    let start_pos = sv.variant1.start_pos;
+                    let af_4dp = canonical_af_4dp(sv.variant1.frequency);
+                    let all_alleles = Some(Box::new(AllAllelesMeta {
+                        end_pos: sv.variant1.end_pos,
+                        ref_allele: sv.variant1.ref_allele.clone(),
+                        var_allele: sv.variant1.var_allele.clone(),
+                        seq: 0,
+                    }));
+                    let record = Some(crate::output::vcf::format_paired_vcf_record(
+                        &sv,
+                        &builder_region.chr,
+                        &config_clone,
+                    ));
+                    candidates.push(SomaticVcfCandidate {
+                        start_pos,
+                        af_4dp,
+                        record,
+                        all_alleles,
+                    });
+                }
+                Ok(SomaticTileOutput::Vcf {
+                    chr: builder_region.chr,
+                    candidates,
+                })
             } else {
                 // Paired VCF mode: ports var2vcf_paired.pl:41,128-129,136 —
                 // bucket rows by the raw .var start column ($hash{$chr}->{$a[3]}),
@@ -6541,6 +7509,7 @@ fn run_somatic<W: EngineWriter>(
                             start_pos,
                             af_4dp,
                             record,
+                            all_alleles: None,
                         }
                     })
                     .collect();
@@ -6554,7 +7523,7 @@ fn run_somatic<W: EngineWriter>(
             match output {
                 SomaticTileOutput::UnSplitVarBlock(block) => {
                     split_var_deduper
-                        .flush_before_unsplit_tile(|line| write_output_line(writer, line))?;
+                        .flush_before_unsplit_tile(|line| write_output_line(writer, &line))?;
                     if !block.is_empty() {
                         std::io::Write::write_all(writer, block.as_bytes())
                             .map_err(VardictError::Io)?;
@@ -6575,20 +7544,71 @@ fn run_somatic<W: EngineWriter>(
                         tile_end,
                         original_start,
                         original_end,
-                        |line| write_output_line(writer, line),
+                        |line| write_output_line(writer, &line),
                     )?;
                 }
                 SomaticTileOutput::Vcf { chr, candidates } => {
+                    if let Some(prev_chr) = cur_vcf_dedup_chr.take() {
+                        vcf_tile_deduper.flush_before_unsplit_tile(|maybe_cand| {
+                            if let Some(cand) = maybe_cand {
+                                vcf_acc.insert(&prev_chr, cand)?;
+                            }
+                            Ok(())
+                        })?;
+                    }
                     for cand in candidates {
                         vcf_acc.insert(&chr, cand)?;
                     }
+                }
+                SomaticTileOutput::SplitVcf {
+                    chr,
+                    rows,
+                    is_split_tile,
+                    tile_start,
+                    tile_end,
+                    original_start,
+                    original_end,
+                } => {
+                    if cur_vcf_dedup_chr.as_deref() != Some(chr.as_str()) {
+                        if let Some(prev_chr) = cur_vcf_dedup_chr.take() {
+                            vcf_tile_deduper.flush_before_unsplit_tile(|maybe_cand| {
+                                if let Some(cand) = maybe_cand {
+                                    vcf_acc.insert(&prev_chr, cand)?;
+                                }
+                                Ok(())
+                            })?;
+                        }
+                        cur_vcf_dedup_chr = Some(chr.clone());
+                    }
+                    vcf_tile_deduper.accept_tile(
+                        rows,
+                        is_split_tile,
+                        tile_start,
+                        tile_end,
+                        original_start,
+                        original_end,
+                        |maybe_cand| {
+                            if let Some(cand) = maybe_cand {
+                                vcf_acc.insert(&chr, cand)?;
+                            }
+                            Ok(())
+                        },
+                    )?;
                 }
             }
             Ok(())
         },
         SomaticTileOutput::approx_heap_bytes,
     )?;
-    split_var_deduper.flush_all_pending(|line| write_output_line(writer, line))?;
+    split_var_deduper.flush_all_pending(|line| write_output_line(writer, &line))?;
+    if let Some(last_chr) = cur_vcf_dedup_chr.take() {
+        vcf_tile_deduper.flush_all_pending(|maybe_cand| {
+            if let Some(cand) = maybe_cand {
+                vcf_acc.insert(&last_chr, cand)?;
+            }
+            Ok(())
+        })?;
+    }
 
     if let Some(ref contigs) = vcf_contigs {
         if config.column_header {
@@ -8073,7 +9093,7 @@ mod tests {
             sample: "S".to_string(),
             ..Default::default()
         };
-        let (steps_per_tile, final_max, active_bams) = scan_multi_tile_max_read_lengths(
+        let (steps_per_tile, final_max, active_bams, ..) = scan_multi_tile_max_read_lengths(
             &[order_bam.to_string_lossy().into_owned()],
             &parent_reg,
             &parent_tiles,
@@ -8138,6 +9158,7 @@ mod tests {
                 event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
                     "chr2", 500, "A", "G", "PASS", "first_25", true, true, false,
                 )),
+                all_alleles: None,
             },
         )
         .unwrap();
@@ -8149,6 +9170,7 @@ mod tests {
                 event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
                     "chr1", 100, "C", "T", "PASS", "first_50", true, true, false,
                 )),
+                all_alleles: None,
             },
         )
         .unwrap();
@@ -8169,6 +9191,7 @@ mod tests {
                     true,
                     false,
                 )),
+                all_alleles: None,
             },
         )
         .unwrap();
@@ -8189,6 +9212,7 @@ mod tests {
                     true,
                     false,
                 )),
+                all_alleles: None,
             },
         )
         .unwrap();
@@ -8201,6 +9225,7 @@ mod tests {
                 event: crate::output::vcf::SingleVcfEvent::Record(mk_test_single_vcf_rec(
                     "chr2", 500, "A", "T", "PASS", "later_75", true, true, false,
                 )),
+                all_alleles: None,
             },
         )
         .unwrap();
@@ -8220,6 +9245,7 @@ mod tests {
                     true,
                     false,
                 )),
+                all_alleles: None,
             },
         )
         .unwrap();
@@ -8281,6 +9307,7 @@ mod tests {
                     start_pos: 300,
                     af_4dp: 0.4000,
                     event: crate::output::vcf::SingleVcfEvent::Record(rec1),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8295,6 +9322,7 @@ mod tests {
                         start_pos: 300,
                         af_4dp: noop_af,
                         event: crate::output::vcf::SingleVcfEvent::Skip,
+                        all_alleles: None,
                     },
                 )
                 .unwrap();
@@ -8309,6 +9337,7 @@ mod tests {
                     start_pos: 300,
                     af_4dp: 0.6000,
                     event: crate::output::vcf::SingleVcfEvent::Skip,
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8334,6 +9363,7 @@ mod tests {
                     start_pos: 300,
                     af_4dp: 0.9000,
                     event: crate::output::vcf::SingleVcfEvent::Record(rec2),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8352,6 +9382,7 @@ mod tests {
                     start_pos: 200,
                     af_4dp: 0.8000,
                     event: crate::output::vcf::SingleVcfEvent::Skip,
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8372,6 +9403,7 @@ mod tests {
                         true,
                         false,
                     )),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8382,6 +9414,7 @@ mod tests {
                     start_pos: 250,
                     af_4dp: 0.2000,
                     event: crate::output::vcf::SingleVcfEvent::Skip,
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8402,6 +9435,7 @@ mod tests {
                         true,
                         false,
                     )),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8456,6 +9490,7 @@ mod tests {
                 record: Some(crate::output::vcf::format_paired_vcf_record(
                     &sv, "chr1", &cfg,
                 )),
+                all_alleles: None,
             }
         };
 
@@ -8470,6 +9505,7 @@ mod tests {
                     start_pos: 150,
                     af_4dp: 0.9000,
                     record: None,
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8506,8 +9542,7 @@ mod tests {
             write_spill_u8(&mut corrupt, 1).unwrap();
             write_spill_u8(&mut corrupt, 1).unwrap();
             let err = SomaticVcfCandidate::read_from(&mut corrupt.as_slice())
-                .err()
-                .expect("corrupt filter span must fail SomaticVcfCandidate::read_from");
+                .expect_err("corrupt filter span must fail SomaticVcfCandidate::read_from");
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         }
 
@@ -8522,8 +9557,7 @@ mod tests {
             write_spill_u8(&mut corrupt_len, 1).unwrap();
             write_spill_u64(&mut corrupt_len, bad_len).unwrap();
             let err = SomaticVcfCandidate::read_from(&mut corrupt_len.as_slice())
-                .err()
-                .expect("corrupt/truncated spill string length must fail without panic");
+                .expect_err("corrupt/truncated spill string length must fail without panic");
             assert_eq!(err.kind(), expected_kind);
 
             let mut corrupt_raw_len = Vec::new();
@@ -8531,11 +9565,9 @@ mod tests {
             write_spill_f64(&mut corrupt_raw_len, 0.5).unwrap();
             write_spill_u8(&mut corrupt_raw_len, 3).unwrap();
             write_spill_u64(&mut corrupt_raw_len, bad_len).unwrap();
-            let raw_err = RawVcfCandidate::read_from(&mut corrupt_raw_len.as_slice())
-                .err()
-                .expect(
-                    "corrupt/truncated spill string length must fail RawVcfCandidate::read_from",
-                );
+            let raw_err = RawVcfCandidate::read_from(&mut corrupt_raw_len.as_slice()).expect_err(
+                "corrupt/truncated spill string length must fail RawVcfCandidate::read_from",
+            );
             assert_eq!(raw_err.kind(), expected_kind);
         }
 
@@ -8545,8 +9577,7 @@ mod tests {
         write_spill_u8(&mut bad_bool, 2).unwrap();
         assert_eq!(
             SomaticVcfCandidate::read_from(&mut bad_bool.as_slice())
-                .err()
-                .expect("corrupt boolean byte must fail")
+                .expect_err("corrupt boolean byte must fail")
                 .kind(),
             std::io::ErrorKind::InvalidData
         );
@@ -8575,11 +9606,13 @@ mod tests {
                 start_pos: 100,
                 af_4dp: 0.8500,
                 event: SingleVcfEvent::Skip,
+                all_alleles: None,
             },
             RawVcfCandidate {
                 start_pos: 110,
                 af_4dp: 0.4500,
                 event: SingleVcfEvent::AmpBiasSnvClusterProbe { start: 110 },
+                all_alleles: None,
             },
             RawVcfCandidate {
                 start_pos: 115,
@@ -8587,16 +9620,19 @@ mod tests {
                 event: SingleVcfEvent::SvSplitreadFlush {
                     cluster_probe_start: Some(115),
                 },
+                all_alleles: None,
             },
             RawVcfCandidate {
                 start_pos: 120,
                 af_4dp: 0.5000,
                 event: SingleVcfEvent::Record(rec_pass_snv),
+                all_alleles: None,
             },
             RawVcfCandidate {
                 start_pos: 180,
                 af_4dp: 0.3500,
                 event: SingleVcfEvent::Record(rec_amp_indel),
+                all_alleles: None,
             },
         ];
 
@@ -8642,8 +9678,7 @@ mod tests {
             write_spill_f64(&mut bad, 0.5).unwrap();
             write_spill_u8(&mut bad, bad_tag).unwrap();
             let err = RawVcfCandidate::read_from(&mut bad.as_slice())
-                .err()
-                .expect("unknown SingleVcfEvent tag must fail");
+                .expect_err("unknown SingleVcfEvent tag must fail");
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         }
 
@@ -8694,9 +9729,9 @@ mod tests {
                 false,
             )
             .is_none());
-            let err = RawVcfCandidate::read_from(&mut corrupt.as_slice())
-                .err()
-                .expect("corrupt SingleVcfRecord span/line must fail RawVcfCandidate::read_from");
+            let err = RawVcfCandidate::read_from(&mut corrupt.as_slice()).expect_err(
+                "corrupt SingleVcfRecord span/line must fail RawVcfCandidate::read_from",
+            );
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         }
 
@@ -8714,8 +9749,7 @@ mod tests {
                 write_spill_u8(&mut corrupt, if slot == bad_bool_slot { 2 } else { 1 }).unwrap();
             }
             let err = RawVcfCandidate::read_from(&mut corrupt.as_slice())
-                .err()
-                .expect("corrupt boolean byte in Record must fail");
+                .expect_err("corrupt boolean byte in Record must fail");
             assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         }
     }
@@ -8745,6 +9779,7 @@ mod tests {
                     event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
                         "chr1", 30, "A", "G", "PASS", "DP=40", true, true, false,
                     )),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8754,6 +9789,7 @@ mod tests {
                     start_pos: 36,
                     af_4dp: 0.5000,
                     event: SingleVcfEvent::AmpBiasSnvClusterProbe { start: 36 },
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8766,6 +9802,7 @@ mod tests {
                     event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
                         "chr1", 60, "C", "T", "PASS", "DP=40", true, true, false,
                     )),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8777,6 +9814,7 @@ mod tests {
                     event: SingleVcfEvent::SvSplitreadFlush {
                         cluster_probe_start: None,
                     },
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8788,6 +9826,7 @@ mod tests {
                     event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
                         "chr1", 65, "G", "A", "PASS", "DP=40", true, true, false,
                     )),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8800,6 +9839,7 @@ mod tests {
                     event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
                         "chr1", 90, "T", "C", "PASS", "DP=40", true, true, false,
                     )),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8809,6 +9849,7 @@ mod tests {
                     start_pos: 90,
                     af_4dp: 0.8000,
                     event: SingleVcfEvent::Skip,
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8821,6 +9862,7 @@ mod tests {
                     event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
                         "chr1", 200, "A", "C", "PASS", "DP=40", true, true, false,
                     )),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -8832,6 +9874,7 @@ mod tests {
                     event: SingleVcfEvent::Record(mk_test_single_vcf_rec(
                         "chr2", 203, "G", "T", "PASS", "DP=40", true, true, false,
                     )),
+                    all_alleles: None,
                 },
             )
             .unwrap();
@@ -9538,10 +10581,10 @@ mod tests {
                 companion_kind: 0,
             },
             is_sv: false,
-            line: line.to_string(),
+            payload: line.to_string(),
         };
 
-        let mut deduper = SplitVarDeduper::default();
+        let mut deduper: SplitVarDeduper<String> = SplitVarDeduper::default();
         let mut emitted = Vec::new();
 
         // 1) Cross-tile ownership resolution when tile-local depth/AF/status/debug differ:
@@ -9635,7 +10678,7 @@ mod tests {
             .map(|(i, id)| SplitVarRow {
                 id,
                 is_sv: false,
-                line: format!("t1_row_{i}"),
+                payload: format!("t1_row_{i}"),
             })
             .collect();
 
@@ -9649,7 +10692,7 @@ mod tests {
             .map(|(i, id)| SplitVarRow {
                 id,
                 is_sv: false,
-                line: format!("t2_row_{i}"),
+                payload: format!("t2_row_{i}"),
             })
             .collect();
 
@@ -9684,7 +10727,7 @@ mod tests {
 
         // 3) Sliding boundary-retention window stays active past 262,144 rows while evicting
         //    obsolete positions < tile_start - SPLIT_VAR_RETENTION_WINDOW_BP.
-        let mut big_deduper = SplitVarDeduper::default();
+        let mut big_deduper: SplitVarDeduper<String> = SplitVarDeduper::default();
         let tile1_big: Vec<SplitVarRow> = (1..=100_000)
             .flat_map(|pos| {
                 [
@@ -9746,7 +10789,7 @@ mod tests {
 
         // 4) flush_before_unsplit_tile flushes pending forward rows from a preceding split tile
         //    and clears retention sets before raw UnSplitVarBlock emission.
-        let mut flush_deduper = SplitVarDeduper::default();
+        let mut flush_deduper: SplitVarDeduper<String> = SplitVarDeduper::default();
         let mut flushed_lines = Vec::new();
         flush_deduper
             .accept_tile(
@@ -11213,5 +12256,612 @@ mod tests {
                 .unwrap(),
             Some(150_050)
         );
+    }
+
+    #[test]
+    fn test_vcf_all_alleles_end_to_end_spill_tiling_and_compat_off_bounds() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+        use noodles::sam::alignment::record_buf::{Cigar, Data};
+        use noodles::sam::alignment::RecordBuf;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_len = 300usize;
+        let motif = b"ACGTAGCTTGCAACGTACGTAGCT";
+        let mut ref_bytes: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+        ref_bytes[99] = b'A'; // 1-based pos 100
+
+        let fasta_path = dir.path().join("all_alleles_ref.fa");
+        let fai_path = dir.path().join("all_alleles_ref.fa.fai");
+        std::fs::write(
+            &fasta_path,
+            format!(">chr1\n{}\n", String::from_utf8(ref_bytes.clone()).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            &fai_path,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .unwrap();
+
+        let mk_read = |name: &str, start_1: usize, seq: &[u8], rev: bool, nm: i32| -> RecordBuf {
+            let flags = if rev {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let cigar: Cigar = [Op::new(Kind::Match, seq.len())].into_iter().collect();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(nm))]
+                .into_iter()
+                .collect();
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(seq.to_vec().into())
+                .set_quality_scores(vec![38u8; seq.len()].into())
+                .set_data(data)
+                .build()
+        };
+
+        // Construct 20 reads across chr1:100:
+        //   9 reads -> 'G' (AF = 0.4500)
+        //   4 reads -> 'C' (AF = 0.2000, first-seen tie)
+        //   4 reads -> 'T' (AF = 0.2000, second-seen tie)
+        //   3 reads -> 'A' (REF)
+        let mut tumor_reads = Vec::new();
+        let mut normal_reads = Vec::new();
+        for idx in 0..20usize {
+            let start_1 = 80 + (idx % 6);
+            let mut seq = ref_bytes[(start_1 - 1)..(start_1 - 1 + 45)].to_vec();
+            let rev = idx % 2 == 1;
+            normal_reads.push(mk_read(&format!("norm_{idx}"), start_1, &seq, rev, 0));
+            let alt_base = if idx < 9 {
+                Some(b'G')
+            } else if idx < 13 {
+                Some(b'C')
+            } else if idx < 17 {
+                Some(b'T')
+            } else {
+                None
+            };
+            if let Some(b) = alt_base {
+                seq[100 - start_1] = b;
+                tumor_reads.push(mk_read(&format!("tum_{idx}"), start_1, &seq, rev, 1));
+            } else {
+                tumor_reads.push(mk_read(&format!("tum_ref_{idx}"), start_1, &seq, rev, 0));
+            }
+        }
+        tumor_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        normal_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+
+        let tumor_bam = dir.path().join("tum.bam");
+        let normal_bam = dir.path().join("norm.bam");
+        write_test_bam(&tumor_bam, "chr1", ref_len, &tumor_reads);
+        write_test_bam(&normal_bam, "chr1", ref_len, &normal_reads);
+
+        // Simple mode: vcf_all_alleles = false emits 1 allele ("G"); vcf_all_alleles = true emits 3 ("G", "C", "T")
+        // across both untiled and split-tiled + disk-spilled runs!
+        let simple_base = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: tumor_bam.to_string_lossy().into_owned(),
+            region: Some("chr1:50-200".to_string()),
+            threads: 1,
+            ..Default::default()
+        };
+        let mut buf_single = Vec::new();
+        run_with_writer(&simple_base, &mut buf_single).unwrap();
+        let single_alts: Vec<String> = String::from_utf8(buf_single)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split('\t').nth(4).unwrap().to_string())
+            .collect();
+        assert_eq!(single_alts, vec!["G".to_string()]);
+
+        let mut simple_all_untiled = simple_base.clone();
+        simple_all_untiled.vcf_all_alleles = true;
+        let mut buf_all_untiled = Vec::new();
+        run_with_writer(&simple_all_untiled, &mut buf_all_untiled).unwrap();
+        let all_alts: Vec<String> = String::from_utf8(buf_all_untiled.clone())
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split('\t').nth(4).unwrap().to_string())
+            .collect();
+        assert_eq!(
+            all_alts,
+            vec!["G".to_string(), "C".to_string(), "T".to_string()]
+        );
+
+        // Split-tile + forced disk spill must match untiled byte-for-byte!
+        struct ResetSpillGuard;
+        impl Drop for ResetSpillGuard {
+            fn drop(&mut self) {
+                TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(None));
+            }
+        }
+        let _guard = ResetSpillGuard;
+        TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(Some(1)));
+
+        let mut simple_all_tiled = simple_all_untiled.clone();
+        simple_all_tiled.tile_size = Some(40);
+        let mut buf_all_tiled = Vec::new();
+        run_with_writer(&simple_all_tiled, &mut buf_all_tiled).unwrap();
+        assert_eq!(
+            String::from_utf8(buf_all_tiled).unwrap(),
+            String::from_utf8(buf_all_untiled).unwrap()
+        );
+
+        // Somatic mode: vcf_all_alleles = true untiled vs split-tiled + forced disk spill
+        TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(None));
+        let som_untiled_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", tumor_bam.display(), normal_bam.display()),
+            region: Some("chr1:50-200".to_string()),
+            vcf_all_alleles: true,
+            threads: 1,
+            ..Default::default()
+        };
+        let mut som_untiled_buf = Vec::new();
+        run_with_writer(&som_untiled_cfg, &mut som_untiled_buf).unwrap();
+        let som_alts: Vec<String> = String::from_utf8(som_untiled_buf.clone())
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split('\t').nth(4).unwrap().to_string())
+            .collect();
+        assert_eq!(
+            som_alts,
+            vec!["G".to_string(), "C".to_string(), "T".to_string()]
+        );
+
+        TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(Some(1)));
+        let mut som_tiled_cfg = som_untiled_cfg.clone();
+        som_tiled_cfg.tile_size = Some(40);
+        let mut som_tiled_buf = Vec::new();
+        run_with_writer(&som_tiled_cfg, &mut som_tiled_buf).unwrap();
+        assert_eq!(
+            String::from_utf8(som_tiled_buf).unwrap(),
+            String::from_utf8(som_untiled_buf).unwrap()
+        );
+        TEST_VCF_SPILL_BYTES_OVERRIDE.with(|c| c.set(None));
+
+        // Amplicon mode: vcf_all_alleles = true emits all 3 alleles ("G", "C", "T") at chr1:100
+        let amp_bed = dir.path().join("amp_all.bed");
+        std::fs::write(&amp_bed, "chr1\t79\t130\tG1\t0\t+\t85\t120\n").unwrap();
+        let amp_all_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: tumor_bam.to_string_lossy().into_owned(),
+            bed: Some(amp_bed.to_string_lossy().into_owned()),
+            amplicon: Some("10:0.95".to_string()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 6,
+            col_seg_end: 7,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            vcf_all_alleles: true,
+            threads: 1,
+            ..Default::default()
+        };
+        let mut amp_all_buf = Vec::new();
+        run_with_writer(&amp_all_cfg, &mut amp_all_buf).unwrap();
+        let amp_alts: Vec<String> = String::from_utf8(amp_all_buf)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .map(|l| l.split('\t').nth(4).unwrap().to_string())
+            .collect();
+        assert_eq!(
+            amp_alts,
+            vec!["G".to_string(), "C".to_string(), "T".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_spillable_all_alleles_associative_merge_deduper_bounds_and_live_duprate_prescan() {
+        use crate::output::vcf::SingleVcfEvent;
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::Cigar;
+        use noodles::sam::alignment::RecordBuf;
+
+        // 1. Direct SpillableVcfAccumulator with vcf_all_alleles = true:
+        //    Compare forced multi-pass disk spill (`with_limits(128, 2)`) against unspilled (`usize::MAX`):
+        //    - Multi-allelic ordering `(start_pos ASC, af_4dp DESC, seq ASC)`
+        //    - `%seen` deduplication on `(start_pos, end_pos, ref, alt)` keeping highest-AF / earliest-seq
+        //    - `-0.0`, `NaN`, and `+0.0` AF canonicalization (tie-breaking strictly by `seq ASC`)
+        //    - `SingleVcfEvent::{Skip, AmpBiasSnvClusterProbe, SvSplitreadFlush}` `%seen` fidelity!
+        let mk_all_cand = |pos: i32,
+                           end: i32,
+                           r: &str,
+                           a: &str,
+                           af: f64,
+                           info: &str,
+                           ev_kind: u8|
+         -> RawVcfCandidate {
+            let event = match ev_kind {
+                0 => SingleVcfEvent::Record(mk_test_single_vcf_rec(
+                    "chr1", pos, r, a, "PASS", info, true, true, false,
+                )),
+                1 => SingleVcfEvent::Skip,
+                2 => SingleVcfEvent::AmpBiasSnvClusterProbe { start: pos },
+                _ => SingleVcfEvent::SvSplitreadFlush {
+                    cluster_probe_start: Some(pos),
+                },
+            };
+            RawVcfCandidate {
+                start_pos: pos,
+                af_4dp: af,
+                event,
+                all_alleles: Some(Box::new(AllAllelesMeta {
+                    end_pos: end,
+                    ref_allele: r.to_string(),
+                    var_allele: a.to_string(),
+                    seq: 0,
+                })),
+            }
+        };
+
+        let feed = vec![
+            // Locus 100: multi-allelic + %seen duplicates across spill files
+            mk_all_cand(100, 100, "A", "T", 0.2000, "tie_first_T", 0),
+            mk_all_cand(100, 100, "A", "G", 0.2500, "old_lower_G", 0),
+            mk_all_cand(100, 100, "A", "C", 0.2000, "tie_second_C", 0),
+            mk_all_cand(100, 100, "A", "G", 0.4500, "winner_higher_G", 0),
+            mk_all_cand(100, 100, "A", "G", 0.4500, "dup_later_tie_G", 0),
+            // Distinct end_pos (e.g. different symbolic DEL span) at same start_pos=100 is NOT suppressed by %seen!
+            mk_all_cand(100, 150, "A", "<DEL>", 0.3000, "del_150", 0),
+            mk_all_cand(100, 180, "A", "<DEL>", 0.3000, "del_180", 0),
+            // Locus 120: higher-AF Skip (e.g. failed --pass-only) suppresses lower-AF PASS of SAME allele via %seen,
+            // WITHOUT suppressing a distinct allele at 120!
+            mk_all_cand(120, 120, "C", "G", 0.3000, "pass_lower_CG", 0),
+            mk_all_cand(120, 120, "C", "G", 0.7000, "skip_higher_CG", 1),
+            mk_all_cand(120, 120, "C", "A", 0.2500, "distinct_CA_survives", 0),
+            // Locus 140 & 144: AmpBiasSnvClusterProbe and SvSplitreadFlush roundtrip + %seen dedup
+            mk_all_cand(140, 140, "G", "T", 0.5000, "snv_140", 0),
+            mk_all_cand(144, 144, "T", "A", 0.6000, "probe_144", 2),
+            mk_all_cand(144, 144, "T", "A", 0.2000, "shadowed_by_probe_144", 0),
+            mk_all_cand(160, 160, "A", "C", 0.5000, "snv_160", 0),
+            mk_all_cand(162, 190, "C", "<DEL>", 0.4000, "sv_flush_162", 3),
+            // Locus 200: -0.0, NaN, and +0.0 AF canonicalization -> preserve strict seq ASC order!
+            mk_all_cand(200, 200, "A", "C", -0.0, "zero_neg_first", 0),
+            mk_all_cand(200, 200, "A", "G", f64::NAN, "zero_nan_second", 0),
+            mk_all_cand(200, 200, "A", "T", 0.0, "zero_pos_third", 0),
+        ];
+
+        let run_acc = |max_bytes: usize, max_fanin: usize| -> (usize, String) {
+            let mut acc: SpillableVcfAccumulator<RawVcfCandidate> =
+                SpillableVcfAccumulator::with_limits(max_bytes, max_fanin);
+            acc.vcf_all_alleles = true;
+            for item in feed.clone() {
+                acc.insert("chr1", item).unwrap();
+            }
+            let spills = acc.spilled_runs.get("chr1").map_or(0, Vec::len);
+            let cfg = crate::config::Config {
+                vcf_all_alleles: true,
+                vcf_cluster_dist: Some(crate::config::VcfThreshold::new(10)),
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            emit_single_vcf_accumulator(acc, &cfg, &mut out).unwrap();
+            (spills, String::from_utf8(out).unwrap())
+        };
+
+        let (unspilled_runs, unspilled_text) = run_acc(usize::MAX, 64);
+        assert_eq!(unspilled_runs, 0);
+        let (spilled_runs, spilled_text) = run_acc(128, 2);
+        assert!(
+            spilled_runs >= 5,
+            "expected >= 5 spill runs to force multi-pass max_fanin=2 merge, got {spilled_runs}"
+        );
+        assert_eq!(
+            spilled_text, unspilled_text,
+            "multi-pass spilled accumulator must match unspilled accumulator byte-for-byte"
+        );
+
+        let info_tags: Vec<&str> = unspilled_text
+            .lines()
+            .map(|l| l.split('\t').nth(7).unwrap())
+            .collect();
+        assert_eq!(
+            info_tags,
+            vec![
+                "winner_higher_G",
+                "del_150",
+                "del_180",
+                "tie_first_T",
+                "tie_second_C",
+                "distinct_CA_survives",
+                "snv_140",
+                "snv_160",
+                "zero_neg_first",
+                "zero_nan_second",
+                "zero_pos_third",
+            ]
+        );
+        // Verify probe_144 clustered snv_140 to Cluster10bp!
+        let snv_140_line = unspilled_text
+            .lines()
+            .find(|l| l.contains("snv_140"))
+            .unwrap();
+        assert_eq!(snv_140_line.split('\t').nth(6).unwrap(), "Cluster10bp");
+
+        // Reject corrupt `all_alleles` boolean tag (byte 2) cleanly with InvalidData
+        let mut bad_aa = Vec::new();
+        write_spill_i32(&mut bad_aa, 100).unwrap();
+        write_spill_f64(&mut bad_aa, 0.5).unwrap();
+        write_spill_u8(&mut bad_aa, 0).unwrap(); // SingleVcfEvent::Skip
+        write_spill_u8(&mut bad_aa, 2).unwrap(); // invalid all_alleles bool byte
+        assert_eq!(
+            RawVcfCandidate::read_from(&mut bad_aa.as_slice())
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
+
+        // 2. SplitVarDeduper<RawVcfCandidate> cross-tile boundary ownership for:
+        //    - left-anchored deletion at `tile2.start - 1` (`100_000`) called only by Tile 2 `[100_001, 200_000]`
+        //    - right-shifted `-3` indel at `100_004 > tile1.end` (`100_000`) called by both Tile 1 and Tile 2
+        //      (Tile 2's owned copy wins) vs called only by Tile 1 (`100_008`, flushed when Tile 2 arrives)!
+        let mk_cand_row = |pos: i32, end: i32, r: &str, a: &str, tag: &str| SplitVarRow {
+            id: SplitVarIdentity {
+                origin_pos: pos,
+                start_pos: pos,
+                end_pos: end,
+                ref_allele: r.to_string(),
+                var_allele: a.to_string(),
+                null_record: false,
+                companion_kind: 0,
+            },
+            is_sv: false,
+            payload: mk_all_cand(pos, end, r, a, 0.4000, tag, 0),
+        };
+        let mut vcf_dedup: SplitVarDeduper<RawVcfCandidate> = SplitVarDeduper::default();
+        let mut owned_tags = Vec::new();
+        vcf_dedup
+            .accept_tile(
+                vec![
+                    mk_cand_row(100_004, 100_004, "G", "GTT", "tile1_halo_100004"),
+                    mk_cand_row(100_008, 100_008, "T", "TAA", "tile1_only_shifted_100008"),
+                ],
+                true,
+                p(1),
+                p(100_000),
+                p(1),
+                p(200_000),
+                |c| {
+                    if let SingleVcfEvent::Record(rec) = c.event {
+                        owned_tags.push(rec.as_str().split('\t').nth(7).unwrap().to_string());
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert!(owned_tags.is_empty());
+        vcf_dedup
+            .accept_tile(
+                vec![
+                    mk_cand_row(
+                        100_000,
+                        100_001,
+                        "CA",
+                        "C",
+                        "tile2_left_anchored_del_100000",
+                    ),
+                    mk_cand_row(100_004, 100_004, "G", "GTT", "tile2_owner_100004"),
+                ],
+                true,
+                p(100_001),
+                p(200_000),
+                p(1),
+                p(200_000),
+                |c| {
+                    if let SingleVcfEvent::Record(rec) = c.event {
+                        owned_tags.push(rec.as_str().split('\t').nth(7).unwrap().to_string());
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            owned_tags,
+            vec![
+                "tile1_only_shifted_100008",
+                "tile2_left_anchored_del_100000",
+                "tile2_owner_100004",
+            ]
+        );
+
+        // 3. Multi-interval overlapping BED `[100, 200]` + `[180, 300]` interval_set_contains & merge_i32_intervals
+        let merged = merge_i32_intervals(vec![(180, 300), (100, 200), (0, 5), (400, 350)]);
+        assert_eq!(merged, vec![(1, 5), (100, 300)]);
+        assert!(!interval_set_contains(&merged, 0));
+        assert!(!interval_set_contains(&merged, -1));
+        assert!(interval_set_contains(&merged, 1));
+        assert!(interval_set_contains(&merged, 5));
+        assert!(!interval_set_contains(&merged, 99));
+        assert!(interval_set_contains(&merged, 205));
+        assert!(!interval_set_contains(&merged, 301));
+
+        // 4. Parent-prescan `live_duprate` parity across multi-tile region + colon-joined BAMs (`-t`):
+        //    Verify `scan_multi_tile_max_read_lengths`, `scan_multi_regions_max_read_lengths`
+        //    (both `BandScan::Candidates` and `BandScan::FallbackSequential`), and `PreparedTileSeed`
+        //    compute exact parent-region `(total_reads, duplicate_reads)` matching untiled `RecordPreprocessor`!
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_len = 1_000usize;
+        let ref_bytes = vec![b'A'; ref_len];
+        let fasta_path = dir.path().join("dup_ref.fa");
+        let fai_path = dir.path().join("dup_ref.fa.fai");
+        std::fs::write(
+            &fasta_path,
+            format!(">chr1\n{}\n", String::from_utf8(ref_bytes.clone()).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            &fai_path,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .unwrap();
+        let mut chr_lens = HashMap::new();
+        chr_lens.insert("chr1".to_string(), ref_len);
+
+        let mk_unpaired = |name: &str, start_1: usize, len: usize, sc: usize| -> RecordBuf {
+            let mut ops = vec![Op::new(Kind::Match, len)];
+            if sc > 0 {
+                ops.push(Op::new(Kind::SoftClip, sc));
+            }
+            let cigar: Cigar = ops.into_iter().collect();
+            let total_len = len + sc;
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(vec![b'A'; total_len].into())
+                .set_quality_scores(vec![38u8; total_len].into())
+                .build()
+        };
+
+        // Unpaired reads have mate_alignment_start = 0 (< 10), so identical alignment_start
+        // in the same BAM triggers RecordPreprocessor duplicate_reads under `-t` (`dedup = true`)!
+        let bam1_reads = vec![
+            mk_unpaired("b1_r1", 120, 40, 0),
+            mk_unpaired("b1_r1_dup1", 120, 40, 6),
+            mk_unpaired("b1_r1_dup2", 120, 45, 0),
+            mk_unpaired("b1_r2", 310, 50, 8),
+            mk_unpaired("b1_r3", 520, 40, 0),
+            mk_unpaired("b1_r3_dup1", 520, 40, 0),
+        ];
+        let bam2_reads = vec![
+            mk_unpaired("b2_r1", 210, 35, 0),
+            mk_unpaired("b2_r1_dup1", 210, 35, 0),
+            mk_unpaired("b2_r2", 610, 45, 10),
+        ];
+        let bam_p1 = dir.path().join("dup_p1.bam");
+        let bam_p2 = dir.path().join("dup_p2.bam");
+        write_test_bam(&bam_p1, "chr1", ref_len, &bam1_reads);
+        write_test_bam(&bam_p2, "chr1", ref_len, &bam2_reads);
+
+        let colon_paths = vec![
+            bam_p1.to_string_lossy().into_owned(),
+            bam_p2.to_string_lossy().into_owned(),
+        ];
+        let dup_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: colon_paths.join(":"),
+            dedup: true,
+            compat: crate::config::COMPAT_OFF,
+            tile_size: Some(200),
+            threads: 4,
+            ..Default::default()
+        };
+        let parent_reg = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(700),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let reg_tiles = crate::regions::tile(&parent_reg, 200, 50);
+        assert_eq!(reg_tiles.len(), 4);
+
+        // Ground-truth untiled RecordPreprocessor counts across colon-joined BAMs
+        let mut untiled_pre = crate::bam::RecordPreprocessor::new();
+        for bp in &colon_paths {
+            untiled_pre.reset_for_next_bam();
+            let mut feed = crate::bam::query_region_iter(
+                Path::new(bp),
+                "chr1",
+                parent_reg.start.to_zero_based(),
+                crate::types::Pos0(parent_reg.end.0),
+                &dup_cfg,
+            )
+            .unwrap();
+            let mut rec = crate::bam::SamRecord::new();
+            while feed.next_into(&mut rec).unwrap() {
+                let _ = untiled_pre.preprocess_record(&rec, &dup_cfg);
+            }
+        }
+        let want_counts = (
+            untiled_pre.total_reads as u64,
+            untiled_pre.duplicate_reads as u64,
+        );
+        assert_eq!(want_counts, (9, 4));
+
+        let seq_scan = scan_multi_tile_max_read_lengths(
+            &colon_paths,
+            &parent_reg,
+            &reg_tiles,
+            &dup_cfg,
+            &chr_lens,
+            0,
+        )
+        .unwrap();
+        assert_eq!((seq_scan.3, seq_scan.4), want_counts);
+
+        // Parallel multi-band Candidates path (band_bp = 150 -> 5 bands)
+        let par_cands = scan_multi_regions_max_read_lengths(
+            &dup_cfg.bam,
+            &colon_paths,
+            std::slice::from_ref(&parent_reg),
+            std::slice::from_ref(&reg_tiles),
+            &[0],
+            &[0],
+            &dup_cfg,
+            &chr_lens,
+            150,
+            MAX_BAND_CANDIDATE_BYTES,
+        )
+        .unwrap();
+        assert_eq!((par_cands[0].3, par_cands[0].4), want_counts);
+
+        // Parallel multi-band FallbackSequential path (max_band_candidate_bytes = 32)
+        let par_fallback = scan_multi_regions_max_read_lengths(
+            &dup_cfg.bam,
+            &colon_paths,
+            std::slice::from_ref(&parent_reg),
+            std::slice::from_ref(&reg_tiles),
+            &[0],
+            &[0],
+            &dup_cfg,
+            &chr_lens,
+            150,
+            32,
+        )
+        .unwrap();
+        assert_eq!((par_fallback[0].3, par_fallback[0].4), want_counts);
+
+        // Verify prepare_tiles_and_prescan populates identical bam1_read_counts on every split tile!
+        let (_, seeds) = prepare_tiles_and_prescan(
+            &dup_cfg,
+            &colon_paths,
+            None,
+            &chr_lens,
+            vec![vec![parent_reg]],
+            None,
+        )
+        .unwrap();
+        assert_eq!(seeds.len(), 4);
+        for seed in seeds.values() {
+            assert_eq!(seed.bam1_read_counts, want_counts);
+        }
     }
 }
