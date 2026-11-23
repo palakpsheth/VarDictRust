@@ -279,7 +279,7 @@ class TestPaperReproducibility(unittest.TestCase):
             "Clopper-Pearson",
             "technical replicates",
             "Mann-Whitney",
-            "--fix",
+            "--compat=off",
             "--nosv",
             "in silico",
             "```bash",

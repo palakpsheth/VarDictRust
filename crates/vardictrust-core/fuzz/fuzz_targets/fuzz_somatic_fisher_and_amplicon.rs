@@ -4,10 +4,11 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use libfuzzer_sys::fuzz_target;
-use vardictrust_core::config::Config;
+use vardictrust_core::config::{Config, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
 use vardictrust_core::javamap::JavaHashMap;
 use vardictrust_core::postprocess::amplicon::{
-    amplicon_post_process, amplicon_post_process_streaming, amplicon_select_vcf_rows,
+    amplicon_post_process, amplicon_post_process_streaming, amplicon_retain_strict_bounds,
+    amplicon_select_vcf_rows,
 };
 use vardictrust_core::postprocess::simple::simple_post_process;
 use vardictrust_core::postprocess::somatic::{somatic_post_process_at, PositionPipelineFn};
@@ -393,6 +394,12 @@ fuzz_target!(|data: &[u8]| {
     };
     base_cfg.min_reads = u32::from(cur.u8() % 5);
     base_cfg.lofreq = cur.f64_bounded(0.2).max(0.001);
+    base_cfg.vcf_all_alleles = cur.bool();
+    base_cfg.compat = if cur.bool() {
+        COMPAT_OFF
+    } else {
+        COMPAT_VARDICTJAVA_1_8_3
+    };
 
     let aligned_bam1 = synth_vars_map(&mut cur, reg_start, reg_span);
     let aligned_bam2 = synth_vars_map(&mut cur, reg_start, reg_span);
@@ -414,9 +421,21 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(row.crispr, 0);
         }
     }
-    if !base_cfg.emit_intermediate {
+    if !base_cfg.emit_intermediate && !base_cfg.vcf_all_alleles {
         for pair in simple_rows.windows(2) {
             assert!(pair[0].start_pos < pair[1].start_pos);
+        }
+    } else if !base_cfg.emit_intermediate && base_cfg.vcf_all_alleles {
+        let mut inter_cfg = base_cfg.clone();
+        inter_cfg.emit_intermediate = true;
+        let inter_rows = simple_post_process(&inter_cfg, &region, &aligned_bam1, &splice);
+        assert_eq!(simple_rows.len(), inter_rows.len());
+    }
+    if base_cfg.compat.strict_region_bounds {
+        for row in &simple_rows {
+            assert!(
+                row.start_pos >= region.start.0 as i32 && row.start_pos <= region.end.0 as i32
+            );
         }
     }
 
@@ -564,7 +583,10 @@ fuzz_target!(|data: &[u8]| {
     )
     .expect("infallible collector in amplicon_post_process_streaming");
 
-    let finalized_streamed = if !amp_cfg.emit_intermediate {
+    if amp_cfg.compat.strict_region_bounds {
+        amplicon_retain_strict_bounds(&mut streamed_amp, &region, &amplicons_on_positions);
+    }
+    let finalized_streamed = if !amp_cfg.emit_intermediate && !amp_cfg.vcf_all_alleles {
         amplicon_select_vcf_rows(streamed_amp)
     } else {
         streamed_amp

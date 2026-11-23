@@ -21,6 +21,14 @@ fn make_null_record(position: i32) -> Variant {
     out
 }
 
+#[inline]
+fn single_region_bounds_i32(region: &Region) -> [(i32, i32); 1] {
+    [(
+        i32::try_from(region.start.0.max(1)).unwrap_or(i32::MAX),
+        i32::try_from(region.end.0).unwrap_or(i32::MAX),
+    )]
+}
+
 /// Single sample mode variant filtering and postprocessing.
 ///
 /// Filters the aligned variants list using is_good_var and pileup rules,
@@ -31,6 +39,7 @@ pub fn simple_post_process(
     aligned_variants: &crate::javamap::JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
 ) -> Vec<Variant> {
+    let single_bounds = single_region_bounds_i32(region);
     simple_post_process_core(
         config,
         region,
@@ -38,16 +47,43 @@ pub fn simple_post_process(
             .iter()
             .map(|(&pos, vars)| (pos, std::borrow::Cow::Borrowed(vars))),
         splice,
+        config
+            .compat
+            .strict_region_bounds
+            .then_some(single_bounds.as_slice()),
     )
 }
 
 /// Owned fast-path counterpart of [`simple_post_process`], moving finalized [`Variant`]
 /// and SV strings directly out of `aligned_variants` without cloning.
+#[cfg(test)]
 pub(crate) fn simple_post_process_owned(
     config: &Config,
     region: &Region,
     aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
+) -> Vec<Variant> {
+    let single_bounds = single_region_bounds_i32(region);
+    simple_post_process_owned_with_bounds(
+        config,
+        region,
+        aligned_variants,
+        splice,
+        config
+            .compat
+            .strict_region_bounds
+            .then_some(single_bounds.as_slice()),
+    )
+}
+
+/// Owned fast-path counterpart of [`simple_post_process`] using pre-merged chromosome
+/// target intervals when `strict_bounds` is supplied (`#369`, `AR-4`).
+pub(crate) fn simple_post_process_owned_with_bounds(
+    config: &Config,
+    region: &Region,
+    aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    strict_bounds: Option<&[(i32, i32)]>,
 ) -> Vec<Variant> {
     simple_post_process_core(
         config,
@@ -56,6 +92,7 @@ pub(crate) fn simple_post_process_owned(
             .into_entries()
             .map(|(pos, vars)| (pos, std::borrow::Cow::Owned(vars))),
         splice,
+        strict_bounds,
     )
 }
 
@@ -64,6 +101,7 @@ fn simple_post_process_core<'a>(
     region: &Region,
     entries: impl IntoIterator<Item = (i32, std::borrow::Cow<'a, Vars>)>,
     splice: &rustc_hash::FxHashSet<String>,
+    strict_bounds: Option<&[(i32, i32)]>,
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
@@ -88,7 +126,7 @@ fn simple_post_process_core<'a>(
                 let mut vref = vref_cow.into_owned();
                 vref.var_type = String::new();
                 vrefs.push(vref);
-            } else {
+            } else if !config.compat.suppress_pileup_sentinels {
                 // ports SimplePostProcessModule.java:55-58: under -p an entry
                 // with no variants and no reference variant still prints, via
                 // `SimpleOutputVariant(null, region, sv, position)` whose fields
@@ -117,7 +155,7 @@ fn simple_post_process_core<'a>(
                         let mut ref_var = rv_cow.into_owned();
                         ref_var.var_type = String::new();
                         vrefs.push(ref_var);
-                    } else {
+                    } else if !config.compat.suppress_pileup_sentinels {
                         // ports SimplePostProcessModule.java:75-79: Java prints a
                         // SimpleOutputVariant wrapping null immediately (the
                         // null-record row at the map key), then continues with a
@@ -158,6 +196,12 @@ fn simple_post_process_core<'a>(
         }
     }
 
+    if let Some(merged_bounds) = strict_bounds {
+        vrefs.retain(|v| crate::interval_set_contains(merged_bounds, v.start_pos));
+    } else if config.compat.strict_region_bounds {
+        vrefs.retain(|v| v.start_pos >= 1);
+    }
+
     // VCF mode: ports var2vcf_valid.pl:41,129-137 — bucket rows by the RAW .var
     // start column ($hash{$chr}->{$a[3]}, column 3), walk buckets in ascending
     // numeric position (:129), sort each bucket by column 14 (af) descending
@@ -166,7 +210,7 @@ fn simple_post_process_core<'a>(
     // Bucketing must use the raw start (what simple_36 writes), NOT the
     // ToVarsBuilder position key: indels and SNVs can share one key while
     // having different raw starts, and different keys can share a raw start.
-    if !config.emit_intermediate {
+    if !config.emit_intermediate && !config.vcf_all_alleles {
         let mut buckets: BTreeMap<i32, Variant> = BTreeMap::new();
         for v in vrefs {
             let v_af = crate::types::round_half_even(v.frequency, 4);
@@ -687,20 +731,134 @@ mod tests {
 
         for pileup in [false, true] {
             for emit_intermediate in [false, true] {
-                for crispr_site in [None, Some(150)] {
-                    let mut cfg = config.clone();
-                    cfg.pileup = pileup;
-                    cfg.emit_intermediate = emit_intermediate;
-                    cfg.crispr_cutting_site = crispr_site;
-                    let borrowed = simple_post_process(&cfg, &region, &parity_map, &splice);
-                    let owned =
-                        simple_post_process_owned(&cfg, &region, parity_map.clone(), &splice);
-                    assert_eq!(owned.len(), borrowed.len());
-                    for (got, want) in owned.iter().zip(borrowed.iter()) {
-                        assert_variant_fields_eq(got, want);
+                for vcf_all_alleles in [false, true] {
+                    for compat in [
+                        crate::config::COMPAT_VARDICTJAVA_1_8_3,
+                        crate::config::COMPAT_OFF,
+                    ] {
+                        for crispr_site in [None, Some(150)] {
+                            let mut cfg = config.clone();
+                            cfg.pileup = pileup;
+                            cfg.emit_intermediate = emit_intermediate;
+                            cfg.vcf_all_alleles = vcf_all_alleles;
+                            cfg.compat = compat;
+                            cfg.crispr_cutting_site = crispr_site;
+                            let borrowed = simple_post_process(&cfg, &region, &parity_map, &splice);
+                            let owned = simple_post_process_owned(
+                                &cfg,
+                                &region,
+                                parity_map.clone(),
+                                &splice,
+                            );
+                            assert_eq!(owned.len(), borrowed.len());
+                            for (got, want) in owned.iter().zip(borrowed.iter()) {
+                                assert_variant_fields_eq(got, want);
+                            }
+                        }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_simple_vcf_all_alleles_and_compat_off_sentinels_and_bounds() {
+        let mut config = Config::default();
+        config.freq = 0.01;
+        config.min_reads = 2;
+        config.read_pos = 5.0;
+        config.base_qual = 22.5;
+        config.qratio = 1.5;
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let splice = rustc_hash::FxHashSet::default();
+
+        // 1. vcf_all_alleles = true preserves all passing alleles at the same start_pos in VCF mode.
+        let mut g1 = Vars::new();
+        g1.variants.push(mk_variant(150, 150, "A", "AT", 0.45));
+        g1.variants.push(mk_variant(150, 150, "A", "G", 0.20));
+        let mut g2 = Vars::new();
+        g2.variants.push(mk_variant(150, 151, "AT", "A", 0.20));
+        let mut multi_map = crate::javamap::JavaHashMap::new();
+        multi_map.insert(149, g1);
+        multi_map.insert(150, g2);
+
+        let single_winner = simple_post_process(&config, &region, &multi_map, &splice);
+        assert_eq!(single_winner.len(), 1);
+        assert_eq!(single_winner[0].var_allele, "AT");
+
+        let mut all_cfg = config.clone();
+        all_cfg.vcf_all_alleles = true;
+        let all_alleles = simple_post_process(&all_cfg, &region, &multi_map, &splice);
+        assert_eq!(all_alleles.len(), 3);
+
+        // 2. suppress_pileup_sentinels (UB-1) under COMPAT_OFF:
+        //    - empty Vars without ref_variant emits 0 rows (no null_record)
+        //    - shifted singleton without ref_variant emits ONLY the real shifted variant (no null_record, no POS=0)
+        //    - empty Vars WITH ref_variant still emits the real reference row
+        let mut p_map = crate::javamap::JavaHashMap::new();
+        p_map.insert(110, Vars::new());
+        let mut with_ref = Vars::new();
+        with_ref.ref_variant = Some(mk_variant(120, 120, "C", "C", 1.0));
+        p_map.insert(120, with_ref);
+        let mut shifted = Vars::new();
+        shifted.variants.push(mk_variant(132, 132, "G", "GTT", 0.8));
+        p_map.insert(130, shifted);
+
+        let mut p_compat_off = pileup_config();
+        p_compat_off.compat = crate::config::COMPAT_OFF;
+        let p_out = simple_post_process(&p_compat_off, &region, &p_map, &splice);
+        assert_eq!(p_out.len(), 2);
+        assert!(p_out.iter().all(|v| !v.null_record && v.start_pos >= 1));
+        let p_starts: Vec<i32> = p_out.iter().map(|v| v.start_pos).collect();
+        assert!(p_starts.contains(&120) && p_starts.contains(&132));
+
+        // 3. strict_region_bounds (#369) under COMPAT_OFF:
+        //    variants shifted outside [100, 200] (e.g. left-anchored deletion at 99, right-shifted indel at 203,
+        //    out-of-bounds SV at 95, or POS <= 0) are dropped while 100 and 200 are retained.
+        let mut b_map = crate::javamap::JavaHashMap::new();
+        let mut v_left_del = Vars::new();
+        v_left_del
+            .variants
+            .push(mk_variant(99, 100, "CA", "C", 0.50));
+        b_map.insert(100, v_left_del);
+
+        let mut v_in_lo = Vars::new();
+        v_in_lo.variants.push(mk_variant(100, 100, "A", "G", 0.50));
+        b_map.insert(101, v_in_lo);
+
+        let mut v_in_hi = Vars::new();
+        v_in_hi.variants.push(mk_variant(200, 200, "T", "C", 0.50));
+        b_map.insert(199, v_in_hi);
+
+        let mut v_right_shift = Vars::new();
+        v_right_shift
+            .variants
+            .push(mk_variant(203, 203, "G", "GAA", 0.50));
+        b_map.insert(200, v_right_shift);
+
+        let mut v_sv_out = Vars::new();
+        v_sv_out.sv = "95-210-4".to_string();
+        v_sv_out
+            .variants
+            .push(mk_variant(95, 210, "A", "<DEL>", 0.50));
+        b_map.insert(95, v_sv_out);
+
+        let default_bounds = simple_post_process(&config, &region, &b_map, &splice);
+        assert_eq!(default_bounds.len(), 5);
+
+        let mut strict_cfg = config.clone();
+        strict_cfg.compat = crate::config::COMPAT_OFF;
+        let strict_out = simple_post_process(&strict_cfg, &region, &b_map, &splice);
+        let strict_starts: Vec<i32> = strict_out.iter().map(|v| v.start_pos).collect();
+        assert_eq!(strict_starts, vec![100, 200]);
+        let strict_owned = simple_post_process_owned(&strict_cfg, &region, b_map, &splice);
+        assert_eq!(strict_owned.len(), 2);
     }
 }
