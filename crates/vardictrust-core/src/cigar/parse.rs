@@ -327,6 +327,12 @@ impl<'a> CigarParser<'a> {
         }
     }
 
+    /// Record live `(total_reads, duplicate_reads)` `u64` counts from `RecordPreprocessor`
+    /// for `COMPAT_OFF` `DUPRATE` computation (implemented in Wave 2A).
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn set_live_read_counts(&mut self, _total_reads: u64, _duplicate_reads: u64) {}
+
     #[inline]
     fn get_ref_base(&self, pos: u32) -> Option<u8> {
         if let Some(offset) = pos.checked_sub(self.primary_ref_start) {

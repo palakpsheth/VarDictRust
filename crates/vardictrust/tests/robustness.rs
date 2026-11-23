@@ -1222,9 +1222,10 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
         );
     }
 
-    // 4. --parity and --compat vardictjava-1.8.3 match default stdout byte-for-byte; unknown --compat fails with Unsupported
+    // 4. --parity and --compat vardictjava / vardictjava-1.8.3 / 1.8.3 match default stdout byte-for-byte; unknown --compat fails with Unsupported
     for compat_args in [
         vec!["--parity"],
+        vec!["--compat", "vardictjava"],
         vec!["--compat", "vardictjava-1.8.3"],
         vec!["--compat=1.8.3"],
     ] {
@@ -1250,7 +1251,7 @@ fn output_bgzf_tbi_and_parity_compat_flags() {
     let bad_compat_stderr = String::from_utf8_lossy(&bad_compat.stderr);
     assert!(
         bad_compat_stderr.contains("unsupported:")
-            && bad_compat_stderr.contains("--compat foo not supported in v1.0"),
+            && bad_compat_stderr.contains("--compat foo not supported"),
         "expected Unsupported error for --compat foo, got: {bad_compat_stderr}"
     );
 }

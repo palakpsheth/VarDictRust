@@ -305,6 +305,15 @@ pub fn perl_reorder_chromosomes<S: AsRef<str>>(chrs: &[S]) -> Vec<String> {
     order
 }
 
+/// Chromosome ordering helper parameterized by `preserve_mixed` (`COMPAT_OFF` sex/mito
+/// contig preservation; full implementation lands in Wave 2B).
+pub fn reorder_chromosomes_with_compat<S: AsRef<str>>(
+    chrs: &[S],
+    _preserve_mixed: bool,
+) -> Vec<String> {
+    perl_reorder_chromosomes(chrs)
+}
+
 /// Ports `var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`:
 /// in Perl, `-f 0` (`"0"`) is falsy and falls back to `0.02`, whereas non-`"0"`
 /// zero strings like `-f 0.0` are truthy in Perl boolean context and keep `0.0`.

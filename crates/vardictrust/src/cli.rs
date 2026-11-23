@@ -32,6 +32,8 @@ const UNSUPPORTED_FLAGS: &[&str] = &[
 const GNU_ONLY_LONG_FLAGS_SINGLE_DASH: &[&str] = &[
     "-pass-only",
     "-paired-strict",
+    "-vcf-all-alleles",
+    "-all-alleles",
     "-vcf-pval",
     "-min-splitreads",
     "-no-pstd-filter",
@@ -200,11 +202,15 @@ fn classify_short_cluster(arg: &str) -> (Option<char>, bool) {
     (None, false)
 }
 
-/// Returns `true` when `arg` is an option token (without `=`) that unconditionally consumes
-/// `args[i + 1]` as its mandatory argument.
-fn takes_mandatory_next_token(arg: &str) -> bool {
+/// Returns `true` when `arg` is an option token (without `=`) that consumes `args[i + 1]`
+/// as its mandatory argument (`--compat` and `--completions` only consume non-hyphen tokens
+/// so missing-value typos like `--compat -G` do not swallow the next flag).
+fn takes_mandatory_next_token(arg: &str, next: Option<&str>) -> bool {
     if arg.contains('=') {
         return false;
+    }
+    if matches!(arg, "--compat" | "--completions") {
+        return next.is_some_and(|n| !n.starts_with('-'));
     }
     if matches!(
         arg,
@@ -229,8 +235,6 @@ fn takes_mandatory_next_token(arg: &str) -> bool {
             | "-adaptor"
             | "--adaptor"
             | "--output"
-            | "--compat"
-            | "--completions"
             | "--stats-json"
             | "--vcf-pval"
             | "--min-splitreads"
@@ -288,7 +292,7 @@ fn scan_has_region(args: &[String]) -> bool {
         if arg == "--region" || arg.starts_with("--region=") || arg_has_region_short(arg) {
             return true;
         }
-        i += if takes_mandatory_next_token(arg) {
+        i += if takes_mandatory_next_token(arg, args.get(i + 1).map(String::as_str)) {
             2
         } else {
             1
@@ -430,7 +434,7 @@ fn normalize_optional_or_passthrough(
     }
 
     out.push(effective_arg.to_string());
-    if takes_mandatory_next_token(effective_arg) {
+    if takes_mandatory_next_token(effective_arg, args.get(i + 1).map(String::as_str)) {
         if let Some(next_val) = args.get(i + 1) {
             out.push(next_val.clone());
             return i + 2;
@@ -484,7 +488,7 @@ fn count_free_positionals_step(
         };
         return (if consumes { i + 2 } else { i + 1 }, 0);
     }
-    if takes_mandatory_next_token(effective_arg) {
+    if takes_mandatory_next_token(effective_arg, args.get(i + 1).map(String::as_str)) {
         return (
             if args.get(i + 1).is_some() {
                 i + 2
@@ -726,7 +730,9 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
                 "-{ch} not implemented in v1.0; use VarDictJava"
             )));
         }
-        i += if consumes_next || takes_mandatory_next_token(arg) {
+        i += if consumes_next
+            || takes_mandatory_next_token(arg, args.get(i + 1).map(String::as_str))
+        {
             2
         } else {
             1
@@ -882,14 +888,14 @@ pub struct Cli {
     #[arg(long = "parity", help_heading = "Core Inputs & Outputs")]
     pub parity: bool,
 
-    /// Pin compatibility target (supported in v1.0: 'vardictjava-1.8.3' or '1.8.3').
+    /// Pin compatibility target ('vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] or 'off'). [default: vardictjava]
     #[arg(
         long = "compat",
         value_name = "TARGET",
-        allow_hyphen_values = true,
+        num_args = 1,
         help_heading = "Core Inputs & Outputs"
     )]
-    pub compat: Option<String>,
+    pub compat: Vec<String>,
 
     /// Emit the intermediate .var table instead of VCF.
     #[arg(long = "emit-intermediate", help_heading = "Core Inputs & Outputs")]
@@ -943,6 +949,14 @@ pub struct Cli {
     /// Disable germline rescue in paired somatic VCF filtering (ports var2vcf_paired.pl -M).
     #[arg(long = "paired-strict", help_heading = "VCF Post-Filtering (var2vcf)")]
     pub paired_strict: bool,
+
+    /// Output all alleles passing filters at the same position in VCF output (ports var2vcf_valid.pl / var2vcf_paired.pl -A).
+    #[arg(
+        long = "vcf-all-alleles",
+        visible_alias = "all-alleles",
+        help_heading = "VCF Post-Filtering (var2vcf)"
+    )]
+    pub vcf_all_alleles: bool,
 
     /// Maximum p-value threshold for high-confidence somatic calls in VCF output (ports var2vcf_paired.pl -P). [default: 0.05]
     #[arg(
@@ -1555,14 +1569,31 @@ impl Cli {
         &self,
         rayon_env: Option<&str>,
     ) -> Result<vardictrust_core::config::Config, vardictrust_core::types::VardictError> {
-        let _ = (self.parity, &self.completions, self.manpage);
-        if let Some(ref raw_target) = self.compat {
-            let target = raw_target.trim();
-            if !target.eq_ignore_ascii_case("vardictjava-1.8.3") && target != "1.8.3" {
-                return Err(vardictrust_core::types::VardictError::Unsupported(format!(
-                    "--compat {raw_target} not supported in v1.0; use --compat vardictjava-1.8.3 or --parity"
-                )));
+        let _ = (&self.completions, self.manpage);
+        let mut saw_vardictjava = false;
+        let mut saw_off = false;
+        for raw_target in &self.compat {
+            let parsed = vardictrust_core::config::parse_compat_target(raw_target)?;
+            if parsed == vardictrust_core::config::CompatTarget::Off {
+                saw_off = true;
+            } else {
+                saw_vardictjava = true;
             }
+        }
+        if saw_vardictjava && saw_off {
+            return Err(vardictrust_core::types::VardictError::Parse(
+                "Conflicting --compat targets: cannot combine 'vardictjava' and 'off'".to_string(),
+            ));
+        }
+        let compat_target = if saw_off {
+            vardictrust_core::config::CompatTarget::Off
+        } else {
+            vardictrust_core::config::CompatTarget::VardictJava183
+        };
+        if self.parity && compat_target == vardictrust_core::config::CompatTarget::Off {
+            return Err(vardictrust_core::types::VardictError::Parse(
+                "Conflicting flags: --parity cannot be combined with --compat off".to_string(),
+            ));
         }
 
         if let Some(raw) = self.validation_stringency.first() {
@@ -1820,6 +1851,8 @@ impl Cli {
             vcf_gt_freq: self.vcf_gt_freq.first().copied(),
             vcf_msi: self.vcf_msi.first().cloned(),
             vcf_cluster_dist: self.vcf_cluster_dist.first().cloned(),
+            compat: compat_target.profile(),
+            vcf_all_alleles: self.vcf_all_alleles,
         };
         cfg.apply_pileup_overrides();
         cfg.validate_vcf_thresholds()?;
@@ -2030,7 +2063,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
 
         let mut cmd = Cli::command();
-        assert_eq!(cmd.get_arguments().count(), 89);
+        assert_eq!(cmd.get_arguments().count(), 90);
         let rendered_help = cmd.render_help().to_string();
         for heading in [
             "Core Inputs & Outputs",
@@ -2080,6 +2113,9 @@ mod tests {
             let text = String::from_utf8(buf).unwrap();
             for needle in [
                 "--vcf-cluster-dist",
+                "--vcf-all-alleles",
+                "--all-alleles",
+                "vardictjava vardictjava-1.8.3 1.8.3 off",
                 "--completions",
                 "-H",
                 "-h",
@@ -2112,6 +2148,8 @@ mod tests {
         let man_text = String::from_utf8(man_buf).unwrap();
         for needle in [
             r"\-\-vcf\-cluster\-dist",
+            r"\-\-vcf\-all\-alleles",
+            r"\-\-all\-alleles",
             r"\-\-completions",
             r"\-H",
             r"\-h",
@@ -3746,5 +3784,362 @@ mod tests {
                 "expected error mentioning 'bogus' and '--threads', got: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn compat_profile_and_vcf_all_alleles_cli_contract() {
+        use vardictrust_core::config::{CompatTarget, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
+        use vardictrust_core::types::VardictError;
+
+        let parse_cfg =
+            |raw_flags: &[&str]| -> Result<vardictrust_core::config::Config, VardictError> {
+                let norm = normalize_args(&args(raw_flags));
+                check_unsupported(&norm)?;
+                let cli =
+                    Cli::try_parse_from(&norm).map_err(|e| VardictError::Parse(e.to_string()))?;
+                cli.to_config()
+            };
+
+        // 1. Supported --compat targets & defaults
+        let def_cfg = parse_cfg(&["-G", "ref.fa", "-b", "a.bam", "-R", "chr1:1-10"]).unwrap();
+        assert_eq!(def_cfg.compat, COMPAT_VARDICTJAVA_1_8_3);
+        assert!(!def_cfg.vcf_all_alleles);
+
+        for vj_flags in [
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat",
+                "vardictjava",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat",
+                "1.8.3",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat",
+                "vardictjava-1.8.3",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat=VARDICTJAVA",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--parity",
+                "--compat",
+                "vardictjava",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat",
+                "vardictjava",
+                "--compat",
+                "1.8.3",
+            ][..],
+        ] {
+            let cfg = parse_cfg(vj_flags).unwrap_or_else(|e| panic!("failed {vj_flags:?}: {e}"));
+            assert_eq!(cfg.compat, COMPAT_VARDICTJAVA_1_8_3, "flags={vj_flags:?}");
+            assert_eq!(cfg.compat.target, CompatTarget::VardictJava183);
+        }
+
+        for off_flags in [
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat=off",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat",
+                "off",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat",
+                "OFF",
+                "--compat",
+                "off",
+            ][..],
+        ] {
+            let cfg = parse_cfg(off_flags).unwrap_or_else(|e| panic!("failed {off_flags:?}: {e}"));
+            assert_eq!(cfg.compat, COMPAT_OFF, "flags={off_flags:?}");
+            assert_eq!(cfg.compat.target, CompatTarget::Off);
+        }
+
+        // Positional BED alongside `--compat off` must not miscount `"off"` as a positional BED
+        let bed_off_cfg = parse_cfg(&[
+            "--compat",
+            "off",
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+            "targets.bed",
+        ])
+        .expect("--compat off with positional BED must succeed");
+        assert_eq!(bed_off_cfg.compat, COMPAT_OFF);
+        assert_eq!(bed_off_cfg.bed.as_deref(), Some("targets.bed"));
+
+        // 2. Conflicting --compat / --parity combinations -> VardictError::Parse
+        for (conflict_flags, expected_substr) in [
+            (
+                &[
+                    "-G",
+                    "ref.fa",
+                    "-b",
+                    "a.bam",
+                    "-R",
+                    "chr1:1-10",
+                    "--compat",
+                    "vardictjava",
+                    "--compat",
+                    "off",
+                ][..],
+                "Conflicting --compat targets: cannot combine 'vardictjava' and 'off'",
+            ),
+            (
+                &[
+                    "-G",
+                    "ref.fa",
+                    "-b",
+                    "a.bam",
+                    "-R",
+                    "chr1:1-10",
+                    "--compat",
+                    "off",
+                    "--compat",
+                    "1.8.3",
+                ][..],
+                "Conflicting --compat targets: cannot combine 'vardictjava' and 'off'",
+            ),
+            (
+                &[
+                    "-G",
+                    "ref.fa",
+                    "-b",
+                    "a.bam",
+                    "-R",
+                    "chr1:1-10",
+                    "--parity",
+                    "--compat",
+                    "off",
+                ][..],
+                "Conflicting flags: --parity cannot be combined with --compat off",
+            ),
+            (
+                &[
+                    "-G",
+                    "ref.fa",
+                    "-b",
+                    "a.bam",
+                    "-R",
+                    "chr1:1-10",
+                    "--compat=off",
+                    "--parity",
+                ][..],
+                "Conflicting flags: --parity cannot be combined with --compat off",
+            ),
+        ] {
+            let err = parse_cfg(conflict_flags)
+                .expect_err(&format!("expected conflict error for {conflict_flags:?}"));
+            assert!(
+                matches!(err, VardictError::Parse(_)),
+                "expected VardictError::Parse for {conflict_flags:?}, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains(expected_substr),
+                "expected '{expected_substr}' in '{err}' for {conflict_flags:?}"
+            );
+        }
+
+        // 3. Invalid --compat targets (single and repeated) -> VardictError::Unsupported
+        for bad_compat_flags in [
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat",
+                "bogus",
+            ][..],
+            &[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--compat",
+                "vardictjava",
+                "--compat",
+                "bogus",
+            ][..],
+        ] {
+            let err = parse_cfg(bad_compat_flags)
+                .expect_err(&format!("expected Unsupported for {bad_compat_flags:?}"));
+            assert!(
+                matches!(err, VardictError::Unsupported(_)),
+                "expected VardictError::Unsupported for {bad_compat_flags:?}, got {err:?}"
+            );
+            assert!(
+                err.to_string().contains("--compat bogus not supported"),
+                "unexpected error message: {err}"
+            );
+        }
+
+        // 4. AR-7 Flag-swallowing guards on `--compat` and `--completions`
+        let bare_compat_before_g = normalize_args(&args(&[
+            "--compat",
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ]));
+        assert!(scan_has_region(&args(&[
+            "--compat",
+            "-R",
+            "chr1:1-10",
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+        ])));
+        check_unsupported(&bare_compat_before_g)
+            .expect("--compat -G ... must pass check_unsupported so Clap rejects missing TARGET");
+        let clap_err = Cli::try_parse_from(&bare_compat_before_g)
+            .expect_err("--compat -G ... must fail Clap parse without swallowing -G");
+        let clap_msg = clap_err.to_string();
+        assert!(
+            clap_msg.contains("--compat"),
+            "expected Clap error to cite --compat (not missing -G), got: {clap_msg}"
+        );
+
+        let compat_then_th = normalize_args(&args(&[
+            "--compat",
+            "-th",
+            "4",
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ]));
+        assert!(
+            compat_then_th.iter().any(|t| t == "--threads=4"),
+            "--compat must not swallow -th during normalize_args: {compat_then_th:?}"
+        );
+        assert!(Cli::try_parse_from(&compat_then_th).is_err());
+
+        for z_after in [&["--compat", "-Z"][..], &["--completions", "-Z"][..]] {
+            let norm_z = normalize_args(&args(z_after));
+            let err_z = check_unsupported(&norm_z).expect_err(&format!(
+                "expected Unsupported on {z_after:?} (norm={norm_z:?})"
+            ));
+            assert!(
+                matches!(err_z, VardictError::Unsupported(_)),
+                "expected VardictError::Unsupported on {z_after:?}, got {err_z:?}"
+            );
+        }
+
+        // 5. -vcf-all-alleles and -all-alleles rejected as GNU-only single-dash flags
+        for (typo, suggestion) in [
+            ("-vcf-all-alleles", "did you mean '--vcf-all-alleles'?"),
+            ("-all-alleles", "did you mean '--all-alleles'?"),
+        ] {
+            let norm_typo = normalize_args(&args(&[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                typo,
+                "-R",
+                "chr1:1-10",
+            ]));
+            let err_typo = check_unsupported(&norm_typo)
+                .expect_err(&format!("{typo} must be rejected by check_unsupported"));
+            assert!(matches!(err_typo, VardictError::Parse(_)));
+            assert!(
+                err_typo.to_string().contains(suggestion),
+                "expected '{suggestion}' in '{err_typo}'"
+            );
+        }
+
+        // 6. --vcf-all-alleles and --all-alleles set cfg.vcf_all_alleles = true while -A stays sv_min_af
+        for allele_flag in ["--vcf-all-alleles", "--all-alleles"] {
+            let cfg_a = parse_cfg(&[
+                "-G",
+                "ref.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                allele_flag,
+            ])
+            .unwrap_or_else(|e| panic!("{allele_flag} failed: {e}"));
+            assert!(
+                cfg_a.vcf_all_alleles,
+                "{allele_flag} must set vcf_all_alleles"
+            );
+            assert_eq!(
+                cfg_a.sv_min_af, 4,
+                "{allele_flag} must leave -A (sv_min_af) at default 4"
+            );
+        }
+        let cfg_short_cap_a =
+            parse_cfg(&["-G", "ref.fa", "-b", "a.bam", "-R", "chr1:1-10", "-A", "7"])
+                .expect("-A 7 must remain sv_min_af");
+        assert_eq!(cfg_short_cap_a.sv_min_af, 7);
+        assert!(!cfg_short_cap_a.vcf_all_alleles);
     }
 }
