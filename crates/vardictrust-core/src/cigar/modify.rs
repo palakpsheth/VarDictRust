@@ -1845,6 +1845,11 @@ impl<'a> CigarModifier<'a> {
                         let mut ilen = m.mid_len;
                         if m.second_op == b'I' {
                             ilen = ilen.saturating_add(m.second_len);
+                            if this.config.compat.cigar_homopolymer_merge {
+                                if let Some(ti) = m.trailing_i {
+                                    ilen = ilen.saturating_add(ti);
+                                }
+                            }
                         } else if m.second_op == b'D' {
                             dlen = dlen.saturating_add(m.second_len);
                             if let Some(ti) = m.trailing_i {
@@ -1872,6 +1877,11 @@ impl<'a> CigarModifier<'a> {
                         let mut ilen = m.first_i_len.saturating_add(m.mid_len);
                         if m.second_op == b'I' {
                             ilen = ilen.saturating_add(m.second_len);
+                            if this.config.compat.cigar_homopolymer_merge {
+                                if let Some(ti) = m.trailing_i {
+                                    ilen = ilen.saturating_add(ti);
+                                }
+                            }
                         } else if m.second_op == b'D' {
                             dlen = dlen.saturating_add(m.second_len);
                             if let Some(ti) = m.trailing_i {
@@ -5498,5 +5508,92 @@ mod tests {
             sum_mnd_and_mis_prefix_compat("20=1X10D5I3S100N", true),
             (131, 29)
         );
+
+        // 6. Trailing `I` conservation when `second_op == b'I'` in `find_dig_d_dig_m_dig_di_digi`
+        //    and `find_notdig_dig_i_dig_m_dig_di_digi` under `COMPAT_OFF`:
+        // - Uncoalesced `"20M3I5M4I6I10M"` (48 bp query, all mismatch vs ref)
+        let ref_48 = vec![b'A'; 100];
+        let mut q_48 = vec![b'A'; 4];
+        q_48.extend_from_slice(&[b'C'; 40]);
+        q_48.extend_from_slice(&[b'A'; 4]);
+        let qual_48 = vec![b'I'; 48];
+        let mod_48_def = CigarModifier::new(
+            1,
+            "20M3I5M4I6I10M",
+            q_48.clone(),
+            qual_48.clone(),
+            &ref_48,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_48_def.cigar, "20M5D12I10M");
+        let mod_48_off = CigarModifier::new(
+            1,
+            "20M3I5M4I6I10M",
+            q_48,
+            qual_48,
+            &ref_48,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_48_off.cigar, "20M5D18I10M");
+        let parsed_48_off = crate::cigar::parse_cigar(&mod_48_off.cigar).unwrap();
+        assert_eq!(crate::cigar::parse::query_consumed_len(&parsed_48_off), 48);
+
+        // - Canonical SAM cascade `"20M3I5M1D1M5I1M1D2M6I10M"` (53 bp query) via `rm <= 0` omission
+        let mut ref_cascade = vec![b'A'; 36];
+        ref_cascade.extend_from_slice(&[b'C'; 50]);
+        let mut q_53 = vec![b'A'; 36];
+        q_53.extend_from_slice(&[b'C'; 17]);
+        let qual_53 = vec![b'I'; 53];
+        let mod_53_off = CigarModifier::new(
+            1,
+            "20M3I5M1D1M5I1M1D2M6I10M",
+            q_53,
+            qual_53,
+            &ref_cascade,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_53_off.cigar, "20M11D23I10M");
+        let parsed_53_off = crate::cigar::parse_cigar(&mod_53_off.cigar).unwrap();
+        assert_eq!(crate::cigar::parse::query_consumed_len(&parsed_53_off), 53);
+
+        // - Canonical SAM cascade `"20M3D5M1D1M5I1M1D2M6I10M"` (50 bp query) via `find_dig_d_dig_m_dig_di_digi`
+        let mut q_50 = vec![b'A'; 33];
+        q_50.extend_from_slice(&[b'C'; 17]);
+        let qual_50 = vec![b'I'; 50];
+        let mod_50_off = CigarModifier::new(
+            1,
+            "20M3D5M1D1M5I1M1D2M6I10M",
+            q_50,
+            qual_50,
+            &ref_cascade,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_50_off.cigar, "20M14D20I10M");
+        let parsed_50_off = crate::cigar::parse_cigar(&mod_50_off.cigar).unwrap();
+        assert_eq!(crate::cigar::parse::query_consumed_len(&parsed_50_off), 50);
     }
 }
