@@ -280,8 +280,8 @@ fn unsupported_and_invalid_cli_flags_exit_nonzero() {
         );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
-            stderr.contains("not implemented in v1.0; use VarDictJava"),
-            "flag {unsupported_args:?} stderr must mention v1.0 rejection, got: {stderr}"
+            stderr.contains("not implemented in VarDictRust; use VarDictJava"),
+            "flag {unsupported_args:?} stderr must mention VarDictRust rejection, got: {stderr}"
         );
     }
 
@@ -1981,7 +1981,8 @@ fn commons_cli_single_dash_flags_and_zero_bed_col_behavior() {
     let downsample_stderr = String::from_utf8_lossy(&downsample_out.stderr);
     assert!(
         downsample_stderr.contains("unsupported:")
-            && downsample_stderr.contains("-downsample not implemented in v1.0; use VarDictJava"),
+            && downsample_stderr
+                .contains("-downsample not implemented in VarDictRust; use VarDictJava"),
         "expected Unsupported error for -downsample 0.5, got: {downsample_stderr}"
     );
 
@@ -2259,7 +2260,7 @@ fn commons_cli_single_dash_flags_and_zero_bed_col_behavior() {
         .expect("spawn -VS STRICT");
     assert!(!vs_strict.status.success());
     assert!(String::from_utf8_lossy(&vs_strict.stderr)
-        .contains("-VS STRICT not implemented in v1.0; use VarDictJava"));
+        .contains("-VS STRICT not implemented in VarDictRust; use VarDictJava"));
 
     assert!(
         String::from_utf8_lossy(&default_out.stdout).contains(";END=101;"),

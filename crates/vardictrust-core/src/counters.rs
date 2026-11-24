@@ -3,7 +3,7 @@
 //! When compiled with `--features profile-counters`, each thread accumulates
 //! counts into a thread-local `[Cell<u64>; NUM_COUNTERS]` array without atomic
 //! cache-line contention on hot paths. When `profile-counters` is disabled (the
-//! default for all release/dist builds), [`add`], [`inc`], and [`count!`]
+//! default for all release/dist builds), [`add`], [`inc`], and `count!`
 //! compile down to zero-cost no-ops.
 
 #[cfg(feature = "profile-counters")]

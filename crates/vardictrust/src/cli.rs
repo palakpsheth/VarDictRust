@@ -1,7 +1,8 @@
-//! CLI argument parser — drop-in compatible with VarDictJava flags plus
-//! ergonomic extras.
+//! CLI argument parser - drop-in compatible with VarDictJava v1.8.3 and
+//! `var2vcf_*.pl` flags, dual-mode `--compat=vardictjava|off` profiles, and
+//! native BGZF/Tabix/CSI streaming options.
 //!
-//! ports Main.java / CmdParser.java
+//! ports Main.java / CmdParser.java / var2vcf_valid.pl / var2vcf_paired.pl
 
 #![forbid(unsafe_code)]
 
@@ -18,7 +19,7 @@ pub enum CompletionShell {
     Fish,
 }
 
-/// VarDictJava v1.8.3 flags (CmdParser.java) with no v1.0 implementation.
+/// VarDictJava v1.8.3 flags (CmdParser.java) with no VarDictRust implementation.
 /// Must be rejected loudly (§12) before Clap sees them.
 const UNSUPPORTED_FLAGS: &[&str] = &[
     "-C",           // chromosome names are just numbers (deprecated upstream)
@@ -716,7 +717,7 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
         let head = arg.split_once('=').map_or(arg.as_str(), |(f, _)| f);
         if UNSUPPORTED_FLAGS.contains(&head) {
             return Err(vardictrust_core::types::VardictError::Unsupported(format!(
-                "{head} not implemented in v1.0; use VarDictJava"
+                "{head} not implemented in VarDictRust; use VarDictJava"
             )));
         }
         if GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head) {
@@ -727,7 +728,7 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
         let (unsupported_short, consumes_next) = classify_short_cluster(arg);
         if let Some(ch) = unsupported_short {
             return Err(vardictrust_core::types::VardictError::Unsupported(format!(
-                "-{ch} not implemented in v1.0; use VarDictJava"
+                "-{ch} not implemented in VarDictRust; use VarDictJava"
             )));
         }
         i += if consumes_next
@@ -741,22 +742,25 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
     Ok(())
 }
 
-/// VarDictRust: single-binary VarDict variant caller (VarDictJava 1.8.3-compatible).
+/// VarDictRust: single-binary somatic and germline variant caller with default
+/// 100% VarDictJava v1.8.3 parity, opt-in `--compat=off` fixes, and native VCF indexing.
 #[derive(Parser, Debug)]
 #[command(
     name = "vardictrust",
     version,
     long_version = concat!(
         env!("CARGO_PKG_VERSION"), "\n",
-        "Idiomatic Rust rewrite of VarDictJava v1.8.3 (commit 0886261; Perl/R submodule 009e017).\n",
-        "Output validated against VarDictJava v1.8.3 - see README \"Validation status\".\n",
+        "Bounded-memory Rust somatic/germline variant caller: 100% VarDictJava v1.8.3 parity by default\n",
+        "  (commit 0886261; Perl/R submodule 009e017) plus opt-in --compat=off fixes and extended VCF options.\n",
         "Original: VarDict/VarDictJava, AstraZeneca-NGS - https://github.com/AstraZeneca-NGS/VarDictJava\n",
         "Please cite: Lai Z, et al. VarDict: a novel and versatile variant caller for next-generation\n",
         "  sequencing in cancer research. Nucleic Acids Res. 2016;44(11):e108. doi:10.1093/nar/gkw227\n",
         "AI disclosure: written with AI coding assistants under human direction; see README \"AI Disclosure\".\n",
         "License: MIT AND GPL-2.0-or-later (see LICENSE-3RD-PARTY)"
     ),
-    about,
+    about = "Fast, bounded-memory somatic and germline variant caller (100% VarDictJava v1.8.3 parity by default + opt-in --compat=off fixes)",
+    long_about = "VarDictRust consolidates the VarDictJava v1.8.3 + R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) variant-calling pipeline into a single memory-safe binary with bounded-memory WGS tiling, native BAM/CRAM and BGZF FASTA/BED support, direct BGZF + Tabix (.tbi) / CSI (.csi) VCF 4.2 (VCFv4.2) emission, 18/18 var2vcf post-filters (including --vcf-all-alleles), and dual-mode compatibility (--compat=vardictjava default 100% parity; --compat=off opt-in accuracy, scale, and --eqx fixes).",
+    after_help = "Note: -h / --header prints the intermediate .var column header (matching VarDictJava); use -H, -?, or --help for CLI help.",
     disable_version_flag = true,
     // `-h` belongs to Java's column header (CmdParser.java:223, 67), so clap
     // help moves to `--help`/`-H` (CmdParser.java:222).
@@ -839,7 +843,7 @@ pub struct Cli {
     )]
     pub sample_regexp: Vec<String>,
 
-    /// Region chr:start-end[:gene] (instead of BED).
+    /// Region `chr:start-end[:gene]` (instead of BED).
     #[arg(
         short = 'R',
         long = "region",
@@ -884,11 +888,11 @@ pub struct Cli {
     )]
     pub stats_json: Vec<String>,
 
-    /// Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in v1.x).
+    /// Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in v1.x; conflicts with --compat=off).
     #[arg(long = "parity", help_heading = "Core Inputs & Outputs")]
     pub parity: bool,
 
-    /// Pin compatibility target ('vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] or 'off'). [default: vardictjava]
+    /// Compatibility profile: 'vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] for 100% v1.8.3 parity, or 'off' to enable 13 CompatProfile accuracy/scale/--eqx fixes (stamps ##VarDictRustCompat=off). [default: vardictjava]
     #[arg(
         long = "compat",
         value_name = "TARGET",
@@ -950,7 +954,7 @@ pub struct Cli {
     #[arg(long = "paired-strict", help_heading = "VCF Post-Filtering (var2vcf)")]
     pub paired_strict: bool,
 
-    /// Output all alleles passing filters at the same position in VCF output (ports var2vcf_valid.pl / var2vcf_paired.pl -A).
+    /// Emit all candidate alleles at the same position in single-sample, amplicon, and paired somatic VCF output instead of collapsing to the top-AF allele (ports var2vcf_valid.pl / var2vcf_paired.pl -A; note: -A remains SV min AF).
     #[arg(
         long = "vcf-all-alleles",
         visible_alias = "all-alleles",
@@ -969,7 +973,7 @@ pub struct Cli {
     )]
     pub vcf_pval: Vec<(f64, String)>,
 
-    /// Minimum split reads required for structural variants in single-sample VCF output (ports var2vcf_valid.pl -T). [default: 1]
+    /// Minimum split reads required for structural variants in single-sample VCF output (ports var2vcf_valid.pl -T; under --compat=off, discordant-pair SVs with SPANPAIR>0 bypass the implicit default unless --min-splitreads is passed explicitly). [default: 1]
     #[arg(
         long = "min-splitreads",
         value_name = "INT",
@@ -1346,7 +1350,7 @@ pub struct Cli {
     #[arg(long = "UN", help_heading = "Variant Calling & Quality Thresholds")]
     pub unique_mode_second_in_pair_enabled: bool,
 
-    /// Trim bases after [INT] bases in the reads (ports CmdParser.java:122, 411-417). [default: 0]
+    /// Trim bases after `[INT]` bases in the reads (ports CmdParser.java:122, 411-417). [default: 0]
     #[arg(
         short = 'T',
         long = "trim",
@@ -1535,7 +1539,7 @@ pub struct Cli {
     )]
     pub threads: Option<usize>,
 
-    /// Advanced: region tile size (bp) for bounded-memory WGS. [auto]
+    /// Advanced: region tile size (bp) for bounded-memory WGS. [default: auto]
     #[arg(
         long = "tile-size",
         num_args = 1,
@@ -1601,7 +1605,7 @@ impl Cli {
                 // Supported no-op: matches noodles lenient decoding.
             } else if raw.eq_ignore_ascii_case("STRICT") {
                 return Err(vardictrust_core::types::VardictError::Unsupported(
-                    "-VS STRICT not implemented in v1.0; use VarDictJava".to_string(),
+                    "-VS STRICT not implemented in VarDictRust; use VarDictJava".to_string(),
                 ));
             } else {
                 return Err(vardictrust_core::types::VardictError::Parse(format!(
@@ -2066,6 +2070,23 @@ mod tests {
         let mut cmd = Cli::command();
         assert_eq!(cmd.get_arguments().count(), 90);
         let rendered_help = cmd.render_help().to_string();
+        assert!(
+            rendered_help.contains("--compat=off"),
+            "expected --compat=off in short help:\n{rendered_help}"
+        );
+        assert!(
+            rendered_help.contains("-h / --header"),
+            "expected -h / --header in short help:\n{rendered_help}"
+        );
+        let rendered_long_help = cmd.render_long_help().to_string();
+        assert!(
+            rendered_long_help.contains("18/18 var2vcf"),
+            "expected 18/18 var2vcf in long help:\n{rendered_long_help}"
+        );
+        assert!(
+            rendered_long_help.contains("--vcf-all-alleles"),
+            "expected --vcf-all-alleles in long help:\n{rendered_long_help}"
+        );
         for heading in [
             "Core Inputs & Outputs",
             "VCF Post-Filtering (var2vcf)",
@@ -2151,6 +2172,7 @@ mod tests {
             r"\-\-vcf\-cluster\-dist",
             r"\-\-vcf\-all\-alleles",
             r"\-\-all\-alleles",
+            r"\-\-compat=off",
             r"\-\-completions",
             r"\-H",
             r"\-h",
@@ -2250,7 +2272,7 @@ mod tests {
             );
             assert!(
                 err.to_string()
-                    .contains("not implemented in v1.0; use VarDictJava"),
+                    .contains("not implemented in VarDictRust; use VarDictJava"),
                 "unexpected error message for {flag}: {err}"
             );
             let eq_form = format!("{flag}=val");
@@ -2302,7 +2324,7 @@ mod tests {
             );
             assert!(
                 err.to_string()
-                    .contains("-VS STRICT not implemented in v1.0; use VarDictJava"),
+                    .contains("-VS STRICT not implemented in VarDictRust; use VarDictJava"),
                 "unexpected STRICT error for {strict_vs:?}: {err}"
             );
         }

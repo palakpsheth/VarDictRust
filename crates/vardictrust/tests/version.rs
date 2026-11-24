@@ -5,7 +5,7 @@ fn version_credits_original_and_discloses_ai() {
         .output()
         .expect("run vardictrust");
     assert!(out.status.success());
-    let s = String::from_utf8_lossy(&out.stdout);
+    let stdout = String::from_utf8_lossy(&out.stdout);
     for needle in [
         concat!("vardictrust ", env!("CARGO_PKG_VERSION")),
         "VarDictJava v1.8.3",
@@ -17,6 +17,13 @@ fn version_credits_original_and_discloses_ai() {
         "AI disclosure",
         "MIT",
     ] {
-        assert!(s.contains(needle), "--version lacks {needle:?}:\n{s}");
+        assert!(
+            stdout.contains(needle),
+            "--version lacks {needle:?}:\n{stdout}"
+        );
     }
+    assert!(
+        stdout.contains("--compat=off"),
+        "expected --compat=off in --version: {stdout}"
+    );
 }

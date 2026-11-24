@@ -595,7 +595,7 @@ fn load_or_cache_shared_fasta_meta_in(
 }
 
 /// Fetches a subsequence from an indexed FASTA file using a thread-local cached reader
-/// backed by process-wide [`SHARED_FASTA_META_CACHE`] `.fai`/`.gzi` metadata.
+/// backed by process-wide `SHARED_FASTA_META_CACHE` `.fai`/`.gzi` metadata.
 pub fn fetch_subsequence(
     fasta_path: &Path,
     chr: &str,
@@ -1319,7 +1319,7 @@ pub struct Reference {
     pub loaded_regions: Vec<LoadedRegion>,
     /// Maps chromosome name to contiguous bases (upper-case) for the primary loaded region.
     pub reference_sequences: HashMap<String, Vec<u8>>,
-    /// Sequences matching loaded_regions by index: region_sequences[i] corresponds to loaded_regions[i].
+    /// Sequences matching `loaded_regions` by index: `region_sequences[i]` corresponds to `loaded_regions[i]`.
     pub region_sequences: Vec<Vec<u8>>,
     /// Per-`loaded_regions` backing-storage descriptor, sharing the same `Arc<[u8]>` queued in `seed`
     /// for FASTA-loaded regions while tracking synthetic `region_sequences` / `reference_sequences` slots.
