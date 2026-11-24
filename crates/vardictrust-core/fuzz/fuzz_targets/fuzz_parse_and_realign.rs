@@ -335,11 +335,17 @@ fuzz_target!(|data: &[u8]| {
             }
         }
         if var_cfg.compat.coordinate_sorted_vars {
-            // Unshifted SNV rows have `start_pos == map_key`, so emitted `.var` positions
-            // on a single contig/region are monotonically non-decreasing (`pos >= prev_pos`).
+            // Genuine 1-byte pileup SNV rows bypass `&`/`#`/`^` complex indels, CRISPR
+            // `refallele.len() > 1` prefix trimming, and `adj_complex`, so `start_pos == map_key`
+            // and emitted `.var` positions on a single contig/region satisfy `pos >= prev_pos`.
             let mut prev_snv_pos = i32::MIN;
             for v in &var_rows {
-                if v.var_type == "SNV" && v.sv.is_empty() && !v.null_record {
+                if v.description.len() == 1
+                    && !v.description.starts_with(['+', '-'])
+                    && v.var_type == "SNV"
+                    && v.sv.is_empty()
+                    && !v.null_record
+                {
                     assert!(
                         v.start_pos >= prev_snv_pos,
                         "coordinate_sorted_vars SNV .var start_pos regressed: {} < {}",
