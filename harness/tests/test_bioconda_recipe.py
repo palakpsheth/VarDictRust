@@ -505,6 +505,7 @@ class TestBiocondaRecipe(unittest.TestCase):
             summary.endswith("."),
             f"Bioconda about.summary must not end with a period: {summary!r}",
         )
+        self.assertTrue(summary.isascii(), f"Bioconda about.summary must be pure ASCII: {summary!r}")
         self.assertIn("VarDictJava", summary)
         self.assertNotIn("--compat", summary)
         self.assertIn("--compat=off", meta)

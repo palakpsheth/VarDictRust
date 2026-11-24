@@ -758,7 +758,7 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
         "AI disclosure: written with AI coding assistants under human direction; see README \"AI Disclosure\".\n",
         "License: MIT AND GPL-2.0-or-later (see LICENSE-3RD-PARTY)"
     ),
-    about = "Fast somatic & germline variant caller - drop-in VarDictJava with fixes",
+    about,
     long_about = "VarDictRust consolidates the VarDictJava v1.8.3 + R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) variant-calling pipeline into a single memory-safe binary with bounded-memory WGS tiling, native BAM/CRAM and BGZF FASTA/BED support, direct BGZF + Tabix (.tbi) / CSI (.csi) VCF 4.2 (VCFv4.2) emission, 18/18 var2vcf post-filters (including --vcf-all-alleles), and dual-mode compatibility (--compat=vardictjava default 100% parity; --compat=off opt-in accuracy, scale, and --eqx fixes).",
     after_help = "Note: -h / --header prints the intermediate .var column header (matching VarDictJava); use -H, -?, or --help for CLI help.",
     disable_version_flag = true,
@@ -2073,81 +2073,7 @@ mod tests {
             .get_about()
             .expect("Cli::command() must define short about")
             .to_string();
-        assert!(
-            short_about.is_ascii(),
-            "short about must be pure ASCII: {short_about}"
-        );
-        assert!(
-            short_about.chars().count() <= 80,
-            "short about must be <= 80 chars (got {}): {short_about}",
-            short_about.chars().count()
-        );
-        assert!(
-            !short_about.ends_with('.'),
-            "short about must not end with '.': {short_about}"
-        );
-        assert!(
-            short_about.contains("VarDictJava"),
-            "short about must contain 'VarDictJava': {short_about}"
-        );
-        assert!(
-            !short_about.contains("--compat"),
-            "short about must not contain '--compat': {short_about}"
-        );
-
-        let pkg_desc = env!("CARGO_PKG_DESCRIPTION");
-        assert!(
-            pkg_desc.is_ascii(),
-            "CARGO_PKG_DESCRIPTION must be pure ASCII: {pkg_desc}"
-        );
-        assert!(
-            pkg_desc.chars().count() <= 80,
-            "CARGO_PKG_DESCRIPTION must be <= 80 chars (got {}): {pkg_desc}",
-            pkg_desc.chars().count()
-        );
-        assert!(
-            !pkg_desc.ends_with('.'),
-            "CARGO_PKG_DESCRIPTION must not end with '.': {pkg_desc}"
-        );
-        assert!(
-            pkg_desc.contains("VarDictJava"),
-            "CARGO_PKG_DESCRIPTION must contain 'VarDictJava': {pkg_desc}"
-        );
-        assert!(
-            !pkg_desc.contains("--compat"),
-            "CARGO_PKG_DESCRIPTION must not contain '--compat': {pkg_desc}"
-        );
-
-        let core_manifest = include_str!("../../vardictrust-core/Cargo.toml");
-        let core_desc = core_manifest
-            .lines()
-            .find_map(|line| {
-                line.trim()
-                    .strip_prefix("description = \"")
-                    .and_then(|rest| rest.strip_suffix('"'))
-            })
-            .expect("crates/vardictrust-core/Cargo.toml must contain description = \"...\"");
-        assert!(
-            core_desc.is_ascii(),
-            "vardictrust-core description must be pure ASCII: {core_desc}"
-        );
-        assert!(
-            core_desc.chars().count() <= 80,
-            "vardictrust-core description must be <= 80 chars (got {}): {core_desc}",
-            core_desc.chars().count()
-        );
-        assert!(
-            !core_desc.ends_with('.'),
-            "vardictrust-core description must not end with '.': {core_desc}"
-        );
-        assert!(
-            core_desc.contains("VarDictRust"),
-            "vardictrust-core description must contain 'VarDictRust': {core_desc}"
-        );
-        assert!(
-            !core_desc.contains("--compat"),
-            "vardictrust-core description must not contain '--compat': {core_desc}"
-        );
+        assert_eq!(short_about, env!("CARGO_PKG_DESCRIPTION"));
 
         let rendered_help = cmd.render_help().to_string();
         assert!(
@@ -2253,31 +2179,37 @@ mod tests {
             man_lines.any(|line| line == ".SH NAME"),
             "manpage missing .SH NAME section"
         );
-        let man_name_line = man_lines
+        let raw_man_name_line = man_lines
             .next()
-            .expect("manpage must have a line immediately following .SH NAME")
-            .replace(r"\-", "-");
+            .expect("manpage must have a line immediately following .SH NAME");
         assert!(
-            man_name_line.is_ascii(),
-            "manpage .SH NAME line must be pure ASCII: {man_name_line}"
+            raw_man_name_line.starts_with(r"vardictrust \- "),
+            "manpage .SH NAME line must start with 'vardictrust \\- ': {raw_man_name_line}"
         );
-        assert!(
-            man_name_line.chars().count() <= 80,
-            "manpage .SH NAME line must be <= 80 chars (got {}): {man_name_line}",
-            man_name_line.chars().count()
-        );
-        assert!(
-            man_name_line.starts_with("vardictrust - "),
-            "manpage .SH NAME line must start with 'vardictrust - ': {man_name_line}"
-        );
-        assert!(
-            man_name_line.contains("VarDictJava"),
-            "manpage .SH NAME line must contain 'VarDictJava': {man_name_line}"
-        );
-        assert!(
-            !man_name_line.contains("--compat"),
-            "manpage .SH NAME line must not contain '--compat': {man_name_line}"
-        );
+        let man_name_line = raw_man_name_line.replace(r"\-", "-");
+        for (label, text) in [
+            ("CLI short about / Cargo.toml", short_about.as_str()),
+            ("manpage .SH NAME", man_name_line.as_str()),
+        ] {
+            assert!(text.is_ascii(), "{label} must be pure ASCII: {text}");
+            assert!(
+                text.chars().count() <= 80,
+                "{label} must be <= 80 chars (got {}): {text}",
+                text.chars().count()
+            );
+            assert!(
+                !text.ends_with('.'),
+                "{label} must not end with '.': {text}"
+            );
+            assert!(
+                text.contains("VarDictJava"),
+                "{label} must contain 'VarDictJava': {text}"
+            );
+            assert!(
+                !text.contains("--compat"),
+                "{label} must not contain '--compat': {text}"
+            );
+        }
         for needle in [
             r"\-\-vcf\-cluster\-dist",
             r"\-\-vcf\-all\-alleles",

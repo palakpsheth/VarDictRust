@@ -985,6 +985,29 @@ mod tests {
         assert!(!c.vcf_all_alleles);
         assert_eq!(c.vcf_min_splitreads, 1);
         assert!(!c.vcf_min_splitreads_explicit);
+
+        let core_desc = env!("CARGO_PKG_DESCRIPTION");
+        assert!(
+            core_desc.is_ascii(),
+            "vardictrust-core description must be pure ASCII: {core_desc}"
+        );
+        assert!(
+            core_desc.chars().count() <= 80,
+            "vardictrust-core description must be <= 80 chars (got {}): {core_desc}",
+            core_desc.chars().count()
+        );
+        assert!(
+            !core_desc.ends_with('.'),
+            "vardictrust-core description must not end with '.': {core_desc}"
+        );
+        assert!(
+            core_desc.contains("VarDictRust"),
+            "vardictrust-core description must contain 'VarDictRust': {core_desc}"
+        );
+        assert!(
+            !core_desc.contains("--compat"),
+            "vardictrust-core description must not contain '--compat': {core_desc}"
+        );
     }
 
     #[test]
