@@ -135,11 +135,15 @@ fn is_decimal_format_underflow_tie(value: f64, digits: i32) -> bool {
 }
 
 #[inline]
-pub(crate) fn round_half_even_reference(value: f64, digits: i32) -> f64 {
+pub(crate) fn round_half_even_reference_compat(
+    value: f64,
+    digits: i32,
+    exact_binary_tie: bool,
+) -> f64 {
     if !value.is_finite() {
         return value;
     }
-    if is_decimal_format_underflow_tie(value, digits) {
+    if !exact_binary_tie && is_decimal_format_underflow_tie(value, digits) {
         return 0.0_f64.copysign(value);
     }
     let prec = digits.max(0) as usize;
@@ -154,19 +158,27 @@ pub(crate) fn round_half_even_reference(value: f64, digits: i32) -> f64 {
     s.parse::<f64>().unwrap_or(value)
 }
 
-/// Banker's rounding to `digits` decimal places.
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn round_half_even_reference(value: f64, digits: i32) -> f64 {
+    round_half_even_reference_compat(value, digits, false)
+}
+
+/// Banker's rounding to `digits` decimal places, parameterized by `exact_binary_tie`.
 ///
-/// Matches Java's `DecimalFormat` with `RoundingMode.HALF_EVEN`.
-/// This is critical for float-field equivalence with VarDictJava.
-pub fn round_half_even(value: f64, digits: i32) -> f64 {
+/// When `exact_binary_tie` is `false` (`COMPAT_VARDICTJAVA_1_8_3`), matches OpenJDK
+/// `DecimalFormat` (`RoundingMode.HALF_EVEN`) including its `DigitList` fixed-point
+/// underflow truncation on `±5e-{4,5,6,9}`. When `exact_binary_tie` is `true`
+/// (`COMPAT_OFF`), rounds the exact IEEE-754 binary `f64` value (`±10^-d` on those inputs).
+pub fn round_half_even_compat(value: f64, digits: i32, exact_binary_tie: bool) -> f64 {
     if !value.is_finite() {
         return value;
     }
-    if is_decimal_format_underflow_tie(value, digits) {
+    if !exact_binary_tie && is_decimal_format_underflow_tie(value, digits) {
         return 0.0_f64.copysign(value);
     }
     if !(0..=8).contains(&digits) {
-        return round_half_even_reference(value, digits);
+        return round_half_even_reference_compat(value, digits, exact_binary_tie);
     }
     let b = value.to_bits();
     let neg = (b >> 63) == 1;
@@ -205,7 +217,7 @@ pub fn round_half_even(value: f64, digits: i32) -> f64 {
         q0
     };
     if q >= (1u128 << 53) {
-        return round_half_even_reference(value, digits);
+        return round_half_even_reference_compat(value, digits, exact_binary_tie);
     }
     let out = (q as f64) / (p as f64);
     if neg {
@@ -213,6 +225,15 @@ pub fn round_half_even(value: f64, digits: i32) -> f64 {
     } else {
         out
     }
+}
+
+/// Banker's rounding to `digits` decimal places.
+///
+/// Matches Java's `DecimalFormat` with `RoundingMode.HALF_EVEN`.
+/// This is critical for float-field equivalence with VarDictJava.
+#[inline]
+pub fn round_half_even(value: f64, digits: i32) -> f64 {
+    round_half_even_compat(value, digits, false)
 }
 
 // ---------------------------------------------------------------------------
@@ -613,5 +634,95 @@ mod tests {
             Err(fmt::Error)
         );
         assert_eq!(fresh.as_str(), "");
+    }
+
+    #[test]
+    fn round_half_even_compat_exact_binary_vs_decimal_format_underflow() {
+        // Verify Rust formatting of 5e-5_f64 at 4 decimal places reflects exact binary IEEE-754 (> 0.00005)
+        assert_eq!(format!("{:.4}", 5e-5_f64), "0.0001");
+
+        let underflow_ties: &[(f64, i32, f64)] = &[
+            (5e-4_f64, 3, 0.001_f64),
+            (-5e-4_f64, 3, -0.001_f64),
+            (5e-5_f64, 4, 0.0001_f64),
+            (-5e-5_f64, 4, -0.0001_f64),
+            (5e-6_f64, 5, 0.00001_f64),
+            (-5e-6_f64, 5, -0.00001_f64),
+            (5e-9_f64, 8, 1e-8_f64),
+            (-5e-9_f64, 8, -1e-8_f64),
+        ];
+
+        for &(v, d, exact_expected) in underflow_ties {
+            let signed_zero_bits = 0.0_f64.copysign(v).to_bits();
+            assert_eq!(round_half_even(v, d).to_bits(), signed_zero_bits);
+            assert_eq!(
+                round_half_even_compat(v, d, false).to_bits(),
+                signed_zero_bits
+            );
+            assert_eq!(round_half_even_reference(v, d).to_bits(), signed_zero_bits);
+            assert_eq!(
+                round_half_even_reference_compat(v, d, false).to_bits(),
+                signed_zero_bits
+            );
+
+            assert_eq!(
+                round_half_even_compat(v, d, true).to_bits(),
+                exact_expected.to_bits(),
+                "round_half_even_compat({v:?}, {d}, true) mismatch"
+            );
+            assert_eq!(
+                round_half_even_reference_compat(v, d, true).to_bits(),
+                exact_expected.to_bits(),
+                "round_half_even_reference_compat({v:?}, {d}, true) mismatch"
+            );
+        }
+
+        // 1 ULP smaller in magnitude than 5e-5_f64 is strictly < 0.00005 -> rounds to ±0.0
+        let below_pos = f64::from_bits(5e-5_f64.to_bits() - 1);
+        assert_eq!(
+            round_half_even_compat(below_pos, 4, true).to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            round_half_even_reference_compat(below_pos, 4, true).to_bits(),
+            0.0_f64.to_bits()
+        );
+        let below_neg = -below_pos;
+        assert_eq!(
+            round_half_even_compat(below_neg, 4, true).to_bits(),
+            (-0.0_f64).to_bits()
+        );
+        assert_eq!(
+            round_half_even_reference_compat(below_neg, 4, true).to_bits(),
+            (-0.0_f64).to_bits()
+        );
+
+        // Fallback branches: digits outside 0..=8 and q >= (1u128 << 53) plus non-finite values
+        for &(v, d) in &[
+            (5e-10_f64, 9),
+            (-5e-10_f64, 9),
+            (1.25_f64, -1),
+            (123_456_789.123_456_79_f64, 8), // q >= 2^53 fallback
+            (-123_456_789.123_456_79_f64, 8),
+            (2.5_f64, 0),
+            (3.5_f64, 0),
+            (0.0_f64, 4),
+            (-0.0_f64, 4),
+            (f64::INFINITY, 4),
+            (f64::NEG_INFINITY, 4),
+        ] {
+            assert_eq!(
+                round_half_even_compat(v, d, true).to_bits(),
+                round_half_even_reference_compat(v, d, true).to_bits(),
+                "fallback agreement failed for v={v:?}, d={d} (true)"
+            );
+            assert_eq!(
+                round_half_even_compat(v, d, false).to_bits(),
+                round_half_even(v, d).to_bits(),
+                "fallback agreement failed for v={v:?}, d={d} (false)"
+            );
+        }
+        assert!(round_half_even_compat(f64::NAN, 4, true).is_nan());
+        assert!(round_half_even_reference_compat(f64::NAN, 4, true).is_nan());
     }
 }
