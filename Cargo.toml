@@ -11,7 +11,7 @@ repository = "https://github.com/palakpsheth/VarDictRust"
 homepage = "https://vardictrust.readthedocs.io/"
 authors = ["Palak Sheth <palakpsheth@gmail.com>"]
 readme = "README.md"
-description = "Fast, bounded-memory Rust somatic and germline variant caller: drop-in VarDictJava v1.8.3 parity by default with opt-in --compat=off fixes"
+description = "Fast somatic & germline variant caller - drop-in VarDictJava with fixes"
 keywords = ["bioinformatics", "genomics", "variant-caller", "ngs", "somatic"]
 categories = ["science::bioinformatics", "command-line-utilities"]
 
