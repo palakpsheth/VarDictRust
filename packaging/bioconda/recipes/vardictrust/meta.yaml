@@ -36,7 +36,7 @@ about:
     - LICENSE
     - LICENSE-3RD-PARTY
     - THIRDPARTY.yml
-  summary: "Fast, memory-safe Rust variant caller (VarDictJava parity; v1.1+ --compat=off)"
+  summary: "Fast Rust somatic & germline variant caller - drop-in VarDictJava with fixes"
   description: |
     VarDictRust is a fast, memory-safe Rust somatic and germline variant caller
     that consolidates the VarDictJava v1.8.3 + R + Perl pipeline into a single

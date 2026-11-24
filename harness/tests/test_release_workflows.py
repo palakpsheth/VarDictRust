@@ -1069,8 +1069,15 @@ esac
         spec.loader.exec_module(mod)
 
         self.assertTrue(hasattr(mod, "REPO_DESCRIPTION"), "configure_github_repo.py must define REPO_DESCRIPTION")
-        self.assertLessEqual(len(mod.REPO_DESCRIPTION), 160)
-        self.assertIn("--compat=off", mod.REPO_DESCRIPTION)
+        self.assertLessEqual(len(mod.REPO_DESCRIPTION), 80)
+        self.assertFalse(mod.REPO_DESCRIPTION.endswith("."))
+        self.assertIn("VarDictJava", mod.REPO_DESCRIPTION)
+        self.assertNotIn("--compat", mod.REPO_DESCRIPTION)
+        site_desc = toml_lite.load_path(ROOT_DIR / "zensical.toml")["project"]["site_description"]
+        self.assertLessEqual(len(site_desc), 80)
+        self.assertFalse(site_desc.endswith("."))
+        self.assertIn("VarDictJava", site_desc)
+        self.assertNotIn("--compat", site_desc)
         self.assertTrue(hasattr(mod, "REPO_TOPICS"), "configure_github_repo.py must define REPO_TOPICS")
         self.assertEqual(len(mod.REPO_TOPICS), 14)
         self.assertEqual(mod.configure_metadata(dry_run=True)["description"], mod.REPO_DESCRIPTION)
