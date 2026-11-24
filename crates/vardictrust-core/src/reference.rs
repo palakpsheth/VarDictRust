@@ -630,17 +630,24 @@ pub fn fetch_subsequence(
             ));
         };
 
-        if let Some(&fai_len) = cached.meta.fai_lengths.get(chr.as_bytes()) {
-            if u64::from(start.0) > fai_len || u64::from(end.0) > fai_len {
-                return Err(VardictError::Parse(format!(
-                    "Query asks for data past end of contig {}: requested {}..={}, contig length {} in '{}'",
-                    chr,
-                    start.0,
-                    end.0,
-                    fai_len,
-                    fasta_path.display()
-                )));
-            }
+        let Some(&fai_len) = cached.meta.fai_lengths.get(chr.as_bytes()) else {
+            return Err(VardictError::Parse(format!(
+                "Reference FASTA '{}' (.fai) does not contain contig '{}' (requested {}..={})",
+                fasta_path.display(),
+                chr,
+                start.0,
+                end.0
+            )));
+        };
+        if u64::from(start.0) > fai_len || u64::from(end.0) > fai_len {
+            return Err(VardictError::Parse(format!(
+                "Query asks for data past end of contig {}: requested {}..={}, contig length {} in '{}'",
+                chr,
+                start.0,
+                end.0,
+                fai_len,
+                fasta_path.display()
+            )));
         }
 
         let region = crate::bam::build_noodles_region(chr, start.0, end.0)?;
@@ -1596,10 +1603,10 @@ pub fn get_reference_with_chr_len(
     let sequence_start = start_val.saturating_sub(total_ext).max(1);
 
     let end_ext = end_val.saturating_add(total_ext);
-    let sequence_end = if len > 0 && end_ext > len {
+    let sequence_end = if len > 0 && end_ext > len && len >= sequence_start {
         len
     } else {
-        end_ext
+        end_ext.max(sequence_start)
     };
 
     if is_loaded(&region.chr, sequence_start, sequence_end, reference) {
@@ -3535,6 +3542,108 @@ mod tests {
             let sk12 = SeedKey::from_slice(win12).unwrap();
             assert_ne!(sk17, sk12);
             assert_ne!(fx_hash(&sk17), fx_hash(&sk12));
+        }
+    }
+
+    #[test]
+    fn fetch_subsequence_and_get_reference_reject_missing_contig_and_start_past_len() {
+        let dir = tempfile::tempdir().unwrap();
+        let fa_path = dir.path().join("guard393.fa");
+        let fai_path = dir.path().join("guard393.fa.fai");
+
+        let seq_50k = b"ACGT".repeat(12_500);
+        assert_eq!(seq_50k.len(), 50_000);
+        let mut fa_file = File::create(&fa_path).unwrap();
+        fa_file.write_all(b">chr1\n").unwrap();
+        fa_file.write_all(&seq_50k).unwrap();
+        fa_file.write_all(b"\n").unwrap();
+
+        let mut fai_file = File::create(&fai_path).unwrap();
+        fai_file
+            .write_all(b"chr1\t50000\t6\t50000\t50001\n")
+            .unwrap();
+
+        // 1. Missing contig in .fai fails fast with VardictError::Parse naming FASTA, contig, and span
+        let err_missing =
+            fetch_subsequence(&fa_path, "chr_missing", Pos1(10), Pos1(50)).unwrap_err();
+        match &err_missing {
+            VardictError::Parse(msg) => {
+                assert!(
+                    msg.contains(
+                        "(.fai) does not contain contig 'chr_missing' (requested 10..=50)"
+                    ),
+                    "unexpected missing-contig message: {msg}"
+                );
+            }
+            other => panic!("expected VardictError::Parse for missing contig, got {other:?}"),
+        }
+
+        let mut cfg = Config::default();
+        cfg.reference = fa_path.to_string_lossy().into_owned();
+        let chr_lengths = HashMap::from([("chr1".to_string(), 50_000usize)]);
+
+        let reg_missing = BedRegion {
+            chr: "chr_missing".to_string(),
+            start: Pos1(10),
+            end: Pos1(50),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut ref_missing = Reference::new();
+        let err_get_missing =
+            get_reference(&reg_missing, 1200, &chr_lengths, &cfg, &mut ref_missing).unwrap_err();
+        assert!(
+            matches!(&err_get_missing, VardictError::Parse(m) if m.contains("does not contain contig 'chr_missing'")),
+            "unexpected get_reference missing-contig error: {err_get_missing:?}"
+        );
+
+        // 2. Normal near-end region clamps sequence_end down to len (50_000 >= sequence_start 48_300)
+        let reg_near_end = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(49_500),
+            end: Pos1(49_800),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut ref_loaded = Reference::new();
+        get_reference(&reg_near_end, 1200, &chr_lengths, &cfg, &mut ref_loaded).unwrap();
+        assert_eq!(ref_loaded.loaded_regions.len(), 1);
+        assert_eq!(ref_loaded.loaded_regions[0].sequence_start, 48_300);
+        assert_eq!(ref_loaded.loaded_regions[0].sequence_end, 50_000);
+
+        // 3. #393 start_val (111_106) > len (50_000): must NOT invert (109_906..=50_000), even when
+        //    1..=50_000 is already loaded in `Reference` (where inverted 109_906..=50_000 would
+        //    falsely satisfy `is_loaded` if `1..=110_000` or `1..=50_000` were checked!).
+        let reg_full = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(50_000),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut ref_full = Reference::new();
+        get_reference(&reg_full, 0, &chr_lengths, &cfg, &mut ref_full).unwrap();
+
+        let reg_past = BedRegion {
+            chr: "chr1".to_string(),
+            start: Pos1(111_106),
+            end: Pos1(111_200),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut ref_fresh = Reference::new();
+        for target_ref in [&mut ref_fresh, &mut ref_full] {
+            let err_past =
+                get_reference(&reg_past, 1200, &chr_lengths, &cfg, target_ref).unwrap_err();
+            match &err_past {
+                VardictError::Parse(msg) => {
+                    assert!(
+                        msg.contains("Query asks for data past end of contig chr1: requested 109906..=112400"),
+                        "unexpected past-end message: {msg}"
+                    );
+                }
+                other => panic!("expected VardictError::Parse for past-end region, got {other:?}"),
+            }
         }
     }
 }
