@@ -451,6 +451,7 @@ impl<'a> CigarParser<'a> {
                 self.region,
                 distance_to_amplicon,
                 overlap_fraction,
+                self.config.compat.eqx_cigar_read_length,
             ) {
                 return Ok(());
             }
@@ -473,6 +474,9 @@ impl<'a> CigarParser<'a> {
         self.scratch_elements.clear();
         self.scratch_elements.extend_from_slice(&record.cigar);
         let mut cigar_elements = std::mem::take(&mut self.scratch_elements);
+        if self.config.compat.eqx_cigar_read_length {
+            coalesce_eqx_into_match(&mut cigar_elements);
+        }
         let mut modified_bufs: Option<(Vec<u8>, Vec<u8>)> = None;
 
         // T046: run CigarModifier if realignment is enabled
@@ -589,6 +593,9 @@ impl<'a> CigarParser<'a> {
                             // exactly: refill from the record.
                             cigar_elements.clear();
                             cigar_elements.extend_from_slice(&record.cigar);
+                            if self.config.compat.eqx_cigar_read_length {
+                                coalesce_eqx_into_match(&mut cigar_elements);
+                            }
                         }
                         modified_bufs = Some((modified.query_seq, modified.query_qual));
                         self.scratch_cigar_str = modified.cigar;
@@ -632,20 +639,9 @@ impl<'a> CigarParser<'a> {
             }
         }
 
-        let mut read_len_match_ins = 0u32;
-        let mut total_len_mis = 0u32;
-        for &(len, kind) in &cigar_elements {
-            match kind {
-                CigarKind::Match | CigarKind::Insertion => {
-                    read_len_match_ins = read_len_match_ins.saturating_add(len);
-                    total_len_mis = total_len_mis.saturating_add(len);
-                }
-                CigarKind::SoftClip => {
-                    total_len_mis = total_len_mis.saturating_add(len);
-                }
-                _ => {}
-            }
-        }
+        let include_eqx = self.config.compat.eqx_cigar_read_length;
+        let read_len_match_ins = get_match_insertion_length_compat(&cigar_elements, include_eqx);
+        let total_len_mis = get_soft_clipped_length_compat(&cigar_elements, include_eqx);
         if self.config.minmatch != 0 && read_len_match_ins < self.config.minmatch {
             if let Some((s, q)) = modified_bufs {
                 self.scratch_seq = s;
@@ -2997,7 +2993,11 @@ impl<'a> CigarParser<'a> {
                         1.0
                     }
                 } else if self.config.dedup && live_total != 0 {
-                    crate::types::round_half_even(live_dup as f64 / live_total as f64, 3)
+                    crate::types::round_half_even_compat(
+                        live_dup as f64 / live_total as f64,
+                        3,
+                        self.config.compat.exact_binary_half_even,
+                    )
                 } else {
                     0.0
                 }
@@ -3086,7 +3086,11 @@ impl<'a> CigarParser<'a> {
                 }
             }
 
-            let end = compute_sv_end(start, cigar_elements);
+            let end = compute_sv_end_compat(
+                start,
+                cigar_elements,
+                self.config.compat.eqx_cigar_read_length,
+            );
             let mq = record.mapping_quality.unwrap_or(0);
 
             let min_svc_dist = 1.5;
@@ -3521,7 +3525,11 @@ impl<'a> CigarParser<'a> {
 
             if sv_allowed {
                 let mchr = get_mate_reference_name_str(record);
-                let end = compute_sv_end(start, cigar_elements);
+                let end = compute_sv_end_compat(
+                    start,
+                    cigar_elements,
+                    self.config.compat.eqx_cigar_read_length,
+                );
                 let (soft5, soft3) = compute_sv_soft5_soft3(
                     start,
                     end,
@@ -3697,10 +3705,16 @@ fn get_mate_reference_name_str(record: &SamRecord) -> &str {
 }
 
 #[inline]
-fn compute_sv_end(start: i32, cigar_elements: &[(u32, CigarKind)]) -> i32 {
+fn compute_sv_end_compat(
+    start: i32,
+    cigar_elements: &[(u32, CigarKind)],
+    include_eqx: bool,
+) -> i32 {
     let mut end = start;
     for &(len, op) in cigar_elements {
-        if matches!(op, CigarKind::Match | CigarKind::Deletion | CigarKind::Skip) {
+        if matches!(op, CigarKind::Match | CigarKind::Deletion | CigarKind::Skip)
+            || (include_eqx && matches!(op, CigarKind::SequenceMatch | CigarKind::SequenceMismatch))
+        {
             end = end.saturating_add(i32::try_from(len).unwrap_or(i32::MAX));
         }
     }
@@ -3945,17 +3959,6 @@ fn parse_amp_param(param: &str) -> (i32, f64) {
     }
 }
 
-/// Sum of matched and deleted segment lengths (`CigarParser.getAlignedLength` at
-/// `CigarParser.java:1590-1597`: `M + D`).
-fn get_aligned_length_amp(cigar: &[(u32, CigarKind)]) -> i32 {
-    cigar
-        .iter()
-        .filter(|(_, kind)| matches!(kind, CigarKind::Match | CigarKind::Deletion))
-        .fold(0i32, |acc, &(len, _)| {
-            acc.saturating_add(i32::try_from(len).unwrap_or(i32::MAX))
-        })
-}
-
 /// Sum of `[MD=X]` segment lengths (`Patterns.java:152` `ALIGNED_LENGTH_MD = "(\\d+)[MD=X]"`,
 /// used by `CigarParser.skipSitesOutRegionOfInterest` at `CigarParser.java:639`).
 fn get_aligned_length_md_eqx(elements: &[(u32, CigarKind)]) -> u32 {
@@ -3982,11 +3985,15 @@ fn parse_cigar_with_amp_case(
     region: &crate::regions::Region,
     distance_to_amplicon: i32,
     overlap_fraction: f64,
+    include_eqx: bool,
 ) -> bool {
     if cigar_elements.is_empty() {
         return false;
     }
-    let read_length = i64::from(get_aligned_length_amp(cigar_elements));
+    let read_length = i64::from(crate::bam::get_aligned_length_md_compat(
+        cigar_elements,
+        include_eqx,
+    ));
     let mut segstart = record.alignment_start.map_or(0i64, |p| i64::from(p.0));
     let mut segend = segstart + read_length - 1;
     let region_start = i64::from(region.start.0);
@@ -8332,5 +8339,327 @@ mod tests {
         assert_eq!(get_soft_clipped_length_compat(&sat_ops, true), u32::MAX);
         assert_eq!(get_match_insertion_length_compat(&sat_ops, false), 10);
         assert_eq!(get_match_insertion_length_compat(&sat_ops, true), u32::MAX);
+    }
+
+    #[test]
+    fn compat_off_eqx_matches_classic_m_across_pileup_amp_sv_and_live_duprate() {
+        use crate::types::Pos1;
+
+        let mut ref_seq = vec![b'A'; 300];
+        for (idx, b) in ref_seq.iter_mut().enumerate() {
+            *b = match idx % 4 {
+                0 => b'A',
+                1 => b'C',
+                2 => b'G',
+                _ => b'T',
+            };
+        }
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 300,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+        reference.seed.index_sequence(&ref_seq, 1, 300, 300);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(150),
+            gene: "TP53".to_string(),
+            amplicon: None,
+        };
+
+        // Build twin read pairs: SNV (`75=1X74=`), MNP (`75=2X73=`), indel+mismatch (`74=1X3D72=`),
+        // and SV discordant soft-clipped read (`15S135=`).
+        let mut seq_snv = ref_seq[0..150].to_vec();
+        seq_snv[75] = if seq_snv[75] == b'A' { b'G' } else { b'A' };
+
+        let mut seq_mnp = ref_seq[0..150].to_vec();
+        seq_mnp[75] = if seq_mnp[75] == b'A' { b'G' } else { b'A' };
+        seq_mnp[76] = if seq_mnp[76] == b'A' { b'G' } else { b'A' };
+
+        let mut seq_indel = Vec::with_capacity(147);
+        seq_indel.extend_from_slice(&ref_seq[0..75]);
+        seq_indel[74] = if seq_indel[74] == b'A' { b'G' } else { b'A' };
+        seq_indel.extend_from_slice(&ref_seq[78..150]);
+
+        let mut seq_sv = vec![b'T'; 15];
+        seq_sv.extend_from_slice(&ref_seq[0..135]);
+
+        let make_rec = |name: &[u8],
+                        cigar: Vec<(u32, CigarKind)>,
+                        seq: Vec<u8>,
+                        end_pos: u32,
+                        nm: i32,
+                        flags: u16,
+                        mate_chr: &str,
+                        mate_pos: u32,
+                        tlen: i32| SamRecord {
+            name: name.to_vec(),
+            flags,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(1)),
+            alignment_end: Some(Pos1(end_pos)),
+            mapping_quality: Some(60),
+            cigar,
+            quality_scores: vec![b'I'; seq.len()],
+            sequence: seq,
+            nm: Some(nm),
+            mate_reference_name: Some(mate_chr.to_string()),
+            mate_alignment_start: Some(Pos1(mate_pos)),
+            template_length: tlen,
+            ..SamRecord::default()
+        };
+
+        let m_records = vec![
+            make_rec(
+                b"snv",
+                vec![(150, CigarKind::Match)],
+                seq_snv.clone(),
+                150,
+                1,
+                0x1 | 0x2 | 0x20,
+                "chr1",
+                1,
+                150,
+            ),
+            make_rec(
+                b"mnp",
+                vec![(150, CigarKind::Match)],
+                seq_mnp.clone(),
+                150,
+                2,
+                0x1 | 0x2 | 0x20,
+                "chr1",
+                1,
+                150,
+            ),
+            make_rec(
+                b"indel",
+                vec![
+                    (75, CigarKind::Match),
+                    (3, CigarKind::Deletion),
+                    (72, CigarKind::Match),
+                ],
+                seq_indel.clone(),
+                150,
+                4,
+                0x1 | 0x2 | 0x20,
+                "chr1",
+                1,
+                150,
+            ),
+            make_rec(
+                b"sv_del",
+                vec![(15, CigarKind::SoftClip), (135, CigarKind::Match)],
+                seq_sv.clone(),
+                135,
+                0,
+                0x1 | 0x20,
+                "chr1",
+                500,
+                600,
+            ),
+            make_rec(
+                b"sv_fus",
+                vec![(135, CigarKind::Match), (15, CigarKind::SoftClip)],
+                seq_sv.clone(),
+                135,
+                0,
+                0x1 | 0x20,
+                "chr2",
+                500,
+                0,
+            ),
+        ];
+
+        let eqx_records = vec![
+            make_rec(
+                b"snv",
+                vec![
+                    (75, CigarKind::SequenceMatch),
+                    (1, CigarKind::SequenceMismatch),
+                    (74, CigarKind::SequenceMatch),
+                ],
+                seq_snv,
+                150,
+                1,
+                0x1 | 0x2 | 0x20,
+                "chr1",
+                1,
+                150,
+            ),
+            make_rec(
+                b"mnp",
+                vec![
+                    (75, CigarKind::SequenceMatch),
+                    (2, CigarKind::SequenceMismatch),
+                    (73, CigarKind::SequenceMatch),
+                ],
+                seq_mnp,
+                150,
+                2,
+                0x1 | 0x2 | 0x20,
+                "chr1",
+                1,
+                150,
+            ),
+            make_rec(
+                b"indel",
+                vec![
+                    (74, CigarKind::SequenceMatch),
+                    (1, CigarKind::SequenceMismatch),
+                    (3, CigarKind::Deletion),
+                    (72, CigarKind::SequenceMatch),
+                ],
+                seq_indel,
+                150,
+                4,
+                0x1 | 0x2 | 0x20,
+                "chr1",
+                1,
+                150,
+            ),
+            make_rec(
+                b"sv_del",
+                vec![(15, CigarKind::SoftClip), (135, CigarKind::SequenceMatch)],
+                seq_sv.clone(),
+                135,
+                0,
+                0x1 | 0x20,
+                "chr1",
+                500,
+                600,
+            ),
+            make_rec(
+                b"sv_fus",
+                vec![(135, CigarKind::SequenceMatch), (15, CigarKind::SoftClip)],
+                seq_sv,
+                135,
+                0,
+                0x1 | 0x20,
+                "chr2",
+                500,
+                0,
+            ),
+        ];
+
+        let cfg_off = Config {
+            compat: crate::config::COMPAT_OFF,
+            minmatch: 50,
+            ..Config::default()
+        };
+        let mut p_m = CigarParser::new(&reference, &region, &cfg_off, false, 0, 0, 0);
+        let mut p_eqx = CigarParser::new(&reference, &region, &cfg_off, false, 0, 0, 0);
+        for rec in &m_records {
+            p_m.parse_cigar(rec).unwrap();
+        }
+        for rec in &eqx_records {
+            p_eqx.parse_cigar(rec).unwrap();
+        }
+        let vd_m = p_m.into_variation_data();
+        let vd_eqx = p_eqx.into_variation_data();
+
+        assert_eq!(vd_eqx.max_read_length, vd_m.max_read_length);
+        assert_eq!(vd_eqx.ref_coverage, vd_m.ref_coverage);
+        assert_eq!(
+            vd_eqx.non_insertion_variants.len(),
+            vd_m.non_insertion_variants.len()
+        );
+        for (pos, map_m) in vd_m.non_insertion_variants.iter() {
+            let map_eqx = vd_eqx
+                .non_insertion_variants
+                .get(pos)
+                .unwrap_or_else(|| panic!("missing variant position {pos} in eqx pileup"));
+            assert_eq!(
+                map_eqx.map.keys().collect::<Vec<_>>(),
+                map_m.map.keys().collect::<Vec<_>>()
+            );
+            for (allele, var_m) in &map_m.map {
+                let var_eqx = &map_eqx.map[allele];
+                assert_eq!(var_eqx.cnt, var_m.cnt, "cnt mismatch at {pos} {allele}");
+                assert_eq!(
+                    var_eqx.pmean, var_m.pmean,
+                    "pmean mismatch at {pos} {allele}"
+                );
+                assert_eq!(
+                    var_eqx.qmean, var_m.qmean,
+                    "qmean mismatch at {pos} {allele}"
+                );
+            }
+        }
+        assert_eq!(vd_eqx.sv_structures.svdelfend, vd_m.sv_structures.svdelfend);
+        assert_eq!(
+            vd_eqx.sv_structures.svfusfend.get("chr2"),
+            vd_m.sv_structures.svfusfend.get("chr2")
+        );
+
+        // Amplicon mode (`-a "10:0.95"`) single-end `150=` read (`tlen = 0`)
+        let amp_snv_m = make_rec(
+            b"amp_m",
+            vec![(150, CigarKind::Match)],
+            m_records[0].sequence.clone(),
+            150,
+            1,
+            0,
+            "*",
+            0,
+            0,
+        );
+        let amp_snv_eqx = make_rec(
+            b"amp_eqx",
+            eqx_records[0].cigar.clone(),
+            eqx_records[0].sequence.clone(),
+            150,
+            1,
+            0,
+            "*",
+            0,
+            0,
+        );
+        let cfg_amp_default = Config {
+            amplicon: Some("10:0.95".to_string()),
+            ..Config::default()
+        };
+        let mut p_amp_def = CigarParser::new(&reference, &region, &cfg_amp_default, false, 0, 0, 0);
+        p_amp_def.parse_cigar(&amp_snv_eqx).unwrap();
+        assert!(
+            p_amp_def
+                .into_variation_data()
+                .non_insertion_variants
+                .is_empty(),
+            "default amplicon mode drops 150= single-end read due to read_length == 0"
+        );
+
+        let cfg_amp_off = Config {
+            amplicon: Some("10:0.95".to_string()),
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let mut p_amp_m = CigarParser::new(&reference, &region, &cfg_amp_off, false, 0, 0, 0);
+        let mut p_amp_eqx = CigarParser::new(&reference, &region, &cfg_amp_off, false, 0, 0, 0);
+        p_amp_m.parse_cigar(&amp_snv_m).unwrap();
+        p_amp_eqx.parse_cigar(&amp_snv_eqx).unwrap();
+        assert_eq!(
+            p_amp_eqx.into_variation_data().non_insertion_variants.len(),
+            p_amp_m.into_variation_data().non_insertion_variants.len()
+        );
+
+        // `live_duprate` exact binary tie `1 / 2_000 == 5e-4 -> 0.001` under COMPAT_OFF
+        let cfg_dup_off = Config {
+            dedup: true,
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let mut p_dup_off = CigarParser::new(&reference, &region, &cfg_dup_off, false, 0, 0, 100);
+        p_dup_off.set_live_read_counts(2_000, 1);
+        assert_eq!(p_dup_off.into_variation_data().duprate, 0.001);
     }
 }
