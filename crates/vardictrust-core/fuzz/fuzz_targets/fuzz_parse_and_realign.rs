@@ -6,15 +6,59 @@ use std::collections::HashMap;
 use vardictrust_core::bam::SamRecord;
 use vardictrust_core::cigar::parse::CigarParser;
 use vardictrust_core::config::Config;
+use vardictrust_core::postprocess::simple::simple_post_process;
 use vardictrust_core::realign::{adj_snv, adjust_mnp, realign_indels};
 use vardictrust_core::reference::{LoadedRegion, Reference};
 use vardictrust_core::regions::Region;
 use vardictrust_core::sv::find_all_sv_paths;
 use vardictrust_core::tovars::ToVarsBuilder;
 use vardictrust_core::types::Pos1;
+use vardictrust_core::variations::Variant;
 
 /// Maximum accepted libFuzzer input payload (`4 KiB`) to bound per-iteration runtime.
 const MAX_FUZZ_INPUT_BYTES: usize = 4096;
+
+#[inline]
+fn assert_reconciled_variant(v: &Variant, is_ref: bool) {
+    assert!(
+        0 <= v.pos_coverage && v.pos_coverage <= v.total_pos_cov,
+        "VD out of [0, DP]: vd={}, dp={}, is_ref={is_ref}",
+        v.pos_coverage,
+        v.total_pos_cov
+    );
+    if is_ref {
+        assert!(
+            0 <= v.ref_fwd_cov
+                && 0 <= v.ref_rev_cov
+                && v.ref_fwd_cov.saturating_add(v.ref_rev_cov) <= v.total_pos_cov,
+            "ref_variant RD out of [0, DP]: rf={}, rr={}, dp={}",
+            v.ref_fwd_cov,
+            v.ref_rev_cov,
+            v.total_pos_cov
+        );
+    }
+    assert!(
+        0.0 <= v.frequency && v.frequency <= 1.0,
+        "AF out of [0, 1]: {}",
+        v.frequency
+    );
+    assert!(
+        0.0 <= v.extra_freq && v.extra_freq <= 1.0,
+        "ADJAF out of [0, 1]: {}",
+        v.extra_freq
+    );
+    assert!(
+        0 <= v.hicnt && v.hicnt <= v.hicov,
+        "HICNT out of [0, HICOV]: hicnt={}, hicov={}",
+        v.hicnt,
+        v.hicov
+    );
+    assert!(
+        0.0 <= v.hi_freq && v.hi_freq <= 1.0,
+        "HIAF out of [0, 1]: {}",
+        v.hi_freq
+    );
+}
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 18 || data.len() > MAX_FUZZ_INPUT_BYTES {
@@ -74,6 +118,16 @@ fuzz_target!(|data: &[u8]| {
     let payload = &data[11..];
     if payload.is_empty() {
         return;
+    }
+
+    // Exercise both full `COMPAT_OFF` / `COMPAT_VARDICTJAVA_1_8_3` profiles and independent
+    // Wave-3 `CompatProfile` switch combinations (`reconcile_vd_dp`, `coordinate_sorted_vars`,
+    // `exact_35_overlap`, `exact_cigar_dlen_match`).
+    if (extra_param & 0x80) != 0 {
+        config.compat.reconcile_vd_dp = (extra_param & 0x08) != 0;
+        config.compat.coordinate_sorted_vars = (extra_param & 0x10) != 0;
+        config.compat.exact_35_overlap = (extra_param & 0x20) != 0;
+        config.compat.exact_cigar_dlen_match = (extra_param & 0x40) != 0;
     }
 
     let bases = [b'A', b'C', b'G', b'T', b'N'];
@@ -258,5 +312,64 @@ fuzz_target!(|data: &[u8]| {
     adj_snv(&reference, "chr1", &config, &mut var_data);
 
     let builder = ToVarsBuilder::new(&reference, &region, &chr_lengths, &config);
-    let _ = builder.build_aligned_variants(&var_data);
+    let aligned = builder.build_aligned_variants(&var_data);
+
+    if config.compat.reconcile_vd_dp {
+        for (_, vars) in aligned.iter() {
+            for v in &vars.variants {
+                assert_reconciled_variant(v, false);
+            }
+            if let Some(ref rv) = vars.ref_variant {
+                assert_reconciled_variant(rv, true);
+            }
+        }
+    }
+
+    if config.amplicon.is_none() {
+        let mut var_cfg = config.clone();
+        var_cfg.emit_intermediate = true;
+        let var_rows = simple_post_process(&var_cfg, &region, &aligned, &var_data.splice);
+        if var_cfg.compat.reconcile_vd_dp {
+            for v in &var_rows {
+                assert_reconciled_variant(v, v.var_type.is_empty());
+            }
+        }
+        if var_cfg.compat.coordinate_sorted_vars {
+            // Unshifted SNV rows have `start_pos == map_key`, so emitted `.var` positions
+            // on a single contig/region are monotonically non-decreasing (`pos >= prev_pos`).
+            let mut prev_snv_pos = i32::MIN;
+            for v in &var_rows {
+                if v.var_type == "SNV" && v.sv.is_empty() && !v.null_record {
+                    assert!(
+                        v.start_pos >= prev_snv_pos,
+                        "coordinate_sorted_vars SNV .var start_pos regressed: {} < {}",
+                        v.start_pos,
+                        prev_snv_pos
+                    );
+                    prev_snv_pos = v.start_pos;
+                }
+            }
+        }
+
+        let mut vcf_cfg = config.clone();
+        vcf_cfg.emit_intermediate = false;
+        let vcf_rows = simple_post_process(&vcf_cfg, &region, &aligned, &var_data.splice);
+        if vcf_cfg.compat.reconcile_vd_dp {
+            for v in &vcf_rows {
+                assert_reconciled_variant(v, v.var_type.is_empty());
+            }
+        }
+        if vcf_cfg.compat.coordinate_sorted_vars && !vcf_cfg.vcf_all_alleles {
+            let mut prev_pos = i32::MIN;
+            for v in &vcf_rows {
+                assert!(
+                    v.start_pos >= prev_pos,
+                    "coordinate_sorted_vars VCF start_pos regressed: {} < {}",
+                    v.start_pos,
+                    prev_pos
+                );
+                prev_pos = v.start_pos;
+            }
+        }
+    }
 });

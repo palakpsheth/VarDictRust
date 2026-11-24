@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`38` tests).
+//! First-class functional engine behavior integration suite (`39` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs,
@@ -1322,7 +1322,7 @@ mod hostile_inputs {
 
         let res = run_core_vcf(&cfg);
         assert!(
-            res.is_ok() || matches!(res, Err(VardictError::Io(_))),
+            res.is_ok() || matches!(res, Err(VardictError::Io(_) | VardictError::Parse(_))),
             "absent chromosome must return clean result without panicking, got: {res:?}"
         );
     }
@@ -3219,7 +3219,7 @@ mod parity_edge_cases {
     }
 }
 
-// 9. mod vcf_all_alleles_and_compat_off (3 tests)
+// 9. mod vcf_all_alleles_and_compat_off (4 tests)
 mod vcf_all_alleles_and_compat_off {
     use super::*;
     use noodles::bam::bai;
@@ -6153,6 +6153,719 @@ mod vcf_all_alleles_and_compat_off {
             extract_variants(&run_via_core_run(&inv_disc_exp_cfg, "inv_disc_exp1", false))
                 .is_empty(),
             "vcf_min_splitreads_explicit=true must drop SPLITREAD=0 <INV> again under COMPAT_OFF"
+        );
+    }
+
+    #[test]
+    fn compat_off_wave3_reconcile_sorted_realign_utr172_and_fai393_e2e() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let flip_nt = |b: u8| -> u8 {
+            match b {
+                b'A' => b'C',
+                b'C' => b'G',
+                b'G' => b'T',
+                _ => b'A',
+            }
+        };
+
+        // =========================================================================
+        // (a) `reconcile_vd_dp` (`VarDictJava #92`, `#386`, `#400`):
+        //     200-bp `<DUP>` across `chr1:200..=399` (`sv_min_len = 150`):
+        //     - 2 wild-type reads covering `399` (`HICOV = 2` since `<dup>` in
+        //       `non_insertion_variants` starts with `'+'` and is skipped by `calc_hicov`)
+        //     - 2 forward split reads `60M20S` at `340..=399` (`DP = 2 + 2 = 4` at `399`)
+        //     - 8 reverse split reads `20S60M` at `200..=259` paired with 8 forward
+        //       discordant mates `60M` at `330..=389` (ending before `399`, adding
+        //       `extracnt >= 8 > DP = 4` and discordant pair counts so `cnt - DP >= extracnt`):
+        //     Under `COMPAT_VARDICTJAVA_1_8_3`, this simultaneously triggers `#92`
+        //     (`VD > DP`, `AF > 1.0`), `#386` (`cnt - DP >= extracnt`, `ADJAF > 1.0`),
+        //     and `#400` (`HICNT > HICOV`, `HIAF > 1.0`). Under `COMPAT_OFF`,
+        //     `reconcile_vd_dp` enforces `0 <= VD <= DP`, `0.0 <= AF <= 1.0`,
+        //     `0.0 <= ADJAF <= 1.0`, `0 <= HICNT <= HICOV`, and `0.0 <= HIAF <= 1.0`.
+        // =========================================================================
+        let mut rec_ref = lcg_ref_bytes(0x9238_6400_CAFE_BABE, 600);
+        // Pin junction bases around 200 and 399 so `modify_cigar` preserves 20S soft-clips
+        rec_ref[198] = b'A'; // pos 199 (before 200)
+        rec_ref[199] = b'C'; // pos 200 (first DUP base)
+        rec_ref[398] = b'G'; // pos 399 (last DUP base != A -> 20S at 200 won't absorb into 199)
+        rec_ref[399] = b'T'; // pos 400 (after DUP != C -> 20S at 400 won't absorb into 400)
+
+        let rec_fa = write_multi_contig_fasta(dir.path(), "w3_rec", &[("chr1", &rec_ref)]);
+        let mut rec_reads = Vec::new();
+        for i in 0..2usize {
+            let start = 360 + i * 2;
+            rec_reads.push(mk_contig_rec(
+                &format!("dup_rec_wt_{i}"),
+                0,
+                if i == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                start,
+                &[(80, Kind::Match)],
+                rec_ref[start - 1..start - 1 + 80].to_vec(),
+                vec![38; 80],
+                None,
+            ));
+        }
+        for i in 0..2usize {
+            let mut fseq = rec_ref[339..399].to_vec(); // 60M at 340..=399
+            fseq.extend_from_slice(&rec_ref[199..219]); // 20S matching 200..=219
+            rec_reads.push(mk_contig_rec(
+                &format!("dup_rec_fsplit_{i}"),
+                0,
+                Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                340,
+                &[(60, Kind::Match), (20, Kind::SoftClip)],
+                fseq,
+                vec![38; 80],
+                Some((0, 200, -200)),
+            ));
+        }
+        for i in 0..8usize {
+            let mut rseq = rec_ref[379..399].to_vec(); // 20S matching 380..=399
+            rseq.extend_from_slice(&rec_ref[199..259]); // 60M at 200..=259
+            rec_reads.push(mk_contig_rec(
+                &format!("dup_rec_rsplit_{i}"),
+                0,
+                Flags::SEGMENTED | Flags::REVERSE_COMPLEMENTED,
+                200,
+                &[(20, Kind::SoftClip), (60, Kind::Match)],
+                rseq,
+                vec![38; 80],
+                Some((0, 330, 200)),
+            ));
+            rec_reads.push(mk_contig_rec(
+                &format!("dup_rec_fdisc_{i}"),
+                0,
+                Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                330,
+                &[(60, Kind::Match)],
+                rec_ref[329..389].to_vec(), // 330..=389 (ends before 399!)
+                vec![38; 60],
+                Some((0, 200, -200)),
+            ));
+        }
+        let rec_bam = dir.path().join("w3_rec.bam");
+        write_multi_contig_bam(&rec_bam, &[("chr1", rec_ref.len())], rec_reads)
+            .expect("write w3_rec.bam");
+        let rec_bed = dir.path().join("w3_rec.bed");
+        fs::write(&rec_bed, "chr1\t180\t440\tREC_GENE\n").expect("write w3_rec.bed");
+
+        let rec_vj_cfg = Config {
+            reference: rec_fa.to_string_lossy().into_owned(),
+            bam: rec_bam.to_string_lossy().into_owned(),
+            sample: "REC_SMPL".to_string(),
+            sample_explicit: true,
+            bed: Some(rec_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            sv_min_len: 150,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let rec_vj_var = run_core_var(&rec_vj_cfg).expect("rec_vj_var");
+        let rec_vj_vcf = run_core_vcf(&rec_vj_cfg).expect("rec_vj_vcf");
+        assert!(
+            rec_vj_var.lines().any(|l| {
+                let cols: Vec<&str> = l.split('\t').collect();
+                cols.len() == 36
+                    && cols[7].parse::<i32>().unwrap_or(0) < cols[8].parse::<i32>().unwrap_or(0)
+            }),
+            "COMPAT_VARDICTJAVA_1_8_3 .var must exhibit #92 VD > DP (TotalCov < VarCov), got:\n{rec_vj_var}"
+        );
+        assert!(
+            extract_variants(&rec_vj_vcf).iter().any(|l| {
+                l.contains("\t<DUP>\t")
+                    && l.split('\t').nth(7).is_some_and(|info| {
+                        let mut dp = 0i32;
+                        let mut vd = 0i32;
+                        for kv in info.split(';') {
+                            if let Some(v) = kv.strip_prefix("DP=") {
+                                dp = v.parse().unwrap_or(0);
+                            } else if let Some(v) = kv.strip_prefix("VD=") {
+                                vd = v.parse().unwrap_or(0);
+                            }
+                        }
+                        vd > dp
+                    })
+            }),
+            "COMPAT_VARDICTJAVA_1_8_3 VCF must exhibit #92 VD > DP (DP=6;VD=10), got:\n{rec_vj_vcf}"
+        );
+
+        let mut rec_off_cfg = rec_vj_cfg.clone();
+        rec_off_cfg.compat = COMPAT_OFF;
+        let rec_off_var = run_core_var(&rec_off_cfg).expect("rec_off_var");
+        let rec_off_vcf = run_core_vcf(&rec_off_cfg).expect("rec_off_vcf");
+        assert!(
+            extract_variants(&rec_off_vcf)
+                .iter()
+                .any(|l| l.contains("\t<DUP>\t")),
+            "COMPAT_OFF must emit <DUP> SV with reconciled depths/frequencies, got:\n{rec_off_vcf}"
+        );
+
+        // Verify ALL reconciled invariants on `.var` and `.vcf` under `COMPAT_OFF`
+        for line in rec_off_var.lines().filter(|l| !l.trim().is_empty()) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            assert_eq!(cols.len(), 36);
+            let dp: i32 = cols[7].parse().expect("dp");
+            let vd: i32 = cols[8].parse().expect("vd");
+            let af: f64 = cols[14].parse().expect("af");
+            let hiaf: f64 = cols[22].parse().expect("hiaf");
+            let adjaf: f64 = cols[23].parse().expect("adjaf");
+            let hicnt: i32 = cols[28].parse().expect("hicnt");
+            let hicov: i32 = cols[29].parse().expect("hicov");
+            assert!(0 <= vd && vd <= dp, "expected 0 <= VD <= DP in {line}");
+            assert!((0.0..=1.0).contains(&af), "expected AF in [0,1] in {line}");
+            assert!(
+                (0.0..=1.0).contains(&adjaf),
+                "expected ADJAF in [0,1] in {line}"
+            );
+            assert!(
+                0 <= hicnt && hicnt <= hicov,
+                "expected 0 <= HICNT <= HICOV in {line}"
+            );
+            assert!(
+                (0.0..=1.0).contains(&hiaf),
+                "expected HIAF in [0,1] in {line}"
+            );
+        }
+        for line in extract_variants(&rec_off_vcf) {
+            let info = line.split('\t').nth(7).expect("INFO");
+            let mut dp = None;
+            let mut vd = None;
+            for kv in info.split(';') {
+                if let Some(v) = kv.strip_prefix("DP=") {
+                    dp = Some(v.parse::<i32>().expect("DP"));
+                } else if let Some(v) = kv.strip_prefix("VD=") {
+                    vd = Some(v.parse::<i32>().expect("VD"));
+                } else if let Some(v) = kv.strip_prefix("AF=") {
+                    let af: f64 = v.parse().expect("AF");
+                    assert!((0.0..=1.0).contains(&af), "VCF AF out of [0,1]: {line}");
+                } else if let Some(v) = kv.strip_prefix("ADJAF=") {
+                    let adjaf: f64 = v.parse().expect("ADJAF");
+                    assert!(
+                        (0.0..=1.0).contains(&adjaf),
+                        "VCF ADJAF out of [0,1]: {line}"
+                    );
+                } else if let Some(v) = kv.strip_prefix("HIAF=") {
+                    let hiaf: f64 = v.parse().expect("HIAF");
+                    assert!((0.0..=1.0).contains(&hiaf), "VCF HIAF out of [0,1]: {line}");
+                }
+            }
+            let (dp, vd) = (dp.expect("DP present"), vd.expect("VD present"));
+            assert!(0 <= vd && vd <= dp, "VCF VD > DP: {line}");
+        }
+
+        // =========================================================================
+        // (b) `coordinate_sorted_vars` (`UB-3` / `#282` / `#34 PB-1`):
+        //     4 variant loci on `chr1:100-600`: `152` (bucket 8 at cap 16), `260`
+        //     (bucket 4), `511` (bucket 15), and `512` (bucket 0) — so JavaHashMap
+        //     iterates `[512, 260, 152, 511]` out of coordinate order!
+        // =========================================================================
+        let mut sort_ref = lcg_ref_bytes(0x2820_0034_BEEF_CAFE, 800);
+        for &p in &[152usize, 260, 511, 512] {
+            sort_ref[p - 1] = b'A';
+        }
+        let sort_fa = write_multi_contig_fasta(dir.path(), "w3_sort", &[("chr1", &sort_ref)]);
+        let mut sort_reads = Vec::new();
+        for &(locus, alt_b, alt_cnt) in &[
+            (152usize, b'G', 6usize),
+            (260usize, b'C', 8usize),
+            (511usize, b'T', 5usize),
+            (512usize, b'G', 10usize),
+        ] {
+            for i in 0..20usize {
+                let start = locus - 25 + (i % 5);
+                let mut seq = sort_ref[start - 1..start - 1 + 60].to_vec();
+                // Keep 511 and 512 on separate clusters or non-overlapping alt subsets:
+                // for 511 and 512 (adjacent), only mutate the target locus when i < alt_cnt
+                // (use disjoint read indices for 511 vs 512 on overlapping window? No,
+                // emit separate 40-bp reads only for 152 and 260, and for 511/512 share
+                // one 20-read pool so total depth at 511 and 512 is cleanly 20!).
+                if locus < 500 {
+                    if i < alt_cnt {
+                        seq[locus - start] = alt_b;
+                    }
+                    sort_reads.push(mk_contig_rec(
+                        &format!("s_{locus}_{i}"),
+                        0,
+                        if i % 2 == 1 {
+                            Flags::REVERSE_COMPLEMENTED
+                        } else {
+                            Flags::empty()
+                        },
+                        start,
+                        &[(60, Kind::Match)],
+                        seq,
+                        vec![38; 60],
+                        None,
+                    ));
+                }
+            }
+        }
+        // Shared 20-read pool across 485..=550 so depth is exactly 20 at both 511 and 512:
+        // reads 0..5 carry 511 A>T (AF = 5/20 = 0.25); reads 6..16 carry 512 A>G (AF = 10/20 = 0.50);
+        // reads 16..20 are pure reference (avoiding MNP fusion on same read!).
+        for i in 0..20usize {
+            let start = 486 + (i % 5);
+            let mut seq = sort_ref[start - 1..start - 1 + 60].to_vec();
+            if i < 5 {
+                seq[511 - start] = b'T';
+            } else if (6..16).contains(&i) {
+                seq[512 - start] = b'G';
+            }
+            sort_reads.push(mk_contig_rec(
+                &format!("s_511_512_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                start,
+                &[(60, Kind::Match)],
+                seq,
+                vec![38; 60],
+                None,
+            ));
+        }
+        let sort_bam = dir.path().join("w3_sort.bam");
+        write_multi_contig_bam(&sort_bam, &[("chr1", sort_ref.len())], sort_reads)
+            .expect("write w3_sort.bam");
+        let sort_bed = dir.path().join("w3_sort.bed");
+        fs::write(&sort_bed, "chr1\t99\t600\tSORT_GENE\n").expect("write w3_sort.bed");
+
+        let sort_vj_cfg = Config {
+            reference: sort_fa.to_string_lossy().into_owned(),
+            bam: sort_bam.to_string_lossy().into_owned(),
+            sample: "SORT_SMPL".to_string(),
+            sample_explicit: true,
+            bed: Some(sort_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            fisher: true,
+            omit_end_tag: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let parse_var_starts = |var_text: &str| -> Vec<i32> {
+            var_text
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| {
+                    l.split('\t')
+                        .nth(3)
+                        .expect("col 4 Start")
+                        .parse::<i32>()
+                        .expect("parse Start")
+                })
+                .collect()
+        };
+        let sort_vj_var = run_core_var(&sort_vj_cfg).expect("sort_vj_var");
+        let vj_starts = parse_var_starts(&sort_vj_var);
+        assert_eq!(
+            vj_starts,
+            vec![512, 260, 152, 511],
+            "COMPAT_VARDICTJAVA_1_8_3 must preserve JavaHashMap bucket order [512, 260, 152, 511]"
+        );
+
+        let mut sort_off_cfg = sort_vj_cfg.clone();
+        sort_off_cfg.compat = COMPAT_OFF;
+        let sort_off_var_u = run_core_var(&sort_off_cfg).expect("sort_off_var_u");
+        let sort_off_vcf_u = run_core_vcf(&sort_off_cfg).expect("sort_off_vcf_u");
+        let off_starts = parse_var_starts(&sort_off_var_u);
+        assert_eq!(
+            off_starts,
+            vec![152, 260, 511, 512],
+            "COMPAT_OFF must emit .var rows in strictly ascending coordinate order"
+        );
+        assert!(off_starts.windows(2).all(|w| w[0] < w[1]));
+
+        // Tiled == untiled conservation under `COMPAT_OFF`
+        let mut sort_off_tiled = sort_off_cfg.clone();
+        sort_off_tiled.tile_size = Some(120);
+        sort_off_tiled.threads = 4;
+        let sort_off_var_t = run_core_var(&sort_off_tiled).expect("sort_off_var_t");
+        let sort_off_vcf_t = run_core_vcf(&sort_off_tiled).expect("sort_off_vcf_t");
+        assert_eq!(
+            sort_off_var_t, sort_off_var_u,
+            "COMPAT_OFF coordinate-sorted .var must be byte-identical across tiled and untiled runs"
+        );
+        assert_eq!(
+            sort_off_vcf_t, sort_off_vcf_u,
+            "COMPAT_OFF coordinate-sorted .vcf must be byte-identical across tiled and untiled runs"
+        );
+
+        // Pipe `COMPAT_OFF` `.var` into `perl VarDictJava/VarDict/var2vcf_valid.pl`
+        if Command::new("perl")
+            .arg("-v")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            let perl_vars = run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-N", "SORT_SMPL", "-E", "-f", "0.01"],
+                &sort_off_var_u,
+            );
+            let native_vars = extract_variants(&sort_off_vcf_u);
+            assert_eq!(
+                native_vars, perl_vars,
+                "native COMPAT_OFF VCF must match perl var2vcf_valid.pl on coordinate-sorted .var"
+            );
+        }
+
+        // =========================================================================
+        // (c1) `exact_35_overlap` (`PB-2`): 35-bp large insertion assembly where
+        //      `rem5 = 25 < rem3 = 35` with 2 mismatches (`indices 6 and 16`):
+        //      dropped under `COMPAT_VARDICTJAVA_1_8_3`, rescued under `COMPAT_OFF`.
+        // =========================================================================
+        let ins35_ref: Vec<u8> = (0..1000)
+            .map(|i| if i % 2 == 0 { b'T' } else { b'C' })
+            .collect();
+        let motif: Vec<u8> = (0..60)
+            .map(|k| b"ACGT"[(k * 7 + (k / 4) * 3 + (k / 16)) % 4])
+            .collect();
+        let mut s3_rev_35 = motif[..35].to_vec();
+        s3_rev_35[34] = b'G'; // != ins35_ref[499] ('C') -> prevents modify_cigar absorption at 500
+        let s3_35: Vec<u8> = s3_rev_35.iter().copied().rev().collect();
+        let mut s5_25 = motif[..25].to_vec();
+        s5_25[6] = flip_nt(s5_25[6]);
+        s5_25[16] = flip_nt(s5_25[16]);
+        assert_ne!(s5_25[0], ins35_ref[498]); // 'A' != 'T' -> prevents modify_cigar absorption at 499
+        let s5_read_bytes: Vec<u8> = s5_25.iter().copied().rev().collect();
+
+        let ins35_fa = write_multi_contig_fasta(dir.path(), "w3_ins35", &[("chr1", &ins35_ref)]);
+        let mut ins35_reads = Vec::new();
+        for i in 0..8usize {
+            // 3' soft-clip at pos 500: start = 450, 50M35S (covers 450..=499, clip key = 500)
+            let mut seq3 = ins35_ref[449..499].to_vec();
+            seq3.extend_from_slice(&s3_35);
+            ins35_reads.push(mk_contig_rec(
+                &format!("ins35_sc3_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                450,
+                &[(50, Kind::Match), (35, Kind::SoftClip)],
+                seq3,
+                vec![38; 85],
+                None,
+            ));
+            // 5' soft-clip at pos 500: start = 500, 25S50M (clip key = 500, covers 500..=549)
+            let mut seq5 = s5_read_bytes.clone();
+            seq5.extend_from_slice(&ins35_ref[499..549]);
+            ins35_reads.push(mk_contig_rec(
+                &format!("ins35_sc5_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                500,
+                &[(25, Kind::SoftClip), (50, Kind::Match)],
+                seq5,
+                vec![38; 75],
+                None,
+            ));
+        }
+        for i in 0..4usize {
+            let start = 470 + i * 2;
+            ins35_reads.push(mk_contig_rec(
+                &format!("ins35_wt_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                start,
+                &[(70, Kind::Match)],
+                ins35_ref[start - 1..start - 1 + 70].to_vec(),
+                vec![38; 70],
+                None,
+            ));
+        }
+        let ins35_bam = dir.path().join("w3_ins35.bam");
+        write_multi_contig_bam(&ins35_bam, &[("chr1", ins35_ref.len())], ins35_reads)
+            .expect("write w3_ins35.bam");
+        let ins35_vj_cfg = Config {
+            reference: ins35_fa.to_string_lossy().into_owned(),
+            bam: ins35_bam.to_string_lossy().into_owned(),
+            sample: "INS35".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:400-600".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        assert!(
+            extract_variants(&run_core_vcf(&ins35_vj_cfg).expect("ins35_vj_vcf")).is_empty(),
+            "COMPAT_VARDICTJAVA_1_8_3 must drop rem5=25 < rem3=35 2-mismatch 35bp insertion"
+        );
+        let mut ins35_off_cfg = ins35_vj_cfg.clone();
+        ins35_off_cfg.compat = COMPAT_OFF;
+        let ins35_off_vcf = run_core_vcf(&ins35_off_cfg).expect("ins35_off_vcf");
+        let ins35_vars = extract_variants(&ins35_off_vcf);
+        assert_eq!(
+            ins35_vars.len(),
+            1,
+            "COMPAT_OFF must rescue the 35-bp insertion via exact_35_overlap, got:\n{ins35_off_vcf}"
+        );
+        assert!(
+            ins35_vars[0].contains("chr1\t499\t") && ins35_vars[0].contains(";TYPE=Insertion;"),
+            "expected rescued 35-bp Insertion at chr1:499, got: {}",
+            ins35_vars[0]
+        );
+
+        // =========================================================================
+        // (c2) `exact_cigar_dlen_match` (`PB-4`): 7 reads with a `5D` deletion at
+        //      chr1:260 (deleted 261..=265) + 3 reads spanning 200..=365 that are
+        //      wild-type across 260..=266 (`h.cnt = 3`) and carry a `15D` deletion
+        //      downstream at 311..=325 (`110M15D40M`).
+        //      `7 > 2 * 3 * (1 - 5/150) = 5.8` enters `no_passing_reads`:
+        //      - `COMPAT_VARDICTJAVA_1_8_3`: `"15D"` substring-matches `"5D"`, returning
+        //        `no_passing_reads == true` and inflating `5D` `VD` from `7` to `10`!
+        //      - `COMPAT_OFF`: `15 != 5`, `no_passing_reads == false`, keeping `VD=7, DP=10`.
+        // =========================================================================
+        let mut dlen_ref = lcg_ref_bytes(0xD15D_0005_1234_5678, 600);
+        // Prevent any homopolymer shift at 260..=266 and 310..=326
+        dlen_ref[259] = b'A'; // 260
+        dlen_ref[260] = b'C'; // 261 (5D start)
+        dlen_ref[264] = b'G'; // 265 (5D end != A)
+        dlen_ref[265] = b'T'; // 266 (post-5D != C)
+        dlen_ref[309] = b'A'; // 310
+        dlen_ref[310] = b'C'; // 311 (15D start)
+        dlen_ref[324] = b'G'; // 325 (15D end != A)
+        dlen_ref[325] = b'T'; // 326 (post-15D != C)
+
+        let dlen_fa = write_multi_contig_fasta(dir.path(), "w3_dlen", &[("chr1", &dlen_ref)]);
+        let mut dlen_reads = Vec::new();
+        for i in 0..7usize {
+            let start = 200 + (i % 4);
+            let left = 260 - start + 1;
+            let right = 150 - left;
+            let mut seq = dlen_ref[start - 1..260].to_vec();
+            seq.extend_from_slice(&dlen_ref[265..265 + right]);
+            dlen_reads.push(mk_contig_rec(
+                &format!("dlen_5d_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                start,
+                &[
+                    (left, Kind::Match),
+                    (5, Kind::Deletion),
+                    (right, Kind::Match),
+                ],
+                seq,
+                vec![38; 150],
+                None,
+            ));
+        }
+        for i in 0..3usize {
+            // start = 201: 110M covers 201..=310 (wild-type across 260..=266!), 15D deletes 311..=325, 40M covers 326..=365
+            let mut seq = dlen_ref[200..310].to_vec();
+            seq.extend_from_slice(&dlen_ref[325..365]);
+            dlen_reads.push(mk_contig_rec(
+                &format!("dlen_span_15d_{i}"),
+                0,
+                if i == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                201,
+                &[(110, Kind::Match), (15, Kind::Deletion), (40, Kind::Match)],
+                seq,
+                vec![38; 150],
+                None,
+            ));
+        }
+        let dlen_bam = dir.path().join("w3_dlen.bam");
+        write_multi_contig_bam(&dlen_bam, &[("chr1", dlen_ref.len())], dlen_reads)
+            .expect("write w3_dlen.bam");
+        let dlen_vj_cfg = Config {
+            reference: dlen_fa.to_string_lossy().into_owned(),
+            bam: dlen_bam.to_string_lossy().into_owned(),
+            sample: "DLEN_SMPL".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:220-290".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let dlen_vj_vcf = run_core_vcf(&dlen_vj_cfg).expect("dlen_vj_vcf");
+        assert!(
+            dlen_vj_vcf.contains("chr1\t260\t") && dlen_vj_vcf.contains(";DP=10;VD=10;AF=1;"),
+            "COMPAT_VARDICTJAVA_1_8_3 must match '5D' inside '15D' and inflate VD to 10, got:\n{dlen_vj_vcf}"
+        );
+        let mut dlen_off_cfg = dlen_vj_cfg.clone();
+        dlen_off_cfg.compat = COMPAT_OFF;
+        let dlen_off_vcf = run_core_vcf(&dlen_off_cfg).expect("dlen_off_vcf");
+        assert!(
+            dlen_off_vcf.contains("chr1\t260\t") && dlen_off_vcf.contains(";DP=10;VD=7;AF=0.7;"),
+            "COMPAT_OFF exact_cigar_dlen_match must ignore 15D and preserve DP=10;VD=7;AF=0.7, got:\n{dlen_off_vcf}"
+        );
+
+        // =========================================================================
+        // (d) `VarDict #172` (`3'_UTR` apostrophes in 4-column BED col 4):
+        //     Verify both default R-port (`stats::hypergeom`, `fisher = false`) and
+        //     `--fisher` (`fisher = true`) succeed with zero quote-truncation errors
+        //     and preserve `XXX_exon_11_3'_UTR` intact in `.var` column 2.
+        // =========================================================================
+        let utr_bed = dir.path().join("w3_utr172.bed");
+        fs::write(&utr_bed, "chr1\t140\t280\tXXX_exon_11_3'_UTR\n").expect("write w3_utr172.bed");
+        for fisher_flag in [false, true] {
+            let utr_cfg = Config {
+                reference: sort_fa.to_string_lossy().into_owned(),
+                bam: sort_bam.to_string_lossy().into_owned(),
+                sample: "UTR172".to_string(),
+                sample_explicit: true,
+                bed: Some(utr_bed.to_string_lossy().into_owned()),
+                zero_based: true,
+                zero_based_defined: true,
+                col_chr: 0,
+                col_start: 1,
+                col_end: 2,
+                col_seg_start: 1,
+                col_seg_end: 2,
+                col_gene: Some(3),
+                column_for_chromosome: Some(0),
+                fisher: fisher_flag,
+                freq: 0.01,
+                af_threshold: 0.01,
+                compat: COMPAT_OFF,
+                threads: 1,
+                ..Config::default()
+            };
+            let utr_var = run_core_var(&utr_cfg).expect("utr_var");
+            let utr_vcf = run_core_vcf(&utr_cfg).expect("utr_vcf");
+            let expected_cols = if fisher_flag { 38 } else { 36 };
+            let utr_lines: Vec<&str> = utr_var.lines().filter(|l| !l.trim().is_empty()).collect();
+            assert_eq!(utr_lines.len(), 2, "expected 152 and 260 in UTR172 window");
+            for line in &utr_lines {
+                let cols: Vec<&str> = line.split('\t').collect();
+                assert_eq!(cols.len(), expected_cols);
+                assert_eq!(cols[1], "XXX_exon_11_3'_UTR");
+            }
+            assert_eq!(extract_variants(&utr_vcf).len(), 2);
+        }
+
+        // =========================================================================
+        // (e) `VarDictJava #393`:
+        //     1. BED interval starting past `.fai` contig end (`800`-bp `chr1` with
+        //        `chr1\t110000\t110100\tG`) -> `Err(VardictError::Parse)` mentioning
+        //        `"past end of contig"`.
+        //     2. BED interval referencing contig `chrZ` absent from `.fai` (when BAM
+        //        has `chrZ`) -> `Err(VardictError::Parse)` mentioning `.fai` missing contig.
+        // =========================================================================
+        let past_end_bed = dir.path().join("w3_past_end_393.bed");
+        fs::write(&past_end_bed, "chr1\t110000\t110100\tPAST_END\n")
+            .expect("write w3_past_end_393.bed");
+        let past_end_cfg = Config {
+            reference: sort_fa.to_string_lossy().into_owned(),
+            bam: sort_bam.to_string_lossy().into_owned(),
+            sample: "FAI393".to_string(),
+            sample_explicit: true,
+            bed: Some(past_end_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            threads: 1,
+            ..Config::default()
+        };
+        let past_err = run_core_vcf(&past_end_cfg).expect_err("expected #393 past-end error");
+        let VardictError::Parse(past_msg) = past_err else {
+            panic!("expected VardictError::Parse for #393 past-end BED, got: {past_err:?}");
+        };
+        assert!(
+            past_msg.contains("past end of contig"),
+            "expected 'past end of contig' in #393 error, got: {past_msg}"
+        );
+
+        let chrz_bam = dir.path().join("w3_chrz_393.bam");
+        write_multi_contig_bam(
+            &chrz_bam,
+            &[("chrZ", 500)],
+            vec![mk_contig_rec(
+                "chrz_r1",
+                0,
+                Flags::empty(),
+                60,
+                &[(50, Kind::Match)],
+                vec![b'A'; 50],
+                vec![38; 50],
+                None,
+            )],
+        )
+        .expect("write w3_chrz_393.bam");
+        let chrz_bed = dir.path().join("w3_chrz_393.bed");
+        fs::write(&chrz_bed, "chrZ\t50\t200\tMISSING_CHR\n").expect("write w3_chrz_393.bed");
+        let chrz_cfg = Config {
+            reference: sort_fa.to_string_lossy().into_owned(),
+            bam: chrz_bam.to_string_lossy().into_owned(),
+            sample: "FAI393_CHRZ".to_string(),
+            sample_explicit: true,
+            bed: Some(chrz_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            threads: 1,
+            ..Config::default()
+        };
+        let chrz_err = run_core_vcf(&chrz_cfg).expect_err("expected #393 missing-contig error");
+        let VardictError::Parse(chrz_msg) = chrz_err else {
+            panic!("expected VardictError::Parse for #393 missing .fai contig, got: {chrz_err:?}");
+        };
+        assert!(
+            chrz_msg.contains("does not contain contig")
+                || chrz_msg.contains("not found in FASTA index"),
+            "expected missing .fai contig message in #393 error, got: {chrz_msg}"
         );
     }
 }

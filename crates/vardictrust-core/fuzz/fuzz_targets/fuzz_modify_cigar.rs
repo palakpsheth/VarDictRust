@@ -91,9 +91,9 @@ fuzz_target!(|data: &[u8]| {
 
     // Pass 2: Matched-query-length valid SAM CIGARs (`[M, I, D, N, S, H, P]` + `[=, X]` when `eqx_cigar_read_length`, `len >= 1`).
     let sam_ops: &[u8] = if config.compat.eqx_cigar_read_length {
-        &[b'M', b'I', b'D', b'N', b'S', b'H', b'P', b'=', b'X']
+        b"MIDNSHP=X"
     } else {
-        &[b'M', b'I', b'D', b'N', b'S', b'H', b'P']
+        b"MIDNSHP"
     };
     let mut valid_cigar = String::new();
     let mut qlen: usize = 0;

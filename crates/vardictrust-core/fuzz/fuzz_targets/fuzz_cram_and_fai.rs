@@ -320,6 +320,7 @@ fn bounded_pos1_pair(b0: u8, b1: u8, b2: u8, b3: u8, mode: u8) -> (u32, u32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn exercise_alignment_and_runner(
     aln_path: &Path,
     ref_path: &Path,

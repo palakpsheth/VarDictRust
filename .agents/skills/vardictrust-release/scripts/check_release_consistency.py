@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (740 total:
-527 core lib + 110 corpus_parity + 38 engine_behavior + 2 amplicon_stream_mem
-+ 3 cram_stack + 32 CLI bin + 28 CLI integration binary tests), engine
+Verifies that all version-bearing files, workspace test counts (746 total:
+531 core lib + 110 corpus_parity + 39 engine_behavior + 2 amplicon_stream_mem
++ 3 cram_stack + 32 CLI bin + 29 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
 """
@@ -21,14 +21,14 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 740,
-    "core_lib": 527,
+    "total_workspace": 746,
+    "core_lib": 531,
     "corpus_parity": 110,
-    "engine_behavior": 38,
+    "engine_behavior": 39,
     "amplicon_stream_mem": 2,
     "cram_stack": 3,
     "cli_bin": 32,
-    "cli_integration": 28,
+    "cli_integration": 29,
     "harness_self_tests": 37,
 }
 
@@ -661,6 +661,36 @@ def check_pre_tag_surfaces(
         f"workspace.package version == {version}",
         errors,
     )
+    require_regex(
+        repo_root,
+        "Cargo.toml",
+        r'^license\s*=\s*"MIT"\s*$',
+        'workspace.package license == "MIT"',
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "README.md",
+        r"\[!\[License: MIT\]",
+        "README.md pure MIT license badge",
+        errors,
+    )
+    for lic_rel in (
+        "Cargo.toml",
+        "crates/vardictrust/src/cli.rs",
+        "deny.toml",
+        "packaging/bioconda/recipes/vardictrust/meta.yaml",
+        "packaging/nf-core/modules/vardictrust/meta.yml",
+        "README.md",
+    ):
+        forbid_regex(
+            repo_root,
+            lic_rel,
+            r"GPL-2\.0|GPL-2\.0-or-later",
+            f"{lic_rel} must remain pure MIT without copyleft dual-licensing",
+            errors,
+        )
+
     cargo_toml_text = read_text(repo_root, "Cargo.toml", errors)
     if cargo_toml_text:
         msrv_m = re.search(

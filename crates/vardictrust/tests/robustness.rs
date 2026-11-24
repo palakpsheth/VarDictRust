@@ -1,4 +1,4 @@
-//! Process-level CLI smoke and robustness tests (`24` tests).
+//! Process-level CLI smoke and robustness tests (`25` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
@@ -397,6 +397,11 @@ fn jemalloc_startup_emits_no_stderr_warnings() {
         ver.status.success(),
         "--version failed: {}",
         String::from_utf8_lossy(&ver.stderr)
+    );
+    let ver_stdout = String::from_utf8_lossy(&ver.stdout);
+    assert!(
+        ver_stdout.contains("License: MIT") && !ver_stdout.contains("GPL"),
+        "expected pure 'License: MIT' without GPL on --version stdout, got: {ver_stdout}"
     );
     let ver_stderr = String::from_utf8_lossy(&ver.stderr);
     assert!(
@@ -8042,5 +8047,169 @@ fn vcf_all_alleles_and_compat_off_bgzf_tbi_and_csi_e2e() {
     assert!(
         run_ub5_cli(&["--compat=off", "--min-splitreads", "1"]).is_empty(),
         "--compat=off --min-splitreads 1 must honor explicit override and drop SPLITREAD=0 SV"
+    );
+}
+
+#[test]
+fn wave3_cli_fai_bounds_393_and_bed_apostrophe_172() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+    use noodles::sam::alignment::record::Flags;
+    use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // 1. VarDict #172: 4-column BED with `3'_UTR` apostrophe in column 4 (both R-port and --fisher)
+    let utr_bed = dir.path().join("utr172.bed");
+    std::fs::write(&utr_bed, "chr1\t40\t260\tXXX_exon_11_3'_UTR\n").expect("write utr172.bed");
+    for extra in [&[][..], &["--fisher"][..]] {
+        let var_out = base_cmd()
+            .args([
+                "-G",
+                "fixtures/micro/micro.ref.fa",
+                "-b",
+                "fixtures/micro/micro.bam",
+                "-c",
+                "1",
+                "-S",
+                "2",
+                "-E",
+                "3",
+                "-g",
+                "4",
+                "-z",
+                "--emit-intermediate",
+                "--threads=1",
+            ])
+            .args(extra)
+            .arg(&utr_bed)
+            .output()
+            .expect("spawn utr172 --intermediate");
+        assert!(
+            var_out.status.success(),
+            "utr172 --intermediate {:?} failed: {}",
+            extra,
+            String::from_utf8_lossy(&var_out.stderr)
+        );
+        let var_stdout = String::from_utf8_lossy(&var_out.stdout);
+        assert!(
+            var_stdout.contains("\tXXX_exon_11_3'_UTR\t"),
+            "expected intact 3'_UTR gene column in .var stdout, got:\n{var_stdout}"
+        );
+
+        let vcf_out = base_cmd()
+            .args([
+                "-G",
+                "fixtures/micro/micro.ref.fa",
+                "-b",
+                "fixtures/micro/micro.bam",
+                "-c",
+                "1",
+                "-S",
+                "2",
+                "-E",
+                "3",
+                "-g",
+                "4",
+                "-z",
+                "--threads=1",
+            ])
+            .args(extra)
+            .arg(&utr_bed)
+            .output()
+            .expect("spawn utr172 vcf");
+        assert!(
+            vcf_out.status.success(),
+            "utr172 vcf {:?} failed: {}",
+            extra,
+            String::from_utf8_lossy(&vcf_out.stderr)
+        );
+        let vcf_stdout = String::from_utf8_lossy(&vcf_out.stdout);
+        assert!(
+            vcf_stdout
+                .lines()
+                .any(|l| !l.starts_with('#') && !l.is_empty()),
+            "expected variant calls for micro.bam with 3'_UTR BED, got:\n{vcf_stdout}"
+        );
+    }
+
+    // 2. VarDictJava #393 (a): BED interval starting past `.fai` contig length (micro.ref.fa chr1 = 300 bp)
+    let past_bed = dir.path().join("past_end_393.bed");
+    std::fs::write(&past_bed, "chr1\t110000\t110100\tPAST_END\n").expect("write past_end_393.bed");
+    let past_out = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-z",
+            "--threads=1",
+        ])
+        .arg(&past_bed)
+        .output()
+        .expect("spawn #393 past-end cli");
+    assert!(
+        !past_out.status.success(),
+        "#393 BED coordinate past .fai contig end must exit non-zero"
+    );
+    let past_stderr = String::from_utf8_lossy(&past_out.stderr);
+    assert!(
+        past_stderr.contains("past end of contig") && !past_stderr.contains("panicked"),
+        "expected clean 'past end of contig' error without panic, got:\n{past_stderr}"
+    );
+
+    // 3. VarDictJava #393 (b): BED interval referencing `chrZ` absent from `.fai`
+    let chrz_bam = dir.path().join("chrz_393.bam");
+    let cigar: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+    let rec = RecordBuf::builder()
+        .set_name("chrz_r1")
+        .set_flags(Flags::empty())
+        .set_reference_sequence_id(0)
+        .set_alignment_start(Position::try_from(60usize).expect("pos"))
+        .set_cigar(cigar)
+        .set_sequence(vec![b'A'; 50].into())
+        .set_quality_scores(vec![38u8; 50].into())
+        .build();
+    write_indexed_bam(&chrz_bam, "chrZ", 500, &[rec]).expect("write chrz_393.bam");
+    let chrz_bed = dir.path().join("chrz_393.bed");
+    std::fs::write(&chrz_bed, "chrZ\t50\t200\tMISSING_CHR\n").expect("write chrz_393.bed");
+    let chrz_out = base_cmd()
+        .arg("-G")
+        .arg("fixtures/micro/micro.ref.fa")
+        .arg("-b")
+        .arg(&chrz_bam)
+        .args([
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-g",
+            "4",
+            "-z",
+            "--threads=1",
+        ])
+        .arg(&chrz_bed)
+        .output()
+        .expect("spawn #393 missing-contig cli");
+    assert!(
+        !chrz_out.status.success(),
+        "#393 BED contig absent from .fai must exit non-zero"
+    );
+    let chrz_stderr = String::from_utf8_lossy(&chrz_out.stderr);
+    assert!(
+        (chrz_stderr.contains("does not contain contig")
+            || chrz_stderr.contains("not found in FASTA index"))
+            && !chrz_stderr.contains("panicked"),
+        "expected clean missing .fai contig error without panic, got:\n{chrz_stderr}"
     );
 }
