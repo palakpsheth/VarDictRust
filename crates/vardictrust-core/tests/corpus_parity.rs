@@ -1631,73 +1631,75 @@ mod manifest {
 
     fn exercise_in_memory_core_branches() {
         use vardictrust_core::stats::f80::{f80_sum, F80};
-        use vardictrust_core::stats::rmath::{bd0, dbinom_raw, dhyper, phyper, stirlerr};
+        use vardictrust_core::stats::hypergeom::{
+            binomial_deviance, binomial_pmf, hypergeom_cdf, hypergeom_pmf, log_binomial_pmf,
+            one_plus_pow, stirling_error,
+        };
 
         for &n in &[
             0.0,
+            0.25,
             0.5,
             1.0,
             2.5,
             3.1,
-            5.2,
-            5.5,
-            6.2,
-            6.8,
-            7.5,
-            9.5,
+            7.25,
             12.5,
-            13.5,
+            14.75,
             15.0,
-            20.0,
+            16.0,
             25.0,
             50.0,
             100.0,
             250.0,
             7000.0,
             20_000_000.0,
+            25_000_000.0,
         ] {
-            let _ = stirlerr::stirlerr(n);
+            let _ = stirling_error(n);
         }
 
         for &(x, np) in &[
             (f64::NAN, 1.0),
             (1.0, 0.0),
+            (0.0, 1.0),
             (1.0, 1.0),
             (1.05, 1.0),
             (5.0, 2.0),
             (2.0, 5.0),
             (1e308, 1e-308),
         ] {
-            let _ = bd0::bd0(x, np);
+            let _ = binomial_deviance(x, np);
         }
 
         for &y in &[f64::NAN, 0.0, 1.0, 2.0, 3.0, 4.0, 5.5] {
-            let _ = dbinom_raw::pow1p(0.0, y);
-            let _ = dbinom_raw::pow1p(0.1, y);
-            let _ = dbinom_raw::pow1p(0.8, y);
-            let _ = dbinom_raw::pow1p(f64::NAN, y);
+            let _ = one_plus_pow(0.0, y);
+            let _ = one_plus_pow(0.1, y);
+            let _ = one_plus_pow(0.8, y);
+            let _ = one_plus_pow(f64::NAN, y);
         }
 
-        for &give_log in &[false, true] {
-            let _ = dbinom_raw::dbinom_raw(0.0, 10.0, 0.0, 1.0, give_log);
-            let _ = dbinom_raw::dbinom_raw(2.0, 10.0, 0.0, 1.0, give_log);
-            let _ = dbinom_raw::dbinom_raw(10.0, 10.0, 1.0, 0.0, give_log);
-            let _ = dbinom_raw::dbinom_raw(2.0, 10.0, 1.0, 0.0, give_log);
-            let _ = dbinom_raw::dbinom_raw(0.0, 0.0, 0.5, 0.5, give_log);
-            let _ = dbinom_raw::dbinom_raw(0.0, 10.0, 0.7, 0.3, give_log);
-            let _ = dbinom_raw::dbinom_raw(0.0, 10.0, 0.3, 0.7, give_log);
-            let _ = dbinom_raw::dbinom_raw(10.0, 10.0, 0.7, 0.3, give_log);
-            let _ = dbinom_raw::dbinom_raw(10.0, 10.0, 0.3, 0.7, give_log);
-            let _ = dbinom_raw::dbinom_raw(-1.0, 10.0, 0.5, 0.5, give_log);
-            let _ = dbinom_raw::dbinom_raw(11.0, 10.0, 0.5, 0.5, give_log);
-            let _ = dhyper::dhyper(-1.0, 5.0, 5.0, 5.0, give_log);
-            let _ = dhyper::dhyper(6.0, 5.0, 5.0, 5.0, give_log);
-            let _ = dhyper::dhyper(0.0, 5.0, 5.0, 0.0, give_log);
-            let _ = dhyper::dhyper(2.0, 5.0, 5.0, 5.0, give_log);
-            let _ = phyper::phyper(-1.0, 5.0, 5.0, 5.0, true);
-            let _ = phyper::phyper(10.0, 5.0, 5.0, 5.0, false);
-            let _ = phyper::phyper(2.0, 10.0, 10.0, 10.0, true);
-            let _ = phyper::phyper(8.0, 10.0, 10.0, 10.0, false);
+        let _ = log_binomial_pmf(3.0, 10.0, 0.3, 0.7);
+        for &log_p in &[false, true] {
+            let _ = binomial_pmf(0.0, 10.0, 0.0, 1.0, log_p);
+            let _ = binomial_pmf(2.0, 10.0, 0.0, 1.0, log_p);
+            let _ = binomial_pmf(10.0, 10.0, 1.0, 0.0, log_p);
+            let _ = binomial_pmf(2.0, 10.0, 1.0, 0.0, log_p);
+            let _ = binomial_pmf(0.0, 0.0, 0.5, 0.5, log_p);
+            let _ = binomial_pmf(0.0, 10.0, 0.7, 0.3, log_p);
+            let _ = binomial_pmf(0.0, 10.0, 0.3, 0.7, log_p);
+            let _ = binomial_pmf(10.0, 10.0, 0.7, 0.3, log_p);
+            let _ = binomial_pmf(10.0, 10.0, 0.3, 0.7, log_p);
+            let _ = binomial_pmf(-1.0, 10.0, 0.5, 0.5, log_p);
+            let _ = binomial_pmf(11.0, 10.0, 0.5, 0.5, log_p);
+            let _ = hypergeom_pmf(-1.0, 5.0, 5.0, 5.0, log_p);
+            let _ = hypergeom_pmf(6.0, 5.0, 5.0, 5.0, log_p);
+            let _ = hypergeom_pmf(0.0, 5.0, 5.0, 0.0, log_p);
+            let _ = hypergeom_pmf(2.0, 5.0, 5.0, 5.0, log_p);
+            let _ = hypergeom_cdf(-1.0, 5.0, 5.0, 5.0, true);
+            let _ = hypergeom_cdf(10.0, 5.0, 5.0, 5.0, false);
+            let _ = hypergeom_cdf(2.0, 10.0, 10.0, 10.0, true);
+            let _ = hypergeom_cdf(8.0, 10.0, 10.0, 10.0, false);
         }
 
         let subnormal = f64::from_bits(1);

@@ -1,8 +1,9 @@
-//! Brent root finder algorithm.
+//! Brent-Dekker root-finding algorithm (`zeroin`).
 //!
-//! Ports `UnirootZeroIn.java` and R's `zeroin.c`.
+//! Ports `UnirootZeroIn.java` (`VarDictJava` MIT) based on Richard P. Brent (1973),
+//! *Algorithms for Minimization Without Derivatives*, Ch. 4 (Netlib `zeroin`).
 
-/// R's R_zeroin2
+/// Finds a root of `f` in `[ax, bx]` using Brent's combined bisection and secant/inverse-quadratic method.
 pub fn zeroin_c<F>(
     ax: f64,
     bx: f64,
