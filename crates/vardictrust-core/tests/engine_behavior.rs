@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`37` tests).
+//! First-class functional engine behavior integration suite (`38` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs,
@@ -4930,6 +4930,1076 @@ mod vcf_all_alleles_and_compat_off {
             sex_chrs_off,
             vec!["X", "chrX", "Y", "chrY", "MT", "chrM"],
             "COMPAT_OFF must preserve all 6 mixed sex/mitochondrial contigs in canonical order"
+        );
+    }
+
+    #[test]
+    fn compat_off_wave2_eqx_pr402_ub5_ub6_lazy_sv_and_rounding_e2e() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let run_via_core_run = |base_cfg: &Config, tag: &str, intermediate: bool| -> String {
+            let ext = if intermediate { "var" } else { "vcf" };
+            let out_path = dir.path().join(format!("{tag}.{ext}"));
+            let mut cfg = base_cfg.clone();
+            cfg.emit_intermediate = intermediate;
+            cfg.output_path = Some(out_path.to_string_lossy().into_owned());
+            vardictrust_core::run(&cfg).unwrap_or_else(|e| panic!("{tag}.{ext} run failed: {e}"));
+            fs::read_to_string(&out_path)
+                .unwrap_or_else(|e| panic!("read {tag}.{ext} output failed: {e}"))
+        };
+
+        let to_eqx_ops = |pos_1b: usize,
+                          ops_m: &[(usize, Kind)],
+                          seq: &[u8],
+                          ref_seq: &[u8]|
+         -> Vec<(usize, Kind)> {
+            let mut out: Vec<(usize, Kind)> = Vec::new();
+            let mut q_idx = 0usize;
+            let mut r_idx = pos_1b - 1;
+            let push_op = |vec: &mut Vec<(usize, Kind)>, kind: Kind, len: usize| {
+                if len == 0 {
+                    return;
+                }
+                if let Some(last) = vec.last_mut() {
+                    if last.1 == kind {
+                        last.0 += len;
+                        return;
+                    }
+                }
+                vec.push((len, kind));
+            };
+            for &(len, kind) in ops_m {
+                match kind {
+                    Kind::Match => {
+                        for _ in 0..len {
+                            let eq = seq[q_idx].eq_ignore_ascii_case(&ref_seq[r_idx]);
+                            push_op(
+                                &mut out,
+                                if eq {
+                                    Kind::SequenceMatch
+                                } else {
+                                    Kind::SequenceMismatch
+                                },
+                                1,
+                            );
+                            q_idx += 1;
+                            r_idx += 1;
+                        }
+                    }
+                    Kind::Insertion | Kind::SoftClip => {
+                        push_op(&mut out, kind, len);
+                        q_idx += len;
+                    }
+                    Kind::Deletion | Kind::Skip => {
+                        push_op(&mut out, kind, len);
+                        r_idx += len;
+                    }
+                    _ => push_op(&mut out, kind, len),
+                }
+            }
+            out
+        };
+
+        // =========================================================================
+        // (a) --eqx Twin Equivalence across Simple, -t Dedup, >=5bp no_passing_reads,
+        //     Amplicon (-a), Somatic, Untiled & --tile-size 60 Split Tiles
+        // =========================================================================
+        let eqx_ref_len = 1_600usize;
+        let eqx_ref = lcg_ref_bytes(0xE0E0_1122_3344_5566, eqx_ref_len);
+        let eqx_fa = write_multi_contig_fasta(dir.path(), "wave2_eqx", &[("chr1", &eqx_ref)]);
+        let flip_nt = |b: u8| -> u8 {
+            match b {
+                b'A' => b'G',
+                b'G' => b'C',
+                b'C' => b'T',
+                _ => b'A',
+            }
+        };
+
+        struct DualReadSpec {
+            name: String,
+            flags: Flags,
+            pos_1b: usize,
+            ops_m: Vec<(usize, Kind)>,
+            seq: Vec<u8>,
+            qual: Vec<u8>,
+            mate: Option<(usize, usize, i32)>,
+        }
+        let mut tum_specs: Vec<DualReadSpec> = Vec::new();
+        let mut push_dual = |name: &str,
+                             flags: Flags,
+                             pos_1b: usize,
+                             ops_m: Vec<(usize, Kind)>,
+                             seq: Vec<u8>,
+                             mate: Option<(usize, usize, i32)>| {
+            let qual = vec![40u8; seq.len()];
+            tum_specs.push(DualReadSpec {
+                name: name.to_string(),
+                flags,
+                pos_1b,
+                ops_m,
+                seq,
+                qual,
+                mate,
+            });
+        };
+
+        // 1. SNV at chr1:130 (6 variant reads + 4 wild-type 150M / 150= reads)
+        let snv_130_alt = flip_nt(eqx_ref[129]);
+        for i in 0..10usize {
+            let start = 75 + (i % 5);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut seq = eqx_ref[start - 1..start - 1 + 150].to_vec();
+            if i < 6 {
+                seq[130 - start] = snv_130_alt;
+            }
+            push_dual(
+                &format!("eqx_snv130_{i}"),
+                flags,
+                start,
+                vec![(150, Kind::Match)],
+                seq,
+                None,
+            );
+        }
+
+        // 2. 2-bp MNP (`2X`) at chr1:175..=176 (6 variant reads ending <= 243 so chr1:260 has exact h.cnt = 3)
+        let mnp_alt0 = flip_nt(eqx_ref[174]);
+        let mnp_alt1 = flip_nt(eqx_ref[175]);
+        for i in 0..6usize {
+            let start = 90 + (i % 5);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut seq = eqx_ref[start - 1..start - 1 + 150].to_vec();
+            seq[175 - start] = mnp_alt0;
+            seq[176 - start] = mnp_alt1;
+            push_dual(
+                &format!("eqx_mnp175_{i}"),
+                flags,
+                start,
+                vec![(150, Kind::Match)],
+                seq,
+                None,
+            );
+        }
+
+        // 3. >=5 bp (6D) deletion at chr1:261..=266 (anchored at 260) with 7 deletion reads
+        //    + 3 wild-type spanning 150M / 150= reads so vref.cnt (7) > 2 * 3 * (1 - 6/150) = 5.76,
+        //    forcing realigndel into realign::no_passing_reads!
+        for i in 0..7usize {
+            let start = 200 + (i % 5);
+            let left = 260 - start + 1;
+            let right = 150 - left;
+            let mut seq = eqx_ref[start - 1..260].to_vec();
+            seq.extend_from_slice(&eqx_ref[266..266 + right]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            push_dual(
+                &format!("eqx_del6_{i}"),
+                flags,
+                start,
+                vec![
+                    (left, Kind::Match),
+                    (6, Kind::Deletion),
+                    (right, Kind::Match),
+                ],
+                seq,
+                None,
+            );
+        }
+        for i in 0..3usize {
+            let start = 201 + i * 2;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            push_dual(
+                &format!("eqx_wt_span260_{i}"),
+                flags,
+                start,
+                vec![(150, Kind::Match)],
+                eqx_ref[start - 1..start - 1 + 150].to_vec(),
+                None,
+            );
+        }
+
+        // 4. Indel adjacent to mismatch: exact `74=1X3D72=` (75M3D72M starting at 310:
+        //    mismatch at 384 + 3D of 385..=387, plus staggered supporting reads)
+        let adj_mm_alt = flip_nt(eqx_ref[383]);
+        for i in 0..6usize {
+            let start = if i < 2 { 310 } else { 308 + i }; // i=0,1 produce exact `74=1X3D72=`
+            let left = 384 - start + 1; // 75 when start == 310
+            let right = 147 - left; // 72 when start == 310
+            let mut seq = eqx_ref[start - 1..384].to_vec();
+            seq[left - 1] = adj_mm_alt;
+            seq.extend_from_slice(&eqx_ref[387..387 + right]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            push_dual(
+                &format!("eqx_mm_del_{i}"),
+                flags,
+                start,
+                vec![
+                    (left, Kind::Match),
+                    (3, Kind::Deletion),
+                    (right, Kind::Match),
+                ],
+                seq,
+                None,
+            );
+        }
+
+        // 5. Unmapped-mate PCR duplicates (`-t` / `dedup`): at pos=430 (mate_pos=430 >= 10),
+        //    first read is wild-type `150=` (`150M`) and its PCR duplicate has a sequencing
+        //    error at offset 74 (`74=1X75=`), plus a second sequencing-error read at 431 so
+        //    without dedup VD=2 at chr1:504, whereas with `-t` VD=1 (dropped at min_reads=2)
+        //    and DUPRATE reflects the deduplicated `74=1X75=` read identically to `150M`!
+        let err_504_alt = flip_nt(eqx_ref[503]);
+        push_dual(
+            "eqx_um_dup_orig",
+            Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::MATE_UNMAPPED,
+            430,
+            vec![(150, Kind::Match)],
+            eqx_ref[429..579].to_vec(),
+            Some((0, 430, 0)),
+        );
+        {
+            let mut dup_err_seq = eqx_ref[429..579].to_vec();
+            dup_err_seq[74] = err_504_alt; // 74=1X75= at pos 504
+            push_dual(
+                "eqx_um_dup_err",
+                Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::MATE_UNMAPPED,
+                430,
+                vec![(150, Kind::Match)],
+                dup_err_seq,
+                Some((0, 430, 0)),
+            );
+        }
+        {
+            let mut companion_err = eqx_ref[430..580].to_vec();
+            companion_err[73] = err_504_alt; // pos 504
+            push_dual(
+                "eqx_um_uniq_err",
+                Flags::SEGMENTED
+                    | Flags::FIRST_SEGMENT
+                    | Flags::MATE_UNMAPPED
+                    | Flags::REVERSE_COMPLEMENTED,
+                431,
+                vec![(150, Kind::Match)],
+                companion_err,
+                Some((0, 431, 0)),
+            );
+        }
+        for i in 0..4usize {
+            let start = 440 + i * 2;
+            push_dual(
+                &format!("eqx_wt_504_{i}"),
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                start,
+                vec![(150, Kind::Match)],
+                eqx_ref[start - 1..start - 1 + 150].to_vec(),
+                None,
+            );
+        }
+
+        // 6. Soft-clips + discordant SV pairs (<DUP> across chr1:600..859 with paired reverse + forward reads)
+        for i in 0..4usize {
+            let start = 585 + i * 2;
+            push_dual(
+                &format!("eqx_sv_ref_{i}"),
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                start,
+                vec![(130, Kind::Match)],
+                eqx_ref[start - 1..start - 1 + 130].to_vec(),
+                None,
+            );
+        }
+        for i in 0..8usize {
+            let mut rseq = eqx_ref[839..859].to_vec(); // 20S matching 840..=859
+            rseq.extend_from_slice(&eqx_ref[599..729]); // 130M at 600..=729
+            push_dual(
+                &format!("eqx_sv_dup_r_{i}"),
+                Flags::SEGMENTED | Flags::REVERSE_COMPLEMENTED,
+                600,
+                vec![(20, Kind::SoftClip), (130, Kind::Match)],
+                rseq,
+                Some((0, 730, 260)),
+            );
+            let mut seq = eqx_ref[729..859].to_vec(); // 130M at 730..=859
+            seq.extend_from_slice(&eqx_ref[599..619]); // 20S matching 600..=619
+            push_dual(
+                &format!("eqx_sv_dup_f_{i}"),
+                Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                730,
+                vec![(130, Kind::Match), (20, Kind::SoftClip)],
+                seq,
+                Some((0, 600, -260)),
+            );
+        }
+
+        let mut m_tum_recs = Vec::with_capacity(tum_specs.len());
+        let mut eqx_tum_recs = Vec::with_capacity(tum_specs.len());
+        let mut saw_2x = false;
+        let mut saw_74eq_1x_3d_72eq = false;
+        let mut saw_150eq = false;
+        let mut saw_74eq_1x_75eq = false;
+        for DualReadSpec {
+            name,
+            flags,
+            pos_1b,
+            ops_m,
+            seq,
+            qual,
+            mate,
+        } in &tum_specs
+        {
+            let ops_eqx = to_eqx_ops(*pos_1b, ops_m, seq, &eqx_ref);
+            if ops_eqx.contains(&(2, Kind::SequenceMismatch)) {
+                saw_2x = true;
+            }
+            if ops_eqx.as_slice()
+                == [
+                    (74, Kind::SequenceMatch),
+                    (1, Kind::SequenceMismatch),
+                    (3, Kind::Deletion),
+                    (72, Kind::SequenceMatch),
+                ]
+            {
+                saw_74eq_1x_3d_72eq = true;
+            }
+            if ops_eqx.as_slice() == [(150, Kind::SequenceMatch)] {
+                saw_150eq = true;
+            }
+            if ops_eqx.as_slice()
+                == [
+                    (74, Kind::SequenceMatch),
+                    (1, Kind::SequenceMismatch),
+                    (75, Kind::SequenceMatch),
+                ]
+            {
+                saw_74eq_1x_75eq = true;
+            }
+            m_tum_recs.push(mk_contig_rec(
+                name,
+                0,
+                *flags,
+                *pos_1b,
+                ops_m,
+                seq.clone(),
+                qual.clone(),
+                *mate,
+            ));
+            eqx_tum_recs.push(mk_contig_rec(
+                name,
+                0,
+                *flags,
+                *pos_1b,
+                &ops_eqx,
+                seq.clone(),
+                qual.clone(),
+                *mate,
+            ));
+        }
+        assert!(
+            saw_2x && saw_74eq_1x_3d_72eq && saw_150eq && saw_74eq_1x_75eq,
+            "twin --eqx BAM must contain 2X, 74=1X3D72=, 150=, and 74=1X75= CIGARs"
+        );
+
+        // Normal BAMs (wild-type + shared germline SNV at chr1:130) for Somatic twin mode
+        let mut m_norm_recs = Vec::new();
+        let mut eqx_norm_recs = Vec::new();
+        for window_start in [75usize, 115, 200, 310, 435, 590, 725] {
+            for i in 0..8usize {
+                let start = window_start + (i % 4);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = eqx_ref[start - 1..start - 1 + 150].to_vec();
+                if window_start == 75 && i < 4 {
+                    seq[130 - start] = snv_130_alt;
+                }
+                let ops_m = vec![(150, Kind::Match)];
+                let ops_eqx = to_eqx_ops(start, &ops_m, &seq, &eqx_ref);
+                let qual = vec![40u8; 150];
+                let rname = format!("eqx_norm_{window_start}_{i}");
+                m_norm_recs.push(mk_contig_rec(
+                    &rname,
+                    0,
+                    flags,
+                    start,
+                    &ops_m,
+                    seq.clone(),
+                    qual.clone(),
+                    None,
+                ));
+                eqx_norm_recs.push(mk_contig_rec(
+                    &rname, 0, flags, start, &ops_eqx, seq, qual, None,
+                ));
+            }
+        }
+
+        let m_bam = dir.path().join("twin_m.bam");
+        let eqx_bam = dir.path().join("twin_eqx.bam");
+        let m_norm_bam = dir.path().join("twin_m_norm.bam");
+        let eqx_norm_bam = dir.path().join("twin_eqx_norm.bam");
+        write_multi_contig_bam(&m_bam, &[("chr1", eqx_ref_len)], m_tum_recs).expect("twin_m.bam");
+        write_multi_contig_bam(&eqx_bam, &[("chr1", eqx_ref_len)], eqx_tum_recs)
+            .expect("twin_eqx.bam");
+        write_multi_contig_bam(&m_norm_bam, &[("chr1", eqx_ref_len)], m_norm_recs)
+            .expect("twin_m_norm.bam");
+        write_multi_contig_bam(&eqx_norm_bam, &[("chr1", eqx_ref_len)], eqx_norm_recs)
+            .expect("twin_eqx_norm.bam");
+
+        let assert_m_eq_eqx_and_tiled = |m_cfg: &Config, eqx_cfg: &Config, label: &str| {
+            let m_var_u = run_via_core_run(m_cfg, &format!("{label}_m_u"), true);
+            let eqx_var_u = run_via_core_run(eqx_cfg, &format!("{label}_eqx_u"), true);
+            let m_vcf_u = run_via_core_run(m_cfg, &format!("{label}_m_u"), false);
+            let eqx_vcf_u = run_via_core_run(eqx_cfg, &format!("{label}_eqx_u"), false);
+            assert!(
+                !m_var_u.trim().is_empty() && !extract_variants(&m_vcf_u).is_empty(),
+                "{label}: expected non-empty variants"
+            );
+            assert_eq!(m_var_u, eqx_var_u, "{label}: untiled .var M vs --eqx");
+            assert_eq!(m_vcf_u, eqx_vcf_u, "{label}: untiled .vcf M vs --eqx");
+
+            let mut m_tiled = m_cfg.clone();
+            m_tiled.tile_size = Some(60);
+            m_tiled.threads = 4;
+            let mut eqx_tiled = eqx_cfg.clone();
+            eqx_tiled.tile_size = Some(60);
+            eqx_tiled.threads = 4;
+
+            let m_var_t = run_via_core_run(&m_tiled, &format!("{label}_m_t60"), true);
+            let eqx_var_t = run_via_core_run(&eqx_tiled, &format!("{label}_eqx_t60"), true);
+            let m_vcf_t = run_via_core_run(&m_tiled, &format!("{label}_m_t60"), false);
+            let eqx_vcf_t = run_via_core_run(&eqx_tiled, &format!("{label}_eqx_t60"), false);
+            assert_eq!(
+                m_var_t, eqx_var_t,
+                "{label}: --tile-size 60 .var M vs --eqx"
+            );
+            assert_eq!(
+                m_vcf_t, eqx_vcf_t,
+                "{label}: --tile-size 60 .vcf M vs --eqx"
+            );
+            (m_var_u, m_vcf_u)
+        };
+
+        let base_eqx_m = Config {
+            reference: eqx_fa.to_string_lossy().into_owned(),
+            bam: m_bam.to_string_lossy().into_owned(),
+            sample: "EQX_SMPL".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:70-900".to_string()),
+            sv_min_len: 200,
+            fisher: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_OFF,
+            threads: 1,
+            ..Config::default()
+        };
+        let mut base_eqx_x = base_eqx_m.clone();
+        base_eqx_x.bam = eqx_bam.to_string_lossy().into_owned();
+
+        // Simple mode (untiled & --tile-size 60)
+        let (_simple_var, simple_vcf) =
+            assert_m_eq_eqx_and_tiled(&base_eqx_m, &base_eqx_x, "simple");
+        // Confirm >=5 bp (6D) deletion at chr1:260 kept VD=7 / DP=10 (7 > 2*3*(1-6/150)=5.76 entered no_passing_reads,
+        // which counted the 3 `150=` wt spanning reads!) and pos 504 sequencing error was present before `-t` dedup
+        assert!(
+            simple_vcf.contains("chr1\t260\t") && simple_vcf.contains(";TYPE=Deletion;DP=10;VD=7;"),
+            "Simple COMPAT_OFF must preserve VD=7/DP=10 at 6D deletion (no_passing_reads), got:\n{simple_vcf}"
+        );
+        assert!(
+            simple_vcf.contains("chr1\t504\t"),
+            "without -t dedup, pos 504 has 2 reads and must be called"
+        );
+        assert!(
+            simple_vcf.contains("<DUP>"),
+            "Simple COMPAT_OFF must call <DUP> SV identically across M and --eqx"
+        );
+
+        // `-t` Dedup mode (untiled & --tile-size 60): `74=1X75=` deduplicated against `150=`, dropping pos 504!
+        let mut dedup_m = base_eqx_m.clone();
+        dedup_m.dedup = true;
+        let mut dedup_x = base_eqx_x.clone();
+        dedup_x.dedup = true;
+        let (_dedup_var, dedup_vcf) = assert_m_eq_eqx_and_tiled(&dedup_m, &dedup_x, "dedup");
+        assert!(
+            !dedup_vcf.contains("chr1\t504\t"),
+            "-t dedup under COMPAT_OFF must deduplicate 74=1X75= against 150= and drop chr1:504"
+        );
+
+        // Amplicon `-a` mode (8-col BED covering SNV, MNP, 6D deletion, and 74=1X3D72= loci)
+        let eqx_amp_bed = dir.path().join("eqx_amp.bed");
+        fs::write(
+            &eqx_amp_bed,
+            "chr1\t74\t225\tAMP1\t0\t+\t79\t220\n\
+             chr1\t199\t355\tAMP2\t0\t+\t204\t350\n\
+             chr1\t309\t460\tAMP3\t0\t+\t314\t455\n",
+        )
+        .expect("write eqx_amp.bed");
+        let mut amp_m = base_eqx_m.clone();
+        amp_m.region = None;
+        amp_m.bed = Some(eqx_amp_bed.to_string_lossy().into_owned());
+        amp_m.amplicon = Some("10:0.90".to_string());
+        amp_m.zero_based = true;
+        amp_m.zero_based_defined = true;
+        let mut amp_x = amp_m.clone();
+        amp_x.bam = eqx_bam.to_string_lossy().into_owned();
+        assert_m_eq_eqx_and_tiled(&amp_m, &amp_x, "amplicon");
+
+        // Somatic mode (untiled & --tile-size 60)
+        let mut som_m = base_eqx_m.clone();
+        som_m.bam = format!("{}|{}", m_bam.display(), m_norm_bam.display());
+        som_m.sample = "EQX_T|EQX_N".to_string();
+        let mut som_x = som_m.clone();
+        som_x.bam = format!("{}|{}", eqx_bam.display(), eqx_norm_bam.display());
+        assert_m_eq_eqx_and_tiled(&som_m, &som_x, "somatic");
+
+        // =========================================================================
+        // (b) PR #402 Duplex Read E2E Rescue (`104M1I2M2D1M1D5M1D2M9D27M`, `-r 1`)
+        // =========================================================================
+        let pr402_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAAAAAAAAAAGAAAAAAGAAAAAAAAAG";
+        let pr402_qual_ascii = b"BBFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=74??44444444FFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let pr402_ref = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAGAAAAAAAAAAGAAAAAAAAAGAAAAAAGAAAAAAAAAGAAAGAAAGAAAAAGAAAAAACAGAAAGAAGAATGAAAATCTGGGTG";
+        let pr402_fa = write_multi_contig_fasta(dir.path(), "wave2_pr402", &[("chr1", pr402_ref)]);
+        let pr402_bam = dir.path().join("wave2_pr402.bam");
+        let pr402_ops = [
+            (104, Kind::Match),
+            (1, Kind::Insertion),
+            (2, Kind::Match),
+            (2, Kind::Deletion),
+            (1, Kind::Match),
+            (1, Kind::Deletion),
+            (5, Kind::Match),
+            (1, Kind::Deletion),
+            (2, Kind::Match),
+            (9, Kind::Deletion),
+            (27, Kind::Match),
+        ];
+        let pr402_phred: Vec<u8> = pr402_qual_ascii.iter().map(|&q| q - 33).collect();
+        write_multi_contig_bam(
+            &pr402_bam,
+            &[("chr1", pr402_ref.len())],
+            vec![mk_contig_rec(
+                "pr402_duplex_1",
+                0,
+                Flags::empty(),
+                1,
+                &pr402_ops,
+                pr402_seq.to_vec(),
+                pr402_phred,
+                None,
+            )],
+        )
+        .expect("wave2_pr402.bam");
+
+        let pr402_vj_cfg = Config {
+            reference: pr402_fa.to_string_lossy().into_owned(),
+            bam: pr402_bam.to_string_lossy().into_owned(),
+            sample: "PR402".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:1-180".to_string()),
+            min_reads: 1,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let pr402_vj_var = run_via_core_run(&pr402_vj_cfg, "pr402_vj", true);
+        let pr402_vj_vcf = run_via_core_run(&pr402_vj_cfg, "pr402_vj", false);
+        assert!(
+            pr402_vj_var.trim().is_empty() && extract_variants(&pr402_vj_vcf).is_empty(),
+            "COMPAT_VARDICTJAVA_1_8_3 must skip PR #402 JavaThrows read and emit 0 variants"
+        );
+        assert_eq!(
+            pr402_vj_cfg.exception_counter.load(Ordering::Relaxed),
+            2,
+            "both .var and .vcf runs under COMPAT_VARDICTJAVA_1_8_3 must count the PR #402 JavaThrows read"
+        );
+
+        let mut pr402_off_cfg = pr402_vj_cfg.clone();
+        pr402_off_cfg.exception_counter =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        pr402_off_cfg.compat = COMPAT_OFF;
+        let pr402_off_var = run_via_core_run(&pr402_off_cfg, "pr402_off", true);
+        let pr402_off_vcf = run_via_core_run(&pr402_off_cfg, "pr402_off", false);
+        let pr402_off_vars = extract_variants(&pr402_off_vcf);
+        assert_eq!(pr402_off_cfg.exception_counter.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            pr402_off_vars.len(),
+            2,
+            "COMPAT_OFF must rescue PR #402 duplex read (104M14D11I9D27M -> Complex + Deletion), got:\n{pr402_off_vcf}"
+        );
+        assert!(
+            !pr402_off_var.trim().is_empty()
+                && pr402_off_vars[0].starts_with("chr1\t115\t.\tAGAA\tA\t")
+                && pr402_off_vars[0].contains("TYPE=Complex;")
+                && pr402_off_vars[1].starts_with("chr1\t118\t.\tAAAAAAAAAG\tA\t")
+                && pr402_off_vars[1].contains("TYPE=Deletion;"),
+            "expected rescued Complex + Deletion variants from PR #402 read, got:\n{}",
+            pr402_off_vars.join("\n")
+        );
+
+        // =========================================================================
+        // (c) UB-5 Discordant <DUP> / <INV> VCF Preservation + Override
+        // =========================================================================
+        let ub5_len = 1_500usize;
+        let ub5_seq = lcg_ref_bytes(0x0B05_D15C_5678_9ABC, ub5_len);
+        let ub5_fa = write_multi_contig_fasta(dir.path(), "wave2_ub5", &[("chr1", &ub5_seq)]);
+        let ub5_bam = dir.path().join("wave2_ub5.bam");
+        let mut ub5_recs = Vec::new();
+        // Wild-type coverage around <DUP> (190..260) and <INV> (780..860)
+        for &wstart in &[185usize, 785] {
+            for i in 0..4usize {
+                let s = wstart + i * 2;
+                ub5_recs.push(mk_contig_rec(
+                    &format!("ub5_wt_{wstart}_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(70, Kind::Match)],
+                    ub5_seq[s - 1..s - 1 + 70].to_vec(),
+                    vec![40; 70],
+                    None,
+                ));
+            }
+        }
+        // Discordant-only <DUP>: 8 pure-50M forward reads at 450, mate reverse at 200 (SPLITREAD=0;SPANPAIR=8)
+        for i in 0..8usize {
+            ub5_recs.push(mk_contig_rec(
+                &format!("ub5_dup_f_{i}"),
+                0,
+                Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                450,
+                &[(50, Kind::Match)],
+                ub5_seq[449..499].to_vec(),
+                vec![40; 50],
+                Some((0, 200, -250)),
+            ));
+        }
+        // Discordant-only <INV>: 8 forward-forward reads at 1200 (mate 800, tlen=-400) +
+        // 4 reverse-reverse reads at 1210 (mate 810, tlen=-400), pure 50M -> SPLITREAD=0;SPANPAIR=8
+        for i in 0..8usize {
+            ub5_recs.push(mk_contig_rec(
+                &format!("ub5_inv_ff_{i}"),
+                0,
+                Flags::SEGMENTED,
+                1200,
+                &[(50, Kind::Match)],
+                ub5_seq[1199..1249].to_vec(),
+                vec![40; 50],
+                Some((0, 800, -400)),
+            ));
+        }
+        for i in 0..4usize {
+            ub5_recs.push(mk_contig_rec(
+                &format!("ub5_inv_rr_{i}"),
+                0,
+                Flags::SEGMENTED | Flags::REVERSE_COMPLEMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                1210,
+                &[(50, Kind::Match)],
+                ub5_seq[1209..1259].to_vec(),
+                vec![40; 50],
+                Some((0, 810, -400)),
+            ));
+        }
+        write_multi_contig_bam(&ub5_bam, &[("chr1", ub5_len)], ub5_recs).expect("wave2_ub5.bam");
+
+        let ub5_vj_cfg = Config {
+            reference: ub5_fa.to_string_lossy().into_owned(),
+            bam: ub5_bam.to_string_lossy().into_owned(),
+            sample: "UB5_S".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:150-1350".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        assert!(
+            extract_variants(&run_via_core_run(&ub5_vj_cfg, "ub5_vj", false)).is_empty(),
+            "default VCF must drop discordant-only SVs (SPLITREAD=0;SPANPAIR=8)"
+        );
+
+        let mut ub5_off_cfg = ub5_vj_cfg.clone();
+        ub5_off_cfg.compat = COMPAT_OFF;
+        assert_eq!(ub5_off_cfg.vcf_min_splitreads, 1);
+        assert!(!ub5_off_cfg.vcf_min_splitreads_explicit);
+        let ub5_off_vars = extract_variants(&run_via_core_run(&ub5_off_cfg, "ub5_off", false));
+        assert!(
+            ub5_off_vars
+                .iter()
+                .any(|l| l.contains("\t<DUP>\t") && l.contains(";SPLITREAD=0;SPANPAIR=8\t"))
+                && ub5_off_vars
+                    .iter()
+                    .any(|l| l.contains("\t<INV>\t") && l.contains(";SPLITREAD=0;SPANPAIR=8\t")),
+            "COMPAT_OFF must emit discordant-only <DUP> and <INV> with SPLITREAD=0;SPANPAIR=8, got:\n{}",
+            ub5_off_vars.join("\n")
+        );
+
+        let mut ub5_exp1_cfg = ub5_off_cfg.clone();
+        ub5_exp1_cfg.vcf_min_splitreads_explicit = true;
+        assert!(
+            extract_variants(&run_via_core_run(&ub5_exp1_cfg, "ub5_exp1", false)).is_empty(),
+            "explicit vcf_min_splitreads_explicit=true (min=1) must drop SPLITREAD=0 SVs under COMPAT_OFF"
+        );
+
+        let mut ub5_min2_cfg = ub5_off_cfg.clone();
+        ub5_min2_cfg.vcf_min_splitreads = 2;
+        assert!(
+            extract_variants(&run_via_core_run(&ub5_min2_cfg, "ub5_min2", false)).is_empty(),
+            "vcf_min_splitreads=2 must drop SPLITREAD=0 SVs under COMPAT_OFF"
+        );
+
+        // =========================================================================
+        // (d) UB-6 Boundary Mate Clustering, sv_lazy_mate_pileup Side::Three Tiled
+        //     Conservation, & exact_binary_half_even (1 / 20_000 == 5e-5 -> 0.0001)
+        // =========================================================================
+        // d1. UB-6 boundary mate clustering: split-refined svfdup at pe=500 -> 499 + svrdup mstart=499
+        let ub6_len = 1_200usize;
+        let mut ub6_seq = lcg_ref_bytes(0x0B06_BEEF_CAFE_1234, ub6_len);
+        ub6_seq[198] = b'G'; // 1-based 199 != 1-based 499 ('A') so homology shift stops at tbp=200
+        ub6_seq[498] = b'A';
+        let ub6_anchor_200 = b"TTCGAAGGTTCCAAGGTTCC";
+        ub6_seq[199..219].copy_from_slice(ub6_anchor_200);
+        let ub6_fa = write_multi_contig_fasta(dir.path(), "wave2_ub6", &[("chr1", &ub6_seq)]);
+        let ub6_bam = dir.path().join("wave2_ub6.bam");
+        let mut ub6_recs = Vec::new();
+        for i in 0..4usize {
+            let s = 165 + i * 2;
+            ub6_recs.push(mk_contig_rec(
+                &format!("ub6_ref_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(150, Kind::Match)],
+                ub6_seq[s - 1..s - 1 + 150].to_vec(),
+                vec![40; 150],
+                None,
+            ));
+        }
+        // 8 forward reads at 450 (50M20S -> end = 500, soft3 = 500, 20S = ub6_anchor_200), mate at 200
+        for i in 0..8usize {
+            let mut seq = ub6_seq[449..499].to_vec();
+            seq.extend_from_slice(ub6_anchor_200);
+            ub6_recs.push(mk_contig_rec(
+                &format!("ub6_fdup_{i}"),
+                0,
+                Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                450,
+                &[(50, Kind::Match), (20, Kind::SoftClip)],
+                seq,
+                vec![40; 70],
+                Some((0, 200, -300)),
+            ));
+        }
+        // 4 reverse reads at 560 (50M) with mate forward at mstart = 499 (< mark_pe 500, == decremented pe 499!)
+        for i in 0..4usize {
+            ub6_recs.push(mk_contig_rec(
+                &format!("ub6_rdup_{i}"),
+                0,
+                Flags::SEGMENTED | Flags::REVERSE_COMPLEMENTED,
+                560,
+                &[(50, Kind::Match)],
+                ub6_seq[559..609].to_vec(),
+                vec![40; 50],
+                Some((0, 499, 110)),
+            ));
+        }
+        write_multi_contig_bam(&ub6_bam, &[("chr1", ub6_len)], ub6_recs).expect("wave2_ub6.bam");
+
+        let mut ub6_cfg = Config {
+            reference: ub6_fa.to_string_lossy().into_owned(),
+            bam: ub6_bam.to_string_lossy().into_owned(),
+            sample: "UB6_S".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:150-700".to_string()),
+            realign: 0,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let ub6_vj_var = run_via_core_run(&ub6_cfg, "ub6_vj", true);
+        ub6_cfg.compat = COMPAT_OFF;
+        let ub6_off_var = run_via_core_run(&ub6_cfg, "ub6_off", true);
+        assert!(
+            ub6_vj_var.lines().any(|l| l.ends_with("\t8-8-1")),
+            "default UB-6 must leave mstart=499 svrdup unmarked (clusters=1: 8-8-1), got:\n{ub6_vj_var}"
+        );
+        assert!(
+            ub6_off_var.lines().any(|l| l.ends_with("\t8-8-2")),
+            "COMPAT_OFF UB-6 must mark mstart=499 svrdup (clusters 1->2: 8-8-2), got:\n{ub6_off_var}"
+        );
+
+        // d2. sv_lazy_mate_pileup Side::Three <INV> across >9.6 kbp distant mate window
+        //     (with halo overlap between Tile 0 [9000..9999] and Tile 1 [10000..10999] over 9850..9900):
+        //     tiled (--tile-size 1000) == untiled conservation under COMPAT_OFF
+        let inv3_len = 12_000usize;
+        let mut inv3_seq = lcg_ref_bytes(0x51DE_0003_7788_99AA, inv3_len);
+        let inv3_target_200 = b"GGGAAATTTCCCGGGAAATT";
+        inv3_seq[180..200].copy_from_slice(inv3_target_200); // 1-based 181..=200
+        inv3_seq[200] = b'A';
+        inv3_seq[9898] = b'A';
+        inv3_seq[9899] = b'T';
+        inv3_seq[199] = b'T';
+        let inv3_fa = write_multi_contig_fasta(dir.path(), "wave2_inv3", &[("chr1", &inv3_seq)]);
+        let inv3_bam = dir.path().join("wave2_inv3.bam");
+        let mut inv3_recs = Vec::new();
+        for k in 0..12usize {
+            let s = 180 + (k % 5);
+            inv3_recs.push(mk_contig_rec(
+                &format!("inv3_mate_wt_{k}"),
+                0,
+                if k % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(50, Kind::Match)],
+                inv3_seq[s - 1..s - 1 + 50].to_vec(),
+                vec![40; 50],
+                None,
+            ));
+        }
+        for k in 0..10usize {
+            let s = 9870 + (k % 5);
+            inv3_recs.push(mk_contig_rec(
+                &format!("inv3_local_wt_{k}"),
+                0,
+                if k % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(50, Kind::Match)],
+                inv3_seq[s - 1..s - 1 + 50].to_vec(),
+                vec![40; 50],
+                None,
+            ));
+        }
+        let mut rc_200 = inv3_target_200.to_vec();
+        vardictrust_core::util::reverse_complement(&mut rc_200);
+        for k in 0..8usize {
+            // Side::Three cluster at 9850..9900 (seen by BOTH Tile 0 [9000..9999] and Tile 1 [10000..10999]'s halo!)
+            let mut seq = inv3_seq[9849..9899].to_vec();
+            seq.extend_from_slice(&rc_200);
+            inv3_recs.push(mk_contig_rec(
+                &format!("inv3_split_{k}"),
+                0,
+                Flags::SEGMENTED,
+                9850,
+                &[(50, Kind::Match), (20, Kind::SoftClip)],
+                seq,
+                vec![40; 70],
+                Some((0, 190, -9660)),
+            ));
+        }
+        write_multi_contig_bam(&inv3_bam, &[("chr1", inv3_len)], inv3_recs)
+            .expect("wave2_inv3.bam");
+
+        let inv3_bed = dir.path().join("wave2_inv3.bed");
+        fs::write(
+            &inv3_bed,
+            "chr1\t99\t300\tSEG_UP\nchr1\t8999\t11500\tSEG_DOWN\n",
+        )
+        .expect("write wave2_inv3.bed");
+        let inv3_untiled_cfg = Config {
+            reference: inv3_fa.to_string_lossy().into_owned(),
+            bam: inv3_bam.to_string_lossy().into_owned(),
+            sample: "INV3_S".to_string(),
+            sample_explicit: true,
+            bed: Some(inv3_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            deldupvar: false,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_OFF,
+            threads: 1,
+            ..Config::default()
+        };
+        let inv3_var_u = run_via_core_run(&inv3_untiled_cfg, "inv3_u", true);
+        let inv3_vcf_u = run_via_core_run(&inv3_untiled_cfg, "inv3_u", false);
+        assert!(
+            inv3_vcf_u.contains("chr1\t201\t")
+                && inv3_vcf_u.contains("\t<INV>\t")
+                && inv3_vcf_u.contains(";DP=12;VD=8;"),
+            "expected Side::Three <INV> at chr1:201 with mate-window DP=12 under COMPAT_OFF, got:\n{inv3_vcf_u}"
+        );
+        let mut inv3_tiled_cfg = inv3_untiled_cfg.clone();
+        inv3_tiled_cfg.tile_size = Some(1_000);
+        inv3_tiled_cfg.threads = 4;
+        let inv3_var_t = run_via_core_run(&inv3_tiled_cfg, "inv3_t1000", true);
+        let inv3_vcf_t = run_via_core_run(&inv3_tiled_cfg, "inv3_t1000", false);
+        assert_eq!(
+            inv3_var_t, inv3_var_u,
+            "COMPAT_OFF sv_lazy_mate_pileup Side::Three <INV> .var must match across tiled and untiled runs"
+        );
+        assert_eq!(
+            inv3_vcf_t, inv3_vcf_u,
+            "COMPAT_OFF sv_lazy_mate_pileup Side::Three <INV> .vcf must match across tiled and untiled runs"
+        );
+
+        // d3. exact_binary_half_even: 1 / 20_000 == 5e-5 -> AF=0.0001 under COMPAT_OFF vs 0.0000 / 0 under default
+        let tie_len = 200usize;
+        let mut tie_seq = lcg_ref_bytes(0x5E05_0001_2000_0000, tie_len);
+        tie_seq[89] = b'A'; // chr1:90
+        let tie_fa = write_multi_contig_fasta(dir.path(), "wave2_tie5e5", &[("chr1", &tie_seq)]);
+        let tie_bam = dir.path().join("wave2_tie5e5.bam");
+        let mut tie_recs = Vec::with_capacity(20_000);
+        {
+            let mut vseq = tie_seq[64..114].to_vec(); // start = 65, len = 50 -> covers chr1:90
+            vseq[90 - 65] = b'G';
+            tie_recs.push(mk_contig_rec(
+                "tie_var_0",
+                0,
+                Flags::empty(),
+                65,
+                &[(50, Kind::Match)],
+                vseq,
+                vec![40; 50],
+                None,
+            ));
+        }
+        for i in 0..19_999usize {
+            let s = 60 + (i % 10);
+            tie_recs.push(mk_contig_rec(
+                &format!("tie_wt_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(50, Kind::Match)],
+                tie_seq[s - 1..s - 1 + 50].to_vec(),
+                vec![40; 50],
+                None,
+            ));
+        }
+        write_multi_contig_bam(&tie_bam, &[("chr1", tie_len)], tie_recs).expect("wave2_tie5e5.bam");
+
+        let mut tie_cfg = Config {
+            reference: tie_fa.to_string_lossy().into_owned(),
+            bam: tie_bam.to_string_lossy().into_owned(),
+            sample: "TIE_S".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:90-90".to_string()),
+            omit_end_tag: false,
+            min_reads: 1,
+            freq: 0.0,
+            af_threshold: 0.0,
+            af_threshold_truthy_zero: true,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        // Without `-p`, default truncates 5e-5 -> 0.0 (`!(0.0 > 0.0)` drops the site),
+        // whereas COMPAT_OFF rounds 5e-5 -> 0.0001 > 0.0 and emits it!
+        assert!(
+            run_via_core_run(&tie_cfg, "tie_nop_vj", true)
+                .trim()
+                .is_empty(),
+            "default -f 0.0 without -p drops 1/20000 (5e-5 -> 0.0 <= 0.0)"
+        );
+        let mut tie_nop_off = tie_cfg.clone();
+        tie_nop_off.compat = COMPAT_OFF;
+        assert_eq!(
+            run_via_core_run(&tie_nop_off, "tie_nop_off", true)
+                .lines()
+                .next()
+                .unwrap()
+                .split('\t')
+                .nth(14),
+            Some("0.0001"),
+            "COMPAT_OFF -f 0.0 without -p must rescue 1/20000 as 0.0001 > 0.0"
+        );
+
+        // With `-p` (`freq = -1.0`), default emits 0.0000 / AF=0 vs COMPAT_OFF 0.0001 / AF=0.0001
+        tie_cfg.pileup = true;
+        let tie_vj_var = run_via_core_run(&tie_cfg, "tie_vj", true);
+        let tie_vj_vcf = run_via_core_run(&tie_cfg, "tie_vj", false);
+        let tie_vj_snv_row = tie_vj_var
+            .lines()
+            .find(|l| l.split('\t').nth(6) == Some("G"))
+            .unwrap_or_else(|| panic!("missing G row in tie_vj_var:\n{tie_vj_var}"));
+        assert_eq!(
+            tie_vj_snv_row.split('\t').nth(14),
+            Some("0"),
+            "default 1/20000 (5e-5) .var AlleleFreq must truncate to 0, got: {tie_vj_snv_row}"
+        );
+        let tie_vj_line = &extract_variants(&tie_vj_vcf)[0];
+        assert!(
+            tie_vj_line.contains(";DP=20000;END=90;VD=1;AF=0;") && tie_vj_line.contains(";HIAF=0;"),
+            "default 1/20000 (5e-5) .vcf must emit AF=0 and HIAF=0, got: {tie_vj_line}"
+        );
+
+        tie_cfg.compat = COMPAT_OFF;
+        let tie_off_var = run_via_core_run(&tie_cfg, "tie_off", true);
+        let tie_off_vcf = run_via_core_run(&tie_cfg, "tie_off", false);
+        let tie_off_snv_row = tie_off_var
+            .lines()
+            .find(|l| l.split('\t').nth(6) == Some("G"))
+            .unwrap_or_else(|| panic!("missing G row in tie_off_var:\n{tie_off_var}"));
+        assert_eq!(
+            tie_off_snv_row.split('\t').nth(14),
+            Some("0.0001"),
+            "COMPAT_OFF 1/20000 (5e-5) .var AlleleFreq must round to 0.0001, got: {tie_off_snv_row}"
+        );
+        let tie_off_line = &extract_variants(&tie_off_vcf)[0];
+        assert!(
+            tie_off_line.contains(";DP=20000;END=90;VD=1;AF=0.0001;")
+                && tie_off_line.contains(";HIAF=0.0001;")
+                && tie_off_line.contains(":0.0001:"),
+            "COMPAT_OFF 1/20000 (5e-5) .vcf must emit AF=0.0001, HIAF=0.0001, and FORMAT AF=0.0001, got: {tie_off_line}"
         );
     }
 }
