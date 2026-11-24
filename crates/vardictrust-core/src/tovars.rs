@@ -200,6 +200,33 @@ impl<'m, I: Iterator<Item = &'m i32>> Iterator for PositionIter<I> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RefSiteCounts {
+    fwd: i32,
+    rev: i32,
+    extracnt: i32,
+}
+
+#[inline]
+fn lookup_raw_extracnt(
+    position: i32,
+    desc: &str,
+    insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    orig_non_ins: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    overlay: &rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
+) -> i32 {
+    insertion_variants
+        .get(&position)
+        .and_then(|m| m.map.get(desc))
+        .or_else(|| {
+            overlay
+                .get(&position)
+                .or_else(|| orig_non_ins.get(&position))
+                .and_then(|m| m.map.get(desc))
+        })
+        .map_or(0, |c| c.extracnt)
+}
+
 impl<'a> ToVarsBuilder<'a> {
     /// Create a new ToVarsBuilder with reference, region, chromosomes_lengths and config.
     pub fn new(
@@ -769,12 +796,18 @@ impl<'a> ToVarsBuilder<'a> {
         _insertion_variations: Option<&crate::variations::VariationMap>,
         non_insertion_variations: &crate::variations::VariationMap,
     ) -> i32 {
+        let clamp_nonneg = self.config.compat.reconcile_vd_dp;
         let mut hicov: i32 = 0;
         for (key, val) in &non_insertion_variations.map {
             if key == "SV" || key.starts_with('+') {
                 continue;
             }
-            hicov = hicov.saturating_add(val.hicnt);
+            let h = if clamp_nonneg {
+                val.hicnt.max(0)
+            } else {
+                val.hicnt
+            };
+            hicov = hicov.saturating_add(h);
         }
         hicov
     }
@@ -953,8 +986,15 @@ impl<'a> ToVarsBuilder<'a> {
         let locnt = cnt.locnt;
 
         let reconcile_vd_dp = self.config.compat.reconcile_vd_dp;
-        let (ttcov, hicov_eff) = if reconcile_vd_dp {
-            (total_pos_coverage.max(cnt.cnt), hicov.max(hicnt))
+        let (pos_cov_eff, hicnt_eff, ttcov, hicov_eff) = if reconcile_vd_dp {
+            let pc = cnt.cnt.max(0);
+            let hc = hicnt.max(0);
+            (
+                pc,
+                hc,
+                total_pos_coverage.max(pc).max(0),
+                hicov.max(hc).max(0),
+            )
         } else {
             let mut ttcov = total_pos_coverage;
             if cnt.cnt > total_pos_coverage
@@ -963,7 +1003,7 @@ impl<'a> ToVarsBuilder<'a> {
             {
                 ttcov = cnt.cnt;
             }
-            (ttcov, hicov)
+            (cnt.cnt, hicnt, ttcov, hicov)
         };
 
         let mut tvref = Variant::empty_internal();
@@ -977,22 +1017,25 @@ impl<'a> ToVarsBuilder<'a> {
             ttcov,
             base_quality,
             mapping_quality,
-            hicnt,
+            hicnt_eff,
             locnt,
             hicov_eff,
             duprate,
             exact_binary_half_even,
         );
         if reconcile_vd_dp {
-            if ttcov <= 0 || cnt.cnt <= 0 {
-                tvref.frequency = 0.0;
-            }
+            tvref.pos_coverage = pos_cov_eff;
+            tvref.frequency = if ttcov > 0 && pos_cov_eff > 0 {
+                round_half_even_compat(pos_cov_eff as f64 / ttcov as f64, 4, exact_binary_half_even)
+            } else {
+                0.0
+            };
             tvref.extra_freq = if cnt.extracnt > 0 && ttcov > 0 {
                 (cnt.extracnt.min(ttcov) as f64) / (ttcov as f64)
             } else {
                 0.0
             };
-            if hicov_eff <= 0 || hicnt <= 0 {
+            if hicov_eff <= 0 || hicnt_eff <= 0 {
                 tvref.hi_freq = 0.0;
             }
             tvref.total_pos_cov = ttcov;
@@ -1011,6 +1054,8 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> Variant {
         let hicov = if sole_key == "SV" || sole_key.starts_with('+') {
             0
+        } else if self.config.compat.reconcile_vd_dp {
+            cnt.hicnt.max(0)
         } else {
             cnt.hicnt
         };
@@ -1019,8 +1064,11 @@ impl<'a> ToVarsBuilder<'a> {
             position,
             total_cov,
             &mut tvref,
-            cnt.fwd,
-            cnt.rev,
+            RefSiteCounts {
+                fwd: cnt.fwd,
+                rev: cnt.rev,
+                extracnt: cnt.extracnt,
+            },
             duprate,
             debug_lines,
         );
@@ -1253,7 +1301,12 @@ impl<'a> ToVarsBuilder<'a> {
                         1,
                         exact_binary_half_even,
                     );
-                    let hicnt = cnt.hicnt;
+                    let reconcile_vd_dp = self.config.compat.reconcile_vd_dp;
+                    let hicnt = if reconcile_vd_dp {
+                        cnt.hicnt.max(0)
+                    } else {
+                        cnt.hicnt
+                    };
                     let locnt = cnt.locnt;
 
                     ttcov = self.adjust_insertion_coverage_and_next_ref(
@@ -1268,6 +1321,9 @@ impl<'a> ToVarsBuilder<'a> {
 
                     if hicov < hicnt {
                         hicov = hicnt;
+                    }
+                    if reconcile_vd_dp {
+                        hicov = hicov.max(0);
                     }
 
                     let mut tvref = Variant::empty_internal();
@@ -1287,19 +1343,28 @@ impl<'a> ToVarsBuilder<'a> {
                         duprate,
                         exact_binary_half_even,
                     );
-                    if self.config.compat.reconcile_vd_dp {
-                        if ttcov <= 0 || cnt.cnt <= 0 {
-                            tvref.frequency = 0.0;
-                        }
-                        tvref.extra_freq = if cnt.extracnt > 0 && ttcov > 0 {
-                            (cnt.extracnt.min(ttcov) as f64) / (ttcov as f64)
+                    if reconcile_vd_dp {
+                        let pos_cov_eff = cnt.cnt.max(0);
+                        let ttcov_eff = ttcov.max(pos_cov_eff).max(0);
+                        tvref.pos_coverage = pos_cov_eff;
+                        tvref.frequency = if ttcov_eff > 0 && pos_cov_eff > 0 {
+                            round_half_even_compat(
+                                pos_cov_eff as f64 / ttcov_eff as f64,
+                                4,
+                                exact_binary_half_even,
+                            )
+                        } else {
+                            0.0
+                        };
+                        tvref.extra_freq = if cnt.extracnt > 0 && ttcov_eff > 0 {
+                            (cnt.extracnt.min(ttcov_eff) as f64) / (ttcov_eff as f64)
                         } else {
                             0.0
                         };
                         if hicov <= 0 || hicnt <= 0 {
                             tvref.hi_freq = 0.0;
                         }
-                        tvref.total_pos_cov = ttcov;
+                        tvref.total_pos_cov = ttcov_eff;
                     }
 
                     if self.config.debug {
@@ -1980,16 +2045,13 @@ impl<'a> ToVarsBuilder<'a> {
                         .max(vref.total_pos_cov)
                         .max(vref.pos_coverage);
                     if final_dp > vref.total_pos_cov && final_dp > 0 {
-                        let raw_extracnt = insertion_variants
-                            .get(&position)
-                            .and_then(|m| m.map.get(vref.description.as_str()))
-                            .or_else(|| {
-                                overlay
-                                    .get(&position)
-                                    .or_else(|| orig_non_ins.get(&position))
-                                    .and_then(|m| m.map.get(vref.description.as_str()))
-                            })
-                            .map_or(0, |c| c.extracnt);
+                        let raw_extracnt = lookup_raw_extracnt(
+                            position,
+                            vref.description.as_str(),
+                            insertion_variants,
+                            orig_non_ins,
+                            overlay,
+                        );
                         vref.frequency = round_half_even_compat(
                             vref.pos_coverage as f64 / final_dp as f64,
                             4,
@@ -2086,12 +2148,26 @@ impl<'a> ToVarsBuilder<'a> {
                     .retain(|vref| !matches_any_sv(&vref.var_allele));
             }
         } else if let Some(ref mut vref) = variations_at_pos.ref_variant {
+            let raw_extracnt = if self.config.compat.reconcile_vd_dp {
+                lookup_raw_extracnt(
+                    position,
+                    vref.description.as_str(),
+                    insertion_variants,
+                    orig_non_ins,
+                    overlay,
+                )
+            } else {
+                0
+            };
             self.update_ref_variant(
                 position,
                 total_pos_coverage_adj,
                 vref,
-                reference_forward_coverage_adj,
-                reference_reverse_coverage_adj,
+                RefSiteCounts {
+                    fwd: reference_forward_coverage_adj,
+                    rev: reference_reverse_coverage_adj,
+                    extracnt: raw_extracnt,
+                },
                 duprate,
                 debug_lines,
             );
@@ -2104,12 +2180,26 @@ impl<'a> ToVarsBuilder<'a> {
             && (changed_ref_variant_at_pos || self.config.amplicon.is_some())
         {
             if let Some(ref mut vref) = variations_at_pos.ref_variant {
+                let raw_extracnt = if self.config.compat.reconcile_vd_dp {
+                    lookup_raw_extracnt(
+                        position,
+                        vref.description.as_str(),
+                        insertion_variants,
+                        orig_non_ins,
+                        overlay,
+                    )
+                } else {
+                    0
+                };
                 self.update_ref_variant(
                     position,
                     total_pos_coverage_adj,
                     vref,
-                    reference_forward_coverage_adj,
-                    reference_reverse_coverage_adj,
+                    RefSiteCounts {
+                        fwd: reference_forward_coverage_adj,
+                        rev: reference_reverse_coverage_adj,
+                        extracnt: raw_extracnt,
+                    },
                     duprate,
                     debug_lines,
                 );
@@ -2122,16 +2212,49 @@ impl<'a> ToVarsBuilder<'a> {
         position: i32,
         total_pos_coverage: i32,
         vref: &mut Variant,
-        reference_forward_coverage: i32,
-        reference_reverse_coverage: i32,
+        ref_counts: RefSiteCounts,
         duprate: f64,
         debug_lines: &[String],
     ) {
-        vref.total_pos_cov = total_pos_coverage;
-        vref.pos_coverage = 0;
-        vref.frequency = 0.0;
-        vref.ref_fwd_cov = reference_forward_coverage;
-        vref.ref_rev_cov = reference_reverse_coverage;
+        let exact_binary_half_even = self.config.compat.exact_binary_half_even;
+        if self.config.compat.reconcile_vd_dp {
+            let fwd = ref_counts.fwd.max(0);
+            let rev = ref_counts.rev.max(0);
+            let ref_cov_eff = fwd.saturating_add(rev);
+            let final_dp = total_pos_coverage.max(vref.total_pos_cov).max(ref_cov_eff);
+            vref.total_pos_cov = final_dp;
+            vref.pos_coverage = 0;
+            vref.frequency = 0.0;
+            vref.ref_fwd_cov = fwd;
+            vref.ref_rev_cov = rev;
+            vref.extra_freq = if ref_counts.extracnt > 0 && final_dp > 0 {
+                round_half_even_compat(
+                    ref_counts.extracnt.min(final_dp) as f64 / final_dp as f64,
+                    4,
+                    exact_binary_half_even,
+                )
+            } else {
+                0.0
+            };
+            vref.hicnt = vref.hicnt.max(0);
+            vref.hicov = vref.hicov.max(vref.hicnt);
+            vref.hi_freq = if vref.hicov > 0 {
+                round_half_even_compat(
+                    vref.hicnt as f64 / vref.hicov as f64,
+                    4,
+                    exact_binary_half_even,
+                )
+            } else {
+                0.0
+            };
+        } else {
+            vref.total_pos_cov = total_pos_coverage;
+            vref.pos_coverage = 0;
+            vref.frequency = 0.0;
+            vref.ref_fwd_cov = ref_counts.fwd;
+            vref.ref_rev_cov = ref_counts.rev;
+            vref.hi_freq = round_half_even_compat(vref.hi_freq, 4, exact_binary_half_even);
+        }
         vref.fwd = 0;
         vref.rev = 0;
         vref.msi = 0.0;
@@ -2142,8 +2265,6 @@ impl<'a> ToVarsBuilder<'a> {
         vref.shift3 = 0;
         vref.start_pos = position;
         vref.end_pos = position;
-        vref.hi_freq =
-            round_half_even_compat(vref.hi_freq, 4, self.config.compat.exact_binary_half_even);
 
         let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
         let valid_base = match ref_base {
@@ -6110,7 +6231,127 @@ mod tests {
                 assert_eq!(sv.hicov, v.hicov);
                 assert_eq!(sv.hi_freq.to_bits(), v.hi_freq.to_bits());
             }
+            if let Some(ref rv) = vars.ref_variant {
+                assert!(0 <= rv.pos_coverage && rv.pos_coverage <= rv.total_pos_cov);
+                assert!(0 <= rv.hicnt && rv.hicnt <= rv.hicov);
+                assert!(0.0 <= rv.hi_freq && rv.hi_freq <= 1.0);
+                assert!(0.0 <= rv.extra_freq && rv.extra_freq <= 1.0);
+            }
         }
+
+        // (f) Finalized reference variants (`Vars.ref_variant` via `hydrate_compact_ref_site` /
+        //     `build_ref_variant_from_cnt` and `collect_reference_variants` -> `update_ref_variant`):
+        //     - pos 70: pure-reference site with `RD = 15 > ref_coverage = 10`, `cnt.hicnt = -1`
+        //       (from `CigarParser` `Variation::sub_cnt`), and `cnt.extracnt = 5`.
+        //     - pos 75: variant + co-occurring insertion raising `total_pos_coverage_adj` from 10
+        //       to `ref_coverage[76] = 25` above ref's initial `ttcov = 12`, with ref `hicnt = -1`
+        //       and `extracnt = 15` (> 12, testing lossless `raw_extracnt` in `update_ref_variant`).
+        let mut ref_vd = VariationData::new();
+        ref_vd.ref_coverage.insert(70, 10);
+        let mut vm70 = VariationMap::new();
+        let mut r70 = mk_var(15, -1, 7);
+        r70.fwd = 8;
+        r70.rev = 7;
+        r70.locnt = 2;
+        vm70.map.insert("A".to_string(), r70);
+        ref_vd.non_insertion_variants.insert(70, vm70);
+
+        ref_vd.ref_coverage.insert(75, 10);
+        ref_vd.ref_coverage.insert(76, 25);
+        let mut vm75 = VariationMap::new();
+        let mut r75 = mk_var(12, -1, 15);
+        r75.fwd = 6;
+        r75.rev = 6;
+        r75.locnt = 2;
+        vm75.map.insert("A".to_string(), r75);
+        vm75.map.insert("G".to_string(), mk_var(4, 4, 0));
+        ref_vd.non_insertion_variants.insert(75, vm75);
+        let mut ins75 = VariationMap::new();
+        ins75.map.insert("+AT".to_string(), mk_var(11, 11, 0));
+        ref_vd.insertion_variants.insert(75, ins75);
+
+        let mut vm76 = VariationMap::new();
+        vm76.map.insert("A".to_string(), mk_var(25, 25, 0));
+        ref_vd.non_insertion_variants.insert(76, vm76);
+
+        // Legacy preserves negative hicnt/hicov (-1), clobbered DP=10 (< RD=15), and unrounded extra_freq (7/15)
+        let mut leg_som_cfg = Config::default();
+        leg_som_cfg.bam = "tumor.bam|normal.bam".to_string();
+        let leg_som_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &leg_som_cfg);
+        let leg_keep =
+            leg_som_b.build_aligned_variants_with_ref_mode(&ref_vd, RefSiteMode::KeepAll);
+        let leg_rv70 = leg_keep.get(&70).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(leg_rv70.total_pos_cov, 10);
+        assert_eq!(leg_rv70.hicnt, -1);
+        assert_eq!(leg_rv70.hicov, -1);
+        assert_eq!(
+            leg_rv70.extra_freq.to_bits(),
+            (7.0_f64 / 15.0_f64).to_bits()
+        );
+
+        // COMPAT_OFF somatic CompactOut + hydrate_compact_ref_site vs KeepAll
+        let mut off_som_cfg = leg_som_cfg.clone();
+        off_som_cfg.compat = crate::config::COMPAT_OFF;
+        let off_som_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &off_som_cfg);
+        let off_keep =
+            off_som_b.build_aligned_variants_with_ref_mode(&ref_vd, RefSiteMode::KeepAll);
+        let mut compact_sites = rustc_hash::FxHashMap::default();
+        let _ = off_som_b.build_aligned_variants_with_ref_mode(
+            &ref_vd,
+            RefSiteMode::CompactOut(&mut compact_sites),
+        );
+        let hydrated_70 = off_som_b
+            .hydrate_compact_ref_site(70, compact_sites.get(&70).expect("pos 70 compact site"));
+        let hyd_rv70 = hydrated_70.ref_variant.as_ref().unwrap();
+        let keep_rv70 = off_keep.get(&70).unwrap().ref_variant.as_ref().unwrap();
+
+        for rv in [hyd_rv70, keep_rv70] {
+            assert_eq!(rv.total_pos_cov, 15);
+            assert_eq!(rv.pos_coverage, 0);
+            assert_eq!(rv.frequency, 0.0);
+            assert_eq!(rv.ref_fwd_cov, 8);
+            assert_eq!(rv.ref_rev_cov, 7);
+            assert_eq!(rv.hicnt, 0);
+            assert_eq!(rv.hicov, 0);
+            assert_eq!(rv.hi_freq, 0.0);
+            assert_eq!(rv.extra_freq, 0.4667);
+        }
+
+        // Un-updated ref_variant on pos 75 (when !pileup) also clamps hicnt >= 0 and hicov >= hicnt,
+        // and negative ref hicnt (-1) does not deflate SNV "G"'s hicov below 4!
+        let off_rv75_unupdated = off_keep.get(&75).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(off_rv75_unupdated.hicnt, 0);
+        assert_eq!(off_rv75_unupdated.hicov, 4);
+        assert_eq!(off_rv75_unupdated.hi_freq, 0.0);
+        let off_snv75 = off_keep
+            .get(&75)
+            .unwrap()
+            .variants
+            .iter()
+            .find(|v| v.description == "G")
+            .unwrap();
+        assert_eq!(off_snv75.hicnt, 4);
+        assert_eq!(off_snv75.hicov, 4);
+        assert_eq!(off_snv75.hi_freq, 1.0);
+
+        // -p pileup + Amplicon (`collect_reference_variants:2107`) reconciles ref_variant DP to 25
+        // and recomputes extra_freq losslessly from raw_extracnt = 15 -> 15 / 25 = 0.6!
+        let mut off_pileup_amp_cfg = Config::default();
+        off_pileup_amp_cfg.pileup = true;
+        off_pileup_amp_cfg.amplicon = Some("10:0.95".to_string());
+        off_pileup_amp_cfg.compat = crate::config::COMPAT_OFF;
+        let off_pa_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &off_pileup_amp_cfg);
+        let off_pa = off_pa_b.build_aligned_variants(&ref_vd);
+        let pa_rv75 = off_pa.get(&75).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(pa_rv75.total_pos_cov, 25);
+        assert_eq!(pa_rv75.pos_coverage, 0);
+        assert_eq!(pa_rv75.frequency, 0.0);
+        assert_eq!(pa_rv75.ref_fwd_cov, 7);
+        assert_eq!(pa_rv75.ref_rev_cov, 7);
+        assert_eq!(pa_rv75.hicnt, 0);
+        assert_eq!(pa_rv75.hicov, 4);
+        assert_eq!(pa_rv75.hi_freq, 0.0);
+        assert_eq!(pa_rv75.extra_freq, 0.6);
     }
 
     #[test]
