@@ -10,13 +10,13 @@ All line references below are to that pin.
 
 | # | Class | Item | Our stance |
 |---|-------|------|------------|
-| [UB-1](#ub-1) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` spurious all-zero record at position 0/0 | **Replicated** ([`postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs)) |
-| [UB-2](#ub-2) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` null-record row cell formatting | **Replicated** ([`variations/mod.rs`](../crates/vardictrust-core/src/variations/mod.rs)) |
+| [UB-1](#ub-1) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` spurious all-zero record at position 0/0 | **Replicated** by default (`--compat=vardictjava`, [`postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs)); suppressed under opt-in `--compat=off` (`suppress_pileup_sentinels`) |
+| [UB-2](#ub-2) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` null-record row cell formatting | **Replicated** by default (`--compat=vardictjava`, [`variations/mod.rs`](../crates/vardictrust-core/src/variations/mod.rs)); suppressed under opt-in `--compat=off` (`suppress_pileup_sentinels`) |
 | [UB-3](#ub-3) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Cross-position `.var` emission order follows HashMap layout ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family) | **Replicated** (via [JavaHashMap Engine](../crates/vardictrust-core/src/javamap.rs)) |
 | [UB-4](#ub-4) | [Class D](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
-| [UB-5](#ub-5) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** ([`output/vcf.rs`](../crates/vardictrust-core/src/output/vcf.rs)) |
-| [UB-6](#ub-6) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** ([`sv.rs:3039`](../crates/vardictrust-core/src/sv.rs)) |
-| [UB-7](#ub-7) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** ([`postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs), [`lib.rs`](../crates/vardictrust-core/src/lib.rs)) |
+| [UB-5](#ub-5) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** by default (`--compat=vardictjava`, [`output/vcf.rs`](../crates/vardictrust-core/src/output/vcf.rs)); discordant-pair SVs preserved under opt-in `--compat=off` (`preserve_discordant_svs`) |
+| [UB-6](#ub-6) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** by default (`--compat=vardictjava`, [`sv.rs`](../crates/vardictrust-core/src/sv.rs) `find_dup_disc_paths`); pre-decrement `mark_pe` passed under opt-in `--compat=off` (`mark_dup_sv_inclusive_end`) |
+| [UB-7](#ub-7) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Multi-allelic site single-winner collapsing without `-A` | **Replicated** by default (`--compat=vardictjava`, [`postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs), [`lib.rs`](../crates/vardictrust-core/src/lib.rs)); all qualifying alleles emitted via opt-in `--vcf-all-alleles` (`--all-alleles`) |
 | [UB-8](#ub-8) | [Class D](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Oracle JVM SIGKILL flake under shared-host memory pressure (exit 137, no output change) | **Tracked** (environmental; diagnostics in [`harness/run_oracle.sh`](../harness/run_oracle.sh)) |
 
 **Third arm:** pinned **vardictcpp 3 `hc52dbad_0` bioconda** runs beside every gate
@@ -47,7 +47,7 @@ downstream Perl VCF conversion receives a REF/ALT-less row at pos 0).
 → stdout contains `hard_clip_next_to_del_test2	testbed	test	0	0	…` between the
 6507-6533 and 6449-6468 rows.
 
-**Our replication stance:** replicated byte-for-byte in [`crates/vardictrust-core/src/postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs) fallback branch keeping `Variant::new()` defaults and [`crates/vardictrust-core/src/output/table.rs`](../crates/vardictrust-core/src/output/table.rs). Verified sorted-diff-empty vs live oracle on the hard_clip case under [Tier-1](testing/test-matrix-and-ci-audit.md#tier-1) table differential testing via [`harness/compare_var.py`](../harness/compare_var.py).
+**Our replication stance:** replicated byte-for-byte by default (`--compat=vardictjava` / `--parity`) in [`crates/vardictrust-core/src/postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs) fallback branch keeping `Variant::new()` defaults and [`crates/vardictrust-core/src/output/table.rs`](../crates/vardictrust-core/src/output/table.rs); verified sorted-diff-empty vs live oracle on the `hard_clip` case under [Tier-1](testing/test-matrix-and-ci-audit.md#tier-1) table differential testing via [`harness/compare_var.py`](../harness/compare_var.py). Opt-in `--compat=off` (`CompatProfile::suppress_pileup_sentinels`) suppresses `-p` pileup `<R,R>`/`N/N` zero-depth sentinel rows in Simple and Amplicon modes.
 
 **Draft issue text:**
 
@@ -76,7 +76,7 @@ defaults rather than Variant fields: genotype cell `""`
 cells `""` (`OutputVariant.java:22-23`). The resulting `.var` row carries an empty
 genotype token; downstream R/Perl consumers must special-case it.
 
-**Our replication stance:** replicated byte-for-byte in [`crates/vardictrust-core/src/variations/mod.rs`](../crates/vardictrust-core/src/variations/mod.rs) (`null_record` flag) and [`crates/vardictrust-core/src/output/table.rs`](../crates/vardictrust-core/src/output/table.rs) renderer. Cell-exact unit tests pin cols 14/16/31/32 to the oracle shape (`simple_36_null_record_renders_printer_defaults`).
+**Our replication stance:** replicated byte-for-byte by default (`--compat=vardictjava` / `--parity`) in [`crates/vardictrust-core/src/variations/mod.rs`](../crates/vardictrust-core/src/variations/mod.rs) (`null_record` flag) and [`crates/vardictrust-core/src/output/table.rs`](../crates/vardictrust-core/src/output/table.rs) renderer; cell-exact unit tests pin cols 14/16/31/32 to the oracle shape (`simple_36_null_record_renders_printer_defaults`). Opt-in `--compat=off` (`CompatProfile::suppress_pileup_sentinels`) suppresses `-p` pileup `<R,R>`/`N/N` zero-depth sentinel rows in Simple and Amplicon modes.
 
 **Draft issue text:**
 
@@ -200,7 +200,7 @@ unless( $isamp ) {
 ```
 Any structural variant allele containing `<` (e.g., `<DUP>`, `<INV>`) that has only discordant mate-pair cluster evidence but zero split-read evidence (`splitreads < $opt_T`, where default `$opt_T = 1`) is unconditionally discarded during VCF formatting. Notably, these variants **are emitted** in the intermediate `.var` table, creating a discrepancy between the table and VCF output.
 
-**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/output/vcf.rs`](../crates/vardictrust-core/src/output/vcf.rs) (`parse_sv_counts` and `SingleRecordStreamer`: `variant.var_allele.contains('<') && splitreads < config.vcf_min_splitreads`, where default `vcf_min_splitreads == 1`, suppresses VCF line generation for SimpleMode), ensuring exact bitwise parity with the full VarDictJava pipeline output.
+**Our replication stance:** **Replicated** byte-for-byte by default (`--compat=vardictjava` / `--parity`) in [`crates/vardictrust-core/src/output/vcf.rs`](../crates/vardictrust-core/src/output/vcf.rs) (`parse_sv_counts` and `SingleRecordStreamer`: `variant.var_allele.contains('<') && splitreads < config.vcf_min_splitreads`, where default `vcf_min_splitreads == 1`, suppresses VCF line generation for SimpleMode). Opt-in `--compat=off` (`CompatProfile::preserve_discordant_svs`) preserves single-sample symbolic SVs (`<DUP>`, `<INV>`, `<DEL>`) with `spanpairs > 0` when `splitreads == 0` unless `--min-splitreads` was explicitly overridden.
 
 **Draft issue text:**
 
@@ -227,7 +227,7 @@ markDUPSV(bp, pe, Collections.singletonList(svStructures.svrdup), maxReadLength)
 ```
 Inside `markDUPSV`, the overlap predicate `isOverlap(start1, end1, start2, end2, rlen)` checks `if (start1 >= end2 || start2 >= end1) return false;`. Because Java passes the post-decrement `pe` as `end1`, any reverse-strand mate cluster whose reads begin exactly at the original un-decremented `pe` fails the overlap condition.
 
-**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/sv.rs:3039, 3105-3111`](../crates/vardictrust-core/src/sv.rs), passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries.
+**Our replication stance:** **Replicated** byte-for-byte by default (`--compat=vardictjava` / `--parity`) in [`crates/vardictrust-core/src/sv.rs`](../crates/vardictrust-core/src/sv.rs) (`find_dup_disc_paths`), passing `pe` (post-decrement) rather than `pe + 1` to match Java's exact discordant pair clustering and breakpoint boundaries. Opt-in `--compat=off` (`CompatProfile::mark_dup_sv_inclusive_end`) passes the pre-decrement cluster end `mark_pe` (`pe + 1`) to `mark_dup_sv` in `svfdup` when `tbp != 0 && tbp < pe`.
 
 **Draft issue text:**
 
@@ -254,7 +254,7 @@ foreach my $p (@pos) {
 ```
 Only the single candidate allele with the highest allele frequency (`$tmp[0]`) is considered at each genomic locus. If that winner candidate is skipped (for example, if `$ref` is empty from a `-p` null-record, or if an SV candidate has `splitreads < 1` per [UB-5](#ub-5)), the loop executes `next` and terminates immediately. As a result, legitimate alternative variants at the same locus with lower allele frequencies are completely excluded from the VCF.
 
-**Our replication stance:** **Replicated** in [`crates/vardictrust-core/src/postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs) (`simple_post_process` within-tile raw-start collapsing when `-A` is omitted) and [`crates/vardictrust-core/src/lib.rs`](../crates/vardictrust-core/src/lib.rs) (`SpillableVcfAccumulator` retaining only the top-`af_4dp` candidate per locus in single-sample VCF mode).
+**Our replication stance:** **Replicated** byte-for-byte by default (`--compat=vardictjava` / `--parity` when `--vcf-all-alleles` is omitted) in [`crates/vardictrust-core/src/postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs) (`simple_post_process` within-tile raw-start collapsing) and [`crates/vardictrust-core/src/lib.rs`](../crates/vardictrust-core/src/lib.rs) (`SpillableVcfAccumulator` retaining only the top-`af_4dp` candidate per locus in single-sample VCF mode). Passing `--vcf-all-alleles` (alias `--all-alleles`, completing 18/18 `var2vcf_*.pl -A` parity) emits all distinct `(chr, start, end, ref, alt)` alleles per locus sorted by 4dp `AF` descending.
 
 **Draft issue text:**
 
