@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (706 total:
-500 core lib + 110 corpus_parity + 34 engine_behavior + 2 amplicon_stream_mem
-+ 3 cram_stack + 30 CLI bin + 27 CLI integration binary tests), engine
+Verifies that all version-bearing files, workspace test counts (723 total:
+512 core lib + 110 corpus_parity + 37 engine_behavior + 2 amplicon_stream_mem
++ 3 cram_stack + 31 CLI bin + 28 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
 """
@@ -21,14 +21,14 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 706,
-    "core_lib": 500,
+    "total_workspace": 723,
+    "core_lib": 512,
     "corpus_parity": 110,
-    "engine_behavior": 34,
+    "engine_behavior": 37,
     "amplicon_stream_mem": 2,
     "cram_stack": 3,
-    "cli_bin": 30,
-    "cli_integration": 27,
+    "cli_bin": 31,
+    "cli_integration": 28,
     "harness_self_tests": 37,
 }
 
@@ -285,7 +285,7 @@ EXPECTED_CLI_HEADINGS = (
     "6. Structural Variants & Complex Indels",
     "7. Performance & Concurrency",
 )
-EXPECTED_CLI_FLAG_COUNT = 89
+EXPECTED_CLI_FLAG_COUNT = 90
 
 
 def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None:
@@ -302,8 +302,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "README.md",
-        r"`87` CLI flags|6 functional groups",
-        "README.md stale 87 CLI flags or 6 functional groups",
+        r"`(?:87|89)` CLI flags|89 CLI flags|89-flag|6 functional groups",
+        "README.md stale 87/89 CLI flags or 6 functional groups",
         errors,
     )
 
@@ -411,8 +411,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "ROADMAP.md",
-        r"`87`-flag CLI surface|6 functional groups",
-        "ROADMAP.md stale 87-flag CLI surface or 6 functional groups",
+        r"`(?:87|89)`-flag CLI surface|89 CLI flags|89-flag|6 functional groups",
+        "ROADMAP.md stale 87/89-flag CLI surface or 6 functional groups",
         errors,
     )
 
@@ -441,8 +441,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "docs/ecosystem-survey.md",
-        r"87-flag|`87` CLI flags|6 functional groups",
-        "docs/ecosystem-survey.md stale 87-flag or 6 functional groups",
+        r"(?:87|89)-flag|`(?:87|89)` CLI flags|89 CLI flags|6 functional groups",
+        "docs/ecosystem-survey.md stale 87/89-flag or 6 functional groups",
         errors,
     )
 
@@ -456,8 +456,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"87-flag CLI surface|6 functional groups",
-        "test-matrix-and-ci-audit.md stale 87-flag CLI surface or 6 functional groups",
+        r"(?:87|89)-flag CLI surface|89 CLI flags|89-flag|6 functional groups",
+        "test-matrix-and-ci-audit.md stale 87/89-flag CLI surface or 6 functional groups",
         errors,
     )
 
@@ -471,8 +471,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "wiki/Home.md",
-        r"87-flag|6 functional groups",
-        "wiki/Home.md stale 87-flag or 6 functional groups",
+        r"(?:87|89)-flag|89 CLI flags|6 functional groups",
+        "wiki/Home.md stale 87/89-flag or 6 functional groups",
         errors,
     )
 
@@ -1008,7 +1008,7 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # 18. CLI 89-flag / 7-group & Migration Guide surfaces
+    # 18. CLI 90-flag / 7-group & Migration Guide surfaces
     check_cli_and_migration_surfaces(repo_root, errors)
 
     # 19. UPSTREAM.toml commit & comparator pins

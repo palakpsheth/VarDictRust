@@ -8,6 +8,11 @@ use crate::types::round_half_even;
 use crate::variations::{Variant, VariationData};
 use std::collections::HashMap;
 
+/// Flanking bases captured per side around `<dup±N>` tokens
+/// (`StructuralVariantsProcessor.java:1430, 1565`, `ToVarsBuilder.java:619, 699-700`:
+/// `Configuration.SVFLANK = 50`).
+const SV_FLANK_BP: i64 = 50;
+
 #[derive(Debug, Clone)]
 pub struct MsiResult {
     pub msi: f64,
@@ -1354,29 +1359,46 @@ impl<'a> ToVarsBuilder<'a> {
         let mut changed_ref_variant_at_pos = false;
 
         if !variations_at_pos.variants.is_empty() {
+            let standard_dup_symbolic_alt = self.config.compat.standard_dup_symbolic_alt;
             let mut gt1_buf = crate::types::StackBuf::<24>::new();
             let genotype1_current: std::borrow::Cow<'_, str> =
                 if let Some(ref ref_var) = variations_at_pos.ref_variant {
                     if ref_var.frequency >= self.config.freq {
                         if ref_var.description.starts_with('+') {
-                            format_plus_genotype1(&ref_var.description, &mut gt1_buf)
+                            format_plus_genotype1(
+                                &ref_var.description,
+                                &mut gt1_buf,
+                                standard_dup_symbolic_alt,
+                            )
                         } else {
                             std::borrow::Cow::Borrowed(ref_var.description.as_str())
                         }
                     } else if let Some(first_var) = variations_at_pos.variants.first() {
                         if first_var.description.starts_with('+') {
-                            format_plus_genotype1(&first_var.description, &mut gt1_buf)
+                            format_plus_genotype1(
+                                &first_var.description,
+                                &mut gt1_buf,
+                                standard_dup_symbolic_alt,
+                            )
                         } else {
                             std::borrow::Cow::Owned(first_var.description.clone())
                         }
                     } else if ref_var.description.starts_with('+') {
-                        format_plus_genotype1(&ref_var.description, &mut gt1_buf)
+                        format_plus_genotype1(
+                            &ref_var.description,
+                            &mut gt1_buf,
+                            standard_dup_symbolic_alt,
+                        )
                     } else {
                         std::borrow::Cow::Borrowed(ref_var.description.as_str())
                     }
                 } else if let Some(first_var) = variations_at_pos.variants.first() {
                     if first_var.description.starts_with('+') {
-                        format_plus_genotype1(&first_var.description, &mut gt1_buf)
+                        format_plus_genotype1(
+                            &first_var.description,
+                            &mut gt1_buf,
+                            standard_dup_symbolic_alt,
+                        )
                     } else {
                         std::borrow::Cow::Owned(first_var.description.clone())
                     }
@@ -1431,28 +1453,67 @@ impl<'a> ToVarsBuilder<'a> {
                             scratch2,
                         );
                     }
+                    let shift_ins_alleles = self.config.three_prime
+                        && self.config.compat.shift3_3prime_alleles
+                        && shift3 > 0;
                     if self.config.three_prime {
                         start_position = start_position.saturating_add(shift3);
                         end_position = end_position.saturating_add(shift3);
                     }
-                    let ref_base_byte = self.get_ref_base_i32(position).unwrap_or(b'N');
+                    let ins_anchor_pos = if shift_ins_alleles {
+                        start_position
+                    } else {
+                        position
+                    };
+                    let ref_base_byte = self.get_ref_base_i32(ins_anchor_pos).unwrap_or(b'N');
                     refallele.push(ref_base_byte as char);
                     varallele = String::with_capacity(1 + stripped_desc.len());
                     varallele.push(ref_base_byte as char);
-                    varallele.push_str(stripped_desc);
-
-                    if varallele.len() > self.config.sv_min_len as usize {
-                        end_position = end_position
-                            .saturating_add(varallele.len().min(i32::MAX as usize) as i32);
-                        varallele = "<DUP>".to_string();
+                    if shift_ins_alleles
+                        && !stripped_desc.is_empty()
+                        && !stripped_desc.contains('<')
+                        && stripped_desc.is_ascii()
+                    {
+                        let rot = (shift3 as usize) % stripped_desc.len();
+                        if let (Some(tail), Some(head)) =
+                            (stripped_desc.get(rot..), stripped_desc.get(..rot))
+                        {
+                            varallele.push_str(tail);
+                            varallele.push_str(head);
+                        } else {
+                            varallele.push_str(stripped_desc);
+                        }
+                    } else {
+                        varallele.push_str(stripped_desc);
                     }
-                    if let Some(dup_val) = get_dup_num(&varallele) {
-                        let dup_span = (2 * 50_i64) + i64::from(dup_val);
-                        end_position = (i64::from(start_position) + dup_span - 1)
-                            .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
-                            as i32;
-                        genotype2 = std::borrow::Cow::Owned(format!("+{dup_span}"));
-                        varallele = "<DUP>".to_string();
+
+                    if standard_dup_symbolic_alt {
+                        if let Some(dup_val) = get_dup_num_compat(&varallele, true) {
+                            let dup_span = ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1);
+                            end_position = (i64::from(start_position) + dup_span - 1)
+                                .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                                as i32;
+                            genotype2 = format_plus_genotype(&mut gt2_buf, dup_span);
+                            varallele = "<DUP>".to_string();
+                        } else if varallele.len() > self.config.sv_min_len as usize {
+                            end_position = end_position
+                                .saturating_add(varallele.len().min(i32::MAX as usize) as i32);
+                            varallele = "<DUP>".to_string();
+                        }
+                    } else {
+                        if varallele.len() > self.config.sv_min_len as usize {
+                            end_position = end_position
+                                .saturating_add(varallele.len().min(i32::MAX as usize) as i32);
+                            varallele = "<DUP>".to_string();
+                        }
+                        if let Some(dup_val) = get_dup_num(&varallele) {
+                            let dup_span = (2 * SV_FLANK_BP) + i64::from(dup_val);
+                            end_position = (i64::from(start_position) + dup_span - 1)
+                                .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                                as i32;
+                            genotype2 = format_plus_genotype(&mut gt2_buf, dup_span);
+                            varallele = "<DUP>".to_string();
+                        }
                     }
                 } else if description_string.starts_with('-') {
                     if i64::from(deletion_length) < i64::from(self.config.sv_min_len) {
@@ -1487,14 +1548,26 @@ impl<'a> ToVarsBuilder<'a> {
                         varallele = "<DEL>".to_string();
                     }
 
-                    if !description_string.contains('&')
+                    let simple_del = !description_string.contains('&')
                         && !description_string.contains('#')
-                        && !description_string.contains('^')
-                    {
+                        && !description_string.contains('^');
+                    let shift_del_alleles = simple_del
+                        && self.config.three_prime
+                        && self.config.compat.shift3_3prime_alleles
+                        && shift3 > 0;
+                    if simple_del {
                         if self.config.three_prime {
                             start_position = start_position.saturating_add(shift3);
+                            if shift_del_alleles {
+                                end_position = end_position.saturating_add(shift3);
+                            }
                         }
-                        let base_prev = position
+                        let anchor_lookup_pos = if shift_del_alleles {
+                            position.saturating_add(shift3)
+                        } else {
+                            position
+                        };
+                        let base_prev = anchor_lookup_pos
                             .checked_sub(1)
                             .and_then(|p| self.get_ref_base_i32(p))
                             .unwrap_or(b'N');
@@ -1506,15 +1579,20 @@ impl<'a> ToVarsBuilder<'a> {
                         start_position = start_position.saturating_sub(1);
                     }
 
+                    let del_seq_pos = if shift_del_alleles {
+                        position.saturating_add(shift3)
+                    } else {
+                        position
+                    };
                     if matches_some_sv_numbers(description_string) {
-                        let base_cur = self.get_ref_base_i32(position).unwrap_or(b'N');
+                        let base_cur = self.get_ref_base_i32(del_seq_pos).unwrap_or(b'N');
                         refallele.clear();
                         refallele.push(base_cur as char);
                     } else if i64::from(deletion_length) < i64::from(self.config.sv_min_len) {
-                        let del_end = (i64::from(position) + i64::from(deletion_length) - 1)
+                        let del_end = (i64::from(del_seq_pos) + i64::from(deletion_length) - 1)
                             .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
                             as i32;
-                        self.join_ref_into(scratch1, position, del_end);
+                        self.join_ref_into(scratch1, del_seq_pos, del_end);
                         refallele.push_str(scratch1);
                     }
                 } else {
@@ -1700,7 +1778,18 @@ impl<'a> ToVarsBuilder<'a> {
                         let cut = i64::from(cut_site);
                         let start64 = i64::from(start_position);
                         let end64 = i64::from(end_position);
-                        let shift3_64 = i64::from(shift3);
+                        let already_shifted_3prime = self.config.three_prime
+                            && self.config.compat.shift3_3prime_alleles
+                            && shift3 > 0
+                            && (description_string.starts_with('+')
+                                || (!description_string.contains('&')
+                                    && !description_string.contains('#')
+                                    && !description_string.contains('^')));
+                        let shift3_64 = if already_shifted_3prime {
+                            0
+                        } else {
+                            i64::from(shift3)
+                        };
                         let mut n64 = 0_i64;
                         let dis = std::cmp::min((cut - start64).abs(), (cut - end64).abs());
                         if start64 < cut {
@@ -1977,12 +2066,17 @@ fn format_plus_genotype<D: std::fmt::Display>(
 fn format_plus_genotype1<'b>(
     desc: &str,
     buf: &'b mut crate::types::StackBuf<24>,
+    standard_dup_symbolic_alt: bool,
 ) -> std::borrow::Cow<'b, str> {
-    if let Some(dup_val) = get_dup_num(desc) {
-        format_plus_genotype(buf, (dup_val as u32).saturating_add(50))
-    } else {
-        format_plus_genotype(buf, (desc.len() as i32).saturating_sub(1))
+    if standard_dup_symbolic_alt {
+        if let Some(dup_val) = get_dup_num_compat(desc, true) {
+            let dup_span = ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1);
+            return format_plus_genotype(buf, dup_span);
+        }
+    } else if let Some(dup_val) = get_dup_num(desc) {
+        return format_plus_genotype(buf, (dup_val as u32).saturating_add(SV_FLANK_BP as u32));
     }
+    format_plus_genotype(buf, (desc.len() as i32).saturating_sub(1))
 }
 
 /// Strand bias calculation matching VarDict
@@ -2169,15 +2263,32 @@ fn count_repetitions_at_start(seq: &[u8], pattern: &[u8]) -> usize {
     count
 }
 
-fn get_dup_num(s: &str) -> Option<i32> {
+fn get_dup_num_compat(s: &str, allow_negative: bool) -> Option<i32> {
     if let Some(idx) = s.find("<dup") {
         let rest = s.get(idx + 4..)?;
+        if allow_negative {
+            if let Some(after_minus) = rest.strip_prefix('-') {
+                let digits_len = after_minus
+                    .bytes()
+                    .take_while(|b| b.is_ascii_digit())
+                    .count();
+                if digits_len > 0 {
+                    let full_len = digits_len.saturating_add(1);
+                    return rest.get(..full_len)?.parse().ok();
+                }
+                return None;
+            }
+        }
         let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
         if len > 0 {
             return rest.get(..len)?.parse().ok();
         }
     }
     None
+}
+
+fn get_dup_num(s: &str) -> Option<i32> {
+    get_dup_num_compat(s, false)
 }
 
 fn get_begin_minus_number(s: &str) -> Option<i32> {
@@ -5121,5 +5232,412 @@ mod tests {
         assert!((maxfreq2 - 0.25).abs() < 1e-12);
         assert_eq!(entry.variants.len(), 2);
         assert!(entry.variants.capacity() >= 2);
+    }
+
+    #[test]
+    fn compat_off_standard_dup_symbolic_alt_normalizes_negative_dup_and_preserves_legacy() {
+        assert_eq!(get_dup_num("<dup-42>"), None);
+        assert_eq!(get_dup_num("<dup80>"), Some(80));
+        assert_eq!(get_dup_num_compat("<dup-42>", false), None);
+        assert_eq!(get_dup_num_compat("<dup-42>", true), Some(-42));
+        assert_eq!(get_dup_num_compat("<dup-120>", true), Some(-120));
+        assert_eq!(get_dup_num_compat("<dup80>", true), Some(80));
+        assert_eq!(get_dup_num_compat("<dup->", true), None);
+        assert_eq!(get_dup_num_compat("<dup>", true), None);
+
+        let mut ref_genome = Reference::new();
+        let mut seq = vec![b'A'; 400];
+        seq[99] = b'G'; // pos 100
+        seq[119] = b'G'; // pos 120
+        seq[139] = b'T'; // pos 140
+        seq[159] = b'C'; // pos 160
+        seq[179] = b'G'; // pos 180
+        seq[199] = b'T'; // pos 200
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 400,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 400)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(400),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mk_dup_var = |cnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - (cnt / 2);
+            v.qmean = 35.0 * cnt as f64;
+            v.mqmean = 60.0 * cnt as f64;
+            v.pmean = 25.0 * cnt as f64;
+            v
+        };
+
+        let flank50 = "A".repeat(50);
+        let desc_neg42 = format!("+{flank50}<dup-42>{flank50}");
+        let desc_neg120 = format!("+{flank50}<dup-120>{flank50}");
+        let desc_pos80 = format!("+{flank50}<dup80>{flank50}");
+        let desc_neg20 = format!("+{flank50}<dup-20>{flank50}");
+
+        let mut var_data = VariationData::new();
+
+        // Pos 100: homozygous <dup-42> (mlen = 58 -> dup_span = 58, end_pos = 157, genotype = +58/+58)
+        var_data.ref_coverage.insert(100, 10);
+        let mut vm100 = VariationMap::new();
+        vm100.sv = Some(Box::new(Sv {
+            r#type: "DUP".to_string(),
+            pairs: 4,
+            splits: 6,
+            clusters: 1,
+        }));
+        var_data.non_insertion_variants.insert(100, vm100);
+        let mut ins100 = VariationMap::new();
+        ins100.map.insert(desc_neg42.clone(), mk_dup_var(10));
+        var_data.insertion_variants.insert(100, ins100);
+
+        // Pos 120: heterozygous <dup-42> (ref 'G' freq 0.5 >= 0.01 -> genotype = G/+58)
+        var_data.ref_coverage.insert(120, 20);
+        let mut vm120 = VariationMap::new();
+        vm120.sv = Some(Box::new(Sv {
+            r#type: "DUP".to_string(),
+            pairs: 4,
+            splits: 6,
+            clusters: 1,
+        }));
+        vm120.map.insert("G".to_string(), mk_dup_var(10));
+        var_data.non_insertion_variants.insert(120, vm120);
+        let mut ins120 = VariationMap::new();
+        ins120.map.insert(desc_neg42.clone(), mk_dup_var(10));
+        var_data.insertion_variants.insert(120, ins120);
+
+        // Pos 140: homozygous <dup-120> (extreme clamp -> dup_span = 1, end_pos = 140, genotype = +1/+1)
+        var_data.ref_coverage.insert(140, 10);
+        let mut vm140 = VariationMap::new();
+        vm140.sv = Some(Box::new(Sv {
+            r#type: "DUP".to_string(),
+            pairs: 4,
+            splits: 6,
+            clusters: 1,
+        }));
+        var_data.non_insertion_variants.insert(140, vm140);
+        let mut ins140 = VariationMap::new();
+        ins140.map.insert(desc_neg120.clone(), mk_dup_var(10));
+        var_data.insertion_variants.insert(140, ins140);
+
+        // Pos 160: malformed "+<dup->" and "+<dup>" must not match <dup-N>
+        var_data.ref_coverage.insert(160, 20);
+        let mut vm160 = VariationMap::new();
+        vm160.map.insert("C".to_string(), mk_dup_var(10));
+        var_data.non_insertion_variants.insert(160, vm160);
+        let mut ins160 = VariationMap::new();
+        ins160.map.insert("+<dup->".to_string(), mk_dup_var(5));
+        ins160.map.insert("+<dup>".to_string(), mk_dup_var(5));
+        var_data.insertion_variants.insert(160, ins160);
+
+        // Pos 180: homozygous positive <dup80> (180 bp, END = 359; legacy genotype1 = +130 vs COMPAT_OFF = +180)
+        var_data.ref_coverage.insert(180, 10);
+        let mut vm180 = VariationMap::new();
+        vm180.sv = Some(Box::new(Sv {
+            r#type: "DUP".to_string(),
+            pairs: 4,
+            splits: 6,
+            clusters: 1,
+        }));
+        var_data.non_insertion_variants.insert(180, vm180);
+        let mut ins180 = VariationMap::new();
+        ins180.map.insert(desc_pos80.clone(), mk_dup_var(10));
+        var_data.insertion_variants.insert(180, ins180);
+
+        // Pos 200: homozygous <dup-20> (80 bp, END = 279, genotype = +80/+80 even under -L 50)
+        var_data.ref_coverage.insert(200, 10);
+        let mut vm200 = VariationMap::new();
+        vm200.sv = Some(Box::new(Sv {
+            r#type: "DUP".to_string(),
+            pairs: 4,
+            splits: 6,
+            clusters: 1,
+        }));
+        var_data.non_insertion_variants.insert(200, vm200);
+        let mut ins200 = VariationMap::new();
+        ins200.map.insert(desc_neg20.clone(), mk_dup_var(10));
+        var_data.insertion_variants.insert(200, ins200);
+
+        // 1. Legacy COMPAT_VARDICTJAVA_1_8_3 preserves upstream #342 & ToVarsBuilder.java:619 behavior verbatim
+        let cfg_legacy = Config::default();
+        let builder_legacy = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_legacy);
+        let aligned_legacy = builder_legacy.build_aligned_variants(&var_data);
+
+        let leg100 = &aligned_legacy.get(&100).unwrap().variants[0];
+        assert!(leg100.var_allele.contains("<dup-42>"));
+        assert_eq!(leg100.start_pos, 100);
+        assert_eq!(leg100.end_pos, 100);
+        assert_eq!(leg100.genotype.as_deref(), Some("+108/+108"));
+
+        let leg140 = &aligned_legacy.get(&140).unwrap().variants[0];
+        assert!(leg140.var_allele.contains("<dup-120>"));
+        assert_eq!(leg140.end_pos, 140);
+
+        let leg180 = &aligned_legacy.get(&180).unwrap().variants[0];
+        assert_eq!(leg180.var_allele, "<DUP>");
+        assert_eq!(leg180.start_pos, 180);
+        assert_eq!(leg180.end_pos, 359);
+        assert_eq!(leg180.genotype.as_deref(), Some("+130/+180"));
+
+        // Legacy -L 50 keeps varallele.len() > sv_min_len BEFORE get_dup_num
+        let cfg_legacy_l50 = Config {
+            sv_min_len: 50,
+            ..Config::default()
+        };
+        let aligned_legacy_l50 =
+            ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_legacy_l50)
+                .build_aligned_variants(&var_data);
+        let leg_l50_180 = &aligned_legacy_l50.get(&180).unwrap().variants[0];
+        assert_eq!(leg_l50_180.var_allele, "<DUP>");
+        assert_eq!(leg_l50_180.end_pos, 288);
+        assert_eq!(leg_l50_180.genotype.as_deref(), Some("+130/+107"));
+
+        // 2. COMPAT_OFF normalizes <dup-N> to <DUP> with positive i64 span (>= 1) and unifies genotype1
+        let mut cfg_off = Config::default();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+        let builder_off = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off);
+        let aligned_off = builder_off.build_aligned_variants(&var_data);
+
+        let off100 = &aligned_off.get(&100).unwrap().variants[0];
+        assert_eq!(off100.ref_allele, "G");
+        assert_eq!(off100.var_allele, "<DUP>");
+        assert_eq!(off100.start_pos, 100);
+        assert_eq!(off100.end_pos, 157);
+        assert_eq!(off100.genotype.as_deref(), Some("+58/+58"));
+
+        let off120 = &aligned_off.get(&120).unwrap().variants[0];
+        assert_eq!(off120.var_allele, "<DUP>");
+        assert_eq!(off120.start_pos, 120);
+        assert_eq!(off120.end_pos, 177);
+        assert_eq!(off120.genotype.as_deref(), Some("G/+58"));
+
+        let off140 = &aligned_off.get(&140).unwrap().variants[0];
+        assert_eq!(off140.ref_allele, "T");
+        assert_eq!(off140.var_allele, "<DUP>");
+        assert_eq!(off140.start_pos, 140);
+        assert_eq!(off140.end_pos, 140);
+        assert_eq!(off140.genotype.as_deref(), Some("+1/+1"));
+
+        let off160 = &aligned_off.get(&160).unwrap().variants;
+        assert_eq!(off160.len(), 2);
+        assert!(off160.iter().all(|v| v.var_allele != "<DUP>"));
+
+        let off180 = &aligned_off.get(&180).unwrap().variants[0];
+        assert_eq!(off180.ref_allele, "G");
+        assert_eq!(off180.var_allele, "<DUP>");
+        assert_eq!(off180.start_pos, 180);
+        assert_eq!(off180.end_pos, 359);
+        assert_eq!(off180.genotype.as_deref(), Some("+180/+180"));
+
+        let off200 = &aligned_off.get(&200).unwrap().variants[0];
+        assert_eq!(off200.ref_allele, "T");
+        assert_eq!(off200.var_allele, "<DUP>");
+        assert_eq!(off200.start_pos, 200);
+        assert_eq!(off200.end_pos, 279);
+        assert_eq!(off200.genotype.as_deref(), Some("+80/+80"));
+
+        // 3. COMPAT_OFF under -L 50 (sv_min_len = 50 <= 110) evaluates get_dup_num_compat BEFORE sv_min_len
+        let cfg_off_l50 = Config {
+            sv_min_len: 50,
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let aligned_off_l50 = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off_l50)
+            .build_aligned_variants(&var_data);
+
+        let l50_180 = &aligned_off_l50.get(&180).unwrap().variants[0];
+        assert_eq!(l50_180.var_allele, "<DUP>");
+        assert_eq!(l50_180.start_pos, 180);
+        assert_eq!(l50_180.end_pos, 359);
+        assert_eq!(l50_180.genotype.as_deref(), Some("+180/+180"));
+
+        let l50_200 = &aligned_off_l50.get(&200).unwrap().variants[0];
+        assert_eq!(l50_200.var_allele, "<DUP>");
+        assert_eq!(l50_200.start_pos, 200);
+        assert_eq!(l50_200.end_pos, 279);
+        assert_eq!(l50_200.genotype.as_deref(), Some("+80/+80"));
+    }
+
+    #[test]
+    fn compat_off_shift3_3prime_alleles_shifts_deletion_and_insertion_and_guards_crispr() {
+        // 1-based positions 10..=15 = G A T A C G, flanked by 'C' everywhere else
+        let mut seq = vec![b'C'; 100];
+        for (offset, base) in [b'G', b'A', b'T', b'A', b'C', b'G'].into_iter().enumerate() {
+            seq[9 + offset] = base;
+        }
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - (cnt / 2);
+            v.qmean = 35.0 * cnt as f64;
+            v.mqmean = 60.0 * cnt as f64;
+            v.pmean = 20.0 * cnt as f64;
+            v
+        };
+
+        // Case A: Dinucleotide insertion "+AT" at pos 10 (10..=14 = G A T A C -> shift3 = 3, 3 % 2 = 1)
+        let mut ins_vd = VariationData::new();
+        ins_vd.ref_coverage.insert(10, 20);
+        let mut vm10 = VariationMap::new();
+        vm10.map.insert("G".to_string(), mk_var(10));
+        ins_vd.non_insertion_variants.insert(10, vm10);
+        let mut ins10 = VariationMap::new();
+        ins10.map.insert("+AT".to_string(), mk_var(10));
+        ins_vd.insertion_variants.insert(10, ins10);
+
+        // Legacy -3 keeps unshifted REF='G' and unrotated ALT="GAT" at shifted start_pos=13 (#292)
+        let mut cfg_leg_3 = Config::default();
+        cfg_leg_3.three_prime = true;
+        let leg_ins_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg_3);
+        let leg_ins = leg_ins_b
+            .build_aligned_variants(&ins_vd)
+            .get(&10)
+            .unwrap()
+            .variants[0]
+            .clone();
+        assert_eq!(leg_ins.shift3, 3);
+        assert_eq!(leg_ins.start_pos, 13);
+        assert_eq!(leg_ins.end_pos, 13);
+        assert_eq!(leg_ins.ref_allele, "G");
+        assert_eq!(leg_ins.var_allele, "GAT");
+
+        // COMPAT_OFF -3 shifts REF to 13:A and rotates "+AT" by 3 % 2 = 1 -> "TA" => ALT="ATA"
+        let mut cfg_off_3 = Config::default();
+        cfg_off_3.three_prime = true;
+        cfg_off_3.compat = crate::config::COMPAT_OFF;
+        let off_ins_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off_3);
+        let off_ins = off_ins_b
+            .build_aligned_variants(&ins_vd)
+            .get(&10)
+            .unwrap()
+            .variants[0]
+            .clone();
+        assert_eq!(off_ins.shift3, 3);
+        assert_eq!(off_ins.start_pos, 13);
+        assert_eq!(off_ins.end_pos, 13);
+        assert_eq!(off_ins.ref_allele, "A");
+        assert_eq!(off_ins.var_allele, "ATA");
+
+        // COMPAT_OFF -3 + CRISPR cut_site = 15 must NOT double-shift past pos 13
+        let mut cfg_off_3_crispr = cfg_off_3.clone();
+        cfg_off_3_crispr.crispr_cutting_site = Some(15);
+        let off_ins_c_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off_3_crispr);
+        let off_ins_c = off_ins_c_b
+            .build_aligned_variants(&ins_vd)
+            .get(&10)
+            .unwrap()
+            .variants[0]
+            .clone();
+        assert_eq!(off_ins_c.start_pos, 13);
+        assert_eq!(off_ins_c.end_pos, 13);
+        assert_eq!(off_ins_c.ref_allele, "A");
+        assert_eq!(off_ins_c.var_allele, "ATA");
+        assert_eq!(off_ins_c.crispr, 0);
+
+        // Case B: Dinucleotide deletion "-2" at pos 11 (10..=15 = G A T A C G -> shift3 = 1)
+        let mut del_vd = VariationData::new();
+        del_vd.ref_coverage.insert(11, 20);
+        let mut vm11 = VariationMap::new();
+        vm11.map.insert("A".to_string(), mk_var(10));
+        vm11.map.insert("-2".to_string(), mk_var(10));
+        del_vd.non_insertion_variants.insert(11, vm11);
+
+        // Legacy -3 shifts start_pos to 11, leaves end_pos=12, REF="GAT", ALT="G" (#292)
+        let leg_del = leg_ins_b
+            .build_aligned_variants(&del_vd)
+            .get(&11)
+            .unwrap()
+            .variants[0]
+            .clone();
+        assert_eq!(leg_del.shift3, 1);
+        assert_eq!(leg_del.start_pos, 11);
+        assert_eq!(leg_del.end_pos, 12);
+        assert_eq!(leg_del.ref_allele, "GAT");
+        assert_eq!(leg_del.var_allele, "G");
+
+        // COMPAT_OFF -3 shifts start_pos=11, end_pos=13, REF="ATA" (matches FASTA 11..=13), ALT="A"
+        let off_del = off_ins_b
+            .build_aligned_variants(&del_vd)
+            .get(&11)
+            .unwrap()
+            .variants[0]
+            .clone();
+        assert_eq!(off_del.shift3, 1);
+        assert_eq!(off_del.start_pos, 11);
+        assert_eq!(off_del.end_pos, 13);
+        assert_eq!(off_del.ref_allele, "ATA");
+        assert_eq!(off_del.var_allele, "A");
+
+        // COMPAT_OFF -3 + CRISPR cut_site = 15 must NOT double-shift past pos 11..=13
+        let off_del_c = off_ins_c_b
+            .build_aligned_variants(&del_vd)
+            .get(&11)
+            .unwrap()
+            .variants[0]
+            .clone();
+        assert_eq!(off_del_c.start_pos, 11);
+        assert_eq!(off_del_c.end_pos, 13);
+        assert_eq!(off_del_c.ref_allele, "ATA");
+        assert_eq!(off_del_c.var_allele, "A");
+        assert_eq!(off_del_c.crispr, 0);
+
+        // Without -3, COMPAT_OFF + CRISPR cut_site = 15 still performs normal CRISPR shift
+        let mut cfg_off_no3_crispr = Config::default();
+        cfg_off_no3_crispr.compat = crate::config::COMPAT_OFF;
+        cfg_off_no3_crispr.crispr_cutting_site = Some(15);
+        let off_no3_c_b =
+            ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off_no3_crispr);
+        let off_del_no3_c = off_no3_c_b
+            .build_aligned_variants(&del_vd)
+            .get(&11)
+            .unwrap()
+            .variants[0]
+            .clone();
+        assert_eq!(off_del_no3_c.start_pos, 11);
+        assert_eq!(off_del_no3_c.end_pos, 13);
+        assert_eq!(off_del_no3_c.ref_allele, "ATA");
+        assert_eq!(off_del_no3_c.var_allele, "A");
+        assert_eq!(off_del_no3_c.crispr, 1);
     }
 }

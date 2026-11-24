@@ -81,11 +81,52 @@ pub fn amplicon_post_process<R: std::borrow::Borrow<Region>>(
         )?;
     }
 
-    if !config.emit_intermediate {
+    if config.compat.strict_region_bounds {
+        amplicon_retain_strict_bounds(&mut results, region, amplicons_on_positions);
+    }
+
+    if !config.emit_intermediate && !config.vcf_all_alleles {
         results = amplicon_select_vcf_rows(results);
     }
 
     Ok(results)
+}
+
+#[inline]
+pub(crate) fn region_target_range_i32(region: &Region) -> (i32, i32) {
+    match region.amplicon.as_ref() {
+        Some(amp) => (
+            i32::try_from(amp.insert_start.0.max(1)).unwrap_or(i32::MAX),
+            i32::try_from(amp.insert_end.0).unwrap_or(i32::MAX),
+        ),
+        None => (
+            i32::try_from(region.start.0.max(1)).unwrap_or(i32::MAX),
+            i32::try_from(region.end.0).unwrap_or(i32::MAX),
+        ),
+    }
+}
+
+/// Filter `results` in-place to the merged 1-based closed amplicon insert bounds of
+/// `amplicons_on_positions` (falling back to `fallback_region` when empty, `#369`, `AR-4`).
+pub fn amplicon_retain_strict_bounds<R: std::borrow::Borrow<Region>>(
+    results: &mut Vec<AmpliconVariant>,
+    fallback_region: &Region,
+    amplicons_on_positions: &BTreeMap<i32, Vec<(usize, R)>>,
+) {
+    let mut seen_amp_idxs = rustc_hash::FxHashSet::default();
+    let mut ranges = Vec::new();
+    for covering in amplicons_on_positions.values() {
+        for (amp_idx, reg) in covering {
+            if seen_amp_idxs.insert(*amp_idx) {
+                ranges.push(region_target_range_i32(reg.borrow()));
+            }
+        }
+    }
+    if ranges.is_empty() {
+        ranges.push(region_target_range_i32(fallback_region));
+    }
+    let merged = crate::merge_i32_intervals(ranges);
+    results.retain(|av| crate::interval_set_contains(&merged, av.variant.start_pos));
 }
 
 /// Active-interval sweep over a segment's insert intervals.
@@ -494,6 +535,9 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                 if let Some(&top_ref) = ref_vars.first() {
                     vref_list.push(top_ref);
                 } else {
+                    if config.compat.suppress_pileup_sentinels {
+                        continue;
+                    }
                     // Output empty variant at this position (AmpliconPostProcessModule.java:105-106,
                     // AmpliconOutputVariant.java:25,27,54-60: new Variant() has genotype="", bias="0;0",
                     // leftseq="", rightseq="").
@@ -2047,5 +2091,157 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_amplicon_vcf_all_alleles_sentinels_and_multi_amplicon_strict_bounds() {
+        use crate::regions::AmpliconInfo;
+        use crate::types::Pos1;
+
+        let mut base_cfg = Config::default();
+        base_cfg.freq = 0.01;
+        base_cfg.min_reads = 2;
+        base_cfg.read_pos = 5.0;
+        base_cfg.base_qual = 22.5;
+        base_cfg.qratio = 1.5;
+        base_cfg.amplicon = Some("10:0.95".to_string());
+
+        let amp0 = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(90),
+            end: Pos1(160),
+            gene: "G1".to_string(),
+            amplicon: Some(AmpliconInfo {
+                insert_start: Pos1(100),
+                insert_end: Pos1(150),
+            }),
+        };
+        let amp1 = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(170),
+            end: Pos1(230),
+            gene: "G1".to_string(),
+            amplicon: Some(AmpliconInfo {
+                insert_start: Pos1(180),
+                insert_end: Pos1(220),
+            }),
+        };
+        let segment = vec![amp0.clone(), amp1.clone()];
+        let splice = rustc_hash::FxHashSet::default();
+
+        let mk_good = |start: i32, end: i32, r: &str, a: &str, af: f64| -> Variant {
+            let mut v = Variant::new();
+            v.start_pos = start;
+            v.end_pos = end;
+            v.ref_allele = r.to_string();
+            v.var_allele = a.to_string();
+            v.description = a.to_string();
+            v.frequency = af;
+            v.hicnt = 10;
+            v.pos_coverage = 10;
+            v.total_pos_cov = 50;
+            v.mean_position = 15.0;
+            v.pstd = true;
+            v.mean_quality = 35.0;
+            v.qstd = true;
+            v.hq_lq_ratio = 3.0;
+            v.mean_mapping_quality = 60.0;
+            v
+        };
+
+        // 1. vcf_all_alleles = true preserves both alleles at pos 120 in VCF mode.
+        let mut vars_amp0 = crate::javamap::JavaHashMap::new();
+        let mut v120 = Vars::new();
+        v120.variants.push(mk_good(120, 120, "A", "G", 0.45));
+        v120.variants.push(mk_good(120, 120, "A", "T", 0.20));
+        vars_amp0.insert(120, v120);
+        // Left-anchored deletion at 99 (outside insert [100, 150]) and shifted indel at 155 (in gap [151, 179])
+        let mut v100 = Vars::new();
+        v100.variants.push(mk_good(99, 100, "CA", "C", 0.35));
+        vars_amp0.insert(100, v100);
+        let mut v150 = Vars::new();
+        v150.variants.push(mk_good(155, 155, "T", "TAA", 0.35));
+        vars_amp0.insert(150, v150);
+
+        let mut vars_amp1 = crate::javamap::JavaHashMap::new();
+        let mut v190 = Vars::new();
+        v190.variants.push(mk_good(190, 190, "C", "A", 0.40));
+        vars_amp1.insert(190, v190);
+        let mut v220 = Vars::new();
+        v220.variants.push(mk_good(225, 225, "G", "GTT", 0.30));
+        vars_amp1.insert(220, v220);
+
+        let vars_per_amp = vec![vars_amp0, vars_amp1];
+        let mut amps_on_pos: BTreeMap<i32, Vec<(usize, &Region)>> = BTreeMap::new();
+        amps_on_pos.insert(100, vec![(0, &amp0)]);
+        amps_on_pos.insert(120, vec![(0, &amp0)]);
+        amps_on_pos.insert(150, vec![(0, &amp0)]);
+        amps_on_pos.insert(190, vec![(1, &amp1)]);
+        amps_on_pos.insert(220, vec![(1, &amp1)]);
+
+        // Pass `amp1` as `region` (mirroring `segment.last()` in `run_amplicon`, AR-4).
+        let single_winner =
+            amplicon_post_process(&base_cfg, &amp1, &vars_per_amp, &amps_on_pos, &splice).unwrap();
+        assert_eq!(
+            single_winner
+                .iter()
+                .filter(|av| av.variant.start_pos == 120)
+                .count(),
+            1
+        );
+
+        let mut all_cfg = base_cfg.clone();
+        all_cfg.vcf_all_alleles = true;
+        let all_out =
+            amplicon_post_process(&all_cfg, &amp1, &vars_per_amp, &amps_on_pos, &splice).unwrap();
+        assert_eq!(
+            all_out
+                .iter()
+                .filter(|av| av.variant.start_pos == 120)
+                .count(),
+            2
+        );
+
+        // 2. strict_region_bounds (#369, AR-4) under COMPAT_OFF:
+        //    Even though `region` is `amp1` ([180, 220]), `amp0`'s insert [100, 150] is ALSO kept
+        //    (pos 120 survives), while out-of-insert shifted positions 99, 155 (in gap), and 225 are dropped!
+        let mut strict_all_cfg = all_cfg.clone();
+        strict_all_cfg.compat = crate::config::COMPAT_OFF;
+        let strict_out =
+            amplicon_post_process(&strict_all_cfg, &amp1, &vars_per_amp, &amps_on_pos, &splice)
+                .unwrap();
+        let strict_starts: Vec<i32> = strict_out.iter().map(|av| av.variant.start_pos).collect();
+        assert_eq!(strict_starts, vec![120, 120, 190]);
+
+        // 3. suppress_pileup_sentinels (UB-2) under COMPAT_OFF:
+        let mut p_vars = vec![
+            crate::javamap::JavaHashMap::new(),
+            crate::javamap::JavaHashMap::new(),
+        ];
+        let mut ref_101 = Vars::new();
+        ref_101.ref_variant = Some(mk_good(101, 101, "G", "G", 1.0));
+        p_vars[0].insert(101, ref_101);
+
+        let mut p_cfg = base_cfg.clone();
+        p_cfg.pileup = true;
+        p_cfg.emit_intermediate = true;
+        p_cfg.compat = crate::config::COMPAT_OFF;
+        let mut p_streamed = Vec::new();
+        amplicon_post_process_streaming(
+            &p_cfg,
+            &amp1,
+            &p_vars,
+            amplicon_position_ref_stream(&segment).filter(|(p, _)| *p == 100 || *p == 101),
+            &splice,
+            &mut |av| {
+                p_streamed.push(av);
+                Ok(())
+            },
+        )
+        .unwrap();
+        // Pos 100 (zero coverage) is suppressed; pos 101 (ref_variant) is emitted.
+        assert_eq!(p_streamed.len(), 1);
+        assert_eq!(p_streamed[0].variant.start_pos, 101);
+        assert!(!p_streamed[0].variant.null_record);
     }
 }

@@ -101,15 +101,16 @@ gh pr comment <bioconda-pr> --repo bioconda/bioconda-recipes --body "All CI chec
 NFCORE_MODULES_DIR=/path/to/nf-core-modules bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z
 python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase post-nfcore
 
-# Once the upstream nf-core/modules PR passes all 23 CI checks (conda, docker, singularity, nf-core lint, pre-commit)
+# Once the upstream nf-core/modules PR passes all CI checks (conda, docker, singularity, nf-core lint, pre-commit)
 # and copilot-pull-request-reviewer[bot] review:
-# 1. Request review from @nf-core/maintainers and @nvnieuwk (vardictjava/vardictrust module reviewer):
-gh api repos/nf-core/modules/pulls/<nfcore-pr>/requested_reviewers -X POST --input - <<< '{"reviewers":["nvnieuwk"],"team_reviewers":["maintainers"]}'
-# 2. Add the "Ready for Review" and "update module" labels:
+# Etiquette rule (per @famosab on nf-core/modules#13830): DO NOT mass-ping @nf-core/maintainers
+# or request "team_reviewers":["maintainers"] on routine nf-core/modules version-bump PRs!
+# 1. Apply the "Ready for Review" and "update module" labels:
 gh api repos/nf-core/modules/issues/<nfcore-pr>/labels -X POST --input - <<< '{"labels":["Ready for Review","update module"]}'
-# 3. Post review-request comment:
-gh pr comment <nfcore-pr> --repo nf-core/modules --body "Hi @nvnieuwk @nf-core/maintainers — all CI checks (docker, singularity, conda, nf-core lint, pre-commit) are green for the vardictrust=X.Y.Z bump. Ready for review!"
-# 4. Once 1 approving review lands, enqueue into the nf-core/modules merge queue:
+# 2. Request review in the nf-core Slack #request-review channel (or request a specific prior module
+#    maintainer such as @nvnieuwk or @SPPearce individually only when appropriate, without @nf-core/maintainers):
+#    e.g. post the PR URL in #request-review on nf-core Slack.
+# 3. Once 1 approving review lands, enqueue into the nf-core/modules merge queue:
 PR_NODE_ID="$(gh api repos/nf-core/modules/pulls/<nfcore-pr> --jq '.node_id')"
 gh api graphql -f query='mutation($id: ID!) { enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { id state position } } }' -f id="$PR_NODE_ID"
 
@@ -126,6 +127,7 @@ bash harness/trigger_rtd.sh build vardictrust latest
 | "I'll bump `Cargo.toml` and `CHANGELOG.md` only, like `v1.0.2` did." | `v1.0.2` left 15 files at `1.0.1` (`crates/vardictrust/Cargo.toml`, `CITATION.cff`, `README.md`, etc.). Always run `bash harness/recertify.sh` and `check_release_consistency.py --version X.Y.Z --phase pre-tag --require-head-fingerprint`. |
 | "I'll compute `meta.yaml`'s SHA-256 from a local `git archive` before pushing the `vX.Y.Z` tag." | GitHub's generated source tarball can differ from local `git archive` metadata. Only run `prepare_bioconda_pr.sh X.Y.Z` in Phase 3A after `vX.Y.Z` is tagged on GitHub. |
 | "I'll run `nf-core modules containers create` as soon as the Bioconda PR merges." | Seqera Wave requires both `linux-64` and `linux-aarch64` packages to be indexed on `anaconda.org`. `prepare_nfcore_pr.sh` verifies both architectures before invoking Wave. |
+| "I'll tag `@nf-core/maintainers` or pass `"team_reviewers":["maintainers"]` on the `nf-core/modules` bump PR." | Per `@famosab` (`nf-core/modules#13830`), never mass-ping `@nf-core/maintainers` on routine module version bumps. Apply the `"Ready for Review"` and `"update module"` labels and post in `nf-core` Slack `#request-review` (or request a prior module maintainer individually without `@nf-core/maintainers`). |
 
 ## Red Flags — STOP Immediately If You Catch Yourself
 

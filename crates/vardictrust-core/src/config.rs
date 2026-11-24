@@ -32,6 +32,107 @@ impl<T> From<T> for VcfThreshold<T> {
     }
 }
 
+/// Compatibility profile selector modeled on `bwa-mem3`'s `--compat` target enum.
+/// Default in `v1.1.x` remains `VardictJava183` (100% VarDictJava v1.8.3 / var2vcf parity).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum CompatTarget {
+    /// Exact VarDictJava v1.8.3 (`0886261`) + `var2vcf_*.pl` (`009e017`) output parity.
+    #[default]
+    VardictJava183,
+    /// Compatibility off: enables bonafide correctness fixes over upstream bugs.
+    Off,
+}
+
+impl std::fmt::Display for CompatTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VardictJava183 => f.write_str("vardictjava"),
+            Self::Off => f.write_str("off"),
+        }
+    }
+}
+
+impl CompatTarget {
+    /// Return the resolved [`CompatProfile`] for this target.
+    #[inline]
+    pub const fn profile(self) -> CompatProfile {
+        match self {
+            Self::VardictJava183 => COMPAT_VARDICTJAVA_1_8_3,
+            Self::Off => COMPAT_OFF,
+        }
+    }
+}
+
+/// Resolved compatibility behavior switches derived from [`CompatTarget`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CompatProfile {
+    pub target: CompatTarget,
+    /// `#116`: Bijective VCF 4.2 percent-encoding on `INFO/SAMPLE=...` (`%`, `;`, `=`, `,`, whitespace/control, `""` -> `-`, `-` -> `%2D`, `.` -> `%2E`).
+    pub sanitize_sample_info: bool,
+    /// `#342`: Normalize `<dup-N>` (`mlen < 100`) to `<DUP>` with non-negative `i64` span (including `-L <= 100`) and unify homozygous `genotype1` `<DUP>` span (`2 * SVFLANK + dup_val`, `ToVarsBuilder.java:619` vs `:700`).
+    pub standard_dup_symbolic_alt: bool,
+    /// `#292`: Shift 3'-moved (`-3`) deletion/insertion `REF`/`ALT` alleles to match shifted coordinates.
+    pub shift3_3prime_alleles: bool,
+    /// `#369`: Restrict emitted variants to merged requested target intervals (`start_pos >= 1`).
+    pub strict_region_bounds: bool,
+    /// `UB-1`/`UB-2`: Suppress `-p` pileup `<R,R>`/`N/N` zero-depth sentinel rows in Simple and Amplicon modes.
+    pub suppress_pileup_sentinels: bool,
+    /// Populate `DUPRATE` from live `u64` `RecordPreprocessor` duplicate/total read counts instead of `0`.
+    pub live_duprate: bool,
+    /// Preserve both unprefixed and `chr`-prefixed sex/mito contigs (`X`+`chrX`, `Y`+`chrY`, `MT`+`chrM`) in VCF output.
+    pub preserve_mixed_sex_contigs: bool,
+}
+
+/// Default VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`).
+pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
+    target: CompatTarget::VardictJava183,
+    sanitize_sample_info: false,
+    standard_dup_symbolic_alt: false,
+    shift3_3prime_alleles: false,
+    strict_region_bounds: false,
+    suppress_pileup_sentinels: false,
+    live_duprate: false,
+    preserve_mixed_sex_contigs: false,
+};
+
+/// Compatibility-off profile (`--compat=off`) enabling bonafide correctness fixes.
+pub const COMPAT_OFF: CompatProfile = CompatProfile {
+    target: CompatTarget::Off,
+    sanitize_sample_info: true,
+    standard_dup_symbolic_alt: true,
+    shift3_3prime_alleles: true,
+    strict_region_bounds: true,
+    suppress_pileup_sentinels: true,
+    live_duprate: true,
+    preserve_mixed_sex_contigs: true,
+};
+
+impl Default for CompatProfile {
+    #[inline]
+    fn default() -> Self {
+        COMPAT_VARDICTJAVA_1_8_3
+    }
+}
+
+/// Parse a `--compat <TARGET>` string into [`CompatTarget`].
+pub fn parse_compat_target(raw: &str) -> Result<CompatTarget, crate::types::VardictError> {
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("vardictjava")
+        || trimmed.eq_ignore_ascii_case("vardictjava-1.8.3")
+        || trimmed == "1.8.3"
+    {
+        Ok(CompatTarget::VardictJava183)
+    } else if trimmed.eq_ignore_ascii_case("off") {
+        Ok(CompatTarget::Off)
+    } else {
+        Err(crate::types::VardictError::Unsupported(format!(
+            "--compat {raw} not supported; expected 'vardictjava' (or 'vardictjava-1.8.3' / '1.8.3') or 'off'"
+        )))
+    }
+}
+
 /// Central configuration struct.
 ///
 /// All VarDictJava defaults from §4.2 are preserved here. Constructed from
@@ -211,6 +312,10 @@ pub struct Config {
     pub vcf_msi: Option<VcfThreshold<f64>>,
     /// Opt-in VCF SNV cluster window in bp (`--vcf-cluster-dist`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -c`).
     pub vcf_cluster_dist: Option<VcfThreshold<i32>>,
+    /// Compatibility profile (`--compat=vardictjava|off`; default: `COMPAT_VARDICTJAVA_1_8_3`).
+    pub compat: CompatProfile,
+    /// Emit all alleles passing filters at the same locus in VCF output (`--vcf-all-alleles` / `--all-alleles`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -A`).
+    pub vcf_all_alleles: bool,
 }
 
 impl Default for Config {
@@ -305,6 +410,8 @@ impl Default for Config {
             vcf_gt_freq: None,
             vcf_msi: None,
             vcf_cluster_dist: None,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            vcf_all_alleles: false,
         }
     }
 }
@@ -839,6 +946,96 @@ mod tests {
         assert_eq!(c.trim_bases_after, 0);
         assert_eq!(c.sample_regexp, None);
         assert!(!c.index_csi);
+        assert_eq!(c.compat, COMPAT_VARDICTJAVA_1_8_3);
+        assert!(!c.vcf_all_alleles);
+    }
+
+    #[test]
+    fn compat_target_and_profile_contract() {
+        assert_eq!(CompatTarget::default(), CompatTarget::VardictJava183);
+        assert_eq!(CompatTarget::VardictJava183.to_string(), "vardictjava");
+        assert_eq!(CompatTarget::Off.to_string(), "off");
+        assert_eq!(
+            CompatTarget::VardictJava183.profile(),
+            COMPAT_VARDICTJAVA_1_8_3
+        );
+        assert_eq!(CompatTarget::Off.profile(), COMPAT_OFF);
+        assert_eq!(CompatProfile::default(), COMPAT_VARDICTJAVA_1_8_3);
+
+        let vj = std::hint::black_box(COMPAT_VARDICTJAVA_1_8_3);
+        assert_eq!(vj.target, CompatTarget::VardictJava183);
+        assert!(!vj.sanitize_sample_info);
+        assert!(!vj.standard_dup_symbolic_alt);
+        assert!(!vj.shift3_3prime_alleles);
+        assert!(!vj.strict_region_bounds);
+        assert!(!vj.suppress_pileup_sentinels);
+        assert!(!vj.live_duprate);
+        assert!(!vj.preserve_mixed_sex_contigs);
+
+        let off = std::hint::black_box(COMPAT_OFF);
+        assert_eq!(off.target, CompatTarget::Off);
+        assert!(off.sanitize_sample_info);
+        assert!(off.standard_dup_symbolic_alt);
+        assert!(off.shift3_3prime_alleles);
+        assert!(off.strict_region_bounds);
+        assert!(off.suppress_pileup_sentinels);
+        assert!(off.live_duprate);
+        assert!(off.preserve_mixed_sex_contigs);
+
+        for valid_vj in [
+            "vardictjava",
+            "VARDICTJAVA",
+            "vardictjava-1.8.3",
+            "VarDictJava-1.8.3",
+            "1.8.3",
+            " vardictjava ",
+        ] {
+            assert_eq!(
+                parse_compat_target(valid_vj).unwrap(),
+                CompatTarget::VardictJava183,
+                "expected VardictJava183 for {valid_vj:?}"
+            );
+        }
+        for valid_off in ["off", "OFF", " off ", "\toff\n"] {
+            assert_eq!(
+                parse_compat_target(valid_off).unwrap(),
+                CompatTarget::Off,
+                "expected Off for {valid_off:?}"
+            );
+        }
+        for bad in ["modern", "foo", "", "-G"] {
+            let err = parse_compat_target(bad).expect_err("expected Unsupported for bad compat");
+            assert!(
+                matches!(err, crate::types::VardictError::Unsupported(_)),
+                "expected VardictError::Unsupported for {bad:?}, got {err:?}"
+            );
+            let expected_msg = format!(
+                "--compat {bad} not supported; expected 'vardictjava' (or 'vardictjava-1.8.3' / '1.8.3') or 'off'"
+            );
+            assert_eq!(err.to_string(), format!("unsupported: {expected_msg}"));
+        }
+
+        // Cross-module Wave-1/Wave-2 contract checks
+        assert_eq!(
+            crate::output::vcf::reorder_chromosomes_with_compat(&["chrX", "X", "chr1"], false),
+            crate::output::vcf::perl_reorder_chromosomes(&["chrX", "X", "chr1"])
+        );
+        assert_eq!(
+            crate::output::vcf::reorder_chromosomes_with_compat(&["chrX", "X", "chr1"], true),
+            vec!["chr1", "X", "chrX"]
+        );
+        let reference = crate::reference::Reference::new();
+        let region = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(10),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+        let cfg = Config::default();
+        let mut parser =
+            crate::cigar::parse::CigarParser::new(&reference, &region, &cfg, false, 0, 0, 0);
+        parser.set_live_read_counts(100, 5);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 **Authors:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/)<sup>1,*</sup>  
 <sup>1</sup>Independent Researcher ([palakpsheth@gmail.com](mailto:palakpsheth@gmail.com) | [https://www.linkedin.com/in/palak-p-sheth/](https://www.linkedin.com/in/palak-p-sheth/))  
 **Cloud Study Engine Baseline:** `VarDictRust` `v{{m:version}}` (commit `{{m:commit}}`, engine fingerprint `{{m:fingerprint}}`, performance fingerprint `{{m:perf_fingerprint}}`)  
-**Current Consolidated Release:** `VarDictRust` `v{{m:current_release_version}}` (engine fingerprint `{{m:current_release_fingerprint}}`, performance fingerprint `{{m:current_perf_fingerprint}}`; `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups, `{{m:workspace_test_count}}` Cargo workspace tests + `{{m:harness_self_test_count}}` harness self-tests)  
+**Latest Certified Release & Workspace Snapshot:** Certified parity release `VarDictRust` `v{{m:current_release_version}}` (engine fingerprint `{{m:current_release_fingerprint}}`, performance fingerprint `{{m:current_perf_fingerprint}}`); repository workspace exposes `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups and `{{m:workspace_test_count}}` Cargo workspace tests + `{{m:harness_self_test_count}}` harness self-tests  
 **Reference Oracles:** `{{m:oracle_version}}` and `{{m:cpp_version}}`  
 **Cloud Benchmark Host:** `{{m:host}}` (`{{m:nvme_raid0_tb}}` TB NVMe RAID0 scratch; exploratory staging also verified on `c3d-standard-32`)
 
@@ -25,7 +25,7 @@
 
 3. **Supplementary Note 2: Twelve-Point Technical Audit of `vardictcpp` Divergences (`CPP-1` through `CPP-12`)**
 
-4. **Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--fix` Governance**
+4. **Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--compat=vardictjava|off` Governance**
 
 5. **Supplementary Tables (`Supplementary Table S1` – `Supplementary Table S6`) and Complete 60-Cell Verification Ledger**
 
@@ -222,7 +222,7 @@ Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, 
 
 ---
 
-## 4. Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--fix` Governance
+## 4. Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--compat=vardictjava|off` Governance
 
 ### 4.1 Exact Clopper-Pearson Binomial Confidence Intervals
 
@@ -245,8 +245,8 @@ with $p_{\text{lo} } = 0$ when $k = 0$ and $p_{\text{hi} } = 1$ when $k = n$:
 
 Across the $N = 12$ AML sample-by-thread cells (`s2_tierp_v2_*`, `n = 3` technical replicates each), we report the mean. Replicate range is min–max (`Supplementary Table S3`). Comparing `VarDictRust` against `VarDictJava` across $N = 12$ gives two-sided Mann-Whitney $U = {{m:s2_tierp_mwu_wall_u}}$ ($p = {{m:s2_tierp_mwu_wall_p}}$) for wall time. For peak RSS, $U = {{m:s2_tierp_mwu_rss_u}}$ ($p = {{m:s2_tierp_mwu_rss_p}}$). An exact paired sign-flip permutation test gives $p = 2^{-12} = {{m:s2_tierp_sign_perm_p}}$.
 
-### 4.3 Release Governance: `v1.0.x` Parity Consolidation (`v{{m:version}}` to `v{{m:current_release_version}}`) Versus `v1.1+` Opt-In `--fix` Flags
-All `v1.0.x` releases (`v{{m:version}}` cloud benchmark baseline through `v{{m:current_release_version}}`, certified under engine fingerprint `{{m:current_release_fingerprint}}`) enforce strict oracle parity on valid inputs. Subsequent `v1.0.7`–`v{{m:current_release_version}}` releases consolidated all `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups (including `var2vcf` post-filtering, multithreaded BGZF `--output`, and `--tbi`/`--csi` indexing), OpenJDK 8 `TreeNode` Red-Black treeification in `JavaHashMap`, `{{m:vcf_spill_cap_mib}}` MiB `SpillableVcfAccumulator` VCF disk spilling, singleflight `{{m:cram_container_cap_mib}}` MiB Illumina CRAM container caching with two-slot `CRAM_META_TLS` and `SeekWindowReader` validation, pre-validated `.bai`/`.csi` index bounds (`{{m:max_bai_cap_mib}}`/`{{m:max_csi_cap_mib}}` MiB), `{{m:workspace_test_count}}` Cargo workspace tests (`{{m:core_lib_test_count}}` core library unit tests), `{{m:harness_self_test_count}}` harness diagnostic self-tests, and in-process `cargo-fuzz` targets without altering valid-input variant calls. Output-changing upstream fixes (`#92` `VD > DP`, `#62` over-filtering, `#292` `SHIFT3`, `#342` `<dup-N>` symbolic alleles, and `eqx-read-length` `=`/`X` CIGAR accounting for `minimap2 --eqx` / `pbmm2` alignments) remain gated behind opt-in `--fix <id>` flags starting in `v1.1.0` (`--modern`, followed by `v2.0` `--preset hifi|ont`), while parity-restoring fixes (`splice-tile-ownership`, `mate-window-ownership`) ship as verified defaults.
+### 4.3 Release Governance: Default Parity Consolidation (`v{{m:version}}` to `v{{m:current_release_version}}`) Versus `v1.1+` Opt-In `--compat=off`
+All default invocations (`--compat=vardictjava` / `--parity`) from the `v{{m:version}}` cloud benchmark baseline through certified release `v{{m:current_release_version}}` (engine fingerprint `{{m:current_release_fingerprint}}`) enforce strict oracle parity on valid inputs. Building on certified `v{{m:current_release_version}}` toward `v1.1`, the repository workspace consolidates all `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups (including `var2vcf` post-filtering, `--vcf-all-alleles` / `--all-alleles`, opt-in `--compat=off`, multithreaded BGZF `--output`, and `--tbi`/`--csi` indexing), OpenJDK 8 `TreeNode` Red-Black treeification in `JavaHashMap`, `{{m:vcf_spill_cap_mib}}` MiB `SpillableVcfAccumulator` VCF disk spilling, singleflight `{{m:cram_container_cap_mib}}` MiB Illumina CRAM container caching with two-slot `CRAM_META_TLS` and `SeekWindowReader` validation, pre-validated `.bai`/`.csi` index bounds (`{{m:max_bai_cap_mib}}`/`{{m:max_csi_cap_mib}}` MiB), `{{m:workspace_test_count}}` Cargo workspace tests (`{{m:core_lib_test_count}}` core library unit tests), `{{m:harness_self_test_count}}` harness diagnostic self-tests, and in-process `cargo-fuzz` targets without altering default valid-input variant calls. Output-changing upstream fixes (including `#116` `INFO/SAMPLE` percent-encoding, `#342` `<DUP>` symbolic alleles, `#292` `SHIFT3` 3'-shifted alleles, `#369` target-region bounds, `UB-1`/`UB-2` `-p` pileup sentinels, live `DUPRATE` accounting, mixed sex/mitochondrial contig preservation, and prospective `#92` `VD > DP`, `#62` over-filtering, and `eqx-read-length` `=`/`X` CIGAR accounting for `minimap2 --eqx` / `pbmm2` alignments) ship behind opt-in `--compat=off` (`CompatProfile`, stamping `##VarDictRustCompat=off` in VCF headers without per-bug `--fix` CLI flag sprawl; followed by `v2.0` `--preset hifi|ont`), while parity-restoring fixes (`splice-tile-ownership`, `mate-window-ownership`) ship as verified defaults.
 
 ---
 

@@ -125,6 +125,7 @@ pub struct CigarParser<'a> {
     pub discordant_count: i32,
     pub total_reads: i32,
     pub duplicate_reads: i32,
+    live_read_counts: Option<(u64, u64)>,
     /// Per-read scratch buffers reused across [`CigarParser::parse_cigar`]
     /// calls (zero per-read allocation after warmup). Never read across
     /// calls: refilled from each record before use.
@@ -313,6 +314,7 @@ impl<'a> CigarParser<'a> {
             discordant_count: 0,
             total_reads,
             duplicate_reads,
+            live_read_counts: None,
             scratch_seq: Vec::new(),
             scratch_qual: Vec::new(),
             scratch_cigar_str: String::new(),
@@ -325,6 +327,13 @@ impl<'a> CigarParser<'a> {
             scratch_f4_seg1: String::new(),
             scratch_f4_seg2: Vec::new(),
         }
+    }
+
+    /// Record live `(total_reads, duplicate_reads)` `u64` counts from `RecordPreprocessor`
+    /// for `COMPAT_OFF` `DUPRATE` computation.
+    #[inline]
+    pub(crate) fn set_live_read_counts(&mut self, total_reads: u64, duplicate_reads: u64) {
+        self.live_read_counts = Some((total_reads, duplicate_reads));
     }
 
     #[inline]
@@ -2976,25 +2985,43 @@ impl<'a> CigarParser<'a> {
     /// production pipeline and `duprate` always evaluates to `0.0`.
     pub fn into_variation_data(mut self) -> VariationData {
         self.finish_ref_coverage();
-        let duprate = if self.svflag {
-            if (i64::from(self.discordant_count) + 1) as f64
-                / (i64::from(self.total_reads) - i64::from(self.duplicate_reads) + 1) as f64
-                > 0.5
-            {
-                0.0
-            } else {
-                1.0
+        let duprate = match (self.config.compat.live_duprate, self.live_read_counts) {
+            (true, Some((live_total, live_dup))) => {
+                if self.svflag {
+                    if (i64::from(self.discordant_count) + 1) as f64
+                        / ((live_total.saturating_sub(live_dup)) as f64 + 1.0)
+                        > 0.5
+                    {
+                        0.0
+                    } else {
+                        1.0
+                    }
+                } else if self.config.dedup && live_total != 0 {
+                    crate::types::round_half_even(live_dup as f64 / live_total as f64, 3)
+                } else {
+                    0.0
+                }
             }
-        } else {
-            if self.config.dedup && self.total_reads != 0 {
-                format!(
-                    "{:.3}",
-                    self.duplicate_reads as f64 / self.total_reads as f64
-                )
-                .parse::<f64>()
-                .unwrap_or(0.0)
-            } else {
-                0.0
+            _ => {
+                if self.svflag {
+                    if (i64::from(self.discordant_count) + 1) as f64
+                        / (i64::from(self.total_reads) - i64::from(self.duplicate_reads) + 1) as f64
+                        > 0.5
+                    {
+                        0.0
+                    } else {
+                        1.0
+                    }
+                } else if self.config.dedup && self.total_reads != 0 {
+                    format!(
+                        "{:.3}",
+                        self.duplicate_reads as f64 / self.total_reads as f64
+                    )
+                    .parse::<f64>()
+                    .unwrap_or(0.0)
+                } else {
+                    0.0
+                }
             }
         };
 
@@ -8033,5 +8060,68 @@ mod tests {
         let mut c = base.clone();
         c.realign = 0;
         c
+    }
+
+    #[test]
+    fn compat_off_live_duprate_uses_u64_counts_with_half_even_rounding_and_preserves_legacy() {
+        let reference = Reference::new();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+
+        // 1. Default COMPAT_VARDICTJAVA_1_8_3 ignores set_live_read_counts (stays 0.0 when total_reads == 0)
+        let mut cfg_legacy = Config::default();
+        cfg_legacy.dedup = true;
+        let mut p_legacy = CigarParser::new(&reference, &region, &cfg_legacy, false, 0, 0, 100);
+        p_legacy.set_live_read_counts(3_000_000_000, 375_000_000);
+        assert_eq!(p_legacy.into_variation_data().duprate, 0.0);
+
+        // 2. COMPAT_OFF + dedup = true with u64 counts > i32::MAX computes exact 0.125
+        let mut cfg_off = Config::default();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+        cfg_off.dedup = true;
+        let mut p_wgs = CigarParser::new(&reference, &region, &cfg_off, false, 0, 0, 100);
+        p_wgs.set_live_read_counts(3_000_000_000, 375_000_000);
+        assert_eq!(p_wgs.into_variation_data().duprate, 0.125);
+
+        // 3. Half-even 3dp banker's rounding midpoints:
+        //    125 / 2000 = 0.0625 -> 0.062 (even), 375 / 2000 = 0.1875 -> 0.188 (even)
+        let mut p_even_down = CigarParser::new(&reference, &region, &cfg_off, false, 0, 0, 100);
+        p_even_down.set_live_read_counts(2_000, 125);
+        assert_eq!(p_even_down.into_variation_data().duprate, 0.062);
+
+        let mut p_even_up = CigarParser::new(&reference, &region, &cfg_off, false, 0, 0, 100);
+        p_even_up.set_live_read_counts(2_000, 375);
+        assert_eq!(p_even_up.into_variation_data().duprate, 0.188);
+
+        // 4. COMPAT_OFF with dedup = false or live_total == 0 yields 0.0; unset live_read_counts falls back
+        let mut cfg_off_nodedup = cfg_off.clone();
+        cfg_off_nodedup.dedup = false;
+        let mut p_nodedup =
+            CigarParser::new(&reference, &region, &cfg_off_nodedup, false, 0, 0, 100);
+        p_nodedup.set_live_read_counts(2_000, 500);
+        assert_eq!(p_nodedup.into_variation_data().duprate, 0.0);
+
+        let mut p_zero = CigarParser::new(&reference, &region, &cfg_off, false, 0, 0, 100);
+        p_zero.set_live_read_counts(0, 0);
+        assert_eq!(p_zero.into_variation_data().duprate, 0.0);
+
+        let p_unset = CigarParser::new(&reference, &region, &cfg_off, false, 1_000, 250, 100);
+        assert_eq!(p_unset.into_variation_data().duprate, 0.25);
+
+        // 5. COMPAT_OFF svflag = true uses live_read_counts for discordant ratio threshold
+        let mut p_sv_high_disc = CigarParser::new(&reference, &region, &cfg_off, true, 0, 0, 100);
+        p_sv_high_disc.discordant_count = 60;
+        p_sv_high_disc.set_live_read_counts(100, 10); // (60+1)/(90+1) = 61/91 > 0.5 -> 0.0
+        assert_eq!(p_sv_high_disc.into_variation_data().duprate, 0.0);
+
+        let mut p_sv_low_disc = CigarParser::new(&reference, &region, &cfg_off, true, 0, 0, 100);
+        p_sv_low_disc.discordant_count = 10;
+        p_sv_low_disc.set_live_read_counts(100, 10); // (10+1)/(90+1) = 11/91 <= 0.5 -> 1.0
+        assert_eq!(p_sv_low_disc.into_variation_data().duprate, 1.0);
     }
 }

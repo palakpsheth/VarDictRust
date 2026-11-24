@@ -25,9 +25,9 @@ Verified Parity Baseline (release/v1.0.10, commit a504e85):
 - Scaling Budget:     PASS (3.20x speedup, 1.34x flat RSS scaling across 249 Mbp chromosome 1)
 - Final Acceptance:   8/8 PASS under release engine fingerprint `2d82664ff81000f7`
 
-Current Workspace Test Suite (main / pre-v1.0.11):
-- Core Library Tests: 500 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
-- Total Workspace:    706 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
+Current Workspace Test Suite (main / pre-v1.1.0):
+- Core Library Tests: 512 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    723 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>

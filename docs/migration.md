@@ -111,7 +111,7 @@ When migrating custom downstream scripts that consume raw `.var` tables instead 
 
 ## 2. `var2vcf_valid.pl` & `var2vcf_paired.pl` Flag Rosetta Stone
 
-Because `vardictrust` fuses [`VarDictJava`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/CmdParser.java) and the Perl [`var2vcf_valid.pl`](https://github.com/AstraZeneca-NGS/VarDict/blob/009e017/var2vcf_valid.pl) / [`var2vcf_paired.pl`](https://github.com/AstraZeneca-NGS/VarDict/blob/009e017/var2vcf_paired.pl) post-filters into one CLI, Perl single-letter flags that collided with Java flags (`-S`, `-E`, `-M`, `-P`, `-T`, `-d`, `-v`, `-q`, `-Q`, `-p`, `-o`, `-m`, `-F`, `-I`, `-c`) map to explicit `--vcf-*` / long flags in Group 2 (`VCF Post-Filtering (var2vcf)`):
+Because `vardictrust` fuses [`VarDictJava`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/CmdParser.java) and the Perl [`var2vcf_valid.pl`](https://github.com/AstraZeneca-NGS/VarDict/blob/009e017/var2vcf_valid.pl) / [`var2vcf_paired.pl`](https://github.com/AstraZeneca-NGS/VarDict/blob/009e017/var2vcf_paired.pl) post-filters into one CLI, Perl single-letter flags that collided with Java flags (`-A`, `-S`, `-E`, `-M`, `-P`, `-T`, `-d`, `-v`, `-q`, `-Q`, `-p`, `-o`, `-m`, `-F`, `-I`, `-c`) map to explicit `--vcf-*` / long flags in Group 2 (`VCF Post-Filtering (var2vcf)`):
 
 | Legacy Perl Flag (`var2vcf_valid.pl` / `var2vcf_paired.pl`) | `vardictrust` Flag | Single-Sample Default (`valid`) | Paired Somatic Default (`paired`) | Notes & Exact Parity Semantics |
 | :--- | :--- | :--- | :--- | :--- |
@@ -133,7 +133,7 @@ Because `vardictrust` fuses [`VarDictJava`](https://github.com/AstraZeneca-NGS/V
 | `-F <FLOAT>` | `--vcf-gt-freq <FLOAT>` | `0.2` | `0.2` | Homozygous `1/1` genotype margin (`1 - AF < FLOAT`). |
 | `-I <FLOAT>` | `--vcf-msi <FLOAT>` | `12` | `12` | Maximum non-monomer microsatellite repeat count (`MSI`) before `MSI<FLOAT>` filter. |
 | `-c <INT>` | `--vcf-cluster-dist <INT>` | `0` (disabled) | `0` (disabled) | Adjacent variant cluster window in bp (`Cluster<INT>bp` filter across single-sample, amplicon, and paired somatic streams). |
-| `-A` (`var2vcf_valid.pl` all-alleles) | *Deferred to `v1.1.0` `--all-alleles`* | Single-winner (`UB-7`) | Single-winner (`UB-7`) | **Important:** `-A <INT>` on `vardictrust` is `VarDictJava`'s `sv_min_af` (`[default: 4]`), **not** `var2vcf_valid.pl -A`! Multi-allelic emission (`UB-7`) is tracked for `v1.1.0` (`--modern` / `--all-alleles`; see [`ROADMAP.md`](../ROADMAP.md)). |
+| `-A` (`var2vcf_valid.pl` / `var2vcf_paired.pl` all-alleles) | `--vcf-all-alleles` (alias: `--all-alleles`) | `Single-winner` (`1` row per `POS`) | `Single-winner` (`1` row per `POS`) | Default `Single-winner` (`1` row per `POS`, `UB-7`); passing `--vcf-all-alleles` (`--all-alleles`) emits all distinct `(chr, start, end, ref, alt)` alleles at each position sorted by 4dp `AF` descending (`var2vcf_valid.pl:137` / `var2vcf_paired.pl:129`). **Important:** `-A <INT>` on `vardictrust` remains `VarDictJava`'s `sv_min_af` (`[default: 4]`), **not** `var2vcf_*.pl -A`. |
 
 Additional `var2vcf_*.pl` migration nuances when translating legacy shell wrappers:
 
@@ -168,7 +168,7 @@ Following [`RegionBuilder.java`](https://github.com/AstraZeneca-NGS/VarDictJava/
 ### 3. Single-Dash Legacy Java Flags vs GNU `--` Flags
 
 - **Accepted with one or two dashes (`VarDictJava` Commons-CLI compatibility):** `-th` / `--threads`, `-UN` / `--UN`, `-fisher` / `--fisher`, `-chimeric` / `--chimeric`, `-deldupvar` / `--deldupvar`, `-nosv` / `--nosv`, `-splice` / `--splice`, `-header` / `--header`, `-dedup` / `--dedup`, `-debug` / `--debug`, `-verbose` / `--verbose`, `-amplicon` / `--amplicon`, `-DP` / `--DP` / `--default-printer`, `-adaptor` / `--adaptor`, `-mfreq` / `--mfreq`, `-nmfreq` / `--nmfreq`, `-insert-size` / `--insert-size`, `-insert-std` / `--insert-std`, `-ref-extension` / `--ref-extension`, `-crispr` / `--crispr`, `-trim` / `--trim`, and `-VS` / `--VS`.
-- **Require double-dash `--` (`vardictrust`-native flags):** `--output`, `--tbi` (`--index`), `--csi`, `--stats-json`, `--parity`, `--compat`, `--emit-intermediate`, `--tile-size`, `--completions`, `--manpage`, `--no-end`, `--pass-only`, `--paired-strict`, `--min-splitreads`, `--no-pstd-filter`, and `--vcf-*`. Passing a single-dash typo (for example `-pass-only` or `-completions`) fails fast with `Unknown single-dash option '-pass-only'; did you mean '--pass-only'?` rather than being misinterpreted as a short-flag cluster.
+- **Require double-dash `--` (`vardictrust`-native flags):** `--output`, `--tbi` (`--index`), `--csi`, `--stats-json`, `--parity`, `--compat`, `--emit-intermediate`, `--tile-size`, `--completions`, `--manpage`, `--no-end`, `--pass-only`, `--paired-strict`, `--vcf-all-alleles` (`--all-alleles`), `--min-splitreads`, `--no-pstd-filter`, and `--vcf-*`. Passing a single-dash typo (for example `-pass-only`, `-vcf-all-alleles`, `-all-alleles`, or `-completions`) fails fast with `Unknown single-dash option '-pass-only'; did you mean '--pass-only'?` rather than being misinterpreted as a short-flag cluster.
 
 ### 4. Default Thread Count (`-th` / `RAYON_NUM_THREADS`)
 
@@ -184,7 +184,9 @@ Following [`RegionBuilder.java`](https://github.com/AstraZeneca-NGS/VarDictJava/
 - **BGZF-Compressed Reference FASTA & BED (`v1.0.8+`):** Pass `-G ref.fa.gz` when indexed with `bgzip` + `samtools faidx ref.fa.gz` (`.fai` + `.gzi` present; plain non-BGZF `gzip` FASTAs fail fast with a `bgzip` + `samtools faidx` remediation hint), and pass `.bed.gz`, `.bed.bgz`, or process-substitution FIFOs (`<(zcat targets.bed.gz)`) directly as the positional `BED` input.
 - **Direct BGZF + Tabix/CSI Output & Stream Safety:** Use `--output variants.vcf.gz --tbi` (or `--csi` when contigs exceed `512 Mbp`) for atomic staged file output with `fsync` verification, or `--output -` / `/dev/stdout` in streaming container pipelines.
 - **Run Telemetry (`--stats-json <PATH>`):** Emit structured JSON metrics (`mode`, `threads`, `regions`, `tiles`, `elapsed_ms`, `peak_rss_kb`) alongside variant calling.
-- **Forward-Compatible Parity Pinning (`--parity`):** Pass `--parity` (or `--compat vardictjava-1.8.3`) in production workflows to lock 100% `VarDictJava` v1.8.3 parity across both `v1.x` and future `v2.0+` releases.
+- **Compatibility Profiles (`--compat=vardictjava` vs `--compat=off`):**
+  - **`--compat=vardictjava` (default in `v1.x`; aliases: `vardictjava-1.8.3`, `1.8.3`, or `--parity`):** Locks 100% byte-for-byte `VarDictJava` v1.8.3 + `var2vcf_*.pl` parity across `v1.x` and future `v2.0+` releases.
+  - **`--compat=off` (`v1.1.0+`):** Activates `VarDictRust`'s `CompatProfile` (`COMPAT_OFF`) correctness fixes without per-bug `--fix` flag sprawl and stamps `##VarDictRustCompat=off` in VCF headers (`#116` bijective `INFO/SAMPLE` percent-encoding, `#342` standard `<DUP>` symbolic `ALT` when `mlen < 100`, `#292` FASTA-valid 3'-shifted `REF`/`ALT` alleles, `#369` strict merged-interval target bounds, `UB-1`/`UB-2` `-p` pileup sentinel suppression, live `u64` `DUPRATE` accounting, and mixed `X`+`chrX` / `Y`+`chrY` / `MT`+`chrM` contig preservation; see [`ROADMAP.md`](../ROADMAP.md)). Combining `--parity` with `--compat=off` (or `--compat=vardictjava` with `--compat=off`) fails fast with `VardictError::Parse`.
 - **Shell Completions & Manual Page (`v1.0.8+`):**
   ```bash
   # Generate shell completions (installed automatically in Bioconda environments):

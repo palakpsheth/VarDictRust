@@ -124,6 +124,14 @@ fn dispatch_somatic_position(
     }
 }
 
+#[inline]
+fn single_somatic_region_bounds_i32(region: &Region) -> [(i32, i32); 1] {
+    [(
+        i32::try_from(region.start.0.max(1)).unwrap_or(i32::MAX),
+        i32::try_from(region.end.0).unwrap_or(i32::MAX),
+    )]
+}
+
 /// Performs somatic analysis of variants from both samples (BAM1 and BAM2)
 /// using a single-position combine callback [`PositionPipelineFn`].
 ///
@@ -168,13 +176,46 @@ pub fn somatic_post_process_at(
         );
     }
 
+    if config.compat.strict_region_bounds {
+        let single_bounds = single_somatic_region_bounds_i32(region);
+        results.retain(|sv| crate::interval_set_contains(&single_bounds, sv.variant1.start_pos));
+    }
+
     results
 }
 
 /// Owned fast-path counterpart of [`somatic_post_process_at`], extracting per-position
 /// [`Vars`] via `get_mut(&position).map(std::mem::take)` to move [`Variant`] and SV
 /// strings without cloning on hot somatic paths.
+#[cfg(test)]
 pub(crate) fn somatic_post_process_owned(
+    config: &Config,
+    region: &Region,
+    aligned_variants_bam1: JavaHashMap<i32, Vars>,
+    aligned_variants_bam2: JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    pipeline: Option<&PositionPipelineFn<'_>>,
+    max_read_length: i32,
+) -> Vec<SomaticVariant> {
+    let single_bounds = single_somatic_region_bounds_i32(region);
+    somatic_post_process_owned_with_bounds(
+        config,
+        region,
+        aligned_variants_bam1,
+        aligned_variants_bam2,
+        splice,
+        pipeline,
+        max_read_length,
+        config
+            .compat
+            .strict_region_bounds
+            .then_some(single_bounds.as_slice()),
+    )
+}
+
+/// Owned fast-path counterpart of [`somatic_post_process_at`] using pre-merged chromosome
+/// target intervals when `strict_bounds` is supplied (`#369`, `AR-4`).
+pub(crate) fn somatic_post_process_owned_with_bounds(
     config: &Config,
     region: &Region,
     mut aligned_variants_bam1: JavaHashMap<i32, Vars>,
@@ -182,6 +223,7 @@ pub(crate) fn somatic_post_process_owned(
     splice: &rustc_hash::FxHashSet<String>,
     pipeline: Option<&PositionPipelineFn<'_>>,
     max_read_length: i32,
+    strict_bounds: Option<&[(i32, i32)]>,
 ) -> Vec<SomaticVariant> {
     let mut results = Vec::new();
     let mut splice: std::borrow::Cow<'_, rustc_hash::FxHashSet<String>> =
@@ -209,6 +251,12 @@ pub(crate) fn somatic_post_process_owned(
             pipeline,
             &mut max_read_length,
         );
+    }
+
+    if let Some(merged_bounds) = strict_bounds {
+        results.retain(|sv| crate::interval_set_contains(merged_bounds, sv.variant1.start_pos));
+    } else if config.compat.strict_region_bounds {
+        results.retain(|sv| sv.variant1.start_pos >= 1);
     }
 
     results
@@ -2847,5 +2895,69 @@ mod tests {
             100,
         );
         assert_somatic_eq(&owned_som, &borrowed_som);
+    }
+
+    #[test]
+    fn test_somatic_strict_region_bounds_compat_off() {
+        use crate::types::Pos1;
+
+        let mut cfg = Config::default();
+        cfg.freq = 0.01;
+        cfg.min_reads = 2;
+        cfg.read_pos = 5.0;
+        cfg.base_qual = 22.5;
+        cfg.qratio = 1.5;
+
+        let reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let empty_splice = rustc_hash::FxHashSet::default();
+
+        let mut bam1 = JavaHashMap::new();
+        let bam2 = JavaHashMap::new();
+
+        // Pileup key 100 (inside reg), but left-anchored deletion start_pos = 99 (< reg.start)
+        let mut v_left = Vars::new();
+        let mut del_99 = make_good_variant("-1", "CA", "C", 0.40);
+        del_99.start_pos = 99;
+        del_99.end_pos = 100;
+        v_left.variants.push(del_99);
+        bam1.insert(100, v_left);
+
+        // Pileup key 150 (inside reg), SNV at 150
+        let mut v_in = Vars::new();
+        let mut snv_150 = make_good_variant("G", "A", "G", 0.45);
+        snv_150.start_pos = 150;
+        snv_150.end_pos = 150;
+        v_in.variants.push(snv_150);
+        bam1.insert(150, v_in);
+
+        // Pileup key 200 (inside reg), right-shifted indel at 204 (> reg.end)
+        let mut v_right = Vars::new();
+        let mut ins_204 = make_good_variant("+TT", "G", "GTT", 0.35);
+        ins_204.start_pos = 204;
+        ins_204.end_pos = 204;
+        v_right.variants.push(ins_204);
+        bam1.insert(200, v_right);
+
+        let compat_default =
+            somatic_post_process_at(&cfg, &reg, &bam1, &bam2, &empty_splice, None, 100);
+        assert_eq!(compat_default.len(), 3);
+
+        let mut strict_cfg = cfg.clone();
+        strict_cfg.compat = crate::config::COMPAT_OFF;
+        let strict_borrowed =
+            somatic_post_process_at(&strict_cfg, &reg, &bam1, &bam2, &empty_splice, None, 100);
+        assert_eq!(strict_borrowed.len(), 1);
+        assert_eq!(strict_borrowed[0].variant1.start_pos, 150);
+
+        let strict_owned =
+            somatic_post_process_owned(&strict_cfg, &reg, bam1, bam2, &empty_splice, None, 100);
+        assert_eq!(strict_owned.len(), 1);
+        assert_eq!(strict_owned[0].variant1.start_pos, 150);
     }
 }
