@@ -209,7 +209,11 @@ fuzz_target!(|data: &[u8]| {
             quality_scores: quals,
             nm: Some(i32::from(chunk[2] % 12)),
             mate_reference_name: Some("=".to_string()),
-            mate_alignment_start: Some(Pos1(base_start.max(10))),
+            mate_alignment_start: Some(Pos1(if (extra_bits & 128) != 0 {
+                base_start.max(10)
+            } else {
+                u32::from(chunk[2] % 9).saturating_add(1)
+            })),
             template_length: i32::from(chunk[3] as i8) * 10,
             ..SamRecord::default()
         };

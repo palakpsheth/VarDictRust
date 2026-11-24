@@ -159,7 +159,13 @@ pub(crate) fn round_half_even_reference_compat(
 }
 
 #[inline]
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retained pub(crate) reference helper per spec; exercised in unit tests"
+    )
+)]
 pub(crate) fn round_half_even_reference(value: f64, digits: i32) -> f64 {
     round_half_even_reference_compat(value, digits, false)
 }

@@ -89,14 +89,18 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // Pass 2: Matched-query-length valid SAM CIGARs (`[M, I, D, N, S, H, P]`, `len >= 1`).
-    let sam_ops = [b'M', b'I', b'D', b'N', b'S', b'H', b'P'];
+    // Pass 2: Matched-query-length valid SAM CIGARs (`[M, I, D, N, S, H, P]` + `[=, X]` when `eqx_cigar_read_length`, `len >= 1`).
+    let sam_ops: &[u8] = if config.compat.eqx_cigar_read_length {
+        &[b'M', b'I', b'D', b'N', b'S', b'H', b'P', b'=', b'X']
+    } else {
+        &[b'M', b'I', b'D', b'N', b'S', b'H', b'P']
+    };
     let mut valid_cigar = String::new();
     let mut qlen: usize = 0;
     for chunk in payload[2 * third..].chunks(2).take(12) {
         let len = usize::from(chunk[0] % 80).max(1);
         let op_byte = sam_ops[(chunk.get(1).copied().unwrap_or(0) as usize) % sam_ops.len()];
-        let consumes_query = matches!(op_byte, b'M' | b'I' | b'S');
+        let consumes_query = matches!(op_byte, b'M' | b'I' | b'S' | b'=' | b'X');
         if consumes_query {
             if qlen.saturating_add(len) > 4096 {
                 break;

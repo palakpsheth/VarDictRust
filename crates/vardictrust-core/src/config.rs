@@ -91,7 +91,7 @@ pub struct CompatProfile {
     pub preserve_discordant_svs: bool,
     /// `UB-6`: Pass pre-decrement cluster end `mark_pe` to `mark_dup_sv` in `svfdup` when `tbp != 0 && tbp < pe`.
     pub mark_dup_sv_inclusive_end: bool,
-    /// `sv-lazy-mate-pileup`: Gate `find_inv_sub_paths` mate-window loads on local soft-clip presence (`>= 12 bp`) and defer `partial_pipeline_paths` until `find_match_rev` + gap validation succeed (`sv.rs:1320`).
+    /// `sv-lazy-mate-pileup`: Gate `find_inv_sub_paths` mate-window loads on local soft-clip presence (`>= 12 bp`) and defer `partial_pipeline_paths` until `find_match_rev` + gap validation succeed (`sv.rs` `find_inv_sub_paths` / `StructuralVariantsProcessor.java:627-628`).
     pub sv_lazy_mate_pileup: bool,
     /// `rounding-underflow-tie`: Bypass OpenJDK `DecimalFormat` `DigitList` underflow truncation (`±5e-{4,5,6,9}`) so exact binary IEEE-754 `f64` values round to `±10^-d`.
     pub exact_binary_half_even: bool,

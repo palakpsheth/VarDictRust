@@ -6001,5 +6001,158 @@ mod vcf_all_alleles_and_compat_off {
                 && tie_off_line.contains(":0.0001:"),
             "COMPAT_OFF 1/20000 (5e-5) .vcf must emit AF=0.0001, HIAF=0.0001, and FORMAT AF=0.0001, got: {tie_off_line}"
         );
+
+        // =========================================================================
+        // (e) Discordant-Only <INV> (`SPLITREAD=0`) in >= 100x Wild-Type Mate Window:
+        //     True Mate-Window DP (`DP=120`, NOT fabricated `2 * cnt`!) + Tiled == Untiled
+        // =========================================================================
+        let inv_disc_len = 12_000usize;
+        let inv_disc_seq = lcg_ref_bytes(0xD15C_1470_0120_BEEF, inv_disc_len);
+        let inv_disc_fa = write_multi_contig_fasta(
+            dir.path(),
+            "wave2_inv_disc_deep",
+            &[("chr1", &inv_disc_seq)],
+        );
+        let inv_disc_bam = dir.path().join("wave2_inv_disc_deep.bam");
+        let mut inv_disc_recs = Vec::new();
+        // 120 wild-type 50M reads covering 200..=239 (bp = midpoint(me=240, rms=200) = 220 -> true DP = 120!)
+        for k in 0..120usize {
+            let s = 190 + (k % 10);
+            inv_disc_recs.push(mk_contig_rec(
+                &format!("inv_disc_mate_wt_{k}"),
+                0,
+                if k % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(50, Kind::Match)],
+                inv_disc_seq[s - 1..s - 1 + 50].to_vec(),
+                vec![40; 50],
+                None,
+            ));
+        }
+        // Local wild-type coverage in SEG_DOWN around 9850..9910
+        for k in 0..10usize {
+            let s = 9855 + (k % 5);
+            inv_disc_recs.push(mk_contig_rec(
+                &format!("inv_disc_local_wt_{k}"),
+                0,
+                if k % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(50, Kind::Match)],
+                inv_disc_seq[s - 1..s - 1 + 50].to_vec(),
+                vec![40; 50],
+                None,
+            ));
+        }
+        // Pure 50M discordant inversion pairs (`SPLITREAD=0`) at 9850..9910 (overlapped by BOTH
+        // Tile 0 [9000..9999] and Tile 1 [10000..10999]'s halo under `--tile-size 1000`):
+        // 8 FF reads (svfinv3: mstart=190, mend=240) + 6 RR reads (svrinv3: mstart=200, mend=250)
+        for k in 0..8usize {
+            inv_disc_recs.push(mk_contig_rec(
+                &format!("inv_disc_ff_{k}"),
+                0,
+                Flags::SEGMENTED,
+                9850,
+                &[(50, Kind::Match)],
+                inv_disc_seq[9849..9899].to_vec(),
+                vec![40; 50],
+                Some((0, 190, -9660)),
+            ));
+        }
+        for k in 0..6usize {
+            inv_disc_recs.push(mk_contig_rec(
+                &format!("inv_disc_rr_{k}"),
+                0,
+                Flags::SEGMENTED | Flags::REVERSE_COMPLEMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                9860,
+                &[(50, Kind::Match)],
+                inv_disc_seq[9859..9909].to_vec(),
+                vec![40; 50],
+                Some((0, 200, -9660)),
+            ));
+        }
+        write_multi_contig_bam(&inv_disc_bam, &[("chr1", inv_disc_len)], inv_disc_recs)
+            .expect("wave2_inv_disc_deep.bam");
+
+        let inv_disc_bed = dir.path().join("wave2_inv_disc_deep.bed");
+        fs::write(
+            &inv_disc_bed,
+            "chr1\t99\t350\tSEG_UP\nchr1\t8999\t11500\tSEG_DOWN\n",
+        )
+        .expect("write wave2_inv_disc_deep.bed");
+        let inv_disc_vj_cfg = Config {
+            reference: inv_disc_fa.to_string_lossy().into_owned(),
+            bam: inv_disc_bam.to_string_lossy().into_owned(),
+            sample: "INVDISC_S".to_string(),
+            sample_explicit: true,
+            bed: Some(inv_disc_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            deldupvar: false,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        assert!(
+            extract_variants(&run_via_core_run(&inv_disc_vj_cfg, "inv_disc_vj", false)).is_empty(),
+            "COMPAT_VARDICTJAVA_1_8_3 must drop SPLITREAD=0 <INV> in VCF"
+        );
+
+        let mut inv_disc_off_cfg = inv_disc_vj_cfg.clone();
+        inv_disc_off_cfg.compat = COMPAT_OFF;
+        let inv_disc_var_u = run_via_core_run(&inv_disc_off_cfg, "inv_disc_off_u", true);
+        let inv_disc_vcf_u = run_via_core_run(&inv_disc_off_cfg, "inv_disc_off_u", false);
+        let inv_disc_vars_u = extract_variants(&inv_disc_vcf_u);
+        assert_eq!(
+            inv_disc_vars_u.len(),
+            1,
+            "COMPAT_OFF must emit exactly 1 discordant-only <INV> in VCF, got:\n{inv_disc_vcf_u}"
+        );
+        assert!(
+            inv_disc_vars_u[0].contains("\t<INV>\t")
+                && inv_disc_vars_u[0].contains(";DP=120;")
+                && inv_disc_vars_u[0].contains(";VD=14;")
+                && inv_disc_vars_u[0].contains(";SPLITREAD=0;SPANPAIR=8\t"),
+            "COMPAT_OFF <INV> must report true mate-window DP=120 (NOT fabricated 2*cnt=16!) with SPLITREAD=0;SPANPAIR=8, got:\n{}",
+            inv_disc_vars_u[0]
+        );
+
+        let mut inv_disc_tiled_cfg = inv_disc_off_cfg.clone();
+        inv_disc_tiled_cfg.tile_size = Some(1_000);
+        inv_disc_tiled_cfg.threads = 4;
+        let inv_disc_var_t = run_via_core_run(&inv_disc_tiled_cfg, "inv_disc_off_t1000", true);
+        let inv_disc_vcf_t = run_via_core_run(&inv_disc_tiled_cfg, "inv_disc_off_t1000", false);
+        assert_eq!(
+            inv_disc_var_t, inv_disc_var_u,
+            "COMPAT_OFF discordant-only <INV> .var must match byte-for-byte across tiled and untiled runs"
+        );
+        assert_eq!(
+            inv_disc_vcf_t, inv_disc_vcf_u,
+            "COMPAT_OFF discordant-only <INV> .vcf must match byte-for-byte across tiled and untiled runs"
+        );
+
+        let mut inv_disc_exp_cfg = inv_disc_off_cfg.clone();
+        inv_disc_exp_cfg.vcf_min_splitreads_explicit = true;
+        assert!(
+            extract_variants(&run_via_core_run(&inv_disc_exp_cfg, "inv_disc_exp1", false))
+                .is_empty(),
+            "vcf_min_splitreads_explicit=true must drop SPLITREAD=0 <INV> again under COMPAT_OFF"
+        );
     }
 }

@@ -739,14 +739,8 @@ pub(crate) fn push_java_rounded_compat(
 /// Push `Utils.getRoundedValueToPrint` directly into `buf` without a temp `String`.
 /// Used by all `--fisher` `.var` writers (`SimpleOutputVariant` 38-col,
 /// `AmpliconOutputVariant` 40-col, `SomaticOutputVariant` 61-col).
+#[cfg(test)]
 #[inline]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "default compat=vardictjava wrapper retained alongside push_java_rounded_compat"
-    )
-)]
 pub(crate) fn push_java_rounded(buf: &mut String, value: f64, digits: i32) {
     push_java_rounded_compat(buf, value, digits, false);
 }
@@ -774,14 +768,8 @@ pub(crate) fn push_keep_compat(
 /// Keep-mode float cell: HALF_EVEN at `digits` decimals with trailing zeros
 /// kept (`"0"` when zero). Ports the `DecimalFormat("0.0000"/"0.0"/"0.000")`
 /// cells of the no-`--fisher` writers.
+#[cfg(test)]
 #[inline]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "default compat=vardictjava wrapper retained alongside push_keep_compat"
-    )
-)]
 pub(crate) fn push_keep(buf: &mut String, v: f64, digits: i32) {
     push_keep_compat(buf, v, digits, false);
 }
@@ -817,14 +805,8 @@ pub(crate) fn push_stripped_compat(
 /// Strip-mode float cell for R `write.table` / Perl `var2vcf_*.pl` VCF output:
 /// HALF_EVEN at `digits` decimals with trailing zeros AND trailing decimal point
 /// stripped (`"0"` when rounded == 0, integers without a dot).
+#[cfg(test)]
 #[inline]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "default compat=vardictjava wrapper retained alongside push_stripped_compat"
-    )
-)]
 pub(crate) fn push_stripped(buf: &mut String, value: f64, digits: i32) {
     push_stripped_compat(buf, value, digits, false);
 }
@@ -839,14 +821,8 @@ pub(crate) fn push_nm_compat(buf: &mut String, v: f64, exact_binary_half_even: b
 }
 
 /// NM cell: keep-mode 1dp when positive, `"0"` otherwise (matches `fmt_nm`).
+#[cfg(test)]
 #[inline]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "default compat=vardictjava wrapper retained alongside push_nm_compat"
-    )
-)]
 pub(crate) fn push_nm(buf: &mut String, v: f64) {
     push_nm_compat(buf, v, false);
 }
