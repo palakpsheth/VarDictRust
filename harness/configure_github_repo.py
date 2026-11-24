@@ -18,6 +18,24 @@ TAG_RULESET_ID = 24867690
 TAG_RULESET_NAME = "tag-protection-v*"
 TAG_REF_PATTERN = "refs/tags/v*"
 
+REPO_DESCRIPTION = "Fast, memory-safe Rust somatic & germline variant caller: drop-in VarDictJava v1.8.3 parity by default plus opt-in --compat=off accuracy & scale fixes"
+REPO_TOPICS = [
+    "bam",
+    "bioinformatics",
+    "cancer-genomics",
+    "cram",
+    "genomics",
+    "germline",
+    "ngs",
+    "rewrites-bio",
+    "rust",
+    "somatic",
+    "structural-variants",
+    "variant-caller",
+    "vcf",
+    "wgs",
+]
+
 
 def get_token():
     token = os.environ.get("GITHUB_TOKEN")
@@ -54,7 +72,7 @@ def api_request(endpoint, method="GET", data=None):
 def configure_metadata(dry_run=False):
     print("[1/6] Configuring repository metadata and settings...")
     payload = {
-        "description": "Fast, memory-safe, idiomatic Rust rewrite of VarDictJava v1.8.3 for deep NGS variant calling",
+        "description": REPO_DESCRIPTION,
         "homepage": "https://vardictrust.readthedocs.io/",
         "has_issues": True,
         "has_projects": False,
@@ -80,16 +98,7 @@ def configure_metadata(dry_run=False):
 
 def configure_topics(dry_run=False):
     print("[2/6] Configuring repository topics...")
-    topics = [
-        "bioinformatics",
-        "genomics",
-        "variant-caller",
-        "ngs",
-        "somatic",
-        "rust",
-        "cancer-genomics",
-        "rewrites-bio",
-    ]
+    topics = list(REPO_TOPICS)
     payload = {"names": topics}
     if dry_run:
         print(f"  [DRY-RUN] PUT {API_BASE}/topics ({len(topics)} topics)")

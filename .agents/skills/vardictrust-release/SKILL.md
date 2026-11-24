@@ -14,7 +14,7 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
 4. **Nextflow (`nf-core/modules`):** `vardictrust` module (`packaging/nf-core/modules/vardictrust/`) with multi-arch Wave Singularity/Docker containers built from Bioconda (`bioconda::vardictrust` + `bioconda::htslib`).
 5. **ReadTheDocs (`vardictrust.readthedocs.io`):** Strictly built Zensical site (`zensical.toml` + `harness/prepare_docs_site.py` + `harness/trigger_rtd.sh`).
 
-**Core principle:** Zero version drift across all 19 version-bearing files (`references/version-surface-map.md`) and zero fake SHA-256s or evidence edits (`AGENTS.md` §0b).
+**Core principle:** Zero version drift across all 20 version-bearing files (`references/version-surface-map.md`) and zero fake SHA-256s or evidence edits (`AGENTS.md` §0b).
 
 ---
 
@@ -22,11 +22,11 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
 
 | Phase | Branch / Context | Validator Flag | Key Deliverables & Upstream Dependency |
 | :--- | :--- | :--- | :--- |
-| **Phase 1 (`pre-tag`)** | `release/vX.Y.Z` PR $\to$ `main` | `--phase pre-tag --require-head-fingerprint` | Bump 17 pre-tag version surfaces, author `docs/release/vX.Y.Z-pr.md`, run `bash harness/recertify.sh` (refreshing all 16 `benchmarks/evidence/*.json` files + `sync_evidence_docs.py` + `acceptance.sh` 8/8) + `pr_check.sh` (6/6), squash-merge to `main`. |
+| **Phase 1 (`pre-tag`)** | `release/vX.Y.Z` PR $\to$ `main` | `--phase pre-tag --require-head-fingerprint` | Bump 18 pre-tag version surfaces (including `.github/SECURITY.md` `X.Y.x` when `major.minor` advances), author `docs/release/vX.Y.Z-pr.md`, run `bash harness/recertify.sh` (refreshing all 16 `benchmarks/evidence/*.json` files + `sync_evidence_docs.py` + `acceptance.sh` 8/8) + `pr_check.sh` (6/6), squash-merge to `main`. |
 | **Phase 2 (`post-tag`)** | Annotated tag `vX.Y.Z` on `main` | `--phase post-tag` | Push `vX.Y.Z` tag $\to$ `.github/workflows/release.yml` publishes GitHub Release + SLSA provenance + Crates.io (`vardictrust-core`, `vardictrust`). |
 | **Phase 3A (`post-bioconda`)** | Post-GitHub tarball `vX.Y.Z.tar.gz` | `--phase post-bioconda` | Run `bash packaging/bioconda/prepare_bioconda_pr.sh X.Y.Z` + `bash harness/test_bioconda_recipe.sh`, sync `meta.yaml` to `VarDictRust` `main` (`chore/bioconda-vX.Y.Z`), open PR on `bioconda/bioconda-recipes`. |
 | **Phase 3B (`post-nfcore`)** | Post-Anaconda `linux-64` + `linux-aarch64` upload | `--phase post-nfcore` | Once `api.anaconda.org/package/bioconda/vardictrust` lists both `linux-64` and `linux-aarch64` tarballs for `X.Y.Z`, run `bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z`, sync `packaging/nf-core/`, and push to `nf-core/modules`. |
-| **Phase 3C (`docs`)** | Post-merge on `main` | `--phase post-nfcore` | Trigger `bash harness/trigger_rtd.sh build vardictrust latest`. |
+| **Phase 3C (`docs` & portals)** | Post-merge on `main` | `--phase post-nfcore` | Trigger `bash harness/trigger_rtd.sh build vardictrust latest` and verify ReadTheDocs project metadata + ELIXIR `bio.tools` (`biotools:vardictrust`). |
 
 ---
 
@@ -34,17 +34,17 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
 
 ### Phase 1: Pre-Tag Release Branch & PR (`--phase pre-tag`)
 1. Create branch `git checkout -b release/vX.Y.Z origin/main`.
-2. Update all 17 pre-tag files listed in [`references/version-surface-map.md`](references/version-surface-map.md) and run `cargo update -w`.
+2. Update all 18 pre-tag files listed in [`references/version-surface-map.md`](references/version-surface-map.md) (updating `.github/SECURITY.md` Supported Versions to `X.Y.x` `:white_check_mark:` whenever `major.minor` changes) and run `cargo update -w`.
 3. Create `docs/release/vX.Y.Z-pr.md` and add a superseded note at the top of the prior `docs/release/v*-pr.md`.
-4. Commit the version surfaces (`git commit -m "release: prepare VarDictRust vX.Y.Z"`, zero `Co-Authored-By` trailers), then run `bash harness/recertify.sh` to refresh all 15 non-scale `benchmarks/evidence/*.json` files to the release `FP`, auto-sync `omnibus-empirical-validation.md` / `DIVERGENCES.md` / `test-matrix-and-ci-audit.md` / `benchmarks/README.md` / `docs/release/vX.Y.Z-pr.md` via `python3 harness/sync_evidence_docs.py`, re-compile `paper/` manuscript artifacts via `python3 paper/build_manuscript.py`, and verify the full gate suite:
+4. Commit the version surfaces (`git commit -m "release: prepare VarDictRust vX.Y.Z"`, zero `Co-Authored-By` trailers), then run `bash harness/recertify.sh` to refresh all 15 non-scale `benchmarks/evidence/*.json` files to the release `FP`, auto-sync `README.md` / `omnibus-empirical-validation.md` / `DIVERGENCES.md` / `test-matrix-and-ci-audit.md` / `benchmarks/README.md` / `docs/ecosystem-survey.md` / `docs/release/vX.Y.Z-pr.md` / `version-surface-map.md` via `python3 harness/sync_evidence_docs.py`, re-compile `paper/` manuscript artifacts via `python3 paper/build_manuscript.py`, and verify the full gate suite:
    ```bash
    # 1. Recertify all 15 non-scale evidence JSONs + sync documentation SHA-256/FP tables + rebuild paper/ + run acceptance.sh (8/8)
    bash harness/recertify.sh
    python3 paper/build_manuscript.py
-   git add benchmarks/evidence/ docs/ DIVERGENCES.md benchmarks/README.md paper/
+   git add benchmarks/evidence/ README.md docs/ DIVERGENCES.md benchmarks/README.md .agents/skills/vardictrust-release/references/version-surface-map.md paper/
    git commit --amend --no-edit
 
-   # 2. Run bundled consistency checker across all 17 pre-tag surfaces + 16 evidence JSONs + live HEAD fingerprint
+   # 2. Run bundled consistency checker across all 18 pre-tag surfaces + 16 evidence JSONs + live HEAD fingerprint
    python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py \
      --version X.Y.Z --phase pre-tag --require-head-fingerprint
 
@@ -114,8 +114,10 @@ gh api repos/nf-core/modules/issues/<nfcore-pr>/labels -X POST --input - <<< '{"
 PR_NODE_ID="$(gh api repos/nf-core/modules/pulls/<nfcore-pr> --jq '.node_id')"
 gh api graphql -f query='mutation($id: ID!) { enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { id state position } } }' -f id="$PR_NODE_ID"
 
-# Trigger ReadTheDocs latest build:
+# Trigger ReadTheDocs latest build and sync external registry metadata:
 bash harness/trigger_rtd.sh build vardictrust latest
+# Verify ReadTheDocs admin project metadata (description & project_url) at https://app.readthedocs.org/projects/vardictrust/
+# and update ELIXIR bio.tools (https://bio.tools/vardictrust) version X.Y.Z, SPDX license, and dual-mode description.
 ```
 
 ---
@@ -133,4 +135,4 @@ bash harness/trigger_rtd.sh build vardictrust latest
 
 - Pushing `vX.Y.Z` tag before the `release/vX.Y.Z` PR has been squash-merged to `main`.
 - Running `cargo publish -p vardictrust --dry-run` before `vardictrust-core = X.Y.Z` is published on `crates.io` (use `cargo publish -p vardictrust-core --dry-run && cargo package --list -p vardictrust` in Phase 1).
-- Editing `packaging/bioconda/recipes/vardictrust/meta.yaml` or `packaging/nf-core/modules/vardictrust/tests/main.nf.test.snap` by hand instead of via `prepare_bioconda_pr.sh` and `prepare_nfcore_pr.sh`.
+- Editing `version`, `sha256`, or `build.number` in `packaging/bioconda/recipes/vardictrust/meta.yaml` or container/snapshot pins in `packaging/nf-core/modules/vardictrust/tests/main.nf.test.snap` by hand at release time instead of via `prepare_bioconda_pr.sh` and `prepare_nfcore_pr.sh`.

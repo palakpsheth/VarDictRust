@@ -1,16 +1,27 @@
-//! VarDictRust core engine library.
+//! VarDictRust core variant-calling engine library.
 //!
-//! An idiomatic Rust rewrite of VarDictJava v1.8.3 — a sensitive somatic and
-//! germline variant caller for next-generation sequencing data.
+//! Consolidates the three-stage VarDictJava v1.8.3 (`0886261`) + R (`teststrandbias.R` /
+//! `testsomatic.R`) + Perl (`var2vcf_valid.pl` / `var2vcf_paired.pl`, submodule `009e017`)
+//! somatic and germline NGS variant-calling pipeline into a single, bounded-memory Rust engine
+//! supporting Simple (single-sample), Paired Somatic, Amplicon, and RNA-seq Splicing modes.
+//! The binary crate (`vardictrust`) provides the CLI front-end over [`config::Config`].
 //!
-//! This crate contains all variant-calling logic. The binary crate
-//! (`vardictrust`) provides the command-line interface.
+//! # Compatibility & Modes
+//! - **Default parity (`--compat=vardictjava`):** [`config::COMPAT_VARDICTJAVA_1_8_3`]
+//!   ([`config::CompatTarget::VardictJava183`]) reproduces VarDictJava v1.8.3 + `var2vcf_*.pl`
+//!   intermediate `.var` and `VCFv4.2` output across valid inputs.
+//! - **Opt-in corrections (`--compat=off`):** [`config::COMPAT_OFF`]
+//!   ([`config::CompatTarget::Off`]) enables all 13 [`config::CompatProfile`] accuracy,
+//!   bounded-scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `=`/`X` (`--eqx`) CIGAR fixes
+//!   and stamps `##VarDictRustCompat=off` in the VCF header; full 18/18 `var2vcf` post-filtering
+//!   (including multi-allelic emission via `Config::vcf_all_alleles` / `--vcf-all-alleles`) works
+//!   under both profiles.
 //!
 //! # Safety
 //! This crate forbids unsafe code: `#![forbid(unsafe_code)]`.
 //!
 //! # Reference
-//! Validated against VarDictJava v1.8.3 (commit `0886261`).
+//! Validated against VarDictJava v1.8.3 (commit `0886261`; Perl/R submodule `009e017`).
 
 #![forbid(unsafe_code)]
 #![cfg_attr(
@@ -11354,7 +11365,7 @@ mod tests {
             ..base_cfg.clone()
         })
         .is_err());
-        // AGENTS.md §5 parity: ',', '>', ';', and '=' in sample MUST remain allowed in v1.0.x!
+        // AGENTS.md §5 parity: ',', '>', ';', and '=' in sample MUST remain allowed in --compat=vardictjava (percent-encoded in INFO/SAMPLE under --compat=off, #116)!
         assert!(resolve_effective_config(&crate::config::Config {
             sample: "patient1,rep2>armA".to_string(),
             sample_explicit: true,

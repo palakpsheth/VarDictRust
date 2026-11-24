@@ -479,6 +479,13 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     migration_text = read_text(repo_root, "docs/migration.md", errors)
     if migration_text and "var2vcf_valid.pl" not in migration_text:
         errors.append("docs/migration.md: missing var2vcf_valid.pl migration table")
+    require_regex(
+        repo_root,
+        "docs/migration.md",
+        r"--compat=off",
+        "docs/migration.md documents --compat=off profile",
+        errors,
+    )
     zensical_text = read_text(repo_root, "zensical.toml", errors)
     if zensical_text:
         nav_entries = parse_zensical_nav_entries(zensical_text)
@@ -589,6 +596,30 @@ def check_divergences_surface(
         "DIVERGENCES.md stale fingerprint/test name/speedup/RSS/commit",
         errors,
     )
+
+
+def check_security_policy_surface(
+    repo_root: Path, version: str, errors: list[str]
+) -> None:
+    major, minor, _ = version.split(".")
+    require_regex(
+        repo_root,
+        ".github/SECURITY.md",
+        rf"^\|\s*\*\*`{re.escape(major)}\.{re.escape(minor)}\.x`\*\*\s*\|\s*:white_check_mark:",
+        f".github/SECURITY.md Supported Versions marks {major}.{minor}.x active (:white_check_mark:)",
+        errors,
+    )
+    sec_text = read_text(repo_root, ".github/SECURITY.md", errors)
+    if sec_text:
+        active_rows = re.findall(
+            r"^\|\s*[^|\n]+\|\s*:white_check_mark:",
+            sec_text,
+            re.MULTILINE,
+        )
+        if len(active_rows) != 1:
+            errors.append(
+                f".github/SECURITY.md: expected exactly 1 active :white_check_mark: row ({major}.{minor}.x), found {len(active_rows)}"
+            )
 
 
 def check_pre_tag_surfaces(
@@ -1008,6 +1039,9 @@ def check_pre_tag_surfaces(
         errors,
     )
 
+    # 18 (surface 18). .github/SECURITY.md Supported Versions SemVer branch
+    check_security_policy_surface(repo_root, version, errors)
+
     # 18. CLI 90-flag / 7-group & Migration Guide surfaces
     check_cli_and_migration_surfaces(repo_root, errors)
 
@@ -1376,7 +1410,7 @@ def main() -> int:
     parser.add_argument(
         "--version",
         default=None,
-        help="Target SemVer (e.g. 1.0.7); defaults to [workspace.package].version in Cargo.toml",
+        help="Target SemVer (e.g. 1.1.0); defaults to [workspace.package].version in Cargo.toml",
     )
     parser.add_argument(
         "--phase",

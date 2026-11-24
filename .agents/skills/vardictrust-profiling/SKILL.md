@@ -9,7 +9,7 @@ description: Use when profiling VarDictRust CPU hotspots, jemalloc heap residenc
 
 VarDictRust includes an opt-in, zero-default-overhead profiling subsystem in `crates/vardictrust/src/profile.rs` (`profile::Session::start()` + `Drop`) backed by three Cargo features (`profile-cpu`, `profile-heap`, `profile-dhat`), activated via `VARDICT_PROFILE_*` environment variables, and orchestrated by `harness/profile.sh` and `harness/profile_catalog.py`.
 
-**Core principle:** Scale optimizations must never alter variant output or violate the no-panic rule (`AGENTS.md` §§8–10). Every optimization must be guided by empirical flamegraph/heap/DHAT data and validated against VarDictJava v1.8.3 (`bash harness/rgate.sh` and `bash harness/compare.sh`).
+**Core principle:** Scale optimizations in default parity mode (`--compat=vardictjava` / `--parity`) must never alter variant output or violate the no-panic rule (`AGENTS.md` §§8–10), while output-affecting scaling fixes (such as `sv_lazy_mate_pileup`) stay gated under `--compat=off`. Every optimization must be guided by empirical flamegraph/heap/DHAT data and validated against VarDictJava v1.8.3 (`bash harness/rgate.sh` and `bash harness/compare.sh`).
 
 ---
 

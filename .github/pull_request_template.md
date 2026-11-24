@@ -2,7 +2,8 @@
 <!-- Provide a clear, concise description of changes, motivation, and references to tracking issues. -->
 
 ## Type of Change
-- [ ] Bug fix (non-breaking change restoring upstream parity or robustness)
+- [ ] Bug fix (non-breaking change restoring default `--compat=vardictjava` upstream parity or crash robustness)
+- [ ] `CompatProfile` / opt-in feature (`v1.1+` `--compat=off` switch with diff-confinement test or opt-in CLI capability)
 - [ ] Performance optimization (scaling or memory footprint improvement)
 - [ ] Test harness / benchmarking expansion
 - [ ] Documentation update
@@ -25,7 +26,7 @@ Docs/infra-only PRs whose diff touches none of `*.rs`, `Cargo.toml`/`Cargo.lock`
 - [ ] **Unit & Workspace Tests ([Level 1](../docs/testing/test-matrix-and-ci-audit.md#level-1)):** `cargo test --workspace` passes with zero failures.
 - [ ] **Integration Corpus ([Level 2 / Tier-1](../docs/testing/test-matrix-and-ci-audit.md#level-2)):** `harness/run_integration.sh` reports `PASS: 91  XFAIL: 1  FAIL: 0  SKIP: 0  XPASS: 0` (UB-4 upstream fixture defect; 100% live oracle parity).
 - [ ] **Crash Robustness Suite ([Level 2](../docs/testing/test-matrix-and-ci-audit.md#level-2)):** `cargo test -p vardictrust --test robustness` passes (Hostile CIGAR [PR #402](https://github.com/AstraZeneca-NGS/VarDictJava/pull/402), missing BAI [#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
-- [ ] **Differential Parity ([Level 3 / Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2)):** `harness/compare.sh` and `pr_check.sh` Stage 4 (`micro`, `s1a..s9`, `run_extended_coverage.sh --no-record`, `run_multimodal_slices.sh --no-record`) executed with 0 diffs ($\varepsilon \le 10^{-6}$).
+- [ ] **Differential Parity ([Level 3 / Tier-2](../docs/testing/test-matrix-and-ci-audit.md#tier-2)):** `harness/compare.sh` and `pr_check.sh` Stage 4 (`micro`, `s1a..s9`, `run_extended_coverage.sh --no-record`, `run_multimodal_slices.sh --no-record`) executed with 0 diffs ($\varepsilon \le 10^{-6}$) in default `--compat=vardictjava` mode (plus targeted `--compat=off` diff-confinement tests in `engine_behavior` / `robustness` when modifying `CompatProfile` paths).
 - [ ] **Release Recertification ([AGENTS.md §15 Item 4](../AGENTS.md#15-definition-of-done-every-change)):** If this is a release branch (`release/vX.Y.Z`) or milestone certification PR, run `bash harness/recertify.sh` and `bash harness/acceptance.sh` (`N/A — deferred to release cut per two-tier testing policy` on normal feature/fix PRs).
 
 ---

@@ -2,7 +2,7 @@
 
 `vardictrust` consolidates the three-stage [`VarDictJava` v1.8.3](https://github.com/AstraZeneca-NGS/VarDictJava/tree/0886261) + [`VarDict` R/Perl](https://github.com/AstraZeneca-NGS/VarDict/tree/009e017) pipeline (`VarDictJava` $\to$ `teststrandbias.R` / `testsomatic.R` $\to$ `var2vcf_valid.pl` / `var2vcf_paired.pl`) into a **single statically-compiled binary** with zero JVM, R, or Perl runtime dependencies.
 
-On valid inputs, `vardictrust` produces VCF 4.2 (`VCFv4.2`) and intermediate `.var` output **byte-for-byte identical** (within floating-point tolerance $\varepsilon \le 10^{-6}$ after R 5-decimal banker's rounding) to `VarDictJava` v1.8.3 (`0886261`) + `VarDict` (`009e017`). See [`DIVERGENCES.md`](../DIVERGENCES.md) and [`docs/validation/omnibus-empirical-validation.md`](validation/omnibus-empirical-validation.md) for empirical parity receipts.
+By default (`--compat=vardictjava`, aliases `vardictjava-1.8.3` / `1.8.3`, or `--parity`), `vardictrust` produces VCF 4.2 (`VCFv4.2`) and intermediate `.var` output **byte-for-byte identical** on valid inputs (within floating-point tolerance $\varepsilon \le 10^{-6}$ after R 5-decimal banker's rounding) to `VarDictJava` v1.8.3 (`0886261`) + `VarDict` (`009e017`), while offering opt-in `--compat=off` (`13` `CompatProfile` correctness switches in `v1.1.0+`) and `--vcf-all-alleles` (`var2vcf_*.pl -A` multi-allelic emission). See [`DIVERGENCES.md`](../DIVERGENCES.md), [`ROADMAP.md`](../ROADMAP.md), and [`docs/validation/omnibus-empirical-validation.md`](validation/omnibus-empirical-validation.md) for empirical parity and diff-confinement receipts.
 
 ---
 
@@ -121,7 +121,7 @@ Because `vardictrust` fuses [`VarDictJava`](https://github.com/AstraZeneca-NGS/V
 | `-M` (`var2vcf_paired.pl` only) | `--paired-strict` | N/A | Off (germline rescue on) | Disables germline/LOH rescue and restricts paired output to strict somatic candidates (`var2vcf_paired.pl -M`). |
 | `-P <FLOAT>` (`var2vcf_paired.pl`) | `--vcf-pval <FLOAT>` | N/A | `0.05` | Maximum somatic Fisher p-value (`SSF`) threshold and `P<FLOAT>` `FILTER` tag in paired VCF output. |
 | `-P 0` (`var2vcf_valid.pl`) | `--no-pstd-filter` | Filter `PSTD=0` on | N/A | Disables the single-position read filter (`PSTD == 0`) in single-sample VCF output. |
-| `-T <INT>` (`var2vcf_valid.pl`) | `--min-splitreads <INT>` | `1` | N/A | Minimum `SPLITREAD` support required for structural variants in single-sample VCF output. |
+| `-T <INT>` (`var2vcf_valid.pl`) | `--min-splitreads <INT>` | `1` | N/A | Minimum `SPLITREAD` support required for structural variants in single-sample VCF output (under `--compat=off`, discordant-pair SVs with `SPANPAIR > 0` bypass the default `1` floor unless `--min-splitreads` is passed explicitly; `UB-5`). |
 | `-f <FLOAT>` | `--vcf-af <FLOAT>` (or `-f <FLOAT>`) | Inherits `-f` (`0.02` if `-f 0`) | Inherits `-f` | Overrides VCF `FILTER`/`GT` minimum AF independently of pileup `-f`. Passing `--vcf-af 0` explicitly sets `0.0` (`defined()` semantics) in both modes; when `--vcf-af` is omitted, single-sample `var2vcf_valid.pl` preserves Perl's falsy fallback (`-f 0` $\to$ `0.02`; pass `-f 0.0` or `--vcf-af 0` for zero single-sample VCF AF cutoff), whereas paired somatic `var2vcf_paired.pl` uses `defined($opt_f)` so `-f 0` stays `0`. |
 | `-d <INT>` | `--vcf-min-depth <INT>` | `3` | `5` | Minimum total read depth (`DP`) before `d<INT>` soft-filter. |
 | `-v <INT>` | `--vcf-min-vd <INT>` | `2` | `3` | Minimum variant read depth (`VD`) before `v<INT>` soft-filter. |
@@ -204,8 +204,8 @@ Following [`RegionBuilder.java`](https://github.com/AstraZeneca-NGS/VarDictJava/
 
 Per [`AGENTS.md §12`](../AGENTS.md#12-unsupported-features-error-loudly), `vardictrust` **never** silently ignores unimplemented legacy flags:
 
-| Legacy Flag | Upstream Behavior | `vardictrust` v1.0 Behavior & Recommended Alternative |
+| Legacy Flag | Upstream Behavior | `vardictrust` Behavior & Recommended Alternative |
 | :--- | :--- | :--- |
-| `-C` | Strip `chr` prefix / treat chromosome names as bare integers (deprecated upstream). | Rejected loudly (`-C not implemented in v1.0; use VarDictJava`). Match BED/region contig names directly to your BAM/FASTA header (`chr1` vs `1`). |
-| `-Z <FLOAT>` / `--downsample <FLOAT>` | Nondeterministic `Math.random()` read subsampling (`CmdParser.java:125-127`). | Rejected loudly (`-Z not implemented in v1.0; use VarDictJava`). Halo tiling bounds memory without downsampling; if subsampling is required for benchmarking, run `samtools view -s <SEED.FRAC>` beforehand for deterministic reproducibility. |
-| `-VS STRICT` | HTSJDK strict SAM validation aborting on benign BAM tag quirks. | Rejected loudly (`-VS STRICT not implemented in v1.0; use VarDictJava`). `-VS SILENT` and `-VS LENIENT` are accepted and match `noodles` lenient decoding. |
+| `-C` | Strip `chr` prefix / treat chromosome names as bare integers (deprecated upstream). | Rejected loudly (`-C not implemented in VarDictRust; use VarDictJava`). Match BED/region contig names directly to your BAM/FASTA header (`chr1` vs `1`). |
+| `-Z <FLOAT>` / `--downsample <FLOAT>` | Nondeterministic `Math.random()` read subsampling (`CmdParser.java:125-127`). | Rejected loudly (`-Z not implemented in VarDictRust; use VarDictJava`). Halo tiling bounds memory without downsampling; if subsampling is required for benchmarking, run `samtools view -s <SEED.FRAC>` beforehand for deterministic reproducibility. |
+| `-VS STRICT` | HTSJDK strict SAM validation aborting on benign BAM tag quirks. | Rejected loudly (`-VS STRICT not implemented in VarDictRust; use VarDictJava`). `-VS SILENT` and `-VS LENIENT` are accepted and match `noodles` lenient decoding. |
