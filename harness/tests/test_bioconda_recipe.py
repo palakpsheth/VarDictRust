@@ -593,10 +593,20 @@ class TestNfCoreModulePackaging(unittest.TestCase):
             f"nf-core meta.yml:2 description must be double-quoted: {meta_lines[1]!r}",
         )
         self.assertIn("--compat=off", meta_lines[1])
-        self.assertIn("--compat=off", meta_lines[10])
-        self.assertIn("--vcf-all-alleles", meta_lines[10])
-        self.assertNotIn("--output", meta_lines[10])
-        self.assertNotIn("--tbi", meta_lines[10])
+        tool_block_m = re.search(
+            r'^\s*-\s*"vardictrust":\s*\n\s*description:\s*("[^\n]+")',
+            meta_yml,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(
+            tool_block_m,
+            'nf-core meta.yml tools[0]."vardictrust".description must be double-quoted',
+        )
+        tool_desc = tool_block_m.group(1)
+        self.assertIn("--compat=off", tool_desc)
+        self.assertIn("--vcf-all-alleles", tool_desc)
+        self.assertNotIn("--output", tool_desc)
+        self.assertNotIn("--tbi", tool_desc)
         self.assertIn("description: BED with the regions of interest", meta_yml)
 
     def test_nfcore_tests_use_lowercase_channel_factory(self):

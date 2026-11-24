@@ -500,6 +500,20 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
         "wiki/_Sidebar.md links to docs/migration.md",
         errors,
     )
+    for rel_path in (
+        "crates/vardictrust/src/cli.rs",
+        "README.md",
+        "AGENTS.md",
+        "DIVERGENCES.md",
+        "docs/migration.md",
+    ):
+        forbid_regex(
+            repo_root,
+            rel_path,
+            r"not implemented in v1\.0",
+            f"{rel_path} stale 'not implemented in v1.0' unsupported-flag phrasing",
+            errors,
+        )
 
 
 def check_divergences_surface(
@@ -1039,13 +1053,13 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # 18 (surface 18). .github/SECURITY.md Supported Versions SemVer branch
+    # 18. .github/SECURITY.md Supported Versions SemVer branch
     check_security_policy_surface(repo_root, version, errors)
 
-    # 18. CLI 90-flag / 7-group & Migration Guide surfaces
+    # Guard #18. CLI 90-flag / 7-group & Migration Guide surfaces
     check_cli_and_migration_surfaces(repo_root, errors)
 
-    # 19. UPSTREAM.toml commit & comparator pins
+    # Guard #19. UPSTREAM.toml commit & comparator pins
     require_regex(
         repo_root,
         "UPSTREAM.toml",
@@ -1068,7 +1082,7 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # 20. .github/workflows/ci.yml test-count synchronization (:71 and :175-177)
+    # Guard #20. .github/workflows/ci.yml test-count synchronization (:71 and :175-177)
     int_suite_total = (
         tc["engine_behavior"]
         + tc["amplicon_stream_mem"]
