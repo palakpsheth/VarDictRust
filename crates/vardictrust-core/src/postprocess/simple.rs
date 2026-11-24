@@ -211,15 +211,17 @@ fn simple_post_process_core<'a>(
     // ToVarsBuilder position key: indels and SNVs can share one key while
     // having different raw starts, and different keys can share a raw start.
     if !config.emit_intermediate && !config.vcf_all_alleles {
+        let exact_tie = config.compat.exact_binary_half_even;
         let mut buckets: BTreeMap<i32, Variant> = BTreeMap::new();
         for v in vrefs {
-            let v_af = crate::types::round_half_even(v.frequency, 4);
+            let v_af = crate::types::round_half_even_compat(v.frequency, 4, exact_tie);
             match buckets.entry(v.start_pos) {
                 std::collections::btree_map::Entry::Vacant(e) => {
                     e.insert(v);
                 }
                 std::collections::btree_map::Entry::Occupied(mut e) => {
-                    let cur_af = crate::types::round_half_even(e.get().frequency, 4);
+                    let cur_af =
+                        crate::types::round_half_even_compat(e.get().frequency, 4, exact_tie);
                     if v_af > cur_af {
                         e.insert(v);
                     }
@@ -860,5 +862,27 @@ mod tests {
         assert_eq!(strict_starts, vec![100, 200]);
         let strict_owned = simple_post_process_owned(&strict_cfg, &region, b_map, &splice);
         assert_eq!(strict_owned.len(), 2);
+
+        // 4. exact_binary_half_even (5e-5 AF tie) in VCF top-1-per-start_pos selection:
+        let tie_4dp = f64::from_bits(0x3f0a_36e2_eb1c_432d); // 5e-5
+        let mut tie_cfg = config.clone();
+        tie_cfg.freq = 0.0;
+        let mut tie_vars = Vars::new();
+        tie_vars.variants.push(mk_variant(150, 150, "A", "G", 0.0));
+        tie_vars
+            .variants
+            .push(mk_variant(150, 150, "A", "T", tie_4dp));
+        let mut tie_map = crate::javamap::JavaHashMap::new();
+        tie_map.insert(150, tie_vars);
+
+        let vj_winner = simple_post_process(&tie_cfg, &region, &tie_map, &splice);
+        assert_eq!(vj_winner.len(), 1);
+        assert_eq!(vj_winner[0].var_allele, "G");
+
+        let mut off_tie_cfg = tie_cfg.clone();
+        off_tie_cfg.compat = crate::config::COMPAT_OFF;
+        let off_winner = simple_post_process(&off_tie_cfg, &region, &tie_map, &splice);
+        assert_eq!(off_winner.len(), 1);
+        assert_eq!(off_winner[0].var_allele, "T");
     }
 }

@@ -8,7 +8,7 @@ use vardictrust_core::config::{Config, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
 use vardictrust_core::javamap::JavaHashMap;
 use vardictrust_core::postprocess::amplicon::{
     amplicon_post_process, amplicon_post_process_streaming, amplicon_retain_strict_bounds,
-    amplicon_select_vcf_rows,
+    amplicon_select_vcf_rows_compat,
 };
 use vardictrust_core::postprocess::simple::simple_post_process;
 use vardictrust_core::postprocess::somatic::{somatic_post_process_at, PositionPipelineFn};
@@ -66,6 +66,7 @@ impl<'a> ByteCursor<'a> {
             4 => 0.25,
             5 => 0.5,
             6 => 1.0,
+            7 => f64::from_bits(0x3f0a_36e2_eb1c_432d), // 5e-5 HALF_EVEN tie
             _ => (f64::from(self.u16()) / 65535.0) * max_val,
         }
     }
@@ -585,7 +586,7 @@ fuzz_target!(|data: &[u8]| {
         amplicon_retain_strict_bounds(&mut streamed_amp, &region, &amplicons_on_positions);
     }
     let finalized_streamed = if !amp_cfg.emit_intermediate && !amp_cfg.vcf_all_alleles {
-        amplicon_select_vcf_rows(streamed_amp)
+        amplicon_select_vcf_rows_compat(streamed_amp, amp_cfg.compat.exact_binary_half_even)
     } else {
         streamed_amp
     };

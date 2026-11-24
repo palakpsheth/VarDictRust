@@ -510,6 +510,11 @@ impl Variant {
     /// `n:cnt:F-fwd:R-rev:freq:bias:meanPos:pstd:meanQual:qstd:hifreq:mapq:qratio`.
     /// Note mapq is printed via raw Java `Double.toString` semantics, not DecimalFormat.
     pub fn debug_variants_content(&self) -> String {
+        self.debug_variants_content_compat(false)
+    }
+
+    /// Per-read debug content string for `-D` output parameterized by `exact_binary_half_even`.
+    pub fn debug_variants_content_compat(&self, exact_binary_half_even: bool) -> String {
         use std::fmt::Write as _;
         let mapq = java_double_to_string(self.mean_mapping_quality);
         let mut out = String::with_capacity(96);
@@ -520,15 +525,15 @@ impl Variant {
             i64::from(self.fwd) + i64::from(self.rev),
             self.fwd,
             self.rev,
-            crate::types::round_half_even(self.frequency, 4),
+            crate::types::round_half_even_compat(self.frequency, 4, exact_binary_half_even),
             self.bias,
-            crate::types::round_half_even(self.mean_position, 1),
+            crate::types::round_half_even_compat(self.mean_position, 1, exact_binary_half_even),
             if self.pstd { "1" } else { "0" },
-            crate::types::round_half_even(self.mean_quality, 1),
+            crate::types::round_half_even_compat(self.mean_quality, 1, exact_binary_half_even),
             if self.qstd { "1" } else { "0" },
-            crate::types::round_half_even(self.hi_freq, 4),
+            crate::types::round_half_even_compat(self.hi_freq, 4, exact_binary_half_even),
             mapq,
-            crate::types::round_half_even(self.hq_lq_ratio, 3),
+            crate::types::round_half_even_compat(self.hq_lq_ratio, 3, exact_binary_half_even),
         );
         out
     }
@@ -2270,6 +2275,14 @@ mod debug_tests {
         assert_eq!(
             v.debug_variants_content(),
             "T:1:F-1:R-0:0.0000:0;1:12.2:0:34.2:1:0.0000:60.0:0.000"
+        );
+        assert_eq!(
+            v.debug_variants_content_compat(false),
+            "T:1:F-1:R-0:0.0000:0;1:12.2:0:34.2:1:0.0000:60.0:0.000"
+        );
+        assert_eq!(
+            v.debug_variants_content_compat(true),
+            "T:1:F-1:R-0:0.0001:0;1:12.2:0:34.2:1:0.0001:60.0:0.001"
         );
     }
 }

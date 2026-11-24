@@ -5,8 +5,7 @@ use std::collections::HashMap;
 use libfuzzer_sys::fuzz_target;
 use vardictrust_core::config::{Config, VcfThreshold};
 use vardictrust_core::output::table::{
-    amplicon_38_into, amplicon_40_into, simple_36_into, simple_38_into, somatic_55_into,
-    somatic_61_into,
+    amplicon_row_into_compat, simple_row_into_compat, somatic_row_into_compat,
 };
 use vardictrust_core::output::vcf::{
     build_single_vcf_event, effective_vcf_cluster_dist, format_paired_vcf_record,
@@ -523,6 +522,7 @@ fuzz_target!(|data: &[u8]| {
         af_threshold_truthy_zero: cur.bool(),
         af_threshold: cur.metric_f64(0.5),
         vcf_min_splitreads: i32::from(cur.u8() % 8) - 1,
+        vcf_min_splitreads_explicit: cur.bool(),
         crispr_cutting_site: match cur.u8() % 3 {
             0 => None,
             1 => Some(0),
@@ -636,11 +636,28 @@ fuzz_target!(|data: &[u8]| {
         );
         let sv_str = v1.sv.clone();
 
+        let exact_tie = config.compat.exact_binary_half_even;
         // 1. Simple .var formatters (exact 36 and 38 columns).
-        simple_36_into(&mut table_buf, &v1, &table_region, &table_sample, &sv_str);
+        simple_row_into_compat(
+            &mut table_buf,
+            &v1,
+            &table_region,
+            &table_sample,
+            &sv_str,
+            false,
+            exact_tie,
+        );
         assert_tsv_cols("simple_36", &table_buf, 36);
 
-        simple_38_into(&mut table_buf, &v1, &table_region, &table_sample, &sv_str);
+        simple_row_into_compat(
+            &mut table_buf,
+            &v1,
+            &table_region,
+            &table_sample,
+            &sv_str,
+            true,
+            exact_tie,
+        );
         assert_tsv_cols("simple_38", &table_buf, 38);
 
         // 2. Amplicon .var formatters (exact 38 and 40 columns when debug == false,
@@ -668,17 +685,49 @@ fuzz_target!(|data: &[u8]| {
             },
         };
 
-        amplicon_38_into(&mut table_buf, &av, &table_region, &table_sample, false);
+        amplicon_row_into_compat(
+            &mut table_buf,
+            &av,
+            &table_region,
+            &table_sample,
+            false,
+            false,
+            exact_tie,
+        );
         assert_tsv_cols("amplicon_38", &table_buf, 38);
 
-        amplicon_40_into(&mut table_buf, &av, &table_region, &table_sample, false);
+        amplicon_row_into_compat(
+            &mut table_buf,
+            &av,
+            &table_region,
+            &table_sample,
+            false,
+            true,
+            exact_tie,
+        );
         assert_tsv_cols("amplicon_40", &table_buf, 40);
 
         if row_idx == 0 {
             let extra_debug_cols = 1 + av.good_variants.len() + av.bad_variants.len();
-            amplicon_38_into(&mut table_buf, &av, &table_region, &table_sample, true);
+            amplicon_row_into_compat(
+                &mut table_buf,
+                &av,
+                &table_region,
+                &table_sample,
+                true,
+                false,
+                exact_tie,
+            );
             assert_tsv_cols("amplicon_38_debug", &table_buf, 38 + extra_debug_cols);
-            amplicon_40_into(&mut table_buf, &av, &table_region, &table_sample, true);
+            amplicon_row_into_compat(
+                &mut table_buf,
+                &av,
+                &table_region,
+                &table_sample,
+                true,
+                true,
+                exact_tie,
+            );
             assert_tsv_cols("amplicon_40_debug", &table_buf, 40 + extra_debug_cols);
         }
 
@@ -776,7 +825,7 @@ fuzz_target!(|data: &[u8]| {
         };
         let end_is_variant2 = cur.bool();
 
-        somatic_55_into(
+        somatic_row_into_compat(
             &mut table_buf,
             &v1,
             v2_opt.as_ref(),
@@ -786,10 +835,12 @@ fuzz_target!(|data: &[u8]| {
             &sv_str,
             &sv2_str,
             end_is_variant2,
+            false,
+            exact_tie,
         );
         assert_tsv_cols("somatic_55", &table_buf, 55);
 
-        somatic_61_into(
+        somatic_row_into_compat(
             &mut table_buf,
             &v1,
             v2_opt.as_ref(),
@@ -799,6 +850,8 @@ fuzz_target!(|data: &[u8]| {
             &sv_str,
             &sv2_str,
             end_is_variant2,
+            true,
+            exact_tie,
         );
         assert_tsv_cols("somatic_61", &table_buf, 61);
 

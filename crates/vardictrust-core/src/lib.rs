@@ -1411,9 +1411,13 @@ fn replay_prescan_candidate(
 ) -> Result<(), VardictError> {
     use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
 
+    let include_eqx = config.compat.eqx_cigar_read_length;
     let read_start = r_start_u32 as i32;
     cigar_elements.clear();
     cigar_elements.extend_from_slice(orig_cigar);
+    if include_eqx {
+        crate::cigar::parse::coalesce_eqx_into_match(cigar_elements);
+    }
 
     if config.realign == 1 {
         let qlen = sequence.len() as i32;
@@ -1458,6 +1462,9 @@ fn replay_prescan_candidate(
                 if crate::cigar::parse_cigar_into(&modified.cigar, cigar_elements).is_none() {
                     cigar_elements.clear();
                     cigar_elements.extend_from_slice(orig_cigar);
+                    if include_eqx {
+                        crate::cigar::parse::coalesce_eqx_into_match(cigar_elements);
+                    }
                 }
                 *cigar_str = modified.cigar;
                 *sequence = modified.query_seq;
@@ -1477,12 +1484,13 @@ fn replay_prescan_candidate(
         }
     }
 
-    let read_len_match_ins = crate::cigar::parse::get_match_insertion_length(cigar_elements);
+    let read_len_match_ins =
+        crate::cigar::parse::get_match_insertion_length_compat(cigar_elements, include_eqx);
     if config.minmatch != 0 && read_len_match_ins < config.minmatch {
         return Ok(());
     }
     let total_length_including_soft_clipped =
-        crate::cigar::parse::get_soft_clipped_length(cigar_elements);
+        crate::cigar::parse::get_soft_clipped_length_compat(cigar_elements, include_eqx);
     if total_length_including_soft_clipped > (*cur_max).max(0) as u32 {
         *cur_max = total_length_including_soft_clipped as i32;
         for (tile, steps) in reg_tiles.iter().zip(steps_per_tile.iter_mut()) {
@@ -1573,7 +1581,11 @@ fn stream_band_sequential(
             any_passed = true;
             preprocessed = true;
         }
-        if crate::cigar::parse::get_soft_clipped_length(&r.cigar) <= (*cur_max).max(0) as u32 {
+        if crate::cigar::parse::get_soft_clipped_length_compat(
+            &r.cigar,
+            config.compat.eqx_cigar_read_length,
+        ) <= (*cur_max).max(0) as u32
+        {
             if overlaps_reg {
                 same_start_ends.push(read_end);
             }
@@ -1821,7 +1833,9 @@ fn scan_band_candidates(
             band_any_passed = true;
             preprocessed = true;
         }
-        let soft_clipped_len = crate::cigar::parse::get_soft_clipped_length(&r.cigar);
+        let include_eqx = config.compat.eqx_cigar_read_length;
+        let soft_clipped_len =
+            crate::cigar::parse::get_soft_clipped_length_compat(&r.cigar, include_eqx);
         if soft_clipped_len <= local_min_max {
             if overlaps_reg
                 && !push_same_start_end(&mut cur_same_start_ends, read_end, candidate_bytes)
@@ -1891,7 +1905,25 @@ fn scan_band_candidates(
             return Ok(BandScan::FallbackSequential);
         }
 
-        if let &[(len, CigarKind::Match)] = r.cigar.as_slice() {
+        let pure_match_len = match r.cigar.as_slice() {
+            &[(len, CigarKind::Match)] => Some(len),
+            ops if include_eqx
+                && !ops.is_empty()
+                && ops.iter().all(|&(_, op)| {
+                    matches!(
+                        op,
+                        CigarKind::Match | CigarKind::SequenceMatch | CigarKind::SequenceMismatch
+                    )
+                }) =>
+            {
+                Some(
+                    ops.iter()
+                        .fold(0u32, |acc, &(len, _)| acc.saturating_add(len)),
+                )
+            }
+            _ => None,
+        };
+        if let Some(len) = pure_match_len {
             if i32::try_from(len).is_ok_and(|m| m > 0) {
                 let guaranteed_noop = (config.realign == 0
                     && len > 0
@@ -2202,8 +2234,10 @@ fn scan_multi_regions_max_read_lengths(
                             st.total_reads = st.total_reads.saturating_add(total_reads);
                             st.duplicate_reads = st.duplicate_reads.saturating_add(duplicate_reads);
                             for mut cand in candidates {
-                                if crate::cigar::parse::get_soft_clipped_length(&cand.cigar)
-                                    <= st.cur_max.max(0) as u32
+                                if crate::cigar::parse::get_soft_clipped_length_compat(
+                                    &cand.cigar,
+                                    config.compat.eqx_cigar_read_length,
+                                ) <= st.cur_max.max(0) as u32
                                 {
                                     continue;
                                 }
@@ -2382,7 +2416,11 @@ fn scan_multi_tile_max_read_lengths(
                 any_passed = true;
                 preprocessed = true;
             }
-            if crate::cigar::parse::get_soft_clipped_length(&r.cigar) <= cur_max.max(0) as u32 {
+            if crate::cigar::parse::get_soft_clipped_length_compat(
+                &r.cigar,
+                config.compat.eqx_cigar_read_length,
+            ) <= cur_max.max(0) as u32
+            {
                 if read_start <= reg.end.0 as i32 && read_end > reg.start.0 as i32 {
                     same_start_ends.push(read_end);
                 }
@@ -2566,8 +2604,8 @@ fn read_spill_str<R: std::io::Read>(r: &mut R) -> std::io::Result<String> {
 }
 
 #[inline]
-fn canonical_af_4dp(af: f64) -> f64 {
-    let r = crate::types::round_half_even(af, 4);
+fn canonical_af_4dp(af: f64, exact_binary_half_even: bool) -> f64 {
+    let r = crate::types::round_half_even_compat(af, 4, exact_binary_half_even);
     if !r.is_finite() || r == 0.0 {
         0.0
     } else {
@@ -6107,26 +6145,19 @@ fn run_with_writer_inner<W: EngineWriter>(
             );
 
             if config_clone.emit_intermediate {
+                let exact_tie = config_clone.compat.exact_binary_half_even;
                 if !is_split_tile {
                     let mut block = String::with_capacity(variants.len().saturating_mul(256));
                     for v in variants {
-                        if config_clone.fisher {
-                            crate::output::table::simple_38_append(
-                                &mut block,
-                                &v,
-                                &builder_region,
-                                &config_clone.sample,
-                                &v.sv,
-                            );
-                        } else {
-                            crate::output::table::simple_36_append(
-                                &mut block,
-                                &v,
-                                &builder_region,
-                                &config_clone.sample,
-                                &v.sv,
-                            );
-                        }
+                        crate::output::table::simple_row_append_compat(
+                            &mut block,
+                            &v,
+                            &builder_region,
+                            &config_clone.sample,
+                            &v.sv,
+                            config_clone.fisher,
+                            exact_tie,
+                        );
                         if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
                             block.push('\t');
                             crate::util::push_i32(&mut block, v.crispr);
@@ -6144,23 +6175,15 @@ fn run_with_writer_inner<W: EngineWriter>(
                     let ids = build_simple_split_var_identities(&variants, is_split_tile);
                     for (v, id) in variants.into_iter().zip(ids) {
                         let mut line = String::new();
-                        if config_clone.fisher {
-                            crate::output::table::simple_38_into(
-                                &mut line,
-                                &v,
-                                &builder_region,
-                                &config_clone.sample,
-                                &v.sv,
-                            );
-                        } else {
-                            crate::output::table::simple_36_into(
-                                &mut line,
-                                &v,
-                                &builder_region,
-                                &config_clone.sample,
-                                &v.sv,
-                            );
-                        }
+                        crate::output::table::simple_row_into_compat(
+                            &mut line,
+                            &v,
+                            &builder_region,
+                            &config_clone.sample,
+                            &v.sv,
+                            config_clone.fisher,
+                            exact_tie,
+                        );
                         if config_clone.crispr_cutting_site.unwrap_or(0) != 0 {
                             line.push('\t');
                             crate::util::push_i32(&mut line, v.crispr);
@@ -6187,6 +6210,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                     })
                 }
             } else if config_clone.vcf_all_alleles && is_split_tile {
+                let exact_tie = config_clone.compat.exact_binary_half_even;
                 let mut scratch = String::with_capacity(512);
                 let ids = build_simple_split_var_identities(&variants, true);
                 let mut rows = Vec::with_capacity(variants.len());
@@ -6196,7 +6220,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                         None
                     } else {
                         let start_pos = v.start_pos;
-                        let af_4dp = canonical_af_4dp(v.frequency);
+                        let af_4dp = canonical_af_4dp(v.frequency, exact_tie);
                         let event = crate::output::vcf::build_single_vcf_event(
                             &mut scratch,
                             &v,
@@ -6229,6 +6253,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                     original_end: tile.original_end,
                 })
             } else {
+                let exact_tie = config_clone.compat.exact_binary_half_even;
                 let mut scratch = String::with_capacity(512);
                 let mut records = Vec::with_capacity(variants.len());
                 for v in variants {
@@ -6239,9 +6264,9 @@ fn run_with_writer_inner<W: EngineWriter>(
                     }
                     let start_pos = v.start_pos;
                     let af_4dp = if config_clone.vcf_all_alleles {
-                        canonical_af_4dp(v.frequency)
+                        canonical_af_4dp(v.frequency, exact_tie)
                     } else {
-                        crate::types::round_half_even(v.frequency, 4)
+                        crate::types::round_half_even_compat(v.frequency, 4, exact_tie)
                     };
                     let event = crate::output::vcf::build_single_vcf_event(
                         &mut scratch,
@@ -6669,30 +6694,25 @@ fn run_amplicon<W: EngineWriter>(
                     Ok(())
                 },
             )?;
+            let exact_tie = config_clone.compat.exact_binary_half_even;
             if !config_clone.emit_intermediate && !config_clone.vcf_all_alleles {
-                results = crate::postprocess::amplicon::amplicon_select_vcf_rows(results);
+                results = crate::postprocess::amplicon::amplicon_select_vcf_rows_compat(
+                    results, exact_tie,
+                );
             }
 
             if config_clone.emit_intermediate {
                 let mut block = String::with_capacity(results.len().saturating_mul(256));
                 for av in results {
-                    if config_clone.fisher {
-                        crate::output::table::amplicon_40_append(
-                            &mut block,
-                            &av,
-                            current_region,
-                            &config_clone.sample,
-                            config_clone.debug,
-                        );
-                    } else {
-                        crate::output::table::amplicon_38_append(
-                            &mut block,
-                            &av,
-                            current_region,
-                            &config_clone.sample,
-                            config_clone.debug,
-                        );
-                    }
+                    crate::output::table::amplicon_row_append_compat(
+                        &mut block,
+                        &av,
+                        current_region,
+                        &config_clone.sample,
+                        config_clone.debug,
+                        config_clone.fisher,
+                        exact_tie,
+                    );
                     block.push('\n');
                 }
                 Ok(AmpliconSegmentOutput::UnSplitVarBlock(block))
@@ -6707,9 +6727,9 @@ fn run_amplicon<W: EngineWriter>(
                     }
                     let start_pos = av.variant.start_pos;
                     let af_4dp = if config_clone.vcf_all_alleles {
-                        canonical_af_4dp(av.variant.frequency)
+                        canonical_af_4dp(av.variant.frequency, exact_tie)
                     } else {
-                        crate::types::round_half_even(av.variant.frequency, 4)
+                        crate::types::round_half_even_compat(av.variant.frequency, 4, exact_tie)
                     };
                     let event = crate::output::vcf::build_single_vcf_event(
                         &mut scratch,
@@ -6771,6 +6791,7 @@ fn run_amplicon<W: EngineWriter>(
                     // materialized (audit-amplicon-expand): the lazy union iterator yields
                     // exactly the positions (and segment-ordered covering lists) the old
                     // per-base BTreeMap held, in the same ascending order.
+                    let exact_tie = config.compat.exact_binary_half_even;
                     if config.emit_intermediate {
                         let mut row_buf = String::new();
                         crate::postprocess::amplicon::amplicon_post_process_streaming(
@@ -6785,23 +6806,15 @@ fn run_amplicon<W: EngineWriter>(
                                         return Ok(());
                                     }
                                 }
-                                if config.fisher {
-                                    crate::output::table::amplicon_40_into(
-                                        &mut row_buf,
-                                        &av,
-                                        current_region,
-                                        &config.sample,
-                                        config.debug,
-                                    );
-                                } else {
-                                    crate::output::table::amplicon_38_into(
-                                        &mut row_buf,
-                                        &av,
-                                        current_region,
-                                        &config.sample,
-                                        config.debug,
-                                    );
-                                }
+                                crate::output::table::amplicon_row_into_compat(
+                                    &mut row_buf,
+                                    &av,
+                                    current_region,
+                                    &config.sample,
+                                    config.debug,
+                                    config.fisher,
+                                    exact_tie,
+                                );
                                 write_output_line(writer, &row_buf)
                             },
                         )?;
@@ -6826,9 +6839,13 @@ fn run_amplicon<W: EngineWriter>(
                                 }
                                 let start_pos = av.variant.start_pos;
                                 let af_4dp = if config.vcf_all_alleles {
-                                    canonical_af_4dp(av.variant.frequency)
+                                    canonical_af_4dp(av.variant.frequency, exact_tie)
                                 } else {
-                                    crate::types::round_half_even(av.variant.frequency, 4)
+                                    crate::types::round_half_even_compat(
+                                        av.variant.frequency,
+                                        4,
+                                        exact_tie,
+                                    )
                                 };
                                 let event = crate::output::vcf::build_single_vcf_event(
                                     &mut scratch,
@@ -7285,36 +7302,25 @@ fn run_somatic<W: EngineWriter>(
 
             // Output 55-column format (or 61-column with --fisher), or the
             // paired VCF (var2vcf_paired.pl) when not in intermediate mode.
+            let exact_tie = config_clone.compat.exact_binary_half_even;
             if config_clone.emit_intermediate {
                 if !is_split_tile {
                     let mut block =
                         String::with_capacity(somatic_variants.len().saturating_mul(384));
                     for sv in somatic_variants {
-                        if config_clone.fisher {
-                            crate::output::table::somatic_61_append(
-                                &mut block,
-                                &sv.variant1,
-                                sv.variant2.as_ref(),
-                                &builder_region,
-                                &config_clone.sample,
-                                &sv.status,
-                                &sv.sv1,
-                                &sv.sv2,
-                                sv.end_is_variant2,
-                            );
-                        } else {
-                            crate::output::table::somatic_55_append(
-                                &mut block,
-                                &sv.variant1,
-                                sv.variant2.as_ref(),
-                                &builder_region,
-                                &config_clone.sample,
-                                &sv.status,
-                                &sv.sv1,
-                                &sv.sv2,
-                                sv.end_is_variant2,
-                            );
-                        }
+                        crate::output::table::somatic_row_append_compat(
+                            &mut block,
+                            &sv.variant1,
+                            sv.variant2.as_ref(),
+                            &builder_region,
+                            &config_clone.sample,
+                            &sv.status,
+                            &sv.sv1,
+                            &sv.sv2,
+                            sv.end_is_variant2,
+                            config_clone.fisher,
+                            exact_tie,
+                        );
                         // ports SomaticOutputVariant.java:80, 193-194 (DEBUG = beginVariant.DEBUG)
                         if config_clone.debug {
                             block.push('\t');
@@ -7327,31 +7333,19 @@ fn run_somatic<W: EngineWriter>(
                     let mut rows = Vec::with_capacity(somatic_variants.len());
                     for sv in somatic_variants {
                         let mut line = String::new();
-                        if config_clone.fisher {
-                            crate::output::table::somatic_61_into(
-                                &mut line,
-                                &sv.variant1,
-                                sv.variant2.as_ref(),
-                                &builder_region,
-                                &config_clone.sample,
-                                &sv.status,
-                                &sv.sv1,
-                                &sv.sv2,
-                                sv.end_is_variant2,
-                            );
-                        } else {
-                            crate::output::table::somatic_55_into(
-                                &mut line,
-                                &sv.variant1,
-                                sv.variant2.as_ref(),
-                                &builder_region,
-                                &config_clone.sample,
-                                &sv.status,
-                                &sv.sv1,
-                                &sv.sv2,
-                                sv.end_is_variant2,
-                            );
-                        }
+                        crate::output::table::somatic_row_into_compat(
+                            &mut line,
+                            &sv.variant1,
+                            sv.variant2.as_ref(),
+                            &builder_region,
+                            &config_clone.sample,
+                            &sv.status,
+                            &sv.sv1,
+                            &sv.sv2,
+                            sv.end_is_variant2,
+                            config_clone.fisher,
+                            exact_tie,
+                        );
                         // ports SomaticOutputVariant.java:80, 193-194 (DEBUG = beginVariant.DEBUG)
                         if config_clone.debug {
                             line.push('\t');
@@ -7403,7 +7397,7 @@ fn run_somatic<W: EngineWriter>(
                         None
                     } else {
                         let start_pos = sv.variant1.start_pos;
-                        let af_4dp = canonical_af_4dp(sv.variant1.frequency);
+                        let af_4dp = canonical_af_4dp(sv.variant1.frequency, exact_tie);
                         let record = Some(crate::output::vcf::format_paired_vcf_record(
                             &sv,
                             &builder_region.chr,
@@ -7440,7 +7434,7 @@ fn run_somatic<W: EngineWriter>(
                         continue;
                     }
                     let start_pos = sv.variant1.start_pos;
-                    let af_4dp = canonical_af_4dp(sv.variant1.frequency);
+                    let af_4dp = canonical_af_4dp(sv.variant1.frequency, exact_tie);
                     let record = Some(crate::output::vcf::format_paired_vcf_record(
                         &sv,
                         &builder_region.chr,
@@ -7478,9 +7472,16 @@ fn run_somatic<W: EngineWriter>(
                             e.insert(sv);
                         }
                         std::collections::btree_map::Entry::Occupied(mut e) => {
-                            let sv_af = crate::types::round_half_even(sv.variant1.frequency, 4);
-                            let cur_af =
-                                crate::types::round_half_even(e.get().variant1.frequency, 4);
+                            let sv_af = crate::types::round_half_even_compat(
+                                sv.variant1.frequency,
+                                4,
+                                exact_tie,
+                            );
+                            let cur_af = crate::types::round_half_even_compat(
+                                e.get().variant1.frequency,
+                                4,
+                                exact_tie,
+                            );
                             if sv_af > cur_af {
                                 e.insert(sv);
                             }
@@ -7491,7 +7492,11 @@ fn run_somatic<W: EngineWriter>(
                     .into_values()
                     .map(|sv| {
                         let start_pos = sv.variant1.start_pos;
-                        let af_4dp = crate::types::round_half_even(sv.variant1.frequency, 4);
+                        let af_4dp = crate::types::round_half_even_compat(
+                            sv.variant1.frequency,
+                            4,
+                            exact_tie,
+                        );
                         let record =
                             if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
                                 None
@@ -7653,6 +7658,14 @@ fn run_somatic<W: EngineWriter>(
 fn select_paired_rows(
     somatic_variants: Vec<crate::postprocess::somatic::SomaticVariant>,
 ) -> Vec<crate::postprocess::somatic::SomaticVariant> {
+    select_paired_rows_compat(somatic_variants, false)
+}
+
+#[cfg(test)]
+fn select_paired_rows_compat(
+    somatic_variants: Vec<crate::postprocess::somatic::SomaticVariant>,
+    exact_binary_half_even: bool,
+) -> Vec<crate::postprocess::somatic::SomaticVariant> {
     let mut buckets: std::collections::BTreeMap<i32, crate::postprocess::somatic::SomaticVariant> =
         std::collections::BTreeMap::new();
     for sv in somatic_variants {
@@ -7661,8 +7674,16 @@ fn select_paired_rows(
                 e.insert(sv);
             }
             std::collections::btree_map::Entry::Occupied(mut e) => {
-                let sv_af = crate::types::round_half_even(sv.variant1.frequency, 4);
-                let cur_af = crate::types::round_half_even(e.get().variant1.frequency, 4);
+                let sv_af = crate::types::round_half_even_compat(
+                    sv.variant1.frequency,
+                    4,
+                    exact_binary_half_even,
+                );
+                let cur_af = crate::types::round_half_even_compat(
+                    e.get().variant1.frequency,
+                    4,
+                    exact_binary_half_even,
+                );
                 if sv_af > cur_af {
                     e.insert(sv);
                 }
@@ -12852,5 +12873,226 @@ mod tests {
         for seed in seeds.values() {
             assert_eq!(seed.bam1_read_counts, want_counts);
         }
+    }
+
+    #[test]
+    fn test_prescan_eqx_band_fast_path_and_replay_coalescing_and_5e5_ties() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::Cigar;
+        use noodles::sam::alignment::RecordBuf;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_len = 1_200usize;
+        let ref_bytes = vec![b'A'; ref_len];
+        let fasta_path = dir.path().join("eqx_ref.fa");
+        let fai_path = dir.path().join("eqx_ref.fa.fai");
+        std::fs::write(
+            &fasta_path,
+            format!(">chr1\n{}\n", String::from_utf8(ref_bytes).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            &fai_path,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .unwrap();
+        let mut chr_lens = HashMap::new();
+        chr_lens.insert("chr1".to_string(), ref_len);
+
+        let mk_eqx_read =
+            |name: &str, start_1: usize, ops: Vec<Op>, mismatch_idx: Option<usize>| -> RecordBuf {
+                let qlen: usize = ops
+                    .iter()
+                    .filter(|op| {
+                        matches!(
+                            op.kind(),
+                            Kind::Match
+                                | Kind::SequenceMatch
+                                | Kind::SequenceMismatch
+                                | Kind::Insertion
+                                | Kind::SoftClip
+                        )
+                    })
+                    .map(|op| op.len())
+                    .sum();
+                let mut seq = vec![b'A'; qlen];
+                if let Some(mi) = mismatch_idx {
+                    seq[mi] = b'C';
+                }
+                let cigar: Cigar = ops.into_iter().collect();
+                RecordBuf::builder()
+                    .set_name(name)
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![40u8; qlen].into())
+                    .build()
+            };
+
+        // 1. `scan_band_candidates` pure `M/=/X` fast-path on `150=` and `74=1X75=`:
+        //    60 reads of `150=` in band 0 and 60 reads of `74=1X75=` in band 1 with a tight
+        //    `max_band_candidate_bytes = 2048` (holds 1 initial 150 bp candidate, would hit
+        //    `FallbackSequential` if `local_min_max` were not raised to 150!).
+        let mut eqx_reads = Vec::new();
+        for i in 0..60usize {
+            eqx_reads.push(mk_eqx_read(
+                &format!("eq150_{i}"),
+                100 + i,
+                vec![Op::new(Kind::SequenceMatch, 150)],
+                None,
+            ));
+        }
+        for i in 0..60usize {
+            eqx_reads.push(mk_eqx_read(
+                &format!("eqx150_{i}"),
+                500 + i,
+                vec![
+                    Op::new(Kind::SequenceMatch, 74),
+                    Op::new(Kind::SequenceMismatch, 1),
+                    Op::new(Kind::SequenceMatch, 75),
+                ],
+                Some(74),
+            ));
+        }
+        let eqx_bam = dir.path().join("eqx_band.bam");
+        write_test_bam(&eqx_bam, "chr1", ref_len, &eqx_reads);
+
+        let eqx_reg = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(900),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let eqx_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: eqx_bam.to_string_lossy().into_owned(),
+            realign: 1,
+            minmatch: 100,
+            compat: crate::config::COMPAT_OFF,
+            ..Default::default()
+        };
+        let scan_b0 =
+            scan_band_candidates(&eqx_cfg.bam, 0, &eqx_reg, 0, 100, 400, 0, 2_048, &eqx_cfg)
+                .unwrap();
+        match scan_b0 {
+            BandScan::Candidates { candidates, .. } => {
+                assert_eq!(
+                    candidates.len(),
+                    1,
+                    "150= fast-path must raise local_min_max=150 on first read and skip remaining 59"
+                );
+            }
+            BandScan::FallbackSequential => {
+                panic!("expected BandScan::Candidates on 150= band under COMPAT_OFF, got FallbackSequential");
+            }
+        }
+
+        let scan_b1 =
+            scan_band_candidates(&eqx_cfg.bam, 0, &eqx_reg, 1, 401, 900, 0, 2_048, &eqx_cfg)
+                .unwrap();
+        match scan_b1 {
+            BandScan::Candidates { candidates, .. } => {
+                assert_eq!(
+                    candidates.len(),
+                    1,
+                    "74=1X75= fast-path must raise local_min_max=150 on first read and skip remaining 59"
+                );
+            }
+            BandScan::FallbackSequential => {
+                panic!("expected BandScan::Candidates on 74=1X75= band under COMPAT_OFF, got FallbackSequential");
+            }
+        }
+
+        // 2. `replay_prescan_candidate` coalesces `15S125=10X` BEFORE `CigarModifier` identically to `CigarParser`!
+        let mut sclip_seq = vec![b'A'; 150];
+        for b in &mut sclip_seq[..15] {
+            *b = b'T';
+        }
+        for b in &mut sclip_seq[140..150] {
+            *b = b'G';
+        }
+        let orig_cigar = vec![
+            (15, Kind::SoftClip),
+            (125, Kind::SequenceMatch),
+            (10, Kind::SequenceMismatch),
+        ];
+        let tiles = crate::regions::tile(&eqx_reg, 300, 50);
+        let mut steps_per_tile = vec![Vec::new(); tiles.len()];
+        let mut cur_max = 0i32;
+        let mut scanner = BoundedParentRefScanner::new(&eqx_reg, &chr_lens, &eqx_cfg);
+        let mut cigar_elements = Vec::new();
+        let mut cigar_str = String::new();
+        let mut replay_seq = sclip_seq.clone();
+        let mut replay_qual = vec![40u8; 150];
+
+        let mut replay_cfg = eqx_cfg.clone();
+        replay_cfg.minmatch = 130;
+        replay_prescan_candidate(
+            0,
+            1,
+            120,
+            255,
+            0,
+            &orig_cigar,
+            &mut replay_seq,
+            &mut replay_qual,
+            &[],
+            &tiles,
+            &mut steps_per_tile,
+            &mut cur_max,
+            &mut scanner,
+            &mut cigar_elements,
+            &mut cigar_str,
+            &replay_cfg,
+        )
+        .unwrap();
+        assert_eq!(
+            cur_max, 150,
+            "replay_prescan_candidate must coalesce 15S125=10X before CigarModifier and record max_read_length = 150"
+        );
+        assert!(!steps_per_tile[0].is_empty());
+
+        // Verify end-to-end sequential + parallel multi-band prescan agree on eqx_bam (max_rl = 150)
+        let bams = vec![eqx_cfg.bam.clone()];
+        let seq_eqx =
+            scan_multi_tile_max_read_lengths(&bams, &eqx_reg, &tiles, &eqx_cfg, &chr_lens, 0)
+                .unwrap();
+        assert_eq!(seq_eqx.1, 150);
+        let mut par_eqx_cfg = eqx_cfg.clone();
+        par_eqx_cfg.threads = 4;
+        let par_eqx = scan_multi_regions_max_read_lengths(
+            &par_eqx_cfg.bam,
+            &bams,
+            std::slice::from_ref(&eqx_reg),
+            std::slice::from_ref(&tiles),
+            &[0],
+            &[0],
+            &par_eqx_cfg,
+            &chr_lens,
+            300,
+            2_048,
+        )
+        .unwrap();
+        assert_eq!(par_eqx[0].0, seq_eqx.0);
+        assert_eq!(par_eqx[0].1, 150);
+
+        // 3. `canonical_af_4dp` and `select_paired_rows_compat` on `5e-5` underflow tie
+        let tie_4dp = f64::from_bits(0x3f0a_36e2_eb1c_432d);
+        assert_eq!(canonical_af_4dp(tie_4dp, false), 0.0);
+        assert_eq!(canonical_af_4dp(tie_4dp, true), 0.0001);
+        let paired_vj =
+            select_paired_rows_compat(vec![sv(100, 0.0, "A"), sv(100, tie_4dp, "C")], false);
+        assert_eq!(paired_vj[0].variant1.ref_allele, "A");
+        let paired_off =
+            select_paired_rows_compat(vec![sv(100, 0.0, "A"), sv(100, tie_4dp, "C")], true);
+        assert_eq!(paired_off[0].variant1.ref_allele, "C");
     }
 }
