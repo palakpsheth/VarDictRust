@@ -1,25 +1,38 @@
-Third-Party Software Notices and Information
-============================================
+Third-Party Software Notices and Mathematical Attributions
+==========================================================
 
-This project incorporates routines from the standalone `nmath` library of
-The R Project for Statistical Computing (https://www.r-project.org/):
+VarDictRust is distributed under the MIT License (see `LICENSE`). All direct
+and transitive Cargo dependencies are permissively licensed (bundled per-release
+in `THIRDPARTY.yml` via `cargo-bundle-licenses`).
 
-Files:
-  - crates/vardictrust-core/src/stats/rmath/bd0.rs
-  - crates/vardictrust-core/src/stats/rmath/dbinom_raw.rs
-  - crates/vardictrust-core/src/stats/rmath/dhyper.rs
-  - crates/vardictrust-core/src/stats/rmath/phyper.rs
-  - crates/vardictrust-core/src/stats/rmath/stirlerr.rs
+This project incorporates cleanroom Rust ports and algorithmic semantics from
+the following permissively licensed upstream projects and published mathematical
+literature:
 
-Copyright (C) 1998–2020 The R Core Team
-Copyright (C) 1995, 1996 Robert Gentleman and Ross Ihaka
+1. AstraZeneca-NGS/VarDictJava v1.8.3 (commit 0886261) and AstraZeneca-NGS/VarDict (commit 009e017)
+   - Repository: https://github.com/AstraZeneca-NGS/VarDictJava
+   - Copyright (c) 2014-2020 AstraZeneca-NGS
+   - License: MIT
 
-These routines are distributed under the terms of the GNU General Public
-License as published by the Free Software Foundation; either version 2
-of the License, or (at your option) any later version.
+2. samtools/htsjdk v2.21.0 (CIGAR, SAMRecord, and SequenceUtil semantics ported via VarDictJava)
+   - Repository: https://github.com/samtools/htsjdk
+   - Copyright (c) The Broad Institute
+   - License: MIT
 
-Cleanroom Replacement Tracking:
-  A cleanroom reimplementation of the hypergeometric distribution functions
-  (mirroring Apache-2.0 Commons Math 3 algorithms) is cataloged in ROADMAP.md
-  for post-1.0 development to restore uniform MIT licensing across all engine
-  crates while preserving exact float tolerance (eps <= 1e-6).
+3. Apache Commons Math v3.6.1 (`SaddlePointExpansion` and `HypergeometricDistribution`
+   ported in `crates/vardictrust-core/src/stats/fisher.rs` for `--fisher` mode parity)
+   - Artifact: org.apache.commons:commons-math3:3.6.1
+   - Copyright (c) 2001-2016 The Apache Software Foundation
+   - License: Apache-2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+
+4. Mathematical Literature Citations (non-copyrighted equations implemented cleanroom
+   in `crates/vardictrust-core/src/stats/hypergeom.rs` and `crates/vardictrust-core/src/stats/zeroin.rs`):
+   - Catherine Loader (2000), "Fast and Accurate Computation of Binomial Probabilities",
+     HP Laboratories Technical Report (saddlepoint binomial deviance and Stirling-series
+     hypergeometric probability mass evaluation).
+   - Euler-Maclaurin asymptotic expansion with Bernoulli numbers for the logarithmic
+     factorial Stirling remainder series.
+   - Milton Abramowitz and Irene A. Stegun (1964), "Handbook of Mathematical Functions",
+     National Bureau of Standards, §26.3.29 (hypergeometric recurrence tail bounds).
+   - Richard P. Brent (1973), "Algorithms for Minimization without Derivatives",
+     Prentice-Hall, Chapter 4 (`zeroin` bracketed secant-bisection root-finding).

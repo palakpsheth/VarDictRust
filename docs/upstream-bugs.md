@@ -12,7 +12,7 @@ All line references below are to that pin.
 |---|-------|------|------------|
 | [UB-1](#ub-1) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` spurious all-zero record at position 0/0 | **Replicated** by default (`--compat=vardictjava`, [`postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs)); suppressed under opt-in `--compat=off` (`suppress_pileup_sentinels`) |
 | [UB-2](#ub-2) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | `-p` null-record row cell formatting | **Replicated** by default (`--compat=vardictjava`, [`variations/mod.rs`](../crates/vardictrust-core/src/variations/mod.rs)); suppressed under opt-in `--compat=off` (`suppress_pileup_sentinels`) |
-| [UB-3](#ub-3) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Cross-position `.var` emission order follows HashMap layout ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family) | **Replicated** (via [JavaHashMap Engine](../crates/vardictrust-core/src/javamap.rs)) |
+| [UB-3](#ub-3) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Cross-position `.var` emission order follows HashMap layout ([#282](https://github.com/AstraZeneca-NGS/VarDictJava/issues/282) family) | **Replicated** by default (`--compat=vardictjava`, via [JavaHashMap Engine](../crates/vardictrust-core/src/javamap.rs)); coordinate-sorted under opt-in `--compat=off` (`coordinate_sorted_vars`) |
 | [UB-4](#ub-4) | [Class D](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Integration fixtures encode mutually inconsistent references | N/A (test-data defect; validated vs live oracle) |
 | [UB-5](#ub-5) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | SimpleMode SV split-read requirement (`splitreads < 1` dropped) | **Replicated** by default (`--compat=vardictjava`, [`output/vcf.rs`](../crates/vardictrust-core/src/output/vcf.rs)); discordant-pair SVs preserved under opt-in `--compat=off` (`preserve_discordant_svs`) |
 | [UB-6](#ub-6) | [Class A](../DIVERGENCES.md#the-four-canonical-parity-classes-rewritesbio-5-8-11) | Mate-pair boundary parameter in `mark_dup_sv` (`pe` decrement) | **Replicated** by default (`--compat=vardictjava`, [`sv.rs`](../crates/vardictrust-core/src/sv.rs) `find_dup_disc_paths`); pre-decrement `mark_pe` passed under opt-in `--compat=off` (`mark_dup_sv_inclusive_end`) |
@@ -107,7 +107,7 @@ changes when upstream insertion history changes; downstream, `var2vcf_valid.pl`
 keeps only the highest-AF row per raw-start bucket and breaks exact AF ties
 first-in-stream — so WHICH allele survives a tie depends on hash layout.
 
-**Our replication stance:** **Replicated** via JavaHashMap Determinism Engine in
+**Our replication stance:** **Replicated** by default (`--compat=vardictjava` / `--parity`) via JavaHashMap Determinism Engine in
 [`vardictrust_core::javamap::JavaHashMap`](../crates/vardictrust-core/src/javamap.rs).
 It faithfully emulates OpenJDK 8+ `java.util.HashMap` hash-spreading (`h ^ (h >> 16)`),
 power-of-two table indexing, load factor 0.75, resize threshold doubling, and bucket
@@ -115,7 +115,7 @@ iteration order across variant maps (`non_insertion_variants`, `insertion_varian
 and `aligned_variants`). This completely eliminated the single residual AF-tie at
 `chr20:20202875` on [Tier-2](testing/test-matrix-and-ci-audit.md#tier-2) dual-engine test slice `s1a`, emitting `TA>T` before `T>A` and achieving
 100% byte-for-byte parity (1048/1048 variants, 0 diffs). Per the VarDictRust parity architecture (see [`CONTRIBUTING.md`](../CONTRIBUTING.md)), `JavaHashMap`
-is the only sanctioned non-sorted map in output-reaching paths.
+is the only sanctioned non-sorted map in default output-reaching paths, while opt-in `--compat=off` (`CompatProfile::coordinate_sorted_vars`) iterates variant and post-processing position maps in ascending genomic coordinate order.
 
 **Draft issue text:**
 

@@ -30,8 +30,8 @@ test:
 
 about:
   home: https://github.com/palakpsheth/VarDictRust
-  license: MIT AND GPL-2.0-or-later
-  license_family: GPL2
+  license: MIT
+  license_family: MIT
   license_file:
     - LICENSE
     - LICENSE-3RD-PARTY
@@ -44,7 +44,7 @@ about:
     v1.8.3 parity on valid inputs (v1.0.10 default; --compat=vardictjava in
     v1.1.0+), native multithreaded BGZF and Tabix/CSI VCF output, and (in
     v1.1.0+) opt-in --compat=off correctness, SV, and SAM =/X (--eqx) alignment
-    fixes (13 switches) plus 18/18 var2vcf post-filtering including
+    fixes (17 switches) plus 18/18 var2vcf post-filtering including
     --vcf-all-alleles multi-allelic VCF output.
   doc_url: https://vardictrust.readthedocs.io/
   dev_url: https://github.com/palakpsheth/VarDictRust

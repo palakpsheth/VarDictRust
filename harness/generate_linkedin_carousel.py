@@ -338,7 +338,7 @@ def read_workspace_license(cargo_toml_path: Path | None = None) -> str:
     data = toml_lite.load_path(path)
     lic = ((data.get("workspace") or {}).get("package") or {}).get("license")
     if not isinstance(lic, str) or not lic.strip():
-        return "MIT AND GPL-2.0-or-later"
+        return "MIT"
     return lic.strip()
 
 
