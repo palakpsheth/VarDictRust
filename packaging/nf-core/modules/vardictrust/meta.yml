@@ -1,5 +1,5 @@
 name: "vardictrust"
-description: "Fast, memory-safe Rust somatic and germline variant caller with VarDictJava v1.8.3 parity and opt-in --compat=off fixes"
+description: "Fast Rust somatic & germline variant caller — drop-in VarDictJava with fixes"
 keywords:
   - variant calling
   - vcf

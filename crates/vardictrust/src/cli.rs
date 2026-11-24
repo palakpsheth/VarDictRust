@@ -758,7 +758,7 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
         "AI disclosure: written with AI coding assistants under human direction; see README \"AI Disclosure\".\n",
         "License: MIT AND GPL-2.0-or-later (see LICENSE-3RD-PARTY)"
     ),
-    about = "Fast, bounded-memory somatic and germline variant caller (100% VarDictJava v1.8.3 parity by default + opt-in --compat=off fixes)",
+    about,
     long_about = "VarDictRust consolidates the VarDictJava v1.8.3 + R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) variant-calling pipeline into a single memory-safe binary with bounded-memory WGS tiling, native BAM/CRAM and BGZF FASTA/BED support, direct BGZF + Tabix (.tbi) / CSI (.csi) VCF 4.2 (VCFv4.2) emission, 18/18 var2vcf post-filters (including --vcf-all-alleles), and dual-mode compatibility (--compat=vardictjava default 100% parity; --compat=off opt-in accuracy, scale, and --eqx fixes).",
     after_help = "Note: -h / --header prints the intermediate .var column header (matching VarDictJava); use -H, -?, or --help for CLI help.",
     disable_version_flag = true,
@@ -2069,6 +2069,12 @@ mod tests {
 
         let mut cmd = Cli::command();
         assert_eq!(cmd.get_arguments().count(), 90);
+        let short_about = cmd
+            .get_about()
+            .expect("Cli::command() must define short about")
+            .to_string();
+        assert_eq!(short_about, env!("CARGO_PKG_DESCRIPTION"));
+
         let rendered_help = cmd.render_help().to_string();
         assert!(
             rendered_help.contains("--compat=off"),
@@ -2168,6 +2174,42 @@ mod tests {
         let mut man_buf = Vec::new();
         completions_man::write_manpage(&mut man_buf).unwrap();
         let man_text = String::from_utf8(man_buf).unwrap();
+        let mut man_lines = man_text.lines();
+        assert!(
+            man_lines.any(|line| line == ".SH NAME"),
+            "manpage missing .SH NAME section"
+        );
+        let raw_man_name_line = man_lines
+            .next()
+            .expect("manpage must have a line immediately following .SH NAME");
+        assert!(
+            raw_man_name_line.starts_with(r"vardictrust \- "),
+            "manpage .SH NAME line must start with 'vardictrust \\- ': {raw_man_name_line}"
+        );
+        let man_name_line = raw_man_name_line.replace(r"\-", "-");
+        for (label, text) in [
+            ("CLI short about / Cargo.toml", short_about.as_str()),
+            ("manpage .SH NAME", man_name_line.as_str()),
+        ] {
+            assert!(text.is_ascii(), "{label} must be pure ASCII: {text}");
+            assert!(
+                text.chars().count() <= 80,
+                "{label} must be <= 80 chars (got {}): {text}",
+                text.chars().count()
+            );
+            assert!(
+                !text.ends_with('.'),
+                "{label} must not end with '.': {text}"
+            );
+            assert!(
+                text.contains("VarDictJava"),
+                "{label} must contain 'VarDictJava': {text}"
+            );
+            assert!(
+                !text.contains("--compat"),
+                "{label} must not contain '--compat': {text}"
+            );
+        }
         for needle in [
             r"\-\-vcf\-cluster\-dist",
             r"\-\-vcf\-all\-alleles",

@@ -478,9 +478,7 @@ pub(crate) fn write_manpage<W: Write>(out: &mut W) -> io::Result<()> {
     writeln!(
         out,
         "{}",
-        escape_roff(
-            "vardictrust - fast, memory-safe Rust somatic and germline NGS variant caller (VarDictJava v1.8.3 parity + opt-in --compat=off fixes)"
-        )
+        escape_roff("vardictrust - fast somatic & germline variant caller (drop-in VarDictJava)")
     )?;
     writeln!(out, ".SH SYNOPSIS")?;
     writeln!(
