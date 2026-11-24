@@ -81,8 +81,8 @@ class TestBiocondaRecipe(unittest.TestCase):
         ws_pkg = (cargo_cfg.get("workspace") or {}).get("package") or {}
         self.assertEqual(
             ws_pkg.get("license"),
-            "MIT AND GPL-2.0-or-later",
-            "Root Cargo.toml must match the recipe SPDX license expression",
+            "MIT",
+            "Root Cargo.toml must declare pure MIT SPDX license expression",
         )
 
     def test_cargo_workspace_msrv_inheritance(self):
@@ -374,11 +374,12 @@ class TestBiocondaRecipe(unittest.TestCase):
     def test_cargo_deny_license_allow_list(self):
         deny_path = ROOT_DIR / "deny.toml"
         content = deny_path.read_text(encoding="utf-8")
-        self.assertIn(
+        self.assertNotIn(
             '"GPL-2.0-or-later"',
             content,
-            "deny.toml must allow GPL-2.0-or-later",
+            "deny.toml must forbid GPL-2.0-or-later",
         )
+        self.assertIn('"MIT"', content)
         self.assertIn("[graph]", content, "deny.toml must define [graph] section")
         self.assertIn("all-features = true", content, "deny.toml must set all-features = true")
         self.assertIn("[sources]", content, "deny.toml must define [sources] section")
@@ -474,7 +475,9 @@ class TestBiocondaRecipe(unittest.TestCase):
     def test_meta_yaml_metadata(self):
         meta = META_PATH.read_text(encoding="utf-8")
         self.assertIn('{% set name = "vardictrust" %}', meta, "Package name must be 'vardictrust'")
-        self.assertIn("license: MIT AND GPL-2.0-or-later", meta, "License must be MIT AND GPL-2.0-or-later")
+        self.assertIn("license: MIT\n", meta, "License must be MIT")
+        self.assertIn("license_family: MIT", meta, "License family must be MIT")
+        self.assertNotIn("GPL", meta, "meta.yaml must not contain GPL")
         self.assertIn("LICENSE-3RD-PARTY", meta, "license_file must include LICENSE-3RD-PARTY")
         self.assertIn("THIRDPARTY.yml", meta, "license_file must include THIRDPARTY.yml")
         self.assertIn("recipe-maintainers:", meta, "extra must list recipe-maintainers")

@@ -1,4 +1,4 @@
-//! Fisher's Exact Test implementation mirroring VarDictJava's R-matching implementation.
+//! Fisher's Exact Test implementation matching VarDictJava (`--fisher` and default exact modes).
 
 use crate::types::round_half_even;
 
@@ -226,7 +226,7 @@ impl FisherExact {
         } else {
             for i in 0..len {
                 let element = self.lo.saturating_add(i as i32);
-                let mut value = crate::stats::rmath::dhyper::dhyper(
+                let mut value = crate::stats::hypergeom::hypergeom_pmf(
                     element as f64,
                     m as f64,
                     n as f64,
@@ -572,7 +572,7 @@ impl FisherExact {
             }
         }
         if upper_tail {
-            crate::stats::rmath::phyper::phyper(
+            crate::stats::hypergeom::hypergeom_cdf(
                 (i64::from(q) - 1) as f64,
                 self.m as f64,
                 self.n as f64,
@@ -580,7 +580,7 @@ impl FisherExact {
                 false,
             )
         } else {
-            crate::stats::rmath::phyper::phyper(
+            crate::stats::hypergeom::hypergeom_cdf(
                 q as f64,
                 self.m as f64,
                 self.n as f64,
@@ -639,8 +639,8 @@ impl FisherExact {
             )
         } else {
             (
-                crate::stats::rmath::stirlerr::stirlerr(mf),
-                crate::stats::rmath::stirlerr::stirlerr(nf),
+                crate::stats::hypergeom::stirling_error(mf),
+                crate::stats::hypergeom::stirling_error(nf),
             )
         };
         let half_log_scale_minus_p3 = if mf > 0.0 && nf > 0.0 {
@@ -710,20 +710,20 @@ impl FisherExact {
             let kjf = kj as f64;
             let nkjf = (self.n64 - kj) as f64;
             let lc = (c.stirl_m
-                - crate::stats::rmath::stirlerr::stirlerr(jf)
-                - crate::stats::rmath::stirlerr::stirlerr(mjf)
-                - crate::stats::rmath::bd0::bd0(jf, c.mp)
-                - crate::stats::rmath::bd0::bd0(mjf, c.mq))
+                - crate::stats::hypergeom::stirling_error(jf)
+                - crate::stats::hypergeom::stirling_error(mjf)
+                - crate::stats::hypergeom::binomial_deviance(jf, c.mp)
+                - crate::stats::hypergeom::binomial_deviance(mjf, c.mq))
                 + (c.stirl_n
-                    - crate::stats::rmath::stirlerr::stirlerr(kjf)
-                    - crate::stats::rmath::stirlerr::stirlerr(nkjf)
-                    - crate::stats::rmath::bd0::bd0(kjf, c.np)
-                    - crate::stats::rmath::bd0::bd0(nkjf, c.nq));
+                    - crate::stats::hypergeom::stirling_error(kjf)
+                    - crate::stats::hypergeom::stirling_error(nkjf)
+                    - crate::stats::hypergeom::binomial_deviance(kjf, c.np)
+                    - crate::stats::hypergeom::binomial_deviance(nkjf, c.nq));
             let prod = (jf * mjf) * (kjf * nkjf);
             lc - 0.5 * prod.ln() + c.half_log_scale_minus_p3
         } else {
-            let p1 = crate::stats::rmath::dbinom_raw::dbinom_raw(j as f64, c.mf, c.p, c.q, true);
-            let p2 = crate::stats::rmath::dbinom_raw::dbinom_raw(kj as f64, c.nf, c.p, c.q, true);
+            let p1 = crate::stats::hypergeom::log_binomial_pmf(j as f64, c.mf, c.p, c.q);
+            let p2 = crate::stats::hypergeom::log_binomial_pmf(kj as f64, c.nf, c.p, c.q);
             p1 + p2 - self.log_p3
         }
     }
@@ -1113,7 +1113,7 @@ impl FisherExact {
             }
         }
         if upper_tail {
-            crate::stats::rmath::phyper::phyper(
+            crate::stats::hypergeom::hypergeom_cdf(
                 (q64 - 1) as f64,
                 self.m64 as f64,
                 self.n64 as f64,
@@ -1121,7 +1121,7 @@ impl FisherExact {
                 false,
             )
         } else {
-            crate::stats::rmath::phyper::phyper(
+            crate::stats::hypergeom::hypergeom_cdf(
                 q64 as f64,
                 self.m64 as f64,
                 self.n64 as f64,
@@ -1273,7 +1273,7 @@ fn compute_log_p3_i64(m64: i64, n64: i64, k64: i64, java_fisher: bool) -> f64 {
     } else if k64 == 0 {
         0.0
     } else {
-        crate::stats::rmath::dbinom_raw::dbinom_raw(k64 as f64, pop, p, q, true)
+        crate::stats::hypergeom::log_binomial_pmf(k64 as f64, pop, p, q)
     }
 }
 
@@ -1372,7 +1372,7 @@ fn round_as_r_java(value: f64) -> f64 {
     }
 }
 
-/// Ports R 4.x `round(value, 5)` (`nmath/fround.c`) for non-`--fisher` R mode:
+/// Exact IEEE-754 `f64` 5-decimal round-half-to-even for non-`--fisher` mode:
 /// compares the two bounding 5-decimal candidates `floor(x * 1e5) / 1e5` and
 /// `ceil(x * 1e5) / 1e5` directly against `x` in IEEE-754 `f64`, breaking exact
 /// ties to the even integer significand.
@@ -1583,7 +1583,7 @@ mod tests {
         let f = FisherExact::new(86, 41, 0, 1);
         let p = f.p_value_two_sided;
 
-        // The exact raw value generated by R (and now correctly reproduced by Rust via dhyper port)
+        // The exact raw value generated by R (and reproduced by hypergeom_pmf)
         let r_raw = 0.32812500000000006;
 
         assert!(

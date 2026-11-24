@@ -1387,13 +1387,19 @@ mod task3_tests {
 }
 
 #[inline]
-fn cigar_contains_dlen_d(
+fn cigar_contains_dlen_d_compat(
     cigar: &[(u32, noodles::sam::alignment::record::cigar::op::Kind)],
     dlen: i32,
+    exact_dlen: bool,
 ) -> bool {
     use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
     if dlen < 0 {
         return false;
+    }
+    if exact_dlen {
+        return cigar
+            .iter()
+            .any(|&(len, k)| k == CigarKind::Deletion && u64::from(len) == dlen as u64);
     }
     let d = dlen as u64;
     let m = 10u64.pow(d.checked_ilog10().unwrap_or(0) + 1);
@@ -1402,17 +1408,26 @@ fn cigar_contains_dlen_d(
         .any(|&(len, k)| k == CigarKind::Deletion && (len as u64) >= d && (len as u64) % m == d)
 }
 
+#[cfg(test)]
+#[inline]
+fn cigar_contains_dlen_d(
+    cigar: &[(u32, noodles::sam::alignment::record::cigar::op::Kind)],
+    dlen: i32,
+) -> bool {
+    cigar_contains_dlen_d_compat(cigar, dlen, false)
+}
+
 #[inline]
 fn accum_no_passing_read_record(
     record: &crate::bam::SamRecord,
     dlen: i32,
-    start: i32,
-    end: i32,
+    (start, end): (i32, i32),
     include_eqx: bool,
+    exact_dlen: bool,
     cnt: &mut i32,
     midcnt: &mut i32,
 ) {
-    if cigar_contains_dlen_d(&record.cigar, dlen) {
+    if cigar_contains_dlen_d_compat(&record.cigar, dlen, exact_dlen) {
         return;
     }
     let read_start = match record.alignment_start {
@@ -1444,6 +1459,7 @@ pub fn no_passing_reads(
     let mut midcnt = 0;
     let dlen = end.saturating_sub(start);
     let include_eqx = config.compat.eqx_cigar_read_length;
+    let exact_dlen = config.compat.exact_cigar_dlen_match;
 
     'bam: for bam in bams {
         let bam_path = std::path::Path::new(bam);
@@ -1480,9 +1496,9 @@ pub fn no_passing_reads(
             accum_no_passing_read_record(
                 &record,
                 dlen,
-                start,
-                end,
+                (start, end),
                 include_eqx,
+                exact_dlen,
                 &mut cnt,
                 &mut midcnt,
             );
@@ -1518,7 +1534,7 @@ mod task13_tests {
         ];
         let mut cnt = 0;
         let mut midcnt = 0;
-        accum_no_passing_read_record(&record, 50, 100, 150, false, &mut cnt, &mut midcnt);
+        accum_no_passing_read_record(&record, 50, (100, 150), false, false, &mut cnt, &mut midcnt);
         assert_eq!(cnt, 1);
         assert_eq!(midcnt, 0);
 
@@ -1529,8 +1545,8 @@ mod task13_tests {
         accum_no_passing_read_record(
             &record,
             (-5i32).saturating_sub(i32::MIN),
-            i32::MIN,
-            -5,
+            (i32::MIN, -5),
+            false,
             false,
             &mut neg_cnt,
             &mut neg_midcnt,
@@ -1618,6 +1634,133 @@ mod task13_tests {
             !no_passing_reads("chr1", 50, 60, &bams, &cfg_off),
             "COMPAT_OFF must count 150= spanning reads in no_passing_reads -> cnt == 1"
         );
+    }
+
+    #[test]
+    fn compat_off_exact_cigar_dlen_match_ignores_decimal_suffix_deletions() {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk, index::LinearIndex,
+        };
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        let dir = tempfile::tempdir().unwrap();
+        let write_del_bam = |name: &str, del_len: usize| -> String {
+            let bam_path = dir.path().join(format!("{name}.bam"));
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(1000usize.try_into().unwrap())
+                .build()
+                .unwrap();
+            let hd = Header::builder().add_reference_sequence("chr1", rs).build();
+            let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            let mut w = noodles::bam::io::Writer::from(bgzf);
+            w.write_alignment_header(&hd).unwrap();
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+
+            // 50M<del_len>D50M starting at 80 (< 100 - 2 = 98) and ending at 80 + 100 + del_len (> 105 + 2 = 107).
+            let cigar: Cigar = [
+                Op::new(CigarKind::Match, 50),
+                Op::new(CigarKind::Deletion, del_len),
+                Op::new(CigarKind::Match, 50),
+            ]
+            .into_iter()
+            .collect();
+            let rec = RecordBuf::builder()
+                .set_name(name)
+                .set_flags(noodles::sam::alignment::record::Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(80usize).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(vec![b'A'; 100].into())
+                .set_quality_scores(vec![40u8; 100].into())
+                .build();
+            let vstart = w.get_ref().virtual_position();
+            w.write_alignment_record(&hd, &rec).unwrap();
+            let vend = w.get_ref().virtual_position();
+            let s = Position::try_from(80usize).unwrap();
+            let e = Position::try_from(80usize + 100 + del_len - 1).unwrap();
+            indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(vstart, vend))
+                .unwrap();
+            w.try_finish().unwrap();
+
+            let mut bai_path = bam_path.clone();
+            bai_path.set_extension("bam.bai");
+            bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+            bam_path.to_string_lossy().into_owned()
+        };
+
+        let cfg_vj = crate::config::Config {
+            compat: crate::config::COMPAT_VARDICTJAVA_1_8_3,
+            ..crate::config::Config::default()
+        };
+        let cfg_off = crate::config::Config {
+            compat: crate::config::COMPAT_OFF,
+            ..crate::config::Config::default()
+        };
+
+        // Decimal-suffix deletions (15D, 25D, 105D) falsely match dlen=5 ("5D") under
+        // COMPAT_VARDICTJAVA_1_8_3 (skipping the spanning read -> no_passing_reads == true),
+        // but do NOT match dlen=5 under COMPAT_OFF (counting the spanning read -> false).
+        for del_len in [15usize, 25, 105] {
+            let bams = vec![write_del_bam(&format!("del_{del_len}d"), del_len)];
+            assert!(
+                no_passing_reads("chr1", 100, 105, &bams, &cfg_vj),
+                "COMPAT_VARDICTJAVA_1_8_3 must treat 50M{del_len}D50M as containing '5D' -> no_passing_reads == true"
+            );
+            assert!(
+                !no_passing_reads("chr1", 100, 105, &bams, &cfg_off),
+                "COMPAT_OFF must NOT treat 50M{del_len}D50M as matching 5D -> no_passing_reads == false"
+            );
+        }
+
+        // Exact 50M5D50M still matches dlen=5 in BOTH modes (read skipped -> no_passing_reads == true).
+        let exact_5d_bams = vec![write_del_bam("del_5d", 5)];
+        assert!(
+            no_passing_reads("chr1", 100, 105, &exact_5d_bams, &cfg_vj),
+            "COMPAT_VARDICTJAVA_1_8_3 must match exact 50M5D50M -> no_passing_reads == true"
+        );
+        assert!(
+            no_passing_reads("chr1", 100, 105, &exact_5d_bams, &cfg_off),
+            "COMPAT_OFF must still match exact 50M5D50M -> no_passing_reads == true"
+        );
+
+        // Direct unit checks on cigar_contains_dlen_d_compat edge cases:
+        assert!(!cigar_contains_dlen_d_compat(
+            &[(5, CigarKind::Deletion)],
+            -1,
+            true
+        ));
+        assert!(!cigar_contains_dlen_d_compat(
+            &[(5, CigarKind::Deletion)],
+            i32::MIN,
+            true
+        ));
+        assert!(!cigar_contains_dlen_d_compat(
+            &[(5, CigarKind::Match)],
+            5,
+            true
+        ));
+        assert!(!cigar_contains_dlen_d_compat(
+            &[(u32::MAX, CigarKind::Deletion)],
+            i32::MAX,
+            true
+        ));
+        assert!(cigar_contains_dlen_d_compat(
+            &[(i32::MAX as u32, CigarKind::Deletion)],
+            i32::MAX,
+            true
+        ));
     }
 
     fn cigar_contains_dlen_d_legacy(cigar: &[(u32, CigarKind)], dlen: i32) -> bool {
@@ -3832,7 +3975,8 @@ pub fn realignlgins30(
             if !((cnt5 as f64) / (cnt3 as f64) >= 0.08 && (cnt5 as f64) / (cnt3 as f64) <= 12.0) {
                 continue;
             }
-            let match35 = find_35_match(seq5, seq3, config.verbose);
+            let match35 =
+                find_35_match_compat(seq5, seq3, config.verbose, config.compat.exact_35_overlap);
             let bp5 = match35.matched_5_end as isize;
             let bp3 = match35.matched_3_end as isize;
             let score = match35.max_matched_length;
@@ -5091,7 +5235,16 @@ fn load_u64_le(slice: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
+/// Find overlap between 5' and 3' soft-clip consensus sequences, optionally omitting
+/// VarDictJava v1.8.3's out-of-bounds `rem5 < rem3` sentinel (`CompatProfile::exact_35_overlap`).
+///
+/// Ports `VariationRealigner.java:2006-2042` (`#34` `PB-2`).
+pub fn find_35_match_compat(
+    seq5: &[u8],
+    seq3: &[u8],
+    verbose: bool,
+    exact_35_overlap: bool,
+) -> Match35 {
     let long_mismatch = 2;
     let mut max_matched_length = 0;
     let mut b3 = 0;
@@ -5100,7 +5253,8 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     let len5 = seq5.len();
     let len3 = seq3.len();
 
-    if len5 <= 9 || len3 <= 9 {
+    let min_len5 = if exact_35_overlap { 8 } else { 9 };
+    if len5 <= min_len5 || len3 <= 9 {
         return Match35 {
             matched_5_end: 0,
             matched_3_end: 0,
@@ -5143,7 +5297,8 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
         &rev3_w0_heap
     };
 
-    for i in 0..(len5 - 9) {
+    let i_end = if exact_35_overlap { len5 - 8 } else { len5 - 9 };
+    for i in 0..i_end {
         let rem5 = len5 - i;
         let w5_0 = load_u64_le(seq5, i);
         let mut cur_j = 0usize;
@@ -5157,12 +5312,16 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
 
             let j = j_idx + 1;
             let rem3 = len3 - j + 1;
-            if (mm0 == 2 && ((rem5 < rem3 && rem5 < 31) || (rem5 >= rem3 && rem3 < 21)))
+            let valid_len = rem3.min(rem5);
+            if exact_35_overlap {
+                if (mm0 == 2 && valid_len < 21) || (mm0 == 1 && valid_len < 11) {
+                    continue;
+                }
+            } else if (mm0 == 2 && ((rem5 < rem3 && rem5 < 31) || (rem5 >= rem3 && rem3 < 21)))
                 || (mm0 == 1 && rem5 < rem3 && rem5 < 20)
             {
                 continue;
             }
-            let valid_len = rem3.min(rem5);
             let s3 = rev3.get(j_idx..(j_idx + valid_len)).unwrap_or(&[]);
             let s5 = seq5.get(i..(i + valid_len)).unwrap_or(&[]);
             let mut number_of_mismatch = mm0;
@@ -5191,7 +5350,7 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
                     total_length += 1;
                 }
             }
-            if number_of_mismatch <= long_mismatch && rem5 < rem3 {
+            if !exact_35_overlap && number_of_mismatch <= long_mismatch && rem5 < rem3 {
                 // Legacy while-loop sentinel iteration at i + total_length == len5
                 number_of_mismatch += 1;
                 if number_of_mismatch <= long_mismatch {
@@ -5228,11 +5387,17 @@ pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     }
 }
 
+#[inline]
+pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
+    find_35_match_compat(seq5, seq3, verbose, false)
+}
+
 #[cfg(test)]
 mod task7_tests {
     #[test]
     fn find_35_match_matches_legacy_on_random_and_adversarial_corpus() {
         crate::variations::util::tests::run_find_35_match_diff_suite();
+        crate::variations::util::tests::run_find_35_match_exact_diff_suite();
     }
 }
 

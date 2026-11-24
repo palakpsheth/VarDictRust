@@ -1,4 +1,4 @@
-pub mod rmath;
+pub mod hypergeom;
 pub mod zeroin;
 
 pub use fisher::FisherExact;

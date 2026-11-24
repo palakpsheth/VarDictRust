@@ -53,4 +53,4 @@ These two surfaces depend on live upstream artifacts and must **not** have their
 ### Advisory External Registry Portals (Verified in Phase 3C)
 
 - **ReadTheDocs Project Admin (`vardictrust.readthedocs.io`):** Verify `description` and `project_url` (`https://github.com/palakpsheth/VarDictRust`) in the ReadTheDocs project dashboard alongside `zensical.toml` `site_description`.
-- **ELIXIR `bio.tools` (`biotools:vardictrust`):** Update `version` (`X.Y.Z`), license (`MIT AND GPL-2.0-or-later`), and dual-mode `--compat=vardictjava` / `--compat=off` summary at `https://bio.tools/vardictrust` (matching `packaging/bioconda/recipes/vardictrust/meta.yaml` and `packaging/nf-core/modules/vardictrust/meta.yml`).
+- **ELIXIR `bio.tools` (`biotools:vardictrust`):** Update `version` (`X.Y.Z`), license (`MIT`), and dual-mode `--compat=vardictjava` / `--compat=off` summary at `https://bio.tools/vardictrust` (matching `packaging/bioconda/recipes/vardictrust/meta.yaml` and `packaging/nf-core/modules/vardictrust/meta.yml`).

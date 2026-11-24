@@ -373,9 +373,70 @@ pub fn adj_ref_cnt(tv: &Variation, ref_var: &mut Variation, len: i32) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::realign::{find_35_match, Match35};
+    use crate::realign::{find_35_match, find_35_match_compat, Match35};
     use crate::variations::{Sclip, Variation};
     use std::collections::BTreeMap;
+
+    fn find_35_match_exact_legacy(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
+        let long_mismatch = 2;
+        let mut max_matched_length = 0;
+        let mut b3 = 0;
+        let mut b5 = 0;
+
+        let len5 = seq5.len();
+        let len3 = seq3.len();
+
+        if len5 < 8 || len3 < 8 {
+            return Match35 {
+                matched_5_end: 0,
+                matched_3_end: 0,
+                max_matched_length: 0,
+            };
+        }
+
+        for i in 0..(len5 - 8) {
+            for j in 1..(len3 - 8) {
+                let mut number_of_mismatch = 0;
+                let mut total_length = 0;
+                while total_length + j <= len3 && i + total_length < len5 {
+                    let idx3 = len3 - j - total_length;
+                    if seq3[idx3] != seq5[i + total_length] {
+                        number_of_mismatch += 1;
+                    }
+                    if number_of_mismatch > long_mismatch {
+                        break;
+                    }
+                    total_length += 1;
+                }
+                let score = total_length as i32 - number_of_mismatch;
+                if score > max_matched_length
+                    && score > 8
+                    && (number_of_mismatch as f64) / (total_length as f64) < 0.1
+                    && (total_length + j >= len3 || i + total_length >= len5)
+                {
+                    max_matched_length = score;
+                    b3 = j as i32;
+                    b5 = i as i32;
+                    if verbose {
+                        crate::verbose_eprintln!(
+                            "      Found 35 Match, seq5_len={}, seq3_len={}, total_length={}, mismatch={}, i={}, j={}",
+                            len5, len3, total_length, number_of_mismatch, i, j
+                        );
+                    }
+                    return Match35 {
+                        matched_5_end: b5,
+                        matched_3_end: b3,
+                        max_matched_length,
+                    };
+                }
+            }
+        }
+        Match35 {
+            matched_5_end: b5,
+            matched_3_end: b3,
+            max_matched_length,
+        }
+    }
 
     fn find_35_match_legacy(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
         let long_mismatch = 2;
@@ -666,6 +727,261 @@ pub(crate) mod tests {
     #[test]
     fn find_35_match_matches_legacy_on_random_and_adversarial_corpus() {
         run_find_35_match_diff_suite();
+    }
+
+    pub(crate) fn run_find_35_match_exact_diff_suite() {
+        let assert_both = |s5: &[u8], s3: &[u8], ctx: &str| {
+            let legacy_vj = find_35_match_legacy(s5, s3, false);
+            assert_eq!(
+                find_35_match_compat(s5, s3, false, false),
+                legacy_vj,
+                "compat(false) vs legacy mismatch: {ctx}"
+            );
+            assert_eq!(
+                find_35_match(s5, s3, false),
+                legacy_vj,
+                "find_35_match vs legacy mismatch: {ctx}"
+            );
+            assert_eq!(
+                find_35_match_compat(s5, s3, false, true),
+                find_35_match_exact_legacy(s5, s3, false),
+                "compat(true) vs exact_legacy mismatch: {ctx}"
+            );
+        };
+
+        for l5 in 0..=12 {
+            for l3 in 0..=12 {
+                let s5 = vec![b'A'; l5];
+                let s3 = vec![b'A'; l3];
+                assert_both(&s5, &s3, &format!("short l5={l5}, l3={l3}"));
+            }
+        }
+
+        let base_motif = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGT";
+        for rem5_len in 8..=32 {
+            for rem3_len in 9..=35 {
+                for mm_count in 0..=4 {
+                    let mut s5 = base_motif[..rem5_len].to_vec();
+                    for k in 0..mm_count.min(rem5_len) {
+                        s5[k * 2 % rem5_len] = b'N';
+                    }
+                    let mut s3_rev = vec![b'T'; rem3_len];
+                    let copy_len = rem5_len.min(rem3_len);
+                    s3_rev[..copy_len].copy_from_slice(&base_motif[..copy_len]);
+                    let s3: Vec<u8> = s3_rev.into_iter().rev().collect();
+                    assert_both(
+                        &s5,
+                        &s3,
+                        &format!("adversarial rem5={rem5_len}, rem3={rem3_len}, mm={mm_count}"),
+                    );
+                }
+            }
+        }
+
+        const ALPHABET: &[u8; 5] = b"ACGTN";
+        let mut state: u64 = 0xD1B5_4A32_D192_ED03;
+        let mut next_u64 = || -> u64 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for case_idx in 0..10_000 {
+            let len5 = (next_u64() as usize) % 60;
+            let len3 = (next_u64() as usize) % 60;
+            let mut s5: Vec<u8> = (0..len5)
+                .map(|_| ALPHABET[(next_u64() as usize) % 5])
+                .collect();
+            let mut s3: Vec<u8> = (0..len3)
+                .map(|_| ALPHABET[(next_u64() as usize) % 5])
+                .collect();
+            if case_idx % 2 == 1 && len5 >= 9 && len3 >= 10 {
+                let max_ov = len5.min(len3 - 1);
+                let ov = 8 + ((next_u64() as usize) % (max_ov - 7).max(1));
+                let i_off = (next_u64() as usize) % (len5.saturating_sub(ov)).max(1);
+                let j_off = 1 + ((next_u64() as usize) % (len3.saturating_sub(ov)).max(1));
+                for t in 0..ov {
+                    if i_off + t < len5 && j_off + t <= len3 {
+                        s3[len3 - j_off - t] = s5[i_off + t];
+                    }
+                }
+                let mm = (next_u64() as usize) % 5;
+                for _ in 0..mm {
+                    let t = (next_u64() as usize) % ov;
+                    if i_off + t < len5 {
+                        s5[i_off + t] ^= 0x01;
+                    }
+                }
+            }
+            assert_both(&s5, &s3, &format!("random #{case_idx}"));
+        }
+    }
+
+    #[test]
+    fn compat_off_exact_35_overlap_rescues_rem5_lt_rem3_assemblies() {
+        let motif: Vec<u8> = (0..60)
+            .map(|k| b"ACGT"[(k * 7 + (k / 4) * 3 + (k / 16)) % 4])
+            .collect();
+
+        // (a1) mm0 == 2 on a 25-bp overlap with rem5 = 25 < rem3 = 35 (2 / 25 = 0.08 < 0.1),
+        // mismatches at indices 6 and 7 inside the first 8-byte word (mm0 == 2).
+        // Under COMPAT_VARDICTJAVA_1_8_3, i = 0..=6 is killed by realign.rs:5160 (`rem5 < 31`)
+        // and :5196 (`mm = 3 > 2`), and i = 7 is killed by :5161 (`rem5 = 18 < 20`), so it
+        // misses the full overlap at (0, 1) and falls through to truncated (8, 9, 17).
+        let mut s5_25_mm0_2 = motif[..25].to_vec();
+        let mut s3_rev_35 = motif[..35].to_vec();
+        s3_rev_35[34] = b'G'; // Ensure non-low-complexity 35-bp 3' consensus ending in 'G' (distinct from 'T' ref).
+        s5_25_mm0_2[6] = b'N';
+        s5_25_mm0_2[7] = b'N';
+        let s3_35: Vec<u8> = s3_rev_35.iter().copied().rev().collect();
+        assert_eq!(
+            find_35_match_compat(&s5_25_mm0_2, &s3_35, false, false),
+            Match35 {
+                matched_5_end: 8,
+                matched_3_end: 9,
+                max_matched_length: 17,
+            },
+            "COMPAT_VARDICTJAVA_1_8_3 must skip i=0..=7 via :5160/:5161/:5196 sentinel and truncate to (8, 9, 17)"
+        );
+        assert_eq!(
+            find_35_match_compat(&s5_25_mm0_2, &s3_35, false, true),
+            Match35 {
+                matched_5_end: 0,
+                matched_3_end: 1,
+                max_matched_length: 23,
+            },
+            "COMPAT_OFF must rescue full mm0=2, rem5=25 < rem3=35 overlap at (0, 1, 23)"
+        );
+
+        // (a2) 2-mismatch 25-bp overlap (mismatches at indices 6 and 16, rem5 = 25 < rem3 = 35):
+        // Under COMPAT_VARDICTJAVA_1_8_3, killed across ALL i by :5196 (`mm = 3 > 2`) and :5161,
+        // returning (0, 0, 0) and dropping the realignlgins30 assembly completely.
+        let mut s5_25 = motif[..25].to_vec();
+        s5_25[6] = b'N';
+        s5_25[16] = b'N';
+        assert_eq!(
+            find_35_match_compat(&s5_25, &s3_35, false, false),
+            Match35 {
+                matched_5_end: 0,
+                matched_3_end: 0,
+                max_matched_length: 0,
+            },
+            "COMPAT_VARDICTJAVA_1_8_3 must drop 2-mismatch rem5=25 < rem3=35 assembly via :5196 sentinel"
+        );
+        assert_eq!(
+            find_35_match_compat(&s5_25, &s3_35, false, true),
+            Match35 {
+                matched_5_end: 0,
+                matched_3_end: 1,
+                max_matched_length: 23,
+            },
+            "COMPAT_OFF must rescue 2-mismatch rem5=25 < rem3=35 (2/25 = 0.08 < 0.1, score = 23)"
+        );
+
+        // Verify end-to-end realignlgins30 wiring of config.compat.exact_35_overlap:
+        let run_lgins30 = |compat: crate::config::CompatProfile| -> bool {
+            let mut reference = crate::reference::Reference::new();
+            reference
+                .reference_sequences
+                .insert("chr1".to_string(), vec![b'T'; 1000]);
+            reference
+                .loaded_regions
+                .push(crate::reference::LoadedRegion {
+                    chr: "chr1".to_string(),
+                    sequence_start: 1,
+                    sequence_end: 1000,
+                });
+            reference.region_sequences.push(vec![b'T'; 1000]);
+            let region = crate::regions::Region {
+                chr: "chr1".to_string(),
+                start: crate::types::Pos1(100),
+                end: crate::types::Pos1(900),
+                gene: String::new(),
+                amplicon: None,
+            };
+            let config = crate::config::Config {
+                compat,
+                ..crate::config::Config::default()
+            };
+            let mut non_ins = crate::javamap::JavaHashMap::new();
+            let mut ins = crate::javamap::JavaHashMap::new();
+            let mut cov = rustc_hash::FxHashMap::default();
+            let mut sc5_map = BTreeMap::new();
+            let mut sc3_map = BTreeMap::new();
+
+            let mut sc5 = Sclip::new();
+            sc5.variation.cnt = 8;
+            sc5.variation.hicnt = 8;
+            sc5.variation.qmean = 280.0;
+            sc5.variation.mqmean = 480.0;
+            sc5.variation.pmean = 160.0;
+            sc5.sequence = Some(s5_25.clone());
+            sc5_map.insert(500, sc5);
+
+            let mut sc3 = Sclip::new();
+            sc3.variation.cnt = 8;
+            sc3.variation.hicnt = 8;
+            sc3.variation.qmean = 280.0;
+            sc3.variation.mqmean = 480.0;
+            sc3.variation.pmean = 160.0;
+            sc3.sequence = Some(s3_35.clone());
+            sc3_map.insert(500, sc3);
+
+            crate::realign::realignlgins30(
+                None,
+                &mut reference,
+                "chr1",
+                1000,
+                &region,
+                &config,
+                &mut non_ins,
+                &mut ins,
+                &mut cov,
+                &mut sc5_map,
+                &mut sc3_map,
+                150,
+            );
+            !ins.is_empty()
+        };
+        assert!(
+            !run_lgins30(crate::config::COMPAT_VARDICTJAVA_1_8_3),
+            "realignlgins30 under COMPAT_VARDICTJAVA_1_8_3 must drop rem5=25 < rem3=35 2-mismatch assembly"
+        );
+        assert!(
+            run_lgins30(crate::config::COMPAT_OFF),
+            "realignlgins30 under COMPAT_OFF must rescue rem5=25 < rem3=35 2-mismatch assembly"
+        );
+
+        // (b) mm0 == 1 on a 15-bp overlap with rem5 = 15 < rem3 = 25 (1 / 15 < 0.1).
+        // Mismatch at index 6 (inside first 8-byte word -> mm0 == 1; for i >= 7, rem5 <= 8).
+        // Under COMPAT_VARDICTJAVA_1_8_3, killed by :5161 (`mm0 == 1 && rem5 < rem3 && rem5 < 20`)
+        // and sentinel `2 / 16 = 0.125 >= 0.1`.
+        let mut s5_15 = motif[..15].to_vec();
+        s5_15[6] = b'N';
+        let s3_25: Vec<u8> = motif[..25].iter().copied().rev().collect();
+        assert_eq!(
+            find_35_match_compat(&s5_15, &s3_25, false, false),
+            Match35 {
+                matched_5_end: 0,
+                matched_3_end: 0,
+                max_matched_length: 0,
+            },
+            "COMPAT_VARDICTJAVA_1_8_3 must reject mm0=1, rem5=15 < rem3=25 via sentinel"
+        );
+        assert_eq!(
+            find_35_match_compat(&s5_15, &s3_25, false, true),
+            Match35 {
+                matched_5_end: 0,
+                matched_3_end: 1,
+                max_matched_length: 14,
+            },
+            "COMPAT_OFF must rescue mm0=1, rem5=15 < rem3=25 (1/15 < 0.1, score = 14)"
+        );
+
+        // (c) Full diff suite confirming find_35_match_compat(..., false) stays 100% identical
+        // to find_35_match_legacy and find_35_match_compat(..., true) matches find_35_match_exact_legacy.
+        run_find_35_match_diff_suite();
+        run_find_35_match_exact_diff_suite();
     }
 
     #[test]

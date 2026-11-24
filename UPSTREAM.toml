@@ -16,19 +16,22 @@ scripts = ["var2vcf_valid.pl", "var2vcf_paired.pl", "teststrandbias.R", "testsom
 artifact = "com.github.samtools:htsjdk"
 version = "2.21.0"
 ported_components = ["Cigar", "SAMRecord", "SequenceUtil"]
-
-[ported_libraries.r_nmath]
-source = "R nmath standalone (dhyper, phyper, dbinom_raw, stirlerr, bd0)"
-module = "crates/vardictrust-core/src/stats/rmath"
-license = "GPL-2.0-or-later"
-# Default --compat=vardictjava preserves exact R 4.x 5-decimal tie parity; cleanroom MIT Fisher math slated for --compat=off (v1.1.1+)
-v2_cleanroom_issue = 92
+license = "MIT"
 
 [ported_libraries.commons_math3]
 artifact = "org.apache.commons:commons-math3"
 version = "3.6.1"
 ported_components = ["HypergeometricDistribution", "SaddlePointExpansion"]
 license = "Apache-2.0"
+
+[mathematical_references.loader_2000]
+module = "crates/vardictrust-core/src/stats/hypergeom.rs"
+citations = [
+    "Catherine Loader (2000), Fast and Accurate Computation of Binomial Probabilities, HP Laboratories",
+    "Euler-Maclaurin Bernoulli Stirling remainder series",
+    "Abramowitz & Stegun (1964) §26.3.29 hypergeometric tail recurrence",
+    "Richard Brent (1973) zeroin root-finding",
+]
 
 [advisory_comparators.vardictcpp]
 package = "vardictcpp"

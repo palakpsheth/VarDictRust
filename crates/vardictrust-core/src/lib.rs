@@ -11,10 +11,11 @@
 //!   ([`config::CompatTarget::VardictJava183`]) reproduces VarDictJava v1.8.3 + `var2vcf_*.pl`
 //!   intermediate `.var` and `VCFv4.2` output across valid inputs.
 //! - **Opt-in corrections (`--compat=off`):** [`config::COMPAT_OFF`]
-//!   ([`config::CompatTarget::Off`]) enables all 13 [`config::CompatProfile`] accuracy,
-//!   bounded-scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `=`/`X` (`--eqx`) CIGAR fixes
-//!   and stamps `##VarDictRustCompat=off` in the VCF header; full 18/18 `var2vcf` post-filtering
-//!   (including multi-allelic emission via [`config::Config::vcf_all_alleles`] /
+//!   ([`config::CompatTarget::Off`]) enables all 17 [`config::CompatProfile`] accuracy,
+//!   bounded-scale, `VD <= DP` reconciliation, coordinate-sorted `.var` order, exact realignment
+//!   overlap/`dlen` matching, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `=`/`X` (`--eqx`)
+//!   CIGAR fixes, and stamps `##VarDictRustCompat=off` in the VCF header; full 18/18 `var2vcf`
+//!   post-filtering (including multi-allelic emission via [`config::Config::vcf_all_alleles`] /
 //!   `--vcf-all-alleles`) works under both profiles.
 //!
 //! # Safety
