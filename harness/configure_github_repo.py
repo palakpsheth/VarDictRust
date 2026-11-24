@@ -18,7 +18,7 @@ TAG_RULESET_ID = 24867690
 TAG_RULESET_NAME = "tag-protection-v*"
 TAG_REF_PATTERN = "refs/tags/v*"
 
-REPO_DESCRIPTION = "Fast, memory-safe Rust somatic & germline variant caller: drop-in VarDictJava v1.8.3 parity by default plus opt-in --compat=off accuracy & scale fixes"
+REPO_DESCRIPTION = "Fast somatic & germline variant caller — drop-in VarDictJava with fixes"
 REPO_TOPICS = [
     "bam",
     "bioinformatics",

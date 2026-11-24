@@ -3,7 +3,7 @@
 
 [project]
 site_name = "VarDictRust"
-site_description = "Fast, memory-safe Rust somatic and germline NGS variant caller: drop-in VarDictJava v1.8.3 parity by default with opt-in --compat=off fixes and extended VCF capabilities"
+site_description = "Fast Rust somatic & germline variant caller — drop-in VarDictJava with fixes"
 site_author = "Palak Sheth"
 site_url = "https://vardictrust.readthedocs.io/"
 repo_url = "https://github.com/palakpsheth/VarDictRust"

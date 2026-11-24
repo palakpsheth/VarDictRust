@@ -505,7 +505,9 @@ class TestBiocondaRecipe(unittest.TestCase):
             summary.endswith("."),
             f"Bioconda about.summary must not end with a period: {summary!r}",
         )
-        self.assertIn("--compat=off", summary, "Bioconda summary must highlight --compat=off")
+        self.assertIn("VarDictJava", summary)
+        self.assertNotIn("--compat", summary)
+        self.assertIn("--compat=off", meta)
         self.assertIn("biotools:vardictrust", meta, "meta.yaml must list biotools:vardictrust")
         self.assertIsNone(
             re.search(r"\bbiotools:vardict\b", meta),
@@ -592,7 +594,18 @@ class TestNfCoreModulePackaging(unittest.TestCase):
             meta_lines[1].startswith('description: "') and meta_lines[1].endswith('"'),
             f"nf-core meta.yml:2 description must be double-quoted: {meta_lines[1]!r}",
         )
-        self.assertIn("--compat=off", meta_lines[1])
+        top_desc = meta_lines[1][len('description: "') : -1]
+        self.assertLessEqual(
+            len(top_desc),
+            80,
+            f"nf-core meta.yml:2 description must be <= 80 chars (got {len(top_desc)}): {top_desc!r}",
+        )
+        self.assertFalse(
+            top_desc.endswith("."),
+            f"nf-core meta.yml:2 description must not end with a period: {top_desc!r}",
+        )
+        self.assertIn("VarDictJava", top_desc)
+        self.assertNotIn("--compat", top_desc)
         tool_block_m = re.search(
             r'^\s*-\s*"vardictrust":\s*\n\s*description:\s*("[^\n]+")',
             meta_yml,
