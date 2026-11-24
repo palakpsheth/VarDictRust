@@ -1408,6 +1408,7 @@ fn accum_no_passing_read_record(
     dlen: i32,
     start: i32,
     end: i32,
+    include_eqx: bool,
     cnt: &mut i32,
     midcnt: &mut i32,
 ) {
@@ -1418,7 +1419,7 @@ fn accum_no_passing_read_record(
         Some(Pos1(p)) => i32::try_from(p).unwrap_or(i32::MAX),
         None => return,
     };
-    let read_len = crate::bam::get_aligned_length_md(&record.cigar);
+    let read_len = crate::bam::get_aligned_length_md_compat(&record.cigar, include_eqx);
     let read_end = read_start.saturating_add(read_len);
 
     if read_end > end.saturating_add(2) && read_start < start.saturating_sub(2) {
@@ -1442,6 +1443,7 @@ pub fn no_passing_reads(
     let mut cnt = 0;
     let mut midcnt = 0;
     let dlen = end.saturating_sub(start);
+    let include_eqx = config.compat.eqx_cigar_read_length;
 
     'bam: for bam in bams {
         let bam_path = std::path::Path::new(bam);
@@ -1475,7 +1477,15 @@ pub fn no_passing_reads(
                     continue 'bam;
                 }
             }
-            accum_no_passing_read_record(&record, dlen, start, end, &mut cnt, &mut midcnt);
+            accum_no_passing_read_record(
+                &record,
+                dlen,
+                start,
+                end,
+                include_eqx,
+                &mut cnt,
+                &mut midcnt,
+            );
         }
     }
 
@@ -1508,7 +1518,7 @@ mod task13_tests {
         ];
         let mut cnt = 0;
         let mut midcnt = 0;
-        accum_no_passing_read_record(&record, 50, 100, 150, &mut cnt, &mut midcnt);
+        accum_no_passing_read_record(&record, 50, 100, 150, false, &mut cnt, &mut midcnt);
         assert_eq!(cnt, 1);
         assert_eq!(midcnt, 0);
 
@@ -1521,6 +1531,7 @@ mod task13_tests {
             (-5i32).saturating_sub(i32::MIN),
             i32::MIN,
             -5,
+            false,
             &mut neg_cnt,
             &mut neg_midcnt,
         );
@@ -1533,6 +1544,80 @@ mod task13_tests {
             &["__nonexistent_bam_for_i32_min_guard__.bam".to_string()],
             &crate::config::Config::default(),
         ));
+    }
+
+    #[test]
+    fn compat_off_no_passing_reads_counts_eqx_spanning_reads() {
+        use noodles::bam::bai;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::{
+            bin::Chunk, index::LinearIndex,
+        };
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        let dir = tempfile::tempdir().unwrap();
+        let bam_path = dir.path().join("eqx_spanning.bam");
+
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(1000usize.try_into().unwrap())
+            .build()
+            .unwrap();
+        let hd = Header::builder().add_reference_sequence("chr1", rs).build();
+        let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+        let mut w = noodles::bam::io::Writer::from(bgzf);
+        w.write_alignment_header(&hd).unwrap();
+        let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+
+        let cigar: Cigar = [Op::new(CigarKind::SequenceMatch, 150)]
+            .into_iter()
+            .collect();
+        let rec = RecordBuf::builder()
+            .set_name("wt_150eq")
+            .set_flags(noodles::sam::alignment::record::Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(10usize).unwrap())
+            .set_cigar(cigar)
+            .set_sequence(vec![b'A'; 150].into())
+            .set_quality_scores(vec![40u8; 150].into())
+            .build();
+        let vstart = w.get_ref().virtual_position();
+        w.write_alignment_record(&hd, &rec).unwrap();
+        let vend = w.get_ref().virtual_position();
+        let s = Position::try_from(10usize).unwrap();
+        let e = Position::try_from(159usize).unwrap();
+        indexer
+            .add_record(Some((0, s, e, true)), Chunk::new(vstart, vend))
+            .unwrap();
+        w.try_finish().unwrap();
+
+        let mut bai_path = bam_path.clone();
+        bai_path.set_extension("bam.bai");
+        bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+            .write_index(&indexer.build(1))
+            .unwrap();
+
+        let bams = vec![bam_path.to_string_lossy().into_owned()];
+        let cfg_default = crate::config::Config::default();
+        assert!(
+            no_passing_reads("chr1", 50, 60, &bams, &cfg_default),
+            "default profile ignores 150= in get_aligned_length_md -> cnt == 0"
+        );
+
+        let cfg_off = crate::config::Config {
+            compat: crate::config::COMPAT_OFF,
+            ..crate::config::Config::default()
+        };
+        assert!(
+            !no_passing_reads("chr1", 50, 60, &bams, &cfg_off),
+            "COMPAT_OFF must count 150= spanning reads in no_passing_reads -> cnt == 1"
+        );
     }
 
     fn cigar_contains_dlen_d_legacy(cigar: &[(u32, CigarKind)], dlen: i32) -> bool {

@@ -2,7 +2,7 @@
 //! Ports var2vcf_valid.pl.
 
 use crate::config::Config;
-use crate::output::table::{push_java_rounded, push_keep, push_stripped};
+use crate::output::table::{push_java_rounded_compat, push_keep_compat, push_stripped_compat};
 use crate::regions::Region;
 use crate::variations::Variant;
 use std::collections::HashMap;
@@ -16,11 +16,17 @@ use std::io::{self, Write};
 /// - Without `--fisher` (`fisher == false`), `teststrandbias.R` / `testsomatic.R`
 ///   parses numeric columns and `write.table` strips both trailing zeros and trailing `.`.
 #[inline]
-fn push_vcf_rounded(buf: &mut String, fisher: bool, value: f64, digits: i32) {
+fn push_vcf_rounded(
+    buf: &mut String,
+    fisher: bool,
+    value: f64,
+    digits: i32,
+    exact_binary_half_even: bool,
+) {
     if fisher {
-        push_java_rounded(buf, value, digits);
+        push_java_rounded_compat(buf, value, digits, exact_binary_half_even);
     } else {
-        push_stripped(buf, value, digits);
+        push_stripped_compat(buf, value, digits, exact_binary_half_even);
     }
 }
 
@@ -899,6 +905,24 @@ pub(crate) fn parse_sv_counts(sv: &str) -> (i32, i32) {
     (splitreads, spanpairs)
 }
 
+#[inline]
+fn sv_dropped_by_splitreads(
+    variant: &Variant,
+    config: &Config,
+    amp: Option<(i32, i32, i32, bool)>,
+) -> bool {
+    if amp.is_some() || !variant.var_allele.contains('<') {
+        return false;
+    }
+    let (splitreads, spanpairs) = parse_sv_counts(&variant.sv);
+    let explicit = config.vcf_min_splitreads_explicit || config.vcf_min_splitreads != 1;
+    if config.compat.preserve_discordant_svs && !explicit {
+        splitreads < 1 && spanpairs < 1
+    } else {
+        splitreads < config.vcf_min_splitreads
+    }
+}
+
 struct ValidThresholds {
     min_depth: i32,
     min_vd: i32,
@@ -969,16 +993,17 @@ fn has_non_fisher_valid_filter(
     thr: &ValidThresholds,
     amp: Option<(i32, i32, i32, bool)>,
 ) -> bool {
+    let exact_tie = config.compat.exact_binary_half_even;
     let dp = variant.total_pos_cov;
     let hicnt = variant.hicnt;
-    let af = crate::types::round_half_even(variant.frequency, 4);
-    let pmean = crate::types::round_half_even(variant.mean_position, 1);
-    let qmean = crate::types::round_half_even(variant.mean_quality, 1);
-    let mapq = crate::types::round_half_even(variant.mean_mapping_quality, 1);
-    let nm = crate::types::round_half_even(variant.nm, 1).max(0.0);
-    let hiaf = crate::types::round_half_even(variant.hi_freq, 4);
-    let sn = crate::types::round_half_even(variant.hq_lq_ratio, 3);
-    let msi = crate::types::round_half_even(variant.msi, 3);
+    let af = crate::types::round_half_even_compat(variant.frequency, 4, exact_tie);
+    let pmean = crate::types::round_half_even_compat(variant.mean_position, 1, exact_tie);
+    let qmean = crate::types::round_half_even_compat(variant.mean_quality, 1, exact_tie);
+    let mapq = crate::types::round_half_even_compat(variant.mean_mapping_quality, 1, exact_tie);
+    let nm = crate::types::round_half_even_compat(variant.nm, 1, exact_tie).max(0.0);
+    let hiaf = crate::types::round_half_even_compat(variant.hi_freq, 4, exact_tie);
+    let sn = crate::types::round_half_even_compat(variant.hq_lq_ratio, 3, exact_tie);
+    let msi = crate::types::round_half_even_compat(variant.msi, 3, exact_tie);
     let hi_check = (hicnt as f64 * hiaf) >= 0.5;
 
     if (dp < thr.min_depth || hicnt < thr.min_vd) && !hi_check {
@@ -1009,16 +1034,16 @@ fn has_non_fisher_valid_filter(
 }
 
 #[inline]
-fn bias_non_fisher_precond(variant: &Variant) -> bool {
-    let hiaf = crate::types::round_half_even(variant.hi_freq, 4);
+fn bias_non_fisher_precond(variant: &Variant, exact_binary_half_even: bool) -> bool {
+    let hiaf = crate::types::round_half_even_compat(variant.hi_freq, 4, exact_binary_half_even);
     hiaf < 0.25
         && variant.bias == "2;1"
         && (i64::from(variant.end_pos) - i64::from(variant.start_pos)) < 100
 }
 
 #[inline]
-fn bias_fires_with_fisher(sbf: f64, oddratio_str: &str) -> bool {
-    let sbf_r = crate::types::round_half_even(sbf, 5);
+fn bias_fires_with_fisher(sbf: f64, oddratio_str: &str, exact_binary_half_even: bool) -> bool {
+    let sbf_r = crate::types::round_half_even_compat(sbf, 5, exact_binary_half_even);
     if sbf_r >= 0.01 {
         return false;
     }
@@ -1062,16 +1087,17 @@ fn collect_valid_filters_into<'a>(
     let [s_f, s_p, s_q, s_mapq, s_sn, s_nm, s_msi, _s_pval] = &mut tag_scratch.slots;
     let [s_d, s_v, s_cluster] = &mut tag_scratch.int_slots;
 
+    let exact_tie = config.compat.exact_binary_half_even;
     let dp = variant.total_pos_cov;
     let hicnt = variant.hicnt;
-    let af = crate::types::round_half_even(variant.frequency, 4);
-    let pmean = crate::types::round_half_even(variant.mean_position, 1);
-    let qmean = crate::types::round_half_even(variant.mean_quality, 1);
-    let mapq = crate::types::round_half_even(variant.mean_mapping_quality, 1);
-    let nm = crate::types::round_half_even(variant.nm, 1).max(0.0);
-    let hiaf = crate::types::round_half_even(variant.hi_freq, 4);
-    let sn = crate::types::round_half_even(variant.hq_lq_ratio, 3);
-    let msi = crate::types::round_half_even(variant.msi, 3);
+    let af = crate::types::round_half_even_compat(variant.frequency, 4, exact_tie);
+    let pmean = crate::types::round_half_even_compat(variant.mean_position, 1, exact_tie);
+    let qmean = crate::types::round_half_even_compat(variant.mean_quality, 1, exact_tie);
+    let mapq = crate::types::round_half_even_compat(variant.mean_mapping_quality, 1, exact_tie);
+    let nm = crate::types::round_half_even_compat(variant.nm, 1, exact_tie).max(0.0);
+    let hiaf = crate::types::round_half_even_compat(variant.hi_freq, 4, exact_tie);
+    let sn = crate::types::round_half_even_compat(variant.hq_lq_ratio, 3, exact_tie);
+    let msi = crate::types::round_half_even_compat(variant.msi, 3, exact_tie);
     let hi_check = (hicnt as f64 * hiaf) >= 0.5;
 
     if dp < thr.min_depth && !hi_check {
@@ -1154,7 +1180,9 @@ fn collect_valid_filters_into<'a>(
         filters.push(tag);
     }
 
-    if bias_non_fisher_precond(variant) && bias_fires_with_fisher(sbf, oddratio_str) {
+    if bias_non_fisher_precond(variant, exact_tie)
+        && bias_fires_with_fisher(sbf, oddratio_str, exact_tie)
+    {
         filters.push(FilterTag::Text("Bias"));
     }
 
@@ -1301,12 +1329,13 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         variant.var_type.as_str()
     };
 
+    let exact_tie = config.compat.exact_binary_half_even;
     // ref==alt (-p pileup reference calls) become ALT ".", GT "0/0".
     let alt_is_dot = variant.ref_allele == variant.var_allele;
     let gt = if alt_is_dot {
         "0/0"
     } else {
-        let af = crate::types::round_half_even(variant.frequency, 4);
+        let af = crate::types::round_half_even_compat(variant.frequency, 4, exact_tie);
         if 1.0 - af < gt_freq {
             "1/1"
         } else if af >= 0.5 {
@@ -1328,7 +1357,8 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         // getRoundedValueToPrint("0.0", …) / :206 DecimalFormat("0.0")), so the
         // multiplicand is the table-rounded value, not the raw mean.
         ((variant.pos_coverage as f64).ln() / std::f64::consts::LN_2
-            * crate::types::round_half_even(variant.mean_quality, 1)) as i32
+            * crate::types::round_half_even_compat(variant.mean_quality, 1, exact_tie))
+            as i32
     };
 
     buf.push_str(&region.chr);
@@ -1365,7 +1395,7 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     buf.push_str(";VD=");
     crate::util::push_i32(buf, variant.pos_coverage);
     buf.push_str(";AF=");
-    push_vcf_rounded(buf, config.fisher, variant.frequency, 4);
+    push_vcf_rounded(buf, config.fisher, variant.frequency, 4, exact_tie);
     buf.push_str(";BIAS=");
     for c in variant.bias.chars() {
         buf.push(if c == ';' { ':' } else { c });
@@ -1379,13 +1409,13 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     buf.push(':');
     crate::util::push_i32(buf, variant.rev);
     buf.push_str(";PMEAN=");
-    push_vcf_rounded(buf, config.fisher, variant.mean_position, 1);
+    push_vcf_rounded(buf, config.fisher, variant.mean_position, 1, exact_tie);
     buf.push_str(if variant.pstd { ";PSTD=1" } else { ";PSTD=0" });
     buf.push_str(";QUAL=");
-    push_vcf_rounded(buf, config.fisher, variant.mean_quality, 1);
+    push_vcf_rounded(buf, config.fisher, variant.mean_quality, 1, exact_tie);
     buf.push_str(if variant.qstd { ";QSTD=1" } else { ";QSTD=0" });
     buf.push_str(";SBF=");
-    push_vcf_rounded(buf, config.fisher, sbf, 5);
+    push_vcf_rounded(buf, config.fisher, sbf, 5, exact_tie);
     // ports var2vcf_valid.pl:147-151 + :236 interpolation: "Inf" → 0; a value in
     // (0,1) is replaced by its reciprocal and stringified with Perl's default
     // numeric format (%.15g); any other table string passes through unchanged.
@@ -1399,27 +1429,33 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         }
     }
     buf.push_str(";MQ=");
-    push_vcf_rounded(buf, config.fisher, variant.mean_mapping_quality, 1);
+    push_vcf_rounded(
+        buf,
+        config.fisher,
+        variant.mean_mapping_quality,
+        1,
+        exact_tie,
+    );
     buf.push_str(";SN=");
-    push_vcf_rounded(buf, config.fisher, variant.hq_lq_ratio, 3);
+    push_vcf_rounded(buf, config.fisher, variant.hq_lq_ratio, 3, exact_tie);
     // Java's RAW table cell for hifreq (trailing zeros kept): ports
     // SimpleOutputVariant.java:127-129 / :211 — `hifreq == 0 ? "0" :
     // new DecimalFormat("0.0000").format(hifreq)` — NOT getRoundedValueToPrint.
     // (The PAIRED writer stays stripped: testsomatic.R's 48-entry pattern
     // leaves hiaf1/hiaf2 numeric, so R re-formats them.)
     buf.push_str(";HIAF=");
-    push_keep(buf, variant.hi_freq, 4);
+    push_keep_compat(buf, variant.hi_freq, 4, exact_tie);
     buf.push_str(";ADJAF=");
-    push_vcf_rounded(buf, config.fisher, variant.extra_freq, 4);
+    push_vcf_rounded(buf, config.fisher, variant.extra_freq, 4, exact_tie);
     buf.push_str(";SHIFT3=");
     crate::util::push_i32(buf, variant.shift3);
     buf.push_str(";MSI=");
-    push_vcf_rounded(buf, config.fisher, variant.msi, 3);
+    push_vcf_rounded(buf, config.fisher, variant.msi, 3, exact_tie);
     buf.push_str(";MSILEN=");
     crate::util::push_i32(buf, variant.msint);
     buf.push_str(";NM=");
     if variant.nm > 0.0 {
-        push_keep(buf, variant.nm, 1);
+        push_keep_compat(buf, variant.nm, 1, exact_tie);
     } else {
         buf.push('0');
     }
@@ -1458,9 +1494,9 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         // numeric), i.e. a 1dp value.
         buf.push_str(";DUPRATE=");
         if config.fisher {
-            push_java_rounded(buf, variant.duprate, 2);
+            push_java_rounded_compat(buf, variant.duprate, 2, exact_tie);
         } else {
-            push_stripped(buf, variant.duprate, 1);
+            push_stripped_compat(buf, variant.duprate, 1, exact_tie);
         }
         if matches!(config.crispr_cutting_site, Some(n) if n != 0) {
             buf.push_str(";CRISPR=");
@@ -1512,7 +1548,7 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         crate::util::push_i32(buf, vd);
     }
     buf.push(':');
-    push_vcf_rounded(buf, config.fisher, variant.frequency, 4);
+    push_vcf_rounded(buf, config.fisher, variant.frequency, 4, exact_tie);
     buf.push(':');
     crate::util::push_i32(buf, variant.ref_fwd_cov);
     buf.push(',');
@@ -1841,6 +1877,7 @@ pub fn build_single_vcf_event(
         return SingleVcfEvent::Skip;
     }
 
+    let exact_tie = config.compat.exact_binary_half_even;
     let thr = ValidThresholds::from_config(config);
     let var_type = if variant.var_type.is_empty() {
         "REF"
@@ -1848,9 +1885,7 @@ pub fn build_single_vcf_event(
         variant.var_type.as_str()
     };
     let type_snv = var_type == "SNV";
-    let is_dropped_sv = amp.is_none()
-        && variant.var_allele.contains('<')
-        && parse_sv_counts(&variant.sv).0 < config.vcf_min_splitreads;
+    let is_dropped_sv = sv_dropped_by_splitreads(variant, config, amp);
 
     if config.vcf_pass_only {
         if has_non_fisher_valid_filter(variant, config, &thr, amp) {
@@ -1863,7 +1898,7 @@ pub fn build_single_vcf_event(
                 scratch.clear();
                 return SingleVcfEvent::Skip;
             }
-            if bias_non_fisher_precond(variant) {
+            if bias_non_fisher_precond(variant, exact_tie) {
                 let fisher = crate::stats::FisherExact::new_with_mode(
                     variant.ref_fwd_cov,
                     variant.ref_rev_cov,
@@ -1873,7 +1908,7 @@ pub fn build_single_vcf_event(
                 );
                 let sbf = fisher.get_p_value();
                 let oddratio_str = fisher.odds_ratio_buf();
-                if bias_fires_with_fisher(sbf, oddratio_str.as_str()) {
+                if bias_fires_with_fisher(sbf, oddratio_str.as_str(), exact_tie) {
                     scratch.clear();
                     return SingleVcfEvent::Skip;
                 }
@@ -1884,7 +1919,7 @@ pub fn build_single_vcf_event(
             };
         }
         if is_dropped_sv {
-            if bias_non_fisher_precond(variant) {
+            if bias_non_fisher_precond(variant, exact_tie) {
                 let fisher = crate::stats::FisherExact::new_with_mode(
                     variant.ref_fwd_cov,
                     variant.ref_rev_cov,
@@ -1894,7 +1929,7 @@ pub fn build_single_vcf_event(
                 );
                 let sbf = fisher.get_p_value();
                 let oddratio_str = fisher.odds_ratio_buf();
-                if bias_fires_with_fisher(sbf, oddratio_str.as_str()) {
+                if bias_fires_with_fisher(sbf, oddratio_str.as_str(), exact_tie) {
                     scratch.clear();
                     return SingleVcfEvent::Skip;
                 }
@@ -1914,7 +1949,9 @@ pub fn build_single_vcf_event(
         );
         let sbf = fisher.get_p_value();
         let oddratio_str = fisher.odds_ratio_buf();
-        if bias_non_fisher_precond(variant) && bias_fires_with_fisher(sbf, oddratio_str.as_str()) {
+        if bias_non_fisher_precond(variant, exact_tie)
+            && bias_fires_with_fisher(sbf, oddratio_str.as_str(), exact_tie)
+        {
             scratch.clear();
             return SingleVcfEvent::Skip;
         }
@@ -1946,7 +1983,7 @@ pub fn build_single_vcf_event(
     if is_dropped_sv {
         let cluster_probe_start =
             if type_snv && !has_non_fisher_valid_filter(variant, config, &thr, amp) {
-                let bias_fires = if bias_non_fisher_precond(variant) {
+                let bias_fires = if bias_non_fisher_precond(variant, exact_tie) {
                     let fisher = crate::stats::FisherExact::new_with_mode(
                         variant.ref_fwd_cov,
                         variant.ref_rev_cov,
@@ -1956,7 +1993,7 @@ pub fn build_single_vcf_event(
                     );
                     let sbf = fisher.get_p_value();
                     let oddratio_str = fisher.odds_ratio_buf();
-                    bias_fires_with_fisher(sbf, oddratio_str.as_str())
+                    bias_fires_with_fisher(sbf, oddratio_str.as_str(), exact_tie)
                 } else {
                     false
                 };
@@ -2501,9 +2538,13 @@ fn push_paired_sample_field(
     sbf: f64,
     oddratio: &(impl std::ops::Deref<Target = str>, f64),
     fisher: bool,
+    exact_binary_half_even: bool,
 ) {
-    let mq =
-        crate::types::round_half_even(crate::types::round_half_even(v.mean_mapping_quality, 1), 0);
+    let mq = crate::types::round_half_even_compat(
+        crate::types::round_half_even_compat(v.mean_mapping_quality, 1, exact_binary_half_even),
+        0,
+        exact_binary_half_even,
+    );
     buf.push_str(gt);
     buf.push(':');
     crate::util::push_i32(buf, v.total_pos_cov);
@@ -2522,32 +2563,32 @@ fn push_paired_sample_field(
     buf.push(',');
     crate::util::push_i32(buf, v.pos_coverage);
     buf.push(':');
-    push_vcf_rounded(buf, fisher, v.frequency, 4);
+    push_vcf_rounded(buf, fisher, v.frequency, 4, exact_binary_half_even);
     buf.push(':');
     push_paired_bias(buf, &v.bias);
     buf.push(':');
-    push_vcf_rounded(buf, fisher, v.mean_position, 1);
+    push_vcf_rounded(buf, fisher, v.mean_position, 1, exact_binary_half_even);
     buf.push(':');
     buf.push(if v.pstd { '1' } else { '0' });
     buf.push(':');
-    push_vcf_rounded(buf, fisher, v.mean_quality, 1);
+    push_vcf_rounded(buf, fisher, v.mean_quality, 1, exact_binary_half_even);
     buf.push(':');
     buf.push(if v.qstd { '1' } else { '0' });
     buf.push(':');
-    push_vcf_rounded(buf, fisher, sbf, 5);
+    push_vcf_rounded(buf, fisher, sbf, 5, exact_binary_half_even);
     buf.push(':');
     buf.push_str(&oddratio.0);
     buf.push(':');
     let _ = write!(buf, "{:.0}", mq);
     buf.push(':');
-    push_vcf_rounded(buf, fisher, v.hq_lq_ratio, 3);
+    push_vcf_rounded(buf, fisher, v.hq_lq_ratio, 3, exact_binary_half_even);
     buf.push(':');
-    push_vcf_rounded(buf, fisher, v.hi_freq, 4);
+    push_vcf_rounded(buf, fisher, v.hi_freq, 4, exact_binary_half_even);
     buf.push(':');
-    push_vcf_rounded(buf, fisher, v.extra_freq, 4);
+    push_vcf_rounded(buf, fisher, v.extra_freq, 4, exact_binary_half_even);
     buf.push(':');
     if v.nm > 0.0 {
-        push_vcf_rounded(buf, fisher, v.nm, 1);
+        push_vcf_rounded(buf, fisher, v.nm, 1, exact_binary_half_even);
     } else {
         buf.push('0');
     }
@@ -2568,7 +2609,7 @@ fn paired_sample_field_into(
     // 192 B covers the 21-field sample column at typical widths; longer
     // alleles regrow once and the capacity is retained across rows.
     buf.reserve(192);
-    push_paired_sample_field(buf, v, gt, sbf, oddratio, fisher);
+    push_paired_sample_field(buf, v, gt, sbf, oddratio, fisher, false);
 }
 
 static ZERO_VARIANT: std::sync::OnceLock<crate::variations::Variant> = std::sync::OnceLock::new();
@@ -2636,14 +2677,15 @@ pub fn format_paired_vcf_record(
     // Filter comparisons run against table-rounded values: the oracle pipeline
     // formats through the .var table before Perl numifies, so compare at table
     // precision.
+    let exact_tie = config.compat.exact_binary_half_even;
     let dp1 = v1.total_pos_cov;
     let vd1 = v1.pos_coverage;
     let dp2 = v2.total_pos_cov;
     let vd2 = v2.pos_coverage;
-    let af1 = crate::types::round_half_even(v1.frequency, 4);
-    let af2 = crate::types::round_half_even(v2.frequency, 4);
-    let qual1 = crate::types::round_half_even(v1.mean_quality, 1);
-    let qual2 = crate::types::round_half_even(v2.mean_quality, 1);
+    let af1 = crate::types::round_half_even_compat(v1.frequency, 4, exact_tie);
+    let af2 = crate::types::round_half_even_compat(v2.frequency, 4, exact_tie);
+    let qual1 = crate::types::round_half_even_compat(v1.mean_quality, 1, exact_tie);
+    let qual2 = crate::types::round_half_even_compat(v2.mean_quality, 1, exact_tie);
 
     let var_type: &str = if v1.var_type.is_empty() {
         "REF" // :139
@@ -2702,12 +2744,17 @@ pub fn format_paired_vcf_record(
         && !(dp2 < eff_min_depth
             || vd2 < eff_min_vd
             || af2 < eff_freq
-            || crate::types::round_half_even(v2.mean_position, 1) < eff_pmean
+            || crate::types::round_half_even_compat(v2.mean_position, 1, exact_tie) < eff_pmean
             || (!v2.pstd && vd2 < eff_min_depth)
             || qual2 < eff_qmean
-            || crate::types::round_half_even(v2.mean_mapping_quality, 1) < eff_mapq
-            || crate::types::round_half_even(v2.hq_lq_ratio, 3) < eff_sn
-            || crate::types::round_half_even(if v2.nm > 0.0 { v2.nm } else { 0.0 }, 1) >= eff_nm);
+            || crate::types::round_half_even_compat(v2.mean_mapping_quality, 1, exact_tie)
+                < eff_mapq
+            || crate::types::round_half_even_compat(v2.hq_lq_ratio, 3, exact_tie) < eff_sn
+            || crate::types::round_half_even_compat(
+                if v2.nm > 0.0 { v2.nm } else { 0.0 },
+                1,
+                exact_tie,
+            ) >= eff_nm);
 
     let mut p_likely = false;
     let mut indel_likely = false;
@@ -2716,15 +2763,19 @@ pub fn format_paired_vcf_record(
     if !normal_clean {
         let [s_f, s_p, s_q, s_mapq, s_sn, s_nm, s_msi, s_pval] = &mut tag_scratch.slots;
         let [s_d, s_v, _s_cluster] = &mut tag_scratch.int_slots;
-        let pmean1 = crate::types::round_half_even(v1.mean_position, 1);
-        let mapq1 = crate::types::round_half_even(v1.mean_mapping_quality, 1);
-        let sn1 = crate::types::round_half_even(v1.hq_lq_ratio, 3);
-        let nm1 = crate::types::round_half_even(if v1.nm > 0.0 { v1.nm } else { 0.0 }, 1);
+        let pmean1 = crate::types::round_half_even_compat(v1.mean_position, 1, exact_tie);
+        let mapq1 = crate::types::round_half_even_compat(v1.mean_mapping_quality, 1, exact_tie);
+        let sn1 = crate::types::round_half_even_compat(v1.hq_lq_ratio, 3, exact_tie);
+        let nm1 = crate::types::round_half_even_compat(
+            if v1.nm > 0.0 { v1.nm } else { 0.0 },
+            1,
+            exact_tie,
+        );
         // Perl sees R's round-5 strings from testsomatic.R:31-47, numified before
         // the P:156/:175/:186/:189 threshold checks — compare at table precision.
-        let ptot_r = crate::types::round_half_even(ptot, 5);
-        let p1_r = crate::types::round_half_even(p1, 5);
-        let p2_r = crate::types::round_half_even(p2, 5);
+        let ptot_r = crate::types::round_half_even_compat(ptot, 5, exact_tie);
+        let p1_r = crate::types::round_half_even_compat(p1, 5, exact_tie);
+        let p2_r = crate::types::round_half_even_compat(p2, 5, exact_tie);
 
         let mut has_bias = false;
         let mut has_msi = false;
@@ -2826,7 +2877,7 @@ pub fn format_paired_vcf_record(
 
         // MSI gates (:188-194).
         let msilen = end_var.msint as f64;
-        let msi = crate::types::round_half_even(end_var.msi, 3);
+        let msi = crate::types::round_half_even_compat(end_var.msi, 3, exact_tie);
         let mut push_msi = false;
         if (msi > eff_msi && msilen > 1.0) || (msi > 12.0 && msilen == 1.0) {
             if !(status == "StrongSomatic" && ptot_r < 0.0005) {
@@ -2914,15 +2965,15 @@ pub fn format_paired_vcf_record(
     line.push_str(";VD=");
     crate::util::push_i32(&mut line, vd1);
     line.push_str(";AF=");
-    push_vcf_rounded(&mut line, config.fisher, v1.frequency, 4);
+    push_vcf_rounded(&mut line, config.fisher, v1.frequency, 4, exact_tie);
     line.push_str(";SHIFT3=");
     crate::util::push_i32(&mut line, end_var.shift3);
     line.push_str(";MSI=");
-    push_keep(&mut line, end_var.msi, 3);
+    push_keep_compat(&mut line, end_var.msi, 3, exact_tie);
     line.push_str(";MSILEN=");
     crate::util::push_i32(&mut line, end_var.msint);
     line.push_str(";SSF=");
-    push_vcf_rounded(&mut line, config.fisher, ptot, 5);
+    push_vcf_rounded(&mut line, config.fisher, ptot, 5, exact_tie);
     line.push_str(";SOR=");
     line.push_str(sor_str);
     line.push_str(";LSEQ=");
@@ -2947,9 +2998,9 @@ pub fn format_paired_vcf_record(
     line.push_str(
         "\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t",
     );
-    push_paired_sample_field(&mut line, v1, gt, p1, &or1, config.fisher);
+    push_paired_sample_field(&mut line, v1, gt, p1, &or1, config.fisher, exact_tie);
     line.push('\t');
-    push_paired_sample_field(&mut line, v2, gtm, p2, &or2, config.fisher);
+    push_paired_sample_field(&mut line, v2, gtm, p2, &or2, config.fisher, exact_tie);
 
     PairedVcfRecord {
         line,
@@ -5571,10 +5622,7 @@ mod tests {
                     out.push(prev);
                 }
             }
-            if amp.is_none()
-                && variant.var_allele.contains('<')
-                && parse_sv_counts(&variant.sv).0 < config.vcf_min_splitreads
-            {
+            if sv_dropped_by_splitreads(variant, config, *amp) {
                 pending = None;
                 continue;
             }
@@ -6227,5 +6275,192 @@ mod tests {
             reorder_chromosomes_with_compat(&["chrX", "X", "chrX", "X"], true),
             vec!["X", "chrX"]
         );
+    }
+
+    #[test]
+    fn test_ub5_preserve_discordant_svs_and_explicit_splitreads() {
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(1_000),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let mut disc_sv = amplicon_passing_variant();
+        disc_sv.start_pos = 200;
+        disc_sv.end_pos = 650;
+        disc_sv.ref_allele = "A".to_string();
+        disc_sv.var_allele = "<DUP>".to_string();
+        disc_sv.var_type = "DUP".to_string();
+        disc_sv.sv = "0-8-1".to_string();
+
+        let mut zero_sv = disc_sv.clone();
+        zero_sv.var_allele = "<DEL>".to_string();
+        zero_sv.var_type = "Deletion".to_string();
+        zero_sv.sv = "0-0-0".to_string();
+
+        let mut scratch = String::new();
+
+        // 1. Default COMPAT_VARDICTJAVA_1_8_3 drops `0-8-1`
+        let vj_cfg = Config::default();
+        assert_eq!(
+            build_single_vcf_event(&mut scratch, &disc_sv, &region, &vj_cfg, None),
+            SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start: None
+            }
+        );
+        assert!(
+            simulate_perl_var2vcf_valid(&[(disc_sv.clone(), None)], &region, &vj_cfg).is_empty()
+        );
+
+        // 2. COMPAT_OFF preserves `0-8-1` when `--min-splitreads` was NOT explicitly overridden
+        for pass_only in [false, true] {
+            let mut off_cfg = Config::default();
+            off_cfg.compat = crate::config::COMPAT_OFF;
+            off_cfg.vcf_pass_only = pass_only;
+            let ev = build_single_vcf_event(&mut scratch, &disc_sv, &region, &off_cfg, None);
+            let SingleVcfEvent::Record(rec) = ev.clone() else {
+                panic!("expected discordant SV 0-8-1 to be emitted under COMPAT_OFF (pass_only={pass_only}), got {ev:?}");
+            };
+            assert!(rec
+                .as_str()
+                .contains(";SVTYPE=DUP;SVLEN=450;SPLITREAD=0;SPANPAIR=8\t"));
+            let sim = simulate_perl_var2vcf_valid(&[(disc_sv.clone(), None)], &region, &off_cfg);
+            assert_eq!(sim, vec![rec.as_str().to_string()]);
+        }
+
+        // 3. Explicit `--min-splitreads 1` (`vcf_min_splitreads_explicit = true`) or `vcf_min_splitreads = 2` drops `0-8-1` even under COMPAT_OFF
+        let mut exp_one_cfg = Config::default();
+        exp_one_cfg.compat = crate::config::COMPAT_OFF;
+        exp_one_cfg.vcf_min_splitreads = 1;
+        exp_one_cfg.vcf_min_splitreads_explicit = true;
+        assert_eq!(
+            build_single_vcf_event(&mut scratch, &disc_sv, &region, &exp_one_cfg, None),
+            SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start: None
+            }
+        );
+
+        let mut min_two_cfg = Config::default();
+        min_two_cfg.compat = crate::config::COMPAT_OFF;
+        min_two_cfg.vcf_min_splitreads = 2;
+        assert_eq!(
+            build_single_vcf_event(&mut scratch, &disc_sv, &region, &min_two_cfg, None),
+            SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start: None
+            }
+        );
+
+        // 4. `0-0-0` is dropped under both default and COMPAT_OFF unless `vcf_min_splitreads == 0`
+        let mut off_cfg = Config::default();
+        off_cfg.compat = crate::config::COMPAT_OFF;
+        assert_eq!(
+            build_single_vcf_event(&mut scratch, &zero_sv, &region, &off_cfg, None),
+            SingleVcfEvent::SvSplitreadFlush {
+                cluster_probe_start: None
+            }
+        );
+        let mut zero_allow_cfg = off_cfg.clone();
+        zero_allow_cfg.vcf_min_splitreads = 0;
+        assert!(matches!(
+            build_single_vcf_event(&mut scratch, &zero_sv, &region, &zero_allow_cfg, None),
+            SingleVcfEvent::Record(_)
+        ));
+    }
+
+    #[test]
+    fn test_vcf_exact_binary_half_even_ties_single_and_paired() {
+        let tie_3dp = f64::from_bits(0x3f40_624d_d2f1_a9fc); // 5e-4
+        let tie_4dp = f64::from_bits(0x3f0a_36e2_eb1c_432d); // 5e-5
+        let tie_5dp = f64::from_bits(0x3ed4_f8b5_88e3_68f1); // 5e-6
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(500),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let mut var = amplicon_passing_variant();
+        var.frequency = tie_4dp;
+        var.hi_freq = tie_4dp;
+        var.extra_freq = tie_4dp;
+        var.hq_lq_ratio = tie_3dp;
+        var.msi = tie_3dp;
+
+        // Single-sample formatting: R-mode vs --fisher under default vs COMPAT_OFF
+        for fisher in [false, true] {
+            let mut vj_cfg = Config::default();
+            vj_cfg.fisher = fisher;
+            let vj_rec = format_vcf_record(&var, &region, &vj_cfg, &[], tie_5dp, "1.0", None);
+            let vj_zero = if fisher { "0." } else { "0" };
+            assert!(vj_rec.contains(&format!(";AF={vj_zero};")), "{vj_rec}");
+            assert!(vj_rec.contains(&format!(";SBF={vj_zero};")), "{vj_rec}");
+            assert!(vj_rec.contains(&format!(";SN={vj_zero};")), "{vj_rec}");
+            assert!(vj_rec.contains(";HIAF=0.0000;"), "{vj_rec}");
+            assert!(vj_rec.contains(&format!(";ADJAF={vj_zero};")), "{vj_rec}");
+            assert!(vj_rec.contains(&format!(";MSI={vj_zero};")), "{vj_rec}");
+
+            let mut off_cfg = vj_cfg.clone();
+            off_cfg.compat = crate::config::COMPAT_OFF;
+            let off_rec = format_vcf_record(&var, &region, &off_cfg, &[], tie_5dp, "1.0", None);
+            assert!(off_rec.contains(";AF=0.0001;"), "{off_rec}");
+            assert!(off_rec.contains(";SBF=0.00001;"), "{off_rec}");
+            assert!(off_rec.contains(";SN=0.001;"), "{off_rec}");
+            assert!(off_rec.contains(";HIAF=0.0001;"), "{off_rec}");
+            assert!(off_rec.contains(";ADJAF=0.0001;"), "{off_rec}");
+            assert!(off_rec.contains(";MSI=0.001;"), "{off_rec}");
+            assert!(off_rec.contains(":0.0001:"), "{off_rec}");
+        }
+
+        // Filter threshold boundary on `5e-5` (vcf_af=0.0001) and `5e-4` (vcf_sn=0.001)
+        let mut filt_cfg = Config::default();
+        filt_cfg.vcf_af = Some(crate::config::VcfThreshold::new(0.0001));
+        filt_cfg.vcf_sn = Some(crate::config::VcfThreshold::new(0.001));
+        let vj_filters = filter_variant(&var, &filt_cfg, 0, None, 1.0, "1.0");
+        assert!(
+            vj_filters.contains(&"f0.0001".to_string())
+                && vj_filters.contains(&"SN0.001".to_string())
+        );
+
+        filt_cfg.compat = crate::config::COMPAT_OFF;
+        let off_filters = filter_variant(&var, &filt_cfg, 0, None, 1.0, "1.0");
+        assert!(
+            off_filters.is_empty(),
+            "expected PASS under COMPAT_OFF, got {off_filters:?}"
+        );
+
+        // Paired somatic VCF formatting: default vs COMPAT_OFF
+        let mut norm = clean_normal();
+        norm.frequency = tie_4dp;
+        norm.hi_freq = tie_4dp;
+        norm.extra_freq = tie_4dp;
+        norm.hq_lq_ratio = tie_3dp;
+        let sv = somatic_sv(var, Some(norm), "StrongSomatic");
+
+        for fisher in [false, true] {
+            let mut pvj_cfg = Config::default();
+            pvj_cfg.fisher = fisher;
+            let pvj = format_paired_vcf_record(&sv, "chr1", &pvj_cfg);
+            let vj_zero = if fisher { "0." } else { "0" };
+            assert!(
+                pvj.as_str().contains(&format!(";AF={vj_zero};")),
+                "{}",
+                pvj.as_str()
+            );
+            assert!(pvj.as_str().contains(";MSI=0.000;"), "{}", pvj.as_str());
+
+            let mut poff_cfg = pvj_cfg.clone();
+            poff_cfg.compat = crate::config::COMPAT_OFF;
+            let poff = format_paired_vcf_record(&sv, "chr1", &poff_cfg);
+            assert!(poff.as_str().contains(";AF=0.0001;"), "{}", poff.as_str());
+            assert!(poff.as_str().contains(";MSI=0.001;"), "{}", poff.as_str());
+            let tumor_sample_col = poff.as_str().split('\t').nth(9).unwrap();
+            assert!(tumor_sample_col.contains(":0.0001:"), "{tumor_sample_col}");
+            assert!(
+                tumor_sample_col.contains(":0.001:0.0001:0.0001:"),
+                "{tumor_sample_col}"
+            );
+        }
     }
 }

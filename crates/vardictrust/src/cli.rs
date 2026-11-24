@@ -1839,6 +1839,7 @@ impl Cli {
             vcf_pval,
             vcf_pval_raw,
             vcf_min_splitreads: self.min_splitreads.first().copied().unwrap_or(1),
+            vcf_min_splitreads_explicit: !self.min_splitreads.is_empty(),
             vcf_pstd_filter: !self.no_pstd_filter,
             vcf_af: self.vcf_af.first().cloned(),
             vcf_min_depth: self.vcf_min_depth.first().cloned(),
@@ -4141,5 +4142,81 @@ mod tests {
                 .expect("-A 7 must remain sv_min_af");
         assert_eq!(cfg_short_cap_a.sv_min_af, 7);
         assert!(!cfg_short_cap_a.vcf_all_alleles);
+    }
+
+    #[test]
+    fn compat_wave2_and_min_splitreads_explicit_cli_contract() {
+        use clap::CommandFactory;
+        use vardictrust_core::config::{COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
+
+        assert_eq!(Cli::command().get_arguments().count(), 90);
+
+        let parse_cfg = |raw_flags: &[&str]| -> vardictrust_core::config::Config {
+            let norm = normalize_args(&args(raw_flags));
+            check_unsupported(&norm).expect("check_unsupported");
+            Cli::try_parse_from(&norm)
+                .expect("Cli::try_parse_from")
+                .to_config()
+                .expect("Cli::to_config")
+        };
+
+        let def_cfg = parse_cfg(&["-G", "ref.fa", "-b", "a.bam", "-R", "chr1:1-10"]);
+        assert_eq!(def_cfg.vcf_min_splitreads, 1);
+        assert!(!def_cfg.vcf_min_splitreads_explicit);
+        assert_eq!(def_cfg.compat, COMPAT_VARDICTJAVA_1_8_3);
+        assert!(!def_cfg.compat.cigar_homopolymer_merge);
+        assert!(!def_cfg.compat.eqx_cigar_read_length);
+        assert!(!def_cfg.compat.preserve_discordant_svs);
+        assert!(!def_cfg.compat.mark_dup_sv_inclusive_end);
+        assert!(!def_cfg.compat.sv_lazy_mate_pileup);
+        assert!(!def_cfg.compat.exact_binary_half_even);
+
+        // Explicit --min-splitreads 1 (same numeric value as default, but explicitly supplied)
+        let exp_one = parse_cfg(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "--min-splitreads",
+            "1",
+        ]);
+        assert_eq!(exp_one.vcf_min_splitreads, 1);
+        assert!(exp_one.vcf_min_splitreads_explicit);
+
+        let exp_zero = parse_cfg(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "--compat=off",
+            "--min-splitreads=0",
+        ]);
+        assert_eq!(exp_zero.vcf_min_splitreads, 0);
+        assert!(exp_zero.vcf_min_splitreads_explicit);
+        assert_eq!(exp_zero.compat, COMPAT_OFF);
+        assert!(exp_zero.compat.cigar_homopolymer_merge);
+        assert!(exp_zero.compat.eqx_cigar_read_length);
+        assert!(exp_zero.compat.preserve_discordant_svs);
+        assert!(exp_zero.compat.mark_dup_sv_inclusive_end);
+        assert!(exp_zero.compat.sv_lazy_mate_pileup);
+        assert!(exp_zero.compat.exact_binary_half_even);
+
+        let off_implicit = parse_cfg(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "--compat",
+            "off",
+        ]);
+        assert_eq!(off_implicit.vcf_min_splitreads, 1);
+        assert!(!off_implicit.vcf_min_splitreads_explicit);
+        assert_eq!(off_implicit.compat, COMPAT_OFF);
     }
 }

@@ -706,16 +706,18 @@ fn find_adjacent_same_op(s: &str, target: u8) -> Option<(std::ops::Range<usize>,
 }
 
 /// Single-pass replacement for `(global_find_sum(&ALIGNED_LENGTH_MND, s), global_find_sum(&SOFT_CLIPPED, s))`,
-/// matching `(\d+)[MND]` and `(\d+)[MIS]` byte-for-byte without regex or heap allocation.
+/// matching `(\d+)[MND]` and `(\d+)[MIS]` byte-for-byte without regex or heap allocation,
+/// and optionally treating `=` / `X` identically to `M` when `include_eqx` is `true`.
 #[inline]
-fn sum_mnd_and_mis_prefix(s: &str) -> (i32, i32) {
+fn sum_mnd_and_mis_prefix_compat(s: &str, include_eqx: bool) -> (i32, i32) {
     let mut mnd: i32 = 0;
     let mut mis: i32 = 0;
     let mut idx = 0;
     while idx < s.len() {
         if let Some((val, op, _, next_idx)) = next_cigar_op(s, idx) {
-            let is_mnd = matches!(op, b'M' | b'N' | b'D');
-            let is_mis = matches!(op, b'M' | b'I' | b'S');
+            let is_eqx = include_eqx && matches!(op, b'=' | b'X');
+            let is_mnd = matches!(op, b'M' | b'N' | b'D') || is_eqx;
+            let is_mis = matches!(op, b'M' | b'I' | b'S') || is_eqx;
             if is_mnd {
                 mnd = mnd.saturating_add(val);
             }
@@ -728,6 +730,12 @@ fn sum_mnd_and_mis_prefix(s: &str) -> (i32, i32) {
         }
     }
     (mnd, mis)
+}
+
+#[cfg(test)]
+#[inline]
+fn sum_mnd_and_mis_prefix(s: &str) -> (i32, i32) {
+    sum_mnd_and_mis_prefix_compat(s, false)
 }
 
 #[inline]
@@ -744,6 +752,111 @@ fn cigar_flags(s: &str) -> (bool, bool, bool) {
         }
     }
     (has_d, has_i, has_s)
+}
+
+/// Coalesces contiguous strictly positive (`len > 0`) ASCII `M | = | X` CIGAR elements
+/// within each `\n`-separated segment of `s` into `<i32::saturating_add>M`, leaving any
+/// non-positive (`0=`, `-1X`, `0M`), overflowing, Unicode-digit, or non-CIGAR tokens
+/// untouched in place so `validate_cigar_element_lengths` still rejects invalid inputs.
+fn coalesce_cigar_str_eqx_into_match(s: &mut String) {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut idx = 0;
+    let mut acc_m: Option<i32> = None;
+
+    while idx < bytes.len() {
+        if bytes.get(idx) == Some(&b'\n') {
+            if let Some(m_len) = acc_m.take() {
+                let _ = write!(out, "{m_len}M");
+            }
+            out.push('\n');
+            idx += 1;
+            continue;
+        }
+        if bytes.get(idx) == Some(&b'-') {
+            if let Some(m_len) = acc_m.take() {
+                let _ = write!(out, "{m_len}M");
+            }
+            let mut end = idx + 1;
+            while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+                end += 1;
+            }
+            if end > idx + 1 && bytes.get(end).is_some_and(u8::is_ascii) {
+                end += 1;
+            }
+            if let Some(tok) = s.get(idx..end) {
+                out.push_str(tok);
+            }
+            idx = end;
+            continue;
+        }
+        if bytes.get(idx).is_some_and(u8::is_ascii_digit) {
+            let mut d_end = idx + 1;
+            while bytes.get(d_end).is_some_and(u8::is_ascii_digit) {
+                d_end += 1;
+            }
+            if let Some(&op) = bytes.get(d_end) {
+                if matches!(op, b'M' | b'=' | b'X') {
+                    if let Some(val) = s
+                        .get(idx..d_end)
+                        .and_then(|num| num.parse::<i32>().ok())
+                        .filter(|&v| v > 0)
+                    {
+                        acc_m = Some(acc_m.map_or(val, |prev| prev.saturating_add(val)));
+                        idx = d_end + 1;
+                        continue;
+                    }
+                }
+                if op < 0x80 && op != b'\n' {
+                    if let Some(m_len) = acc_m.take() {
+                        let _ = write!(out, "{m_len}M");
+                    }
+                    if let Some(tok) = s.get(idx..d_end + 1) {
+                        out.push_str(tok);
+                    }
+                    idx = d_end + 1;
+                    continue;
+                }
+            }
+            if let Some(m_len) = acc_m.take() {
+                let _ = write!(out, "{m_len}M");
+            }
+            if let Some(tok) = s.get(idx..d_end) {
+                out.push_str(tok);
+            }
+            idx = d_end;
+            continue;
+        }
+        if let Some(m_len) = acc_m.take() {
+            let _ = write!(out, "{m_len}M");
+        }
+        if let Some(ch) = s.get(idx..).and_then(|tail| tail.chars().next()) {
+            out.push(ch);
+            idx += ch.len_utf8();
+            if is_regex_decimal_digit(ch) {
+                while let Some(nch) = s.get(idx..).and_then(|tail| tail.chars().next()) {
+                    if is_regex_decimal_digit(nch) {
+                        out.push(nch);
+                        idx += nch.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(&op) = bytes.get(idx) {
+                    if op < 0x80 && op != b'\n' {
+                        out.push(op as char);
+                        idx += 1;
+                    }
+                }
+            }
+        } else {
+            break;
+        }
+    }
+    if let Some(m_len) = acc_m.take() {
+        let _ = write!(out, "{m_len}M");
+    }
+    *s = out;
 }
 
 /// Matches `ANY_NUMBER_M_NUMBER_S_END` (`^(.*?)(\d+)M(\d+)S$`) without regex or heap allocation.
@@ -1564,6 +1677,15 @@ impl<'a> CigarModifier<'a> {
         //flag is set to true if CIGAR string is modified and should be looked at again
         let flag = true;
         let this = self;
+        if this.config.compat.eqx_cigar_read_length
+            && this
+                .cigar_str
+                .as_bytes()
+                .iter()
+                .any(|&b| b == b'=' || b == b'X')
+        {
+            coalesce_cigar_str_eqx_into_match(&mut this.cigar_str);
+        }
         let (mut has_d, mut has_i, mut has_s) = cigar_flags(&this.cigar_str);
 
         if has_d {
@@ -1804,7 +1926,7 @@ impl<'a> CigarModifier<'a> {
                 if g4.saturating_add(g6) <= MAX_MULTI_INDEL_MID_SPAN {
                     flag_loop = this.two_deletions_insertion_to_complex_range(
                         range, ov5_len, g2, g3, g4, g5, g6, g7, g8, flag_loop,
-                    );
+                    )?;
                     (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                 }
             } else {
@@ -1817,13 +1939,13 @@ impl<'a> CigarModifier<'a> {
                     if g4.saturating_add(g6) <= MAX_MULTI_INDEL_MID_SPAN {
                         flag_loop = this.three_deletions_range(
                             range, ov5_len, g2, g3, g4, g5, g6, g7, g8, flag_loop,
-                        );
+                        )?;
                         (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                     }
                 } else if has_d || has_i {
                     if let Some(m) = find_three_indels(&this.cigar_str) {
                         if m.g5.saturating_add(m.g8) <= MAX_MULTI_INDEL_MID_SPAN {
-                            flag_loop = this.three_indels_range(m, flag_loop);
+                            flag_loop = this.three_indels_range(m, flag_loop)?;
                             (has_d, has_i, has_s) = cigar_flags(&this.cigar_str);
                         }
                     }
@@ -1837,6 +1959,11 @@ impl<'a> CigarModifier<'a> {
                         let mut ilen = m.mid_len;
                         if m.second_op == b'I' {
                             ilen = ilen.saturating_add(m.second_len);
+                            if this.config.compat.cigar_homopolymer_merge {
+                                if let Some(ti) = m.trailing_i {
+                                    ilen = ilen.saturating_add(ti);
+                                }
+                            }
                         } else if m.second_op == b'D' {
                             dlen = dlen.saturating_add(m.second_len);
                             if let Some(ti) = m.trailing_i {
@@ -1864,6 +1991,11 @@ impl<'a> CigarModifier<'a> {
                         let mut ilen = m.first_i_len.saturating_add(m.mid_len);
                         if m.second_op == b'I' {
                             ilen = ilen.saturating_add(m.second_len);
+                            if this.config.compat.cigar_homopolymer_merge {
+                                if let Some(ti) = m.trailing_i {
+                                    ilen = ilen.saturating_add(ti);
+                                }
+                            }
                         } else if m.second_op == b'D' {
                             dlen = dlen.saturating_add(m.second_len);
                             if let Some(ti) = m.trailing_i {
@@ -2357,7 +2489,10 @@ impl<'a> CigarModifier<'a> {
         let mut refoff = self.position.saturating_add(mch);
         let mut rdoff = mch;
         if ov5_len > 0 {
-            let (mnd, mis) = sum_mnd_and_mis_prefix(self.cigar_str.get(..ov5_len).unwrap_or(""));
+            let (mnd, mis) = sum_mnd_and_mis_prefix_compat(
+                self.cigar_str.get(..ov5_len).unwrap_or(""),
+                self.config.compat.eqx_cigar_read_length,
+            );
             refoff = refoff.saturating_add(mnd);
             rdoff = rdoff.saturating_add(mis);
         }
@@ -2408,7 +2543,10 @@ impl<'a> CigarModifier<'a> {
         let mut refoff = self.position.saturating_add(mch);
         let mut rdoff = mch;
         if ov5_len > 0 {
-            let (mnd, mis) = sum_mnd_and_mis_prefix(self.cigar_str.get(..ov5_len).unwrap_or(""));
+            let (mnd, mis) = sum_mnd_and_mis_prefix_compat(
+                self.cigar_str.get(..ov5_len).unwrap_or(""),
+                self.config.compat.eqx_cigar_read_length,
+            );
             refoff = refoff.saturating_add(mnd);
             rdoff = rdoff.saturating_add(mis);
         }
@@ -2538,7 +2676,96 @@ impl<'a> CigarModifier<'a> {
         flag
     }
 
-    fn three_indels_range(&mut self, m: ThreeIndelsMatch, flag: bool) -> bool {
+    #[inline]
+    fn ensure_positive_cigar_ops(&self, ops: &[i32]) -> Result<(), crate::types::VardictError> {
+        if let Some(&bad_len) = ops.iter().find(|&&v| v <= 0) {
+            return Err(crate::types::VardictError::JavaThrows(format!(
+                "invalid CIGAR length {bad_len} in {}",
+                self.cigar_str
+            )));
+        }
+        Ok(())
+    }
+
+    /// Shared PR #402 (`cigar_homopolymer_merge`) post-`rn` emission helper across
+    /// `three_indels_range`, `three_deletions_range`, and `two_deletions_insertion_to_complex_range`.
+    /// Ports `AstraZeneca-NGS/VarDictJava#402` with query-length conservation in `tslen > 0 && dlen < 0`
+    /// and immediate `Err(VardictError::JavaThrows)` whenever `rdoff_corr <= 0` (`AR-5`).
+    fn emit_homopolymer_merged_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        mut rdoff_corr: i32,
+        mut dlen: i32,
+        mut tslen: i32,
+        mut rm: i32,
+    ) -> Result<(), crate::types::VardictError> {
+        if tslen <= 0 {
+            dlen = dlen.saturating_sub(tslen);
+            rm = rm.saturating_add(tslen);
+            if dlen == 0 {
+                rdoff_corr = rdoff_corr.saturating_add(rm);
+                self.ensure_positive_cigar_ops(&[rdoff_corr])?;
+                replace_cigar_range(&mut self.cigar_str, range, format_args!("{rdoff_corr}M"));
+                return Ok(());
+            }
+            if dlen < 0 {
+                tslen = dlen.saturating_neg();
+                rm = rm.saturating_add(dlen);
+                dlen = 0;
+            } else {
+                tslen = 0;
+            }
+        } else if dlen < 0 {
+            tslen = tslen.saturating_sub(dlen);
+            rm = rm.saturating_add(dlen);
+            dlen = 0;
+        }
+
+        if rm <= 0 {
+            rdoff_corr = rdoff_corr.saturating_add(rm);
+        }
+        self.ensure_positive_cigar_ops(&[rdoff_corr])?;
+
+        match (dlen > 0, tslen > 0, rm > 0) {
+            (false, true, false) => replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{tslen}I"),
+            ),
+            (false, true, true) => replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{tslen}I{rm}M"),
+            ),
+            (true, false, false) => replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D"),
+            ),
+            (true, false, true) => replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D{rm}M"),
+            ),
+            (_, _, false) => replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D{tslen}I"),
+            ),
+            (_, _, true) => replace_cigar_range(
+                &mut self.cigar_str,
+                range,
+                format_args!("{rdoff_corr}M{dlen}D{tslen}I{rm}M"),
+            ),
+        }
+        Ok(())
+    }
+
+    fn three_indels_range(
+        &mut self,
+        m: ThreeIndelsMatch,
+        flag: bool,
+    ) -> Result<bool, crate::types::VardictError> {
         let ThreeIndelsMatch {
             range,
             ov5_len,
@@ -2555,7 +2782,10 @@ impl<'a> CigarModifier<'a> {
         } = m;
         let mid = g5.saturating_add(g8);
         if mid > MAX_MULTI_INDEL_MID_SPAN {
-            return flag;
+            return Ok(flag);
+        }
+        if self.config.compat.cigar_homopolymer_merge {
+            self.ensure_positive_cigar_ops(&[g2, g3, g5, g6, g8, g9, g11])?;
         }
         let mut tslen = mid;
         if op1 == b'I' {
@@ -2585,7 +2815,10 @@ impl<'a> CigarModifier<'a> {
         let mut rm = g11;
 
         if ov5_len > 0 {
-            let (mnd, mis) = sum_mnd_and_mis_prefix(self.cigar_str.get(..ov5_len).unwrap_or(""));
+            let (mnd, mis) = sum_mnd_and_mis_prefix_compat(
+                self.cigar_str.get(..ov5_len).unwrap_or(""),
+                self.config.compat.eqx_cigar_read_length,
+            );
             refoff = refoff.saturating_add(mnd);
             rdoff = rdoff.saturating_add(mis);
         }
@@ -2610,6 +2843,11 @@ impl<'a> CigarModifier<'a> {
         rdoff_corr = rdoff_corr.saturating_add(rn);
         dlen = dlen.saturating_sub(rn);
         tslen = tslen.saturating_sub(rn);
+
+        if self.config.compat.cigar_homopolymer_merge {
+            self.emit_homopolymer_merged_range(range, rdoff_corr, dlen, tslen, rm)?;
+            return Ok(true);
+        }
 
         if tslen <= 0 {
             dlen = dlen.saturating_sub(tslen);
@@ -2661,7 +2899,7 @@ impl<'a> CigarModifier<'a> {
                 format_args!("{rdoff_corr}M{dlen}D{tslen}I{rm}M"),
             );
         }
-        true
+        Ok(true)
     }
 
     fn three_deletions_range(
@@ -2676,10 +2914,13 @@ impl<'a> CigarModifier<'a> {
         g7: i32,
         g8: i32,
         flag: bool,
-    ) -> bool {
+    ) -> Result<bool, crate::types::VardictError> {
         let mid = g4.saturating_add(g6);
         if mid > MAX_MULTI_INDEL_MID_SPAN {
-            return flag;
+            return Ok(flag);
+        }
+        if self.config.compat.cigar_homopolymer_merge {
+            self.ensure_positive_cigar_ops(&[g2, g3, g4, g5, g6, g7, g8])?;
         }
         let mut tslen = mid;
         let mut dlen = g3
@@ -2693,7 +2934,10 @@ impl<'a> CigarModifier<'a> {
         let mut rm = g8;
 
         if ov5_len > 0 {
-            let (mnd, mis) = sum_mnd_and_mis_prefix(self.cigar_str.get(..ov5_len).unwrap_or(""));
+            let (mnd, mis) = sum_mnd_and_mis_prefix_compat(
+                self.cigar_str.get(..ov5_len).unwrap_or(""),
+                self.config.compat.eqx_cigar_read_length,
+            );
             refoff = refoff.saturating_add(mnd);
             rdoff = rdoff.saturating_add(mis);
         }
@@ -2717,6 +2961,10 @@ impl<'a> CigarModifier<'a> {
         rdoff_corr = rdoff_corr.saturating_add(rn);
         dlen = dlen.saturating_sub(rn);
         tslen = tslen.saturating_sub(rn);
+        if self.config.compat.cigar_homopolymer_merge {
+            self.emit_homopolymer_merged_range(range, rdoff_corr, dlen, tslen, rm)?;
+            return Ok(true);
+        }
         if tslen <= 0 {
             dlen = dlen.saturating_sub(tslen);
             rm = rm.saturating_add(tslen);
@@ -2732,7 +2980,7 @@ impl<'a> CigarModifier<'a> {
                 format_args!("{rdoff_corr}M{dlen}D{tslen}I{rm}M"),
             );
         }
-        true
+        Ok(true)
     }
 
     fn two_deletions_insertion_to_complex_range(
@@ -2747,10 +2995,13 @@ impl<'a> CigarModifier<'a> {
         g7: i32,
         g8: i32,
         flag: bool,
-    ) -> bool {
+    ) -> Result<bool, crate::types::VardictError> {
         let mid = g4.saturating_add(g6);
         if mid > MAX_MULTI_INDEL_MID_SPAN {
-            return flag;
+            return Ok(flag);
+        }
+        if self.config.compat.cigar_homopolymer_merge {
+            self.ensure_positive_cigar_ops(&[g2, g3, g4, g5, g6, g7, g8])?;
         }
         let mut tslen = mid.saturating_add(g5);
         let mut dlen = g3.saturating_add(mid).saturating_add(g7);
@@ -2760,7 +3011,10 @@ impl<'a> CigarModifier<'a> {
         let mut rm = g8;
 
         if ov5_len > 0 {
-            let (mnd, mis) = sum_mnd_and_mis_prefix(self.cigar_str.get(..ov5_len).unwrap_or(""));
+            let (mnd, mis) = sum_mnd_and_mis_prefix_compat(
+                self.cigar_str.get(..ov5_len).unwrap_or(""),
+                self.config.compat.eqx_cigar_read_length,
+            );
             refoff = refoff.saturating_add(mnd);
             rdoff = rdoff.saturating_add(mis);
         }
@@ -2785,6 +3039,10 @@ impl<'a> CigarModifier<'a> {
         rdoff_corr = rdoff_corr.saturating_add(rn);
         dlen = dlen.saturating_sub(rn);
         tslen = tslen.saturating_sub(rn);
+        if self.config.compat.cigar_homopolymer_merge {
+            self.emit_homopolymer_merged_range(range, rdoff_corr, dlen, tslen, rm)?;
+            return Ok(true);
+        }
         if tslen <= 0 {
             dlen = dlen.saturating_sub(tslen);
             rm = rm.saturating_add(tslen);
@@ -2800,7 +3058,7 @@ impl<'a> CigarModifier<'a> {
                 format_args!("{rdoff_corr}M{dlen}D{tslen}I{rm}M"),
             );
         }
-        true
+        Ok(true)
     }
 
     #[cfg(test)]
@@ -4989,6 +5247,464 @@ mod tests {
             assert!(
                 elapsed < std::time::Duration::from_secs(10),
                 "10,000-digit CIGAR hung: {elapsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compat_off_pr402_homopolymer_merges_and_immediate_nonpositive_rdoff_guard() {
+        let cfg_default = Config::default();
+        let cfg_off = Config {
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let seed = SeedMap::new();
+
+        // 1. PR #402 production duplex read `104M1I2M2D1M1D5M1D2M9D27M` (142 nt)
+        let pr402_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAAAAAAAAAAGAAAAAAGAAAAAAAAAG";
+        let pr402_qual = b"BBFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=74??44444444FFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let pr402_ref = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAGAAAAAAAAAAGAAAAAAAAAGAAAAAAGAAAAAAAAAGAAAGAAAGAAAAAGAAAAAACAGAAAGAAGAATGAAAATCTGGGTG";
+
+        let res_default = CigarModifier::new(
+            1,
+            "104M1I2M2D1M1D5M1D2M9D27M",
+            pr402_seq.as_slice(),
+            pr402_qual.as_slice(),
+            pr402_ref,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar();
+        assert!(matches!(
+            res_default,
+            Err(crate::types::VardictError::JavaThrows(_))
+        ));
+
+        let modified_pr402 = CigarModifier::new(
+            1,
+            "104M1I2M2D1M1D5M1D2M9D27M",
+            pr402_seq.as_slice(),
+            pr402_qual.as_slice(),
+            pr402_ref,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .expect("PR #402 read must succeed under COMPAT_OFF");
+        assert_eq!(modified_pr402.cigar, "104M14D11I9D27M");
+        let parsed_pr402 = crate::cigar::parse_cigar(&modified_pr402.cigar).unwrap();
+        assert!(parsed_pr402.iter().all(|&(len, _)| len > 0));
+        assert_eq!(crate::cigar::parse::query_consumed_len(&parsed_pr402), 142);
+        assert_eq!(modified_pr402.query_seq.len(), 142);
+
+        // 2a. three_indels_range (`tslen <= 0`, `dlen > 0`, `rm < 0` in homopolymer)
+        // `20M1I2M4D2M4D2M9N10M` (`I-D-D`, so only `three_indels_range` matches): query = 20+1+2+2+2+10 = 37 nt
+        let mut ref_homo_3i = vec![b'A'; 28];
+        ref_homo_3i.extend_from_slice(&[b'C'; 60]);
+        let mut q_homo_3i = vec![b'A'; 28];
+        q_homo_3i.extend_from_slice(&[b'C'; 9]);
+        let qual_homo_3i = vec![b'I'; q_homo_3i.len()];
+        assert!(matches!(
+            CigarModifier::new(
+                1,
+                "20M1I2M4D2M4D2M9N10M",
+                q_homo_3i.clone(),
+                qual_homo_3i.clone(),
+                &ref_homo_3i,
+                1,
+                &seed,
+                3,
+                150,
+                &cfg_default,
+            )
+            .modify_cigar(),
+            Err(crate::types::VardictError::JavaThrows(_))
+        ));
+        let mod_3i = CigarModifier::new(
+            1,
+            "20M1I2M4D2M4D2M9N10M",
+            q_homo_3i.clone(),
+            qual_homo_3i,
+            &ref_homo_3i,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .expect("three_indels_range homopolymer must succeed under COMPAT_OFF");
+        let parsed_3i = crate::cigar::parse_cigar(&mod_3i.cigar).unwrap();
+        assert!(parsed_3i.iter().all(|&(len, _)| len > 0));
+        assert_eq!(
+            crate::cigar::parse::query_consumed_len(&parsed_3i),
+            mod_3i.query_seq.len() as u64
+        );
+
+        // 2b. three_indels_range (`tslen > 0 && dlen < 0`):
+        // - `rm > 0`: `10M1I1M1I1M1I20M` (35 query bp) with rn = 3 -> `13M3I19M` (35 query bp conserved)
+        let mut ref_rn3 = vec![b'A'; 13];
+        ref_rn3.extend_from_slice(&[b'C'; 60]);
+        let mut q_35 = vec![b'A'; 16];
+        q_35.extend_from_slice(&[b'C'; 19]);
+        let qual_35 = vec![b'I'; 35];
+        let mod_rn3_default = CigarModifier::new(
+            1,
+            "10M1I1M1I1M1I20M",
+            q_35.clone(),
+            qual_35.clone(),
+            &ref_rn3,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_rn3_default.cigar, "13M2I19M");
+        let mod_rn3_off = CigarModifier::new(
+            1,
+            "10M1I1M1I1M1I20M",
+            q_35,
+            qual_35,
+            &ref_rn3,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_rn3_off.cigar, "13M3I19M");
+        let parsed_rn3 = crate::cigar::parse_cigar(&mod_rn3_off.cigar).unwrap();
+        assert_eq!(crate::cigar::parse::query_consumed_len(&parsed_rn3), 35);
+
+        // - `tslen > 0 && dlen < 0 && rm < 0`: `10M5I1M5I1M5I2M9N20M` (49 query bp) with rn = 6
+        let mut ref_rn6 = vec![b'A'; 16];
+        ref_rn6.extend_from_slice(&[b'C'; 70]);
+        let mut q_49 = vec![b'A'; 20];
+        q_49.extend_from_slice(&[b'C'; 29]);
+        let qual_49 = vec![b'I'; 49];
+        assert!(matches!(
+            CigarModifier::new(
+                1,
+                "10M5I1M5I1M5I2M9N20M",
+                q_49.clone(),
+                qual_49.clone(),
+                &ref_rn6,
+                1,
+                &seed,
+                3,
+                150,
+                &cfg_default,
+            )
+            .modify_cigar(),
+            Err(crate::types::VardictError::JavaThrows(_))
+        ));
+        let mod_rn6_off = CigarModifier::new(
+            1,
+            "10M5I1M5I1M5I2M9N20M",
+            q_49,
+            qual_49,
+            &ref_rn6,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .expect("three_indels tslen>0 dlen<0 rm<0 must succeed under COMPAT_OFF");
+        assert_eq!(mod_rn6_off.cigar, "14M15I9N20M");
+        let parsed_rn6 = crate::cigar::parse_cigar(&mod_rn6_off.cigar).unwrap();
+        assert!(parsed_rn6.iter().all(|&(len, _)| len > 0));
+        assert_eq!(
+            crate::cigar::parse::query_consumed_len(&parsed_rn6),
+            mod_rn6_off.query_seq.len() as u64
+        );
+
+        // 3. two_deletions_insertion_to_complex_range (`rm < 0` in both `dlen > 0` and `dlen < 0`)
+        // - `dlen > 0 && rm < 0`: `20M3D1M1I1M3D2M9D20M` (query = 20+1+1+1+2+20 = 45 nt) with rn = 6
+        let mut ref_2di = vec![b'A'; 26];
+        ref_2di.extend_from_slice(&[b'C'; 60]);
+        let mut q_2di = vec![b'A'; 26];
+        q_2di.extend_from_slice(&[b'C'; 19]);
+        let qual_2di = vec![b'I'; q_2di.len()];
+        assert!(matches!(
+            CigarModifier::new(
+                1,
+                "20M3D1M1I1M3D2M9D20M",
+                q_2di.clone(),
+                qual_2di.clone(),
+                &ref_2di,
+                1,
+                &seed,
+                3,
+                150,
+                &cfg_default,
+            )
+            .modify_cigar(),
+            Err(crate::types::VardictError::JavaThrows(_))
+        ));
+        let mod_2di = CigarModifier::new(
+            1,
+            "20M3D1M1I1M3D2M9D20M",
+            q_2di,
+            qual_2di,
+            &ref_2di,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .expect("two_deletions_insertion dlen>0 rm<0 must succeed under COMPAT_OFF");
+        let parsed_2di = crate::cigar::parse_cigar(&mod_2di.cigar).unwrap();
+        assert!(parsed_2di.iter().all(|&(len, _)| len > 0));
+        assert_eq!(
+            crate::cigar::parse::query_consumed_len(&parsed_2di),
+            mod_2di.query_seq.len() as u64
+        );
+
+        // - `dlen < 0`: `10M1D1M5I1M1D2M9N20M` (39 query bp) with rn = 8 -> `tslen = -1 <= 0`, `dlen = -3 < 0`
+        let mut ref_2di_neg_d = vec![b'A'; 18];
+        ref_2di_neg_d.extend_from_slice(&[b'C'; 60]);
+        let mut q_2di_neg_d = vec![b'A'; 18];
+        q_2di_neg_d.extend_from_slice(&[b'C'; 21]);
+        let qual_2di_neg_d = vec![b'I'; 39];
+        assert!(matches!(
+            CigarModifier::new(
+                1,
+                "10M1D1M5I1M1D2M9N20M",
+                q_2di_neg_d.clone(),
+                qual_2di_neg_d.clone(),
+                &ref_2di_neg_d,
+                1,
+                &seed,
+                3,
+                150,
+                &cfg_default,
+            )
+            .modify_cigar(),
+            Err(crate::types::VardictError::JavaThrows(_))
+        ));
+        let mod_2di_neg_d = CigarModifier::new(
+            1,
+            "10M1D1M5I1M1D2M9N20M",
+            q_2di_neg_d,
+            qual_2di_neg_d,
+            &ref_2di_neg_d,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .expect("two_deletions_insertion dlen<0 must succeed under COMPAT_OFF");
+        assert_eq!(mod_2di_neg_d.cigar, "16M3I9N20M");
+        let parsed_2di_neg_d = crate::cigar::parse_cigar(&mod_2di_neg_d.cigar).unwrap();
+        assert!(parsed_2di_neg_d.iter().all(|&(len, _)| len > 0));
+        assert_eq!(
+            crate::cigar::parse::query_consumed_len(&parsed_2di_neg_d),
+            39
+        );
+
+        // 4. Immediate Err(VardictError::JavaThrows) on non-positive RDOFF / 0M inputs (`AR-5`)
+        let all_a_ref = vec![b'A'; 200];
+        let all_a_q = vec![b'A'; 140];
+        let all_c_q = vec![b'C'; 140];
+        let all_qual = vec![b'I'; 140];
+        for bad_cigar in ["20M1I0M2D0M1D0M1D0M9D27M", "0M10D0M10D0M10D0M10M"] {
+            for q in [&all_a_q, &all_c_q] {
+                let res = CigarModifier::new(
+                    1,
+                    bad_cigar,
+                    q.clone(),
+                    all_qual.clone(),
+                    &all_a_ref,
+                    1,
+                    &seed,
+                    3,
+                    150,
+                    &cfg_off,
+                )
+                .modify_cigar();
+                assert!(
+                    matches!(res, Err(crate::types::VardictError::JavaThrows(_))),
+                    "Expected immediate JavaThrows for {bad_cigar}, got {res:?}"
+                );
+            }
+        }
+
+        // 5. sum_mnd_and_mis_prefix_compat & `--eqx` prefix equivalence in CigarModifier
+        assert_eq!(
+            sum_mnd_and_mis_prefix_compat("20=1X10D5I3S100N", false),
+            (110, 8)
+        );
+        assert_eq!(
+            sum_mnd_and_mis_prefix_compat("20=1X10D5I3S100N", true),
+            (131, 29)
+        );
+
+        // 6. Trailing `I` conservation when `second_op == b'I'` in `find_dig_d_dig_m_dig_di_digi`
+        //    and `find_notdig_dig_i_dig_m_dig_di_digi` under `COMPAT_OFF`:
+        // - Uncoalesced `"20M3I5M4I6I10M"` (48 bp query, all mismatch vs ref)
+        let ref_48 = vec![b'A'; 100];
+        let mut q_48 = vec![b'A'; 4];
+        q_48.extend_from_slice(&[b'C'; 40]);
+        q_48.extend_from_slice(&[b'A'; 4]);
+        let qual_48 = vec![b'I'; 48];
+        let mod_48_def = CigarModifier::new(
+            1,
+            "20M3I5M4I6I10M",
+            q_48.clone(),
+            qual_48.clone(),
+            &ref_48,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_48_def.cigar, "20M5D12I10M");
+        let mod_48_off = CigarModifier::new(
+            1,
+            "20M3I5M4I6I10M",
+            q_48,
+            qual_48,
+            &ref_48,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_48_off.cigar, "20M5D18I10M");
+        let parsed_48_off = crate::cigar::parse_cigar(&mod_48_off.cigar).unwrap();
+        assert_eq!(crate::cigar::parse::query_consumed_len(&parsed_48_off), 48);
+
+        // - Canonical SAM cascade `"20M3I5M1D1M5I1M1D2M6I10M"` (53 bp query) via `rm <= 0` omission
+        let mut ref_cascade = vec![b'A'; 36];
+        ref_cascade.extend_from_slice(&[b'C'; 50]);
+        let mut q_53 = vec![b'A'; 36];
+        q_53.extend_from_slice(&[b'C'; 17]);
+        let qual_53 = vec![b'I'; 53];
+        let mod_53_off = CigarModifier::new(
+            1,
+            "20M3I5M1D1M5I1M1D2M6I10M",
+            q_53,
+            qual_53,
+            &ref_cascade,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_53_off.cigar, "20M11D23I10M");
+        let parsed_53_off = crate::cigar::parse_cigar(&mod_53_off.cigar).unwrap();
+        assert_eq!(crate::cigar::parse::query_consumed_len(&parsed_53_off), 53);
+
+        // - Canonical SAM cascade `"20M3D5M1D1M5I1M1D2M6I10M"` (50 bp query) via `find_dig_d_dig_m_dig_di_digi`
+        let mut q_50 = vec![b'A'; 33];
+        q_50.extend_from_slice(&[b'C'; 17]);
+        let qual_50 = vec![b'I'; 50];
+        let mod_50_off = CigarModifier::new(
+            1,
+            "20M3D5M1D1M5I1M1D2M6I10M",
+            q_50,
+            qual_50,
+            &ref_cascade,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_50_off.cigar, "20M14D20I10M");
+        let parsed_50_off = crate::cigar::parse_cigar(&mod_50_off.cigar).unwrap();
+        assert_eq!(crate::cigar::parse::query_consumed_len(&parsed_50_off), 50);
+
+        // 7. Direct CigarModifier `--eqx` entry coalescing (`74=1X73=2X` -> `148M2S`) and
+        //    rejection of non-positive `--eqx` operator lengths (`10=0=5=`, `10=-1X5=`)
+        let ref_eqx = vec![b'A'; 200];
+        let mut q_eqx = vec![b'A'; 150];
+        q_eqx[74] = b'C';
+        q_eqx[148] = b'C';
+        q_eqx[149] = b'C';
+        let qual_eqx = vec![b'I'; 150];
+        let mod_eqx_def = CigarModifier::new(
+            1,
+            "74=1X73=2X",
+            q_eqx.clone(),
+            qual_eqx.clone(),
+            &ref_eqx,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(mod_eqx_def.cigar, "74=1X73=2X");
+
+        let mod_eqx_off = CigarModifier::new(
+            1,
+            "74=1X73=2X",
+            q_eqx,
+            qual_eqx,
+            &ref_eqx,
+            1,
+            &seed,
+            3,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .expect("direct CigarModifier --eqx must succeed under COMPAT_OFF");
+        assert_eq!(mod_eqx_off.cigar, "148M2S");
+        let parsed_eqx_off = crate::cigar::parse_cigar(&mod_eqx_off.cigar).unwrap();
+        assert_eq!(
+            crate::cigar::parse::query_consumed_len(&parsed_eqx_off),
+            150
+        );
+
+        for bad_eqx in ["10=0=5=", "10=-1X5=", "0M10="] {
+            let bad_res = CigarModifier::new(
+                1,
+                bad_eqx,
+                vec![b'A'; 20],
+                vec![b'I'; 20],
+                &ref_eqx,
+                1,
+                &seed,
+                3,
+                150,
+                &cfg_off,
+            )
+            .modify_cigar();
+            assert!(
+                matches!(bad_res, Err(crate::types::VardictError::JavaThrows(_))),
+                "Expected JavaThrows for invalid --eqx CIGAR {bad_eqx}, got {bad_res:?}"
             );
         }
     }

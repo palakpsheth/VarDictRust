@@ -52,6 +52,14 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let mut config = Config::default();
+    config.compat = if (mode_bits & 64) != 0 {
+        vardictrust_core::config::COMPAT_OFF
+    } else {
+        vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3
+    };
+    if (mode_bits & 128) != 0 {
+        config.amplicon = Some("10:0.95".to_string());
+    }
     config.realign = u8::from((mode_bits & 4) != 0);
     config.chimeric = (mode_bits & 8) != 0;
     config.dedup = (mode_bits & 16) != 0;
@@ -138,6 +146,7 @@ fuzz_target!(|data: &[u8]| {
         CigarKind::SequenceMismatch,
     ];
 
+    let mut pre = vardictrust_core::bam::RecordPreprocessor::new();
     let mut parser = CigarParser::new(&reference, &region, &config, false, 0, 0, seed_max_rl);
     for (rec_idx, chunk) in payload.chunks(24).take(8).enumerate() {
         if chunk.len() < 6 {
@@ -187,7 +196,7 @@ fuzz_target!(|data: &[u8]| {
         let aln_end = aln_start
             .saturating_add(rlen.saturating_sub(1))
             .min(i32::MAX as u32);
-        let flags = u16::from(chunk[0] & 0x13);
+        let flags = u16::from(chunk[0] & 0x1b);
         let rec = SamRecord {
             name: format!("r{rec_idx}").into_bytes(),
             flags,
@@ -200,11 +209,17 @@ fuzz_target!(|data: &[u8]| {
             quality_scores: quals,
             nm: Some(i32::from(chunk[2] % 12)),
             mate_reference_name: Some("=".to_string()),
-            mate_alignment_start: Some(Pos1(base_start)),
+            mate_alignment_start: Some(Pos1(if (extra_bits & 128) != 0 {
+                base_start.max(10)
+            } else {
+                u32::from(chunk[2] % 9).saturating_add(1)
+            })),
             template_length: i32::from(chunk[3] as i8) * 10,
             ..SamRecord::default()
         };
-        let _ = parser.parse_cigar(&rec);
+        if pre.preprocess_record(&rec, &config) {
+            let _ = parser.parse_cigar(&rec);
+        }
     }
 
     let mut var_data = parser.into_variation_data();

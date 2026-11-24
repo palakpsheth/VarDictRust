@@ -6981,14 +6981,26 @@ pub fn push_cigar_string(buf: &mut String, cigar: &[(u32, CigarKind)]) {
     }
 }
 
-/// Compute the aligned length on the reference using only Match and Deletion CIGAR operators.
-pub fn get_aligned_length_md(cigar: &[(u32, CigarKind)]) -> i32 {
+/// Compute the aligned length on the reference using Match and Deletion CIGAR operators,
+/// plus `=` (`SequenceMatch`) and `X` (`SequenceMismatch`) when `include_eqx` is `true`,
+/// saturating at `i32::MAX`.
+pub fn get_aligned_length_md_compat(cigar: &[(u32, CigarKind)], include_eqx: bool) -> i32 {
     cigar
         .iter()
-        .filter(|&&(_, kind)| kind == CigarKind::Match || kind == CigarKind::Deletion)
+        .filter(|&&(_, kind)| {
+            matches!(kind, CigarKind::Match | CigarKind::Deletion)
+                || (include_eqx
+                    && matches!(kind, CigarKind::SequenceMatch | CigarKind::SequenceMismatch))
+        })
         .fold(0i32, |acc, &(len, _)| {
             acc.saturating_add(i32::try_from(len).unwrap_or(i32::MAX))
         })
+}
+
+/// Compute the aligned length on the reference using only Match and Deletion CIGAR operators.
+#[inline]
+pub fn get_aligned_length_md(cigar: &[(u32, CigarKind)]) -> i32 {
+    get_aligned_length_md_compat(cigar, false)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -7181,7 +7193,11 @@ impl RecordPreprocessor {
                 let is_mate_unmapped = (record.flags & 0x8) != 0;
                 if is_paired && is_mate_unmapped {
                     // POS-CIGAR
-                    let key = DupKey::UnmappedMateCigar(alignment_start_val, record.cigar.clone());
+                    let mut ops = record.cigar.clone();
+                    if config.compat.eqx_cigar_read_length {
+                        crate::cigar::parse::coalesce_eqx_into_match(&mut ops);
+                    }
+                    let key = DupKey::UnmappedMateCigar(alignment_start_val, ops);
                     if self.duplicates.contains(&key) {
                         self.duplicate_reads = self.duplicate_reads.saturating_add(1);
                         return false;
@@ -14526,5 +14542,77 @@ mod tests {
             "dropping CramContigPinGuard must unpin and evict chr1 under budget pressure"
         );
         drop(chr2_worker_pin);
+    }
+
+    #[test]
+    fn compat_off_aligned_length_md_and_unmapped_mate_eqx_dedup() {
+        let eqx_cigar = [
+            (74, CigarKind::SequenceMatch),
+            (1, CigarKind::SequenceMismatch),
+            (5, CigarKind::Deletion),
+            (3, CigarKind::Insertion),
+            (10, CigarKind::SoftClip),
+            (75, CigarKind::SequenceMatch),
+        ];
+        assert_eq!(get_aligned_length_md(&eqx_cigar), 5);
+        assert_eq!(get_aligned_length_md_compat(&eqx_cigar, false), 5);
+        assert_eq!(get_aligned_length_md_compat(&eqx_cigar, true), 155);
+        assert_eq!(
+            get_aligned_length_md_compat(
+                &[
+                    (u32::MAX, CigarKind::SequenceMatch),
+                    (10, CigarKind::SequenceMismatch),
+                ],
+                true,
+            ),
+            i32::MAX
+        );
+
+        let make_unmapped_mate_rec = |name: &[u8], cigar: Vec<(u32, CigarKind)>| SamRecord {
+            name: name.to_vec(),
+            flags: 0x1 | 0x8, // paired + mate unmapped
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(100)),
+            alignment_end: Some(Pos1(249)),
+            mapping_quality: Some(60),
+            cigar,
+            sequence: vec![b'A'; 150],
+            quality_scores: vec![b'I'; 150],
+            mate_reference_name: Some("=".to_string()),
+            mate_alignment_start: Some(Pos1(100)),
+            ..SamRecord::default()
+        };
+
+        let r_150eq = make_unmapped_mate_rec(b"r1", vec![(150, CigarKind::SequenceMatch)]);
+        let r_74eq_1x_75eq = make_unmapped_mate_rec(
+            b"r2",
+            vec![
+                (74, CigarKind::SequenceMatch),
+                (1, CigarKind::SequenceMismatch),
+                (75, CigarKind::SequenceMatch),
+            ],
+        );
+        let r_150m = make_unmapped_mate_rec(b"r3", vec![(150, CigarKind::Match)]);
+
+        let cfg_default = Config {
+            dedup: true,
+            ..Config::default()
+        };
+        let mut pre_default = RecordPreprocessor::new();
+        assert!(pre_default.preprocess_record(&r_150eq, &cfg_default));
+        assert!(pre_default.preprocess_record(&r_74eq_1x_75eq, &cfg_default));
+        assert!(pre_default.preprocess_record(&r_150m, &cfg_default));
+        assert_eq!(pre_default.duplicate_reads, 0);
+
+        let cfg_off = Config {
+            dedup: true,
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let mut pre_off = RecordPreprocessor::new();
+        assert!(pre_off.preprocess_record(&r_150eq, &cfg_off));
+        assert!(!pre_off.preprocess_record(&r_74eq_1x_75eq, &cfg_off));
+        assert!(!pre_off.preprocess_record(&r_150m, &cfg_off));
+        assert_eq!(pre_off.duplicate_reads, 2);
     }
 }

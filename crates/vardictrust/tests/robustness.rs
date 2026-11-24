@@ -7894,4 +7894,152 @@ fn vcf_all_alleles_and_compat_off_bgzf_tbi_and_csi_e2e() {
         2,
         "both X and chrX must have indexed bins in .vcf.gz.csi"
     );
+
+    // 3. UB-5 discordant-only symbolic SV (<DUP>, SPLITREAD=0;SPANPAIR=8):
+    //    dropped by default CLI, emitted by `--compat=off`, and dropped again by `--compat=off --min-splitreads 1`
+    let sv_ref_len = 700usize;
+    let mut sv_seed = 0x5678_1234_9ABC_DEF0u64;
+    let sv_bases = [b'A', b'C', b'G', b'T'];
+    let sv_seq: Vec<u8> = (0..sv_ref_len)
+        .map(|i| {
+            sv_seed = sv_seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            if i % 5 == 0 {
+                sv_bases[(i / 5) % 4]
+            } else {
+                sv_bases[((sv_seed >> 33) & 3) as usize]
+            }
+        })
+        .collect();
+    let sv_fa = dir.path().join("ub5_cli.fa");
+    let sv_fai = dir.path().join("ub5_cli.fa.fai");
+    let mut sv_fa_bytes = b">chr1\n".to_vec();
+    sv_fa_bytes.extend_from_slice(&sv_seq);
+    sv_fa_bytes.push(b'\n');
+    std::fs::write(&sv_fa, &sv_fa_bytes).expect("write ub5_cli.fa");
+    std::fs::write(
+        &sv_fai,
+        format!("chr1\t{sv_ref_len}\t6\t{sv_ref_len}\t{}\n", sv_ref_len + 1),
+    )
+    .expect("write ub5_cli.fa.fai");
+
+    let sv_bam = dir.path().join("ub5_cli.bam");
+    {
+        let rs_c1 = HeaderMap::<RefSeqMap>::builder()
+            .set_length(sv_ref_len.try_into().unwrap())
+            .build()
+            .unwrap();
+        let hd = Header::builder()
+            .add_reference_sequence("chr1", rs_c1)
+            .build();
+        let mut sv_recs = Vec::new();
+        for i in 0..4usize {
+            let s = 185 + i * 2;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let cigar: Cigar = [Op::new(Kind::Match, 70)].into_iter().collect();
+            sv_recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("ub5_wt_{i}"))
+                    .set_flags(flags)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(s).unwrap())
+                    .set_mapping_quality(MappingQuality::new(60).unwrap())
+                    .set_cigar(cigar)
+                    .set_sequence(sv_seq[s - 1..s - 1 + 70].to_vec().into())
+                    .set_quality_scores(vec![40u8; 70].into())
+                    .build(),
+            );
+        }
+        for i in 0..8usize {
+            let cigar: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+            sv_recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("ub5_disc_{i}"))
+                    .set_flags(Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(450usize).unwrap())
+                    .set_mapping_quality(MappingQuality::new(60).unwrap())
+                    .set_cigar(cigar)
+                    .set_sequence(sv_seq[449..499].to_vec().into())
+                    .set_quality_scores(vec![40u8; 50].into())
+                    .set_mate_reference_sequence_id(0)
+                    .set_mate_alignment_start(Position::try_from(200usize).unwrap())
+                    .set_template_length(-250)
+                    .build(),
+            );
+        }
+        let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&sv_bam).unwrap());
+        let mut w = noodles::bam::io::Writer::from(bgzf);
+        w.write_alignment_header(&hd).unwrap();
+        let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+        for rec in &sv_recs {
+            let vs = w.get_ref().virtual_position();
+            w.write_alignment_record(&hd, rec).unwrap();
+            let ve = w.get_ref().virtual_position();
+            let s = rec.alignment_start().unwrap();
+            let span = rec.cigar().alignment_span().saturating_sub(1).max(1);
+            let e = Position::new(s.get() + span).unwrap();
+            indexer
+                .add_record(Some((0, s, e, true)), Chunk::new(vs, ve))
+                .unwrap();
+        }
+        w.try_finish().unwrap();
+        let mut bai_path = sv_bam.clone();
+        bai_path.set_extension("bam.bai");
+        bai::io::Writer::new(std::fs::File::create(bai_path).unwrap())
+            .write_index(&indexer.build(1))
+            .unwrap();
+    }
+
+    let run_ub5_cli = |extra_args: &[&str]| -> Vec<String> {
+        let out = base_cmd()
+            .arg("-G")
+            .arg(&sv_fa)
+            .arg("-b")
+            .arg(&sv_bam)
+            .args(["-R", "chr1:150-550", "-N", "UB5_CLI", "-f", "0.01"])
+            .args(extra_args)
+            .output()
+            .expect("spawn ub5 cli");
+        assert!(
+            out.status.success(),
+            "ub5 cli {:?} failed: {}",
+            extra_args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout)
+            .expect("utf8")
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(str::to_string)
+            .collect()
+    };
+
+    assert!(
+        run_ub5_cli(&[]).is_empty(),
+        "default CLI must drop discordant-only <DUP> (SPLITREAD=0;SPANPAIR=8)"
+    );
+    let ub5_compat_off_vars = run_ub5_cli(&["--compat=off"]);
+    assert_eq!(
+        ub5_compat_off_vars.len(),
+        1,
+        "expected --compat=off CLI to emit discordant-only <DUP>, got:\n{}",
+        ub5_compat_off_vars.join("\n")
+    );
+    assert!(
+        ub5_compat_off_vars[0].contains("\t<DUP>\t")
+            && ub5_compat_off_vars[0].contains(";SVTYPE=DUP;")
+            && ub5_compat_off_vars[0].contains(";SPLITREAD=0;SPANPAIR=8\t"),
+        "expected <DUP> with SPLITREAD=0;SPANPAIR=8, got: {}",
+        ub5_compat_off_vars[0]
+    );
+    assert!(
+        run_ub5_cli(&["--compat=off", "--min-splitreads", "1"]).is_empty(),
+        "--compat=off --min-splitreads 1 must honor explicit override and drop SPLITREAD=0 SV"
+    );
 }

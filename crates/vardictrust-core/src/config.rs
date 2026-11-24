@@ -83,6 +83,18 @@ pub struct CompatProfile {
     pub live_duprate: bool,
     /// Preserve both unprefixed and `chr`-prefixed sex/mito contigs (`X`+`chrX`, `Y`+`chrY`, `MT`+`chrM`) in VCF output.
     pub preserve_mixed_sex_contigs: bool,
+    /// `PR #402`: Absorb negative trailing `M` (`rm < 0`) into `rdoff_corr` during homopolymer multi-indel merges in `CigarModifier` (returning `Err(JavaThrows)` immediately if `rdoff_corr <= 0`).
+    pub cigar_homopolymer_merge: bool,
+    /// `eqx-read-length`: Treat `CigarKind::SequenceMatch` (`=`) and `CigarKind::SequenceMismatch` (`X`) equivalently to `CigarKind::Match` (`M`) across read-length, coalescing, realignment, dedup, and prescan paths.
+    pub eqx_cigar_read_length: bool,
+    /// `UB-5`: Preserve single-sample symbolic SVs (`<DUP>`, `<INV>`, `<DEL>`) with `spanpairs > 0` when `splitreads == 0` unless `--min-splitreads` was explicitly overridden.
+    pub preserve_discordant_svs: bool,
+    /// `UB-6`: Pass pre-decrement cluster end `mark_pe` to `mark_dup_sv` in `svfdup` when `tbp != 0 && tbp < pe`.
+    pub mark_dup_sv_inclusive_end: bool,
+    /// `sv-lazy-mate-pileup`: Gate `find_inv_sub_paths` mate-window loads on local soft-clip presence (`>= 12 bp`) and defer `partial_pipeline_paths` until `find_match_rev` + gap validation succeed (`sv.rs` `find_inv_sub_paths` / `StructuralVariantsProcessor.java:627-628`).
+    pub sv_lazy_mate_pileup: bool,
+    /// `rounding-underflow-tie`: Bypass OpenJDK `DecimalFormat` `DigitList` underflow truncation (`±5e-{4,5,6,9}`) so exact binary IEEE-754 `f64` values round to `±10^-d`.
+    pub exact_binary_half_even: bool,
 }
 
 /// Default VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`).
@@ -95,6 +107,12 @@ pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     suppress_pileup_sentinels: false,
     live_duprate: false,
     preserve_mixed_sex_contigs: false,
+    cigar_homopolymer_merge: false,
+    eqx_cigar_read_length: false,
+    preserve_discordant_svs: false,
+    mark_dup_sv_inclusive_end: false,
+    sv_lazy_mate_pileup: false,
+    exact_binary_half_even: false,
 };
 
 /// Compatibility-off profile (`--compat=off`) enabling bonafide correctness fixes.
@@ -107,6 +125,12 @@ pub const COMPAT_OFF: CompatProfile = CompatProfile {
     suppress_pileup_sentinels: true,
     live_duprate: true,
     preserve_mixed_sex_contigs: true,
+    cigar_homopolymer_merge: true,
+    eqx_cigar_read_length: true,
+    preserve_discordant_svs: true,
+    mark_dup_sv_inclusive_end: true,
+    sv_lazy_mate_pileup: true,
+    exact_binary_half_even: true,
 };
 
 impl Default for CompatProfile {
@@ -288,6 +312,8 @@ pub struct Config {
     pub vcf_pval_raw: Option<String>,
     /// Minimum split reads required for structural variants in single-sample VCF (`--min-splitreads`, default: 1, ports `var2vcf_valid.pl -T`).
     pub vcf_min_splitreads: i32,
+    /// True when `--min-splitreads` was explicitly passed on the CLI (`var2vcf_valid.pl -T`).
+    pub vcf_min_splitreads_explicit: bool,
     /// Enable the PSTD=0 single-position read filter in single-sample VCF output (`true` by default; `--no-pstd-filter` sets `false`, ports `var2vcf_valid.pl -P 0`).
     pub vcf_pstd_filter: bool,
     /// Opt-in VCF allele-frequency filter/GT threshold override (`--vcf-af`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -f`).
@@ -398,6 +424,7 @@ impl Default for Config {
             vcf_pval: 0.05,
             vcf_pval_raw: None,
             vcf_min_splitreads: 1,
+            vcf_min_splitreads_explicit: false,
             vcf_pstd_filter: true,
             vcf_af: None,
             vcf_min_depth: None,
@@ -948,6 +975,32 @@ mod tests {
         assert!(!c.index_csi);
         assert_eq!(c.compat, COMPAT_VARDICTJAVA_1_8_3);
         assert!(!c.vcf_all_alleles);
+        assert_eq!(c.vcf_min_splitreads, 1);
+        assert!(!c.vcf_min_splitreads_explicit);
+    }
+
+    #[test]
+    fn compat_wave2_switches_and_min_splitreads_explicit_contract() {
+        let vj = std::hint::black_box(COMPAT_VARDICTJAVA_1_8_3);
+        assert!(!vj.cigar_homopolymer_merge);
+        assert!(!vj.eqx_cigar_read_length);
+        assert!(!vj.preserve_discordant_svs);
+        assert!(!vj.mark_dup_sv_inclusive_end);
+        assert!(!vj.sv_lazy_mate_pileup);
+        assert!(!vj.exact_binary_half_even);
+
+        let off = std::hint::black_box(COMPAT_OFF);
+        assert!(off.cigar_homopolymer_merge);
+        assert!(off.eqx_cigar_read_length);
+        assert!(off.preserve_discordant_svs);
+        assert!(off.mark_dup_sv_inclusive_end);
+        assert!(off.sv_lazy_mate_pileup);
+        assert!(off.exact_binary_half_even);
+
+        let mut cfg = Config::default();
+        assert!(!cfg.vcf_min_splitreads_explicit);
+        cfg.vcf_min_splitreads_explicit = true;
+        assert!(cfg.vcf_min_splitreads_explicit);
     }
 
     #[test]
@@ -971,6 +1024,12 @@ mod tests {
         assert!(!vj.suppress_pileup_sentinels);
         assert!(!vj.live_duprate);
         assert!(!vj.preserve_mixed_sex_contigs);
+        assert!(!vj.cigar_homopolymer_merge);
+        assert!(!vj.eqx_cigar_read_length);
+        assert!(!vj.preserve_discordant_svs);
+        assert!(!vj.mark_dup_sv_inclusive_end);
+        assert!(!vj.sv_lazy_mate_pileup);
+        assert!(!vj.exact_binary_half_even);
 
         let off = std::hint::black_box(COMPAT_OFF);
         assert_eq!(off.target, CompatTarget::Off);
@@ -981,6 +1040,12 @@ mod tests {
         assert!(off.suppress_pileup_sentinels);
         assert!(off.live_duprate);
         assert!(off.preserve_mixed_sex_contigs);
+        assert!(off.cigar_homopolymer_merge);
+        assert!(off.eqx_cigar_read_length);
+        assert!(off.preserve_discordant_svs);
+        assert!(off.mark_dup_sv_inclusive_end);
+        assert!(off.sv_lazy_mate_pileup);
+        assert!(off.exact_binary_half_even);
 
         for valid_vj in [
             "vardictjava",

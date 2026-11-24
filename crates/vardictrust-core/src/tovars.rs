@@ -4,7 +4,7 @@
 use crate::config::Config;
 use crate::reference::Reference;
 use crate::regions::Region;
-use crate::types::round_half_even;
+use crate::types::round_half_even_compat;
 use crate::variations::{Variant, VariationData};
 use std::collections::HashMap;
 
@@ -104,6 +104,7 @@ fn fill_common_fields(
     locnt: i32,
     hicov: i32,
     duprate: f64,
+    exact_binary_half_even: bool,
 ) {
     tvref.description = description.to_string();
     tvref.pos_coverage = cnt.cnt;
@@ -111,8 +112,10 @@ fn fill_common_fields(
     tvref.rev = rev;
     tvref.bias.clear();
     let _ = std::fmt::Write::write_fmt(&mut tvref.bias, format_args!("{}", bias));
-    tvref.frequency = round_half_even(cnt.cnt as f64 / ttcov as f64, 4);
-    tvref.mean_position = round_half_even(cnt.pmean / cnt.cnt as f64, 1);
+    tvref.frequency =
+        round_half_even_compat(cnt.cnt as f64 / ttcov as f64, 4, exact_binary_half_even);
+    tvref.mean_position =
+        round_half_even_compat(cnt.pmean / cnt.cnt as f64, 1, exact_binary_half_even);
     tvref.pstd = cnt.pstd;
     tvref.mean_quality = base_quality;
     tvref.qstd = cnt.qstd;
@@ -130,7 +133,7 @@ fn fill_common_fields(
     };
     tvref.shift3 = 0;
     tvref.msi = 0.0;
-    tvref.nm = round_half_even(cnt.nm / cnt.cnt as f64, 1);
+    tvref.nm = round_half_even_compat(cnt.nm / cnt.cnt as f64, 1, exact_binary_half_even);
     tvref.hicnt = hicnt;
     tvref.hicov = hicov;
     tvref.duprate = duprate;
@@ -907,12 +910,15 @@ impl<'a> ToVarsBuilder<'a> {
         hicov: i32,
         duprate: f64,
     ) -> Variant {
+        let exact_binary_half_even = self.config.compat.exact_binary_half_even;
         let fwd = cnt.fwd;
         let rev = cnt.rev;
         let min_reads_bias = i32::try_from(self.config.min_reads_bias).unwrap_or(i32::MAX);
         let bias = strand_bias(fwd, rev, min_reads_bias);
-        let base_quality = round_half_even(cnt.qmean / cnt.cnt as f64, 1);
-        let mapping_quality = round_half_even(cnt.mqmean / cnt.cnt as f64, 1);
+        let base_quality =
+            round_half_even_compat(cnt.qmean / cnt.cnt as f64, 1, exact_binary_half_even);
+        let mapping_quality =
+            round_half_even_compat(cnt.mqmean / cnt.cnt as f64, 1, exact_binary_half_even);
         let hicnt = cnt.hicnt;
         let locnt = cnt.locnt;
 
@@ -939,6 +945,7 @@ impl<'a> ToVarsBuilder<'a> {
             locnt,
             hicov,
             duprate,
+            exact_binary_half_even,
         );
         tvref
     }
@@ -1030,7 +1037,11 @@ impl<'a> ToVarsBuilder<'a> {
                 );
 
                 if self.config.debug {
-                    debug_lines.push(tvref.debug_variants_content());
+                    debug_lines.push(
+                        tvref.debug_variants_content_compat(
+                            self.config.compat.exact_binary_half_even,
+                        ),
+                    );
                 }
 
                 var.push(tvref);
@@ -1176,13 +1187,22 @@ impl<'a> ToVarsBuilder<'a> {
                     if cnt.cnt == 0 {
                         continue;
                     }
+                    let exact_binary_half_even = self.config.compat.exact_binary_half_even;
                     let fwd = cnt.fwd;
                     let rev = cnt.rev;
                     let min_reads_bias =
                         i32::try_from(self.config.min_reads_bias).unwrap_or(i32::MAX);
                     let bias = strand_bias(fwd, rev, min_reads_bias);
-                    let base_quality = round_half_even(cnt.qmean / cnt.cnt as f64, 1);
-                    let mapping_quality = round_half_even(cnt.mqmean / cnt.cnt as f64, 1);
+                    let base_quality = round_half_even_compat(
+                        cnt.qmean / cnt.cnt as f64,
+                        1,
+                        exact_binary_half_even,
+                    );
+                    let mapping_quality = round_half_even_compat(
+                        cnt.mqmean / cnt.cnt as f64,
+                        1,
+                        exact_binary_half_even,
+                    );
                     let hicnt = cnt.hicnt;
                     let locnt = cnt.locnt;
 
@@ -1215,12 +1235,13 @@ impl<'a> ToVarsBuilder<'a> {
                         locnt,
                         hicov,
                         duprate,
+                        exact_binary_half_even,
                     );
 
                     if self.config.debug {
                         // ports Variant.debugVariantsContentInsertion (Variant.java:261-266)
                         let mut s = String::from("I");
-                        s.push_str(&tvref.debug_variants_content());
+                        s.push_str(&tvref.debug_variants_content_compat(exact_binary_half_even));
                         debug_lines.push(s);
                     }
 
@@ -1882,10 +1903,12 @@ impl<'a> ToVarsBuilder<'a> {
                 drop(genotype1_current_inner);
                 drop(genotype2);
 
-                vref.extra_freq = round_half_even(vref.extra_freq, 4);
-                vref.frequency = round_half_even(vref.frequency, 4);
-                vref.hi_freq = round_half_even(vref.hi_freq, 4);
-                vref.msi = round_half_even(msi, 3);
+                let exact_binary_half_even = self.config.compat.exact_binary_half_even;
+                vref.extra_freq =
+                    round_half_even_compat(vref.extra_freq, 4, exact_binary_half_even);
+                vref.frequency = round_half_even_compat(vref.frequency, 4, exact_binary_half_even);
+                vref.hi_freq = round_half_even_compat(vref.hi_freq, 4, exact_binary_half_even);
+                vref.msi = round_half_even_compat(msi, 3, exact_binary_half_even);
                 vref.msint = msint_len;
                 vref.shift3 = shift3;
                 vref.start_pos = start_position;
@@ -1993,7 +2016,8 @@ impl<'a> ToVarsBuilder<'a> {
         vref.shift3 = 0;
         vref.start_pos = position;
         vref.end_pos = position;
-        vref.hi_freq = round_half_even(vref.hi_freq, 4);
+        vref.hi_freq =
+            round_half_even_compat(vref.hi_freq, 4, self.config.compat.exact_binary_half_even);
 
         let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
         let valid_base = match ref_base {
@@ -5639,5 +5663,129 @@ mod tests {
         assert_eq!(off_del_no3_c.ref_allele, "ATA");
         assert_eq!(off_del_no3_c.var_allele, "A");
         assert_eq!(off_del_no3_c.crispr, 1);
+    }
+
+    #[test]
+    fn compat_off_exact_binary_half_even_rounds_5e_minus_5_ties_in_tovars_and_debug() {
+        let seq = vec![b'A'; 50];
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 50,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 50)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(50),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32, hicnt: i32, extracnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = hicnt;
+            v.extracnt = extracnt;
+            v.fwd = cnt;
+            v.rev = 0;
+            v.qmean = 35.0 * cnt as f64;
+            v.mqmean = 60.0 * cnt as f64;
+            v.pmean = 20.0 * cnt as f64;
+            v
+        };
+
+        // Pos 10: 1 / 20_000 == 5e-5 for SNV "G" and insertion "+T" (frequency, hi_freq, extra_freq, debug)
+        let mut vd = VariationData::new();
+        vd.ref_coverage.insert(10, 20_000);
+        let mut vm10 = VariationMap::new();
+        vm10.map.insert("A".to_string(), mk_var(19_999, 19_999, 0));
+        vm10.map.insert("G".to_string(), mk_var(1, 1, 1));
+        vd.non_insertion_variants.insert(10, vm10);
+        let mut ins10 = VariationMap::new();
+        ins10.map.insert("+T".to_string(), mk_var(1, 1, 1));
+        vd.insertion_variants.insert(10, ins10);
+
+        // Pos 20: ref "A" has hicnt = 1 out of hicov = 20_000 (tests update_ref_variant hi_freq)
+        vd.ref_coverage.insert(20, 20_000);
+        let mut vm20 = VariationMap::new();
+        vm20.map.insert("A".to_string(), mk_var(1, 1, 0));
+        vm20.map.insert("C".to_string(), mk_var(19_999, 19_999, 0));
+        vd.non_insertion_variants.insert(20, vm20);
+
+        let mut cfg_leg = Config::default();
+        cfg_leg.pileup = true;
+        cfg_leg.amplicon = Some("10:0.95".to_string());
+        cfg_leg.freq = -1.0;
+        cfg_leg.debug = true;
+        let aligned_leg = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg)
+            .build_aligned_variants(&vd);
+        let leg_vars10 = aligned_leg.get(&10).unwrap();
+        let leg_snv = leg_vars10
+            .variants
+            .iter()
+            .find(|v| v.description == "G")
+            .unwrap();
+        let leg_ins = leg_vars10
+            .variants
+            .iter()
+            .find(|v| v.description == "+T")
+            .unwrap();
+        assert_eq!(leg_snv.frequency, 0.0);
+        assert_eq!(leg_snv.hi_freq, 0.0);
+        assert_eq!(leg_snv.extra_freq, 0.0);
+        assert_eq!(leg_ins.frequency, 0.0);
+        assert!(leg_snv.debug.contains("G:1:F-1:R-0:0.0000:"));
+        assert!(leg_snv.debug.contains("I+T:1:F-1:R-0:0.0000:"));
+        assert_eq!(
+            aligned_leg
+                .get(&20)
+                .unwrap()
+                .ref_variant
+                .as_ref()
+                .unwrap()
+                .hi_freq,
+            0.0
+        );
+
+        let mut cfg_off = cfg_leg.clone();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+        let aligned_off = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off)
+            .build_aligned_variants(&vd);
+        let off_vars10 = aligned_off.get(&10).unwrap();
+        let off_snv = off_vars10
+            .variants
+            .iter()
+            .find(|v| v.description == "G")
+            .unwrap();
+        let off_ins = off_vars10
+            .variants
+            .iter()
+            .find(|v| v.description == "+T")
+            .unwrap();
+        assert_eq!(off_snv.frequency, 0.0001);
+        assert_eq!(off_snv.hi_freq, 0.0001);
+        assert_eq!(off_snv.extra_freq, 0.0001);
+        assert_eq!(off_ins.frequency, 0.0001);
+        assert!(off_snv.debug.contains("G:1:F-1:R-0:0.0001:"));
+        assert!(off_snv.debug.contains("I+T:1:F-1:R-0:0.0001:"));
+        assert_eq!(
+            aligned_off
+                .get(&20)
+                .unwrap()
+                .ref_variant
+                .as_ref()
+                .unwrap()
+                .hi_freq,
+            0.0001
+        );
     }
 }
