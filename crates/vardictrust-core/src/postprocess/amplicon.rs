@@ -93,7 +93,7 @@ pub fn amplicon_post_process<R: std::borrow::Borrow<Region>>(
 }
 
 #[inline]
-fn region_target_range_i32(region: &Region) -> (i32, i32) {
+pub(crate) fn region_target_range_i32(region: &Region) -> (i32, i32) {
     match region.amplicon.as_ref() {
         Some(amp) => (
             i32::try_from(amp.insert_start.0.max(1)).unwrap_or(i32::MAX),
@@ -104,13 +104,6 @@ fn region_target_range_i32(region: &Region) -> (i32, i32) {
             i32::try_from(region.end.0).unwrap_or(i32::MAX),
         ),
     }
-}
-
-/// Merged 1-based closed target intervals across a segment's amplicon inserts
-/// (falling back to `[region.start, region.end]` when `region.amplicon` is `None`).
-pub(crate) fn merge_segment_target_ranges(segment: &[Region]) -> Vec<(i32, i32)> {
-    let ranges: Vec<(i32, i32)> = segment.iter().map(region_target_range_i32).collect();
-    crate::merge_i32_intervals(ranges)
 }
 
 /// Filter `results` in-place to the merged 1-based closed amplicon insert bounds of
@@ -295,7 +288,7 @@ impl<'a> AmpliconCoverSweep<'a> {
     }
 }
 
-pub(crate) fn merge_insert_ranges(segment: &[Region]) -> Vec<(i32, i32)> {
+fn merge_insert_ranges(segment: &[Region]) -> Vec<(i32, i32)> {
     let mut ranges: Vec<(i32, i32)> = segment
         .iter()
         .filter_map(|region| {

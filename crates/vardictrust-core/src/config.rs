@@ -69,9 +69,9 @@ impl CompatTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CompatProfile {
     pub target: CompatTarget,
-    /// `#116`: Bijective VCF 4.2 percent-encoding on `INFO/SAMPLE=...` (`%`, `;`, `=`, `,`, whitespace, `""`, `.`).
+    /// `#116`: Bijective VCF 4.2 percent-encoding on `INFO/SAMPLE=...` (`%`, `;`, `=`, `,`, whitespace/control, `""` -> `-`, `-` -> `%2D`, `.` -> `%2E`).
     pub sanitize_sample_info: bool,
-    /// `#342`: Normalize negative `<dup-N>` (`mlen < 100`) to `<DUP>` with non-negative `i64` span.
+    /// `#342`: Normalize `<dup-N>` (`mlen < 100`) to `<DUP>` with non-negative `i64` span (including `-L <= 100`) and unify homozygous `genotype1` `<DUP>` span (`2 * SVFLANK + dup_val`, `ToVarsBuilder.java:619` vs `:700`).
     pub standard_dup_symbolic_alt: bool,
     /// `#292`: Shift 3'-moved (`-3`) deletion/insertion `REF`/`ALT` alleles to match shifted coordinates.
     pub shift3_3prime_alleles: bool,

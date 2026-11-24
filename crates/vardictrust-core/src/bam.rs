@@ -10286,33 +10286,79 @@ mod tests {
             ..Default::default()
         };
         NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
-        let meta = acquire_cram_meta(&cram_path, &config).unwrap();
-        let loads_before = meta
-            .fasta_repo
-            .load_count
-            .load(std::sync::atomic::Ordering::SeqCst);
+        // Retry across `BAM_CACHE_EPOCH` bumps if a sibling parallel test calls `clear_bam_caches()`.
+        loop {
+            if let Some(cache) = FASTA_REPO_CACHE.get() {
+                cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&ref_fa);
+            }
+            if let Some(cache) = CRAM_META_CACHE.get() {
+                cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&(cram_path.clone(), ref_fa.clone()));
+            }
+            let _ = CRAM_META_TLS.try_with(|tls| {
+                if let Ok(mut slots) = tls.try_borrow_mut() {
+                    *slots = [None, None];
+                }
+            });
+            let _ = CRAM_LAST_CONTAINER_TLS.try_with(|tls| {
+                if let Ok(mut slots) = tls.try_borrow_mut() {
+                    *slots = [None, None];
+                }
+            });
+            let ep0 = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+            let meta = acquire_cram_meta(&cram_path, &config).unwrap();
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                continue;
+            }
+            for shard_mutex in cram_container_cache_shards() {
+                shard_mutex
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .lru
+                    .entries
+                    .retain(|((mid, _), _)| *mid != meta.id);
+            }
+            let loads_before = meta
+                .fasta_repo
+                .load_count
+                .load(std::sync::atomic::Ordering::SeqCst);
 
-        for (name, _) in contigs {
-            let recs: Vec<SamRecord> =
-                query_region_iter(&cram_path, name, Pos0(1), Pos0(500), &config)
-                    .unwrap()
-                    .map(|r| r.unwrap())
-                    .collect();
-            assert_eq!(recs.len(), 4);
-            assert_eq!(recs[0].nm, Some(0));
-            assert_eq!(recs[1].nm, Some(1));
-            assert_eq!(recs[0].reference_name.as_deref(), Some(name));
+            let mut aborted = false;
+            for (name, _) in contigs {
+                let recs: Vec<SamRecord> =
+                    query_region_iter(&cram_path, name, Pos0(1), Pos0(500), &config)
+                        .unwrap()
+                        .map(|r| r.unwrap())
+                        .collect();
+                if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                    aborted = true;
+                    break;
+                }
+                assert_eq!(recs.len(), 4);
+                assert_eq!(recs[0].nm, Some(0));
+                assert_eq!(recs[1].nm, Some(1));
+                assert_eq!(recs[0].reference_name.as_deref(), Some(name));
+            }
+            if aborted || BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                continue;
+            }
+
+            let loads_after = meta
+                .fasta_repo
+                .load_count
+                .load(std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(
+                loads_after - loads_before,
+                3,
+                "each of the 3 contigs must be loaded from disk only once across multi-ref slice decode + NM calculation"
+            );
+            break;
         }
-
-        let loads_after = meta
-            .fasta_repo
-            .load_count
-            .load(std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(
-            loads_after - loads_before,
-            3,
-            "each of the 3 contigs must be loaded from disk only once across multi-ref slice decode + NM calculation"
-        );
     }
 
     #[test]
@@ -10401,13 +10447,45 @@ mod tests {
             ..Default::default()
         };
         NEXT_BAM_META_ID.fetch_max(TEST_META_ID_BASE, std::sync::atomic::Ordering::Relaxed);
-        let meta = acquire_cram_meta(&cram_path, &config).unwrap();
-        // Set budget to 2 * (contig_len + CRAM_REF_OVERHANG_PAD) so at most 2 padded contigs fit
-        let per_contig_bytes = contig_len + CRAM_REF_OVERHANG_PAD;
-        meta.fasta_repo.set_budget_bytes(2 * per_contig_bytes);
+        let (meta, mut feed) = loop {
+            if let Some(cache) = FASTA_REPO_CACHE.get() {
+                cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&ref_fa);
+            }
+            if let Some(cache) = CRAM_META_CACHE.get() {
+                cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&(cram_path.clone(), ref_fa.clone()));
+            }
+            let _ = CRAM_META_TLS.try_with(|tls| {
+                if let Ok(mut slots) = tls.try_borrow_mut() {
+                    *slots = [None, None];
+                }
+            });
+            let _ = CRAM_LAST_CONTAINER_TLS.try_with(|tls| {
+                if let Ok(mut slots) = tls.try_borrow_mut() {
+                    *slots = [None, None];
+                }
+            });
+            let ep0 = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
+            let meta = acquire_cram_meta(&cram_path, &config).unwrap();
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                continue;
+            }
+            // Set budget to 2 * (contig_len + CRAM_REF_OVERHANG_PAD) so at most 2 padded contigs fit
+            let per_contig_bytes = contig_len + CRAM_REF_OVERHANG_PAD;
+            meta.fasta_repo.set_budget_bytes(2 * per_contig_bytes);
 
-        // Hold an active CramFeed on chr1 -> pins chr1's ContigSlot
-        let mut feed = query_region_iter(&cram_path, "chr1", Pos0(50), Pos0(200), &config).unwrap();
+            // Hold an active CramFeed on chr1 -> pins chr1's ContigSlot
+            let feed = query_region_iter(&cram_path, "chr1", Pos0(50), Pos0(200), &config).unwrap();
+            if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) != ep0 {
+                continue;
+            }
+            break (meta, feed);
+        };
         let slot_chr1 = meta
             .fasta_repo
             .resident_slot(b"chr1")

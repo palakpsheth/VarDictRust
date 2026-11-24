@@ -195,6 +195,35 @@ fn assert_tsv_cols(kind: &str, line: &str, expected_cols: usize) {
     );
 }
 
+fn decode_sanitized_sample(sample_val: &str) -> String {
+    if sample_val == "-" {
+        return String::new();
+    }
+    let bytes = sample_val.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes.get(i) == Some(&b'%') {
+            let Some(hex_slice) = bytes.get(i + 1..i + 3) else {
+                panic!("truncated percent escape in INFO/SAMPLE: {sample_val:?}");
+            };
+            let hex_str = std::str::from_utf8(hex_slice)
+                .unwrap_or_else(|e| panic!("non-ASCII percent escape in {sample_val:?}: {e}"));
+            let byte = u8::from_str_radix(hex_str, 16)
+                .unwrap_or_else(|e| panic!("invalid hex %{hex_str} in {sample_val:?}: {e}"));
+            out.push(byte);
+            i += 3;
+        } else if let Some(&b) = bytes.get(i) {
+            out.push(b);
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    String::from_utf8(out)
+        .unwrap_or_else(|e| panic!("decoded INFO/SAMPLE is not valid UTF-8 ({sample_val:?}): {e}"))
+}
+
 fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: &Config) {
     assert_tsv_cols(kind, line, expected_cols);
     if !config.compat.sanitize_sample_info || line.starts_with('#') {
@@ -218,8 +247,20 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
         !sample_val.contains(',')
             && !sample_val.contains('=')
             && !sample_val.contains(';')
-            && !sample_val.chars().any(char::is_whitespace),
-        "{kind} has unescaped VCF delimiter or whitespace in INFO/SAMPLE: {sample_val:?}"
+            && !sample_val
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control()),
+        "{kind} has unescaped VCF delimiter, whitespace, or control char in INFO/SAMPLE: {sample_val:?}"
+    );
+    let expected_raw_sample = if expected_cols == 10 {
+        config.sample.as_str()
+    } else {
+        config.sample.split('|').next().unwrap_or(&config.sample)
+    };
+    assert_eq!(
+        decode_sanitized_sample(sample_val),
+        expected_raw_sample,
+        "{kind} INFO/SAMPLE round-trip mismatch: encoded={sample_val:?}, expected_raw={expected_raw_sample:?}"
     );
     assert_eq!(
         entries
@@ -487,7 +528,7 @@ fuzz_target!(|data: &[u8]| {
             1 => Some(0),
             _ => Some(cur.i32()),
         },
-        sample: match cur.u8() % 8 {
+        sample: match cur.u8() % 12 {
             0 => "SAMPLE".to_string(),
             1 => "TUMOR|NORMAL".to_string(),
             2 => "TUMOR|".to_string(),
@@ -495,6 +536,10 @@ fuzz_target!(|data: &[u8]| {
             4 => ".".to_string(),
             5 => "..|.".to_string(),
             6 => "a;FOO=1,bar%20baz\tq|NORM;X=2".to_string(),
+            7 => "-".to_string(),
+            8 => "%2D|_".to_string(),
+            9 => "a b;T=1|a_b;T=1".to_string(),
+            10 => "\0".to_string(),
             _ => cur.utf8_capped(48, true),
         },
         vcf_pval: cur.metric_f64(0.5),

@@ -3376,13 +3376,17 @@ mod vcf_all_alleles_and_compat_off {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn system perl for var2vcf_*.pl");
-        child
-            .stdin
-            .take()
-            .expect("perl stdin")
-            .write_all(var_stdin.as_bytes())
-            .expect("write .var to perl stdin");
-        let out = child.wait_with_output().expect("wait perl var2vcf");
+        let mut stdin = child.stdin.take().expect("perl stdin");
+        let out = std::thread::scope(|s| {
+            let writer = s.spawn(move || {
+                stdin
+                    .write_all(var_stdin.as_bytes())
+                    .expect("write .var to perl stdin");
+            });
+            let output = child.wait_with_output().expect("wait perl var2vcf");
+            writer.join().expect("join perl stdin writer");
+            output
+        });
         assert!(
             out.status.success(),
             "perl {} {:?} failed: {}",
@@ -4186,6 +4190,91 @@ mod vcf_all_alleles_and_compat_off {
         assert!(vcf_dot_off.contains("##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n"));
         assert!(extract_variants(&vcf_dot_off)[0].contains("\tSAMPLE=%2E;TYPE="));
 
+        let e2e_sample_cases = [
+            ("", "-", ""),
+            ("-", "%2D", "-"),
+            ("%2D", "%252D", "%2D"),
+            (".", "%2E", "."),
+            ("%2E", "%252E", "%2E"),
+            ("_", "_", "_"),
+            ("HG008-T", "HG008-T", "HG008-T"),
+            ("a b;T=1", "a%20b%3BT%3D1", "a_b;T=1"),
+            ("a_b;T=1", "a_b%3BT%3D1", "a_b;T=1"),
+        ];
+        let mut seen_e2e_samples = std::collections::HashSet::with_capacity(e2e_sample_cases.len());
+        for (raw_s, expected_off, expected_vj) in e2e_sample_cases {
+            let mut s_vj = base_micro_config();
+            s_vj.sample = raw_s.to_string();
+            s_vj.sample_explicit = true;
+            let out_vj = run_core_vcf(&s_vj).expect("single sample VJ");
+            assert!(
+                extract_variants(&out_vj)[0].contains(&format!("\tSAMPLE={expected_vj};TYPE=")),
+                "single VJ mismatch for {raw_s:?}"
+            );
+
+            let mut s_off = s_vj;
+            s_off.compat = COMPAT_OFF;
+            let out_off = run_core_vcf(&s_off).expect("single sample OFF");
+            let first_info_off = extract_variants(&out_off)[0]
+                .split('\t')
+                .nth(7)
+                .unwrap()
+                .to_string();
+            assert!(
+                first_info_off.starts_with(&format!("SAMPLE={expected_off};TYPE=")),
+                "single OFF mismatch for {raw_s:?}: {first_info_off}"
+            );
+            let encoded_tok = first_info_off
+                .split(';')
+                .next()
+                .unwrap()
+                .strip_prefix("SAMPLE=")
+                .unwrap()
+                .to_string();
+            assert!(
+                seen_e2e_samples.insert(encoded_tok),
+                "E2E collision in sanitized INFO/SAMPLE for {raw_s:?}"
+            );
+        }
+
+        // Direct record formatter check for NUL ("\0" -> "%00"), which header validation rejects on -N
+        {
+            let nul_cfg = Config {
+                compat: COMPAT_OFF,
+                sample: "\0".to_string(),
+                ..Config::default()
+            };
+            let mut nul_var = vardictrust_core::variations::Variant::new();
+            nul_var.start_pos = 100;
+            nul_var.end_pos = 100;
+            nul_var.ref_allele = "A".to_string();
+            nul_var.var_allele = "G".to_string();
+            nul_var.var_type = "SNV".to_string();
+            nul_var.total_pos_cov = 20;
+            nul_var.pos_coverage = 10;
+            nul_var.frequency = 0.5;
+            nul_var.mean_quality = 35.0;
+            let nul_reg = vardictrust_core::regions::Region {
+                chr: "chr1".to_string(),
+                start: vardictrust_core::types::Pos1(1),
+                end: vardictrust_core::types::Pos1(200),
+                gene: "G".to_string(),
+                amplicon: None,
+            };
+            let mut nul_buf = String::new();
+            vardictrust_core::output::vcf::format_vcf_record_into(
+                &mut nul_buf,
+                &nul_var,
+                &nul_reg,
+                &nul_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None,
+            );
+            assert!(nul_buf.contains("\tSAMPLE=%00;TYPE=SNV;"));
+        }
+
         // Paired somatic header + bijective INFO/SAMPLE ("TUM;X=1,Y%20|NORM")
         let som_ref_seq = lcg_ref_bytes(0x9988_7766_5544_3322, 300);
         let som_fa = write_multi_contig_fasta(dir.path(), "compat_som", &[("chr1", &som_ref_seq)]);
@@ -4558,13 +4647,18 @@ mod vcf_all_alleles_and_compat_off {
         // Multi-amplicon 8-col BED under COMPAT_OFF strict_region_bounds + Switch 6 (UB-1/UB-2 -p sentinels)
         let amp_bounds_bed = dir.path().join("amp_bounds.bed");
         // AMP_LEFT [80,109] insert [100,109] (del at 99 < 100), overlapping AMP_OV1 [126,169] insert [135,155]
-        // + AMP_OV2 [127,170] insert [140,165] (snv at 145 inside both!), AMP_RIGHT [180,226] insert [185,200]
-        // (+AT at 199 shifts -3 to 202 > 200!), and AMP_EMPTY [260,270] insert [260,270] (0 reads for -p UB-2)
+        // + AMP_OV2 [127,170] insert [140,158] (snv at 145 inside both!), abutting non-overlapping segments
+        // AMP_SEAM1 [144,185] insert [159,161] and AMP_SEAM2 [158,198] insert [162,180] (regions.rs splits
+        // into two segments because 162 > 161; s3_ins160 piled up at 160 shifts -3 to POS=163 across the
+        // 161 -> 162 seam and MUST be retained!), AMP_RIGHT [180,226] insert [185,200] (+AT at 199 shifts
+        // -3 to 202 > 200!), and AMP_EMPTY [260,270] insert [260,270] (0 reads for -p UB-2)
         fs::write(
             &amp_bounds_bed,
             "chr1\t79\t109\tAMP_LEFT\t0\t+\t99\t109\n\
              chr1\t125\t169\tAMP_OV1\t0\t+\t134\t155\n\
-             chr1\t126\t170\tAMP_OV2\t0\t+\t139\t165\n\
+             chr1\t126\t170\tAMP_OV2\t0\t+\t139\t158\n\
+             chr1\t143\t185\tAMP_SEAM1\t0\t+\t158\t161\n\
+             chr1\t157\t198\tAMP_SEAM2\t0\t+\t161\t180\n\
              chr1\t179\t226\tAMP_RIGHT\t0\t+\t184\t200\n\
              chr1\t259\t270\tAMP_EMPTY\t0\t+\t259\t270\n",
         )
@@ -4588,6 +4682,7 @@ mod vcf_all_alleles_and_compat_off {
         let amp_vj_vars = extract_variants(&run_core_vcf(&amp_off_cfg).expect("amp VJ bounds"));
         assert!(
             amp_vj_vars.iter().any(|l| l.starts_with("chr1\t202\t"))
+                && amp_vj_vars.iter().any(|l| l.starts_with("chr1\t163\t"))
                 && amp_vj_vars.iter().any(|l| l.starts_with("chr1\t145\t")),
             "legacy Amplicon VCF must emit -3 out-of-insert variant at 202 (#369), got:\n{}",
             amp_vj_vars.join("\n")
@@ -4599,8 +4694,11 @@ mod vcf_all_alleles_and_compat_off {
                 && !amp_off_vars.iter().any(|l| l.starts_with("chr1\t202\t"))
                 && amp_off_vars
                     .iter()
+                    .any(|l| l.starts_with("chr1\t163\t.\tA\tATA\t"))
+                && amp_off_vars
+                    .iter()
                     .any(|l| l.starts_with("chr1\t145\t") && l.contains(";GDAMP=2;TLAMP=2;")),
-            "COMPAT_OFF amplicon strict_region_bounds must drop out-of-insert 99/202 and keep multi-amplicon 145, got:\n{}",
+            "COMPAT_OFF amplicon strict_region_bounds must drop out-of-insert 99/202, retain seam-shifted 163 across abutting segments, and keep multi-amplicon 145, got:\n{}",
             amp_off_vars.join("\n")
         );
 
@@ -4610,6 +4708,11 @@ mod vcf_all_alleles_and_compat_off {
         let amp_p_vj = run_core_var(&amp_off_cfg).expect("amp -p VJ .var");
         amp_off_cfg.compat = COMPAT_OFF;
         let amp_p_off = run_core_var(&amp_off_cfg).expect("amp -p OFF .var");
+        assert!(
+            amp_p_off.lines().any(|l| l.contains("\t163\t163\tA\tATA\t"))
+                && !amp_p_off.lines().any(|l| l.contains("\t202\t")),
+            "COMPAT_OFF Amplicon -p must also retain seam-shifted 163 across abutting segments and drop 202"
+        );
         assert!(
             amp_p_vj
                 .lines()

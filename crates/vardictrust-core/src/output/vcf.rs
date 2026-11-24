@@ -211,8 +211,8 @@ fn chrom_compare(a: &str, b: &str) -> std::cmp::Ordering {
     let clean_a = a.strip_prefix("chr").unwrap_or(a);
     let clean_b = b.strip_prefix("chr").unwrap_or(b);
 
-    let a_is_num = clean_a.chars().all(|c| c.is_ascii_digit());
-    let b_is_num = clean_b.chars().all(|c| c.is_ascii_digit());
+    let a_is_num = !clean_a.is_empty() && clean_a.bytes().all(|b| b.is_ascii_digit());
+    let b_is_num = !clean_b.is_empty() && clean_b.bytes().all(|b| b.is_ascii_digit());
 
     match (a_is_num, b_is_num) {
         (true, true) => {
@@ -1249,7 +1249,11 @@ fn push_vcf_info_sample(buf: &mut String, raw_sample: &str, sanitize: bool) {
         return;
     }
     if raw_sample.is_empty() {
-        buf.push('_');
+        buf.push('-');
+        return;
+    }
+    if raw_sample == "-" {
+        buf.push_str("%2D");
         return;
     }
     if raw_sample == "." {
@@ -1258,11 +1262,16 @@ fn push_vcf_info_sample(buf: &mut String, raw_sample: &str, sanitize: bool) {
     }
     for c in raw_sample.chars() {
         match c {
-            c if c.is_whitespace() => buf.push('_'),
             '%' => buf.push_str("%25"),
             ';' => buf.push_str("%3B"),
             '=' => buf.push_str("%3D"),
             ',' => buf.push_str("%2C"),
+            c if c.is_whitespace() || c.is_control() => {
+                let mut u8_buf = [0u8; 4];
+                for &b in c.encode_utf8(&mut u8_buf).as_bytes() {
+                    let _ = std::fmt::Write::write_fmt(buf, format_args!("%{b:02X}"));
+                }
+            }
             other => buf.push(other),
         }
     }
@@ -5946,13 +5955,47 @@ mod tests {
         let var = amplicon_passing_variant();
         let norm = clean_normal();
 
+        fn decode_sanitized_sample(sample_val: &str) -> String {
+            if sample_val == "-" {
+                return String::new();
+            }
+            let bytes = sample_val.as_bytes();
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'%' {
+                    assert!(
+                        i + 2 < bytes.len(),
+                        "truncated percent escape in {sample_val:?}"
+                    );
+                    let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                    let b = u8::from_str_radix(hex, 16)
+                        .unwrap_or_else(|e| panic!("invalid hex %{hex} in {sample_val:?}: {e}"));
+                    out.push(b);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            String::from_utf8(out).expect("decoded sample must be valid UTF-8")
+        }
+
         let cases = [
-            ("", "_", ""),
+            ("", "-", ""),
+            ("-", "%2D", "-"),
+            ("%2D", "%252D", "%2D"),
             (".", "%2E", "."),
+            ("%2E", "%252E", "%2E"),
             ("..", "..", ".."),
+            ("_", "_", "_"),
+            ("\0", "%00", "\0"),
+            ("HG008-T", "HG008-T", "HG008-T"),
+            ("a b;T=1", "a%20b%3BT%3D1", "a_b;T=1"),
+            ("a_b;T=1", "a_b%3BT%3D1", "a_b;T=1"),
             (
                 "a;FOO=1,bar%20baz\tq",
-                "a%3BFOO%3D1%2Cbar%2520baz_q",
+                "a%3BFOO%3D1%2Cbar%2520baz%09q",
                 "a;FOO=1,bar%20baz_q",
             ),
             ("a;b", "a%3Bb", "a;b"),
@@ -5961,9 +6004,10 @@ mod tests {
             ("a%3Db", "a%253Db", "a%3Db"),
             ("a,b", "a%2Cb", "a,b"),
             ("a%2Cb", "a%252Cb", "a%2Cb"),
-            ("%2E", "%252E", "%2E"),
+            ("α\u{0085}β", "α%C2%85β", "α_β"),
         ];
 
+        let mut seen_encoded_off = std::collections::HashSet::with_capacity(cases.len());
         for (raw, expected_off, expected_vj) in cases {
             let mut direct_vj = String::new();
             push_vcf_info_sample(&mut direct_vj, raw, false);
@@ -5971,6 +6015,15 @@ mod tests {
             let mut direct_off = String::new();
             push_vcf_info_sample(&mut direct_off, raw, true);
             assert_eq!(direct_off, expected_off, "helper OFF mismatch for {raw:?}");
+            assert_eq!(
+                decode_sanitized_sample(&direct_off),
+                raw,
+                "bijective round-trip failed for {raw:?} -> {direct_off:?}"
+            );
+            assert!(
+                seen_encoded_off.insert(direct_off.clone()),
+                "collision in sanitized INFO/SAMPLE for {raw:?}: {direct_off:?}"
+            );
 
             // Single-sample COMPAT_VARDICTJAVA_1_8_3
             let mut vj_cfg = Config::default();
@@ -6076,9 +6129,20 @@ mod tests {
         assert_eq!(chrom_compare("chrX", "X"), Ordering::Greater);
         assert_eq!(chrom_compare("M", "chrM"), Ordering::Less);
         assert_eq!(chrom_compare("chrM", "M"), Ordering::Greater);
+        assert_eq!(chrom_compare("1", ""), Ordering::Less);
+        assert_eq!(chrom_compare("1", "chr"), Ordering::Less);
+        assert_eq!(chrom_compare("chr1", ""), Ordering::Less);
+        assert_eq!(chrom_compare("chr1", "chr"), Ordering::Less);
+        assert_eq!(chrom_compare("X", ""), Ordering::Less);
+        assert_eq!(chrom_compare("X", "chr"), Ordering::Less);
+        assert_eq!(chrom_compare("MT", ""), Ordering::Less);
+        assert_eq!(chrom_compare("MT", "chr"), Ordering::Less);
+        assert_eq!(chrom_compare("", "chr"), Ordering::Less);
 
-        // Verify strict total order axioms across mixed contigs
+        // Verify strict total order axioms across mixed contigs (including "" and "chr")
         let probes = [
+            "",
+            "chr",
             "1",
             "chr1",
             "01",

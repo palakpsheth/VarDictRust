@@ -130,9 +130,8 @@ fn build_strict_chr_target_intervals(
     let mut raw: HashMap<String, Vec<(i32, i32)>> = HashMap::new();
     for seg in regions {
         for reg in seg {
-            let lo = i32::try_from(reg.start.0.max(1)).unwrap_or(i32::MAX);
-            let hi = i32::try_from(reg.end.0).unwrap_or(i32::MAX);
-            raw.entry(reg.chr.clone()).or_default().push((lo, hi));
+            let range = crate::postprocess::amplicon::region_target_range_i32(reg);
+            raw.entry(reg.chr.clone()).or_default().push(range);
         }
     }
     raw.into_iter()
@@ -311,7 +310,6 @@ impl<P> SplitVarDeduper<P> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn accept_tile<F>(
         &mut self,
         rows: Vec<SplitVarRow<P>>,
@@ -2586,12 +2584,72 @@ fn normalize_af_value(af: f64) -> f64 {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct AllAllelesIdentity {
+    end_pos: i32,
+    ref_allele: Box<str>,
+    var_allele: Box<str>,
+}
+
+impl AllAllelesIdentity {
+    #[inline]
+    fn new(end_pos: i32, ref_allele: &str, var_allele: &str) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            end_pos,
+            ref_allele: ref_allele.into(),
+            var_allele: var_allele.into(),
+        })
+    }
+
+    #[inline]
+    fn from_owned(end_pos: i32, ref_allele: String, var_allele: String) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            end_pos,
+            ref_allele: ref_allele.into_boxed_str(),
+            var_allele: var_allele.into_boxed_str(),
+        })
+    }
+
+    #[inline]
+    fn approx_heap_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            .saturating_add(self.ref_allele.len())
+            .saturating_add(self.var_allele.len())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AllAllelesMeta {
-    end_pos: i32,
-    ref_allele: String,
-    var_allele: String,
+    id: std::sync::Arc<AllAllelesIdentity>,
     seq: u64,
+}
+
+impl AllAllelesMeta {
+    #[inline]
+    fn boxed(end_pos: i32, ref_allele: &str, var_allele: &str, seq: u64) -> Box<Self> {
+        Box::new(Self {
+            id: AllAllelesIdentity::new(end_pos, ref_allele, var_allele),
+            seq,
+        })
+    }
+
+    #[inline]
+    fn from_owned_boxed(
+        end_pos: i32,
+        ref_allele: String,
+        var_allele: String,
+        seq: u64,
+    ) -> Box<Self> {
+        Box::new(Self {
+            id: AllAllelesIdentity::from_owned(end_pos, ref_allele, var_allele),
+            seq,
+        })
+    }
+
+    #[inline]
+    fn approx_heap_bytes(&self) -> usize {
+        std::mem::size_of::<Self>().saturating_add(self.id.approx_heap_bytes())
+    }
 }
 
 fn write_all_alleles_meta<W: std::io::Write>(
@@ -2602,9 +2660,9 @@ fn write_all_alleles_meta<W: std::io::Write>(
         None => write_spill_u8(w, 0),
         Some(m) => {
             write_spill_u8(w, 1)?;
-            write_spill_i32(w, m.end_pos)?;
-            write_spill_str(w, &m.ref_allele)?;
-            write_spill_str(w, &m.var_allele)?;
+            write_spill_i32(w, m.id.end_pos)?;
+            write_spill_str(w, &m.id.ref_allele)?;
+            write_spill_str(w, &m.id.var_allele)?;
             write_spill_u64(w, m.seq)
         }
     }
@@ -2621,9 +2679,7 @@ fn read_all_alleles_meta<R: std::io::Read>(
     let var_allele = read_spill_str(r)?;
     let seq = read_spill_u64(r)?;
     Ok(Some(Box::new(AllAllelesMeta {
-        end_pos,
-        ref_allele,
-        var_allele,
+        id: AllAllelesIdentity::from_owned(end_pos, ref_allele, var_allele),
         seq,
     })))
 }
@@ -2676,12 +2732,7 @@ impl SpillableCandidate for RawVcfCandidate {
         match self.all_alleles.as_mut() {
             Some(m) => m.seq = seq,
             None => {
-                self.all_alleles = Some(Box::new(AllAllelesMeta {
-                    end_pos: self.start_pos,
-                    ref_allele: String::new(),
-                    var_allele: String::new(),
-                    seq,
-                }));
+                self.all_alleles = Some(AllAllelesMeta::boxed(self.start_pos, "", "", seq));
             }
         }
     }
@@ -2693,11 +2744,11 @@ impl SpillableCandidate for RawVcfCandidate {
                 crate::output::vcf::SingleVcfEvent::Record(rec) => rec.capacity(),
                 _ => 0,
             })
-            .saturating_add(self.all_alleles.as_ref().map_or(0, |m| {
-                std::mem::size_of::<AllAllelesMeta>()
-                    .saturating_add(m.ref_allele.capacity())
-                    .saturating_add(m.var_allele.capacity())
-            }))
+            .saturating_add(
+                self.all_alleles
+                    .as_ref()
+                    .map_or(0, |m| m.approx_heap_bytes()),
+            )
     }
 
     fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
@@ -2835,12 +2886,7 @@ impl SpillableCandidate for SomaticVcfCandidate {
         match self.all_alleles.as_mut() {
             Some(m) => m.seq = seq,
             None => {
-                self.all_alleles = Some(Box::new(AllAllelesMeta {
-                    end_pos: self.start_pos,
-                    ref_allele: String::new(),
-                    var_allele: String::new(),
-                    seq,
-                }));
+                self.all_alleles = Some(AllAllelesMeta::boxed(self.start_pos, "", "", seq));
             }
         }
     }
@@ -2849,11 +2895,11 @@ impl SpillableCandidate for SomaticVcfCandidate {
     fn approx_heap_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             .saturating_add(self.record.as_ref().map_or(0, |rec| rec.capacity()))
-            .saturating_add(self.all_alleles.as_ref().map_or(0, |m| {
-                std::mem::size_of::<AllAllelesMeta>()
-                    .saturating_add(m.ref_allele.capacity())
-                    .saturating_add(m.var_allele.capacity())
-            }))
+            .saturating_add(
+                self.all_alleles
+                    .as_ref()
+                    .map_or(0, |m| m.approx_heap_bytes()),
+            )
     }
 
     fn write_to<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
@@ -3076,7 +3122,7 @@ where
     }
 
     let mut cur_pos: Option<i32> = None;
-    let mut seen_at_pos: rustc_hash::FxHashSet<(i32, String, String)> =
+    let mut seen_at_pos: rustc_hash::FxHashSet<std::sync::Arc<AllAllelesIdentity>> =
         rustc_hash::FxHashSet::default();
 
     while let Some(top_key) = heap.pop() {
@@ -3106,8 +3152,8 @@ where
             cur_pos = Some(pos);
         }
         let seen_key = match cand.all_alleles_meta() {
-            Some(m) => (m.end_pos, m.ref_allele.clone(), m.var_allele.clone()),
-            None => (pos, String::new(), String::new()),
+            Some(m) => std::sync::Arc::clone(&m.id),
+            None => AllAllelesIdentity::new(pos, "", ""),
         };
         if !seen_at_pos.insert(seen_key) {
             continue;
@@ -3190,9 +3236,7 @@ fn resolve_preferred_spill_parent(output_path: Option<&str>) -> Option<std::path
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct AllAllelesKey {
     start_pos: i32,
-    end_pos: i32,
-    ref_allele: String,
-    var_allele: String,
+    id: std::sync::Arc<AllAllelesIdentity>,
 }
 
 /// Bounded-memory per-chromosome VCF candidate accumulator (`AGENTS.md §10`).
@@ -3269,15 +3313,11 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
             let key = match cand.all_alleles_meta() {
                 Some(m) => AllAllelesKey {
                     start_pos: cand.start_pos(),
-                    end_pos: m.end_pos,
-                    ref_allele: m.ref_allele.clone(),
-                    var_allele: m.var_allele.clone(),
+                    id: std::sync::Arc::clone(&m.id),
                 },
                 None => AllAllelesKey {
                     start_pos: cand.start_pos(),
-                    end_pos: cand.start_pos(),
-                    ref_allele: String::new(),
-                    var_allele: String::new(),
+                    id: AllAllelesIdentity::new(cand.start_pos(), "", ""),
                 },
             };
             let chr_map = if let Some(m) = self.in_memory_all_alleles.get_mut(chr) {
@@ -3292,10 +3332,7 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
             };
             match chr_map.entry(key) {
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    let key_bytes = std::mem::size_of::<AllAllelesKey>()
-                        .saturating_add(e.key().ref_allele.capacity())
-                        .saturating_add(e.key().var_allele.capacity())
-                        .saturating_add(32);
+                    let key_bytes = std::mem::size_of::<AllAllelesKey>().saturating_add(32);
                     let new_bytes = cand.approx_heap_bytes().saturating_add(key_bytes);
                     self.current_bytes = self.current_bytes.saturating_add(new_bytes);
                     e.insert(cand);
@@ -3355,36 +3392,99 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
         Ok(())
     }
 
+    fn ensure_spill_dir<'a>(
+        temp_dir: &'a mut Option<SpillTempDir>,
+        preferred_parent: Option<&Path>,
+        record_test_dir: bool,
+    ) -> Result<&'a Path, VardictError> {
+        #[cfg(not(test))]
+        let _ = record_test_dir;
+        let dir = match temp_dir {
+            Some(d) => d,
+            None => {
+                let d =
+                    SpillTempDir::new_with_preferred(preferred_parent).map_err(VardictError::Io)?;
+                #[cfg(test)]
+                if record_test_dir {
+                    assert!(d.path().is_dir(), "spill directory must exist when created");
+                    TEST_LAST_VCF_SPILL_DIR
+                        .with(|slot| *slot.borrow_mut() = Some(d.path().to_path_buf()));
+                }
+                temp_dir.insert(d)
+            }
+        };
+        Ok(dir.path())
+    }
+
+    // Multi-pass bounded fan-in merge so open file descriptors never exceed `max_fanin`.
+    // Merging contiguous chronological chunks preserves first-seen AF tie-breaking.
+    fn compact_spilled_runs<M>(
+        &mut self,
+        mut run_paths: Vec<std::path::PathBuf>,
+        max_fanin: usize,
+        mut merge_fn: M,
+    ) -> Result<Vec<std::path::PathBuf>, VardictError>
+    where
+        M: FnMut(
+            Vec<RunSource<V>>,
+            &mut std::io::BufWriter<std::fs::File>,
+        ) -> Result<(), VardictError>,
+    {
+        while run_paths.len() > max_fanin {
+            let mut next_gen = Vec::with_capacity(run_paths.len().div_ceil(max_fanin));
+            for chunk in run_paths.chunks(max_fanin) {
+                if let [single] = chunk {
+                    next_gen.push(single.clone());
+                    continue;
+                }
+                let dir_path = Self::ensure_spill_dir(
+                    &mut self.temp_dir,
+                    self.preferred_spill_parent.as_deref(),
+                    false,
+                )?;
+                let out_path = dir_path.join(format!("vcf_spill_{}.bin", self.next_spill_id));
+                self.next_spill_id += 1;
+                let mut chunk_sources: Vec<RunSource<V>> = Vec::with_capacity(chunk.len());
+                for p in chunk {
+                    let f = std::fs::File::open(p).map_err(VardictError::Io)?;
+                    chunk_sources.push(RunSource::File(std::io::BufReader::with_capacity(
+                        BUFFER_CAPACITY,
+                        f,
+                    )));
+                }
+                let out_file = create_private_spill_file(&out_path).map_err(VardictError::Io)?;
+                let mut writer = std::io::BufWriter::with_capacity(BUFFER_CAPACITY, out_file);
+                merge_fn(chunk_sources, &mut writer)?;
+                use std::io::Write as _;
+                writer.flush().map_err(VardictError::Io)?;
+                for p in chunk {
+                    let _ = std::fs::remove_file(p);
+                }
+                next_gen.push(out_path);
+            }
+            run_paths = next_gen;
+        }
+        Ok(run_paths)
+    }
+
     fn spill_to_disk(&mut self) -> Result<(), VardictError> {
         if self.vcf_all_alleles {
             if self.in_memory_all_alleles.is_empty() {
                 self.current_bytes = 0;
                 return Ok(());
             }
-            let dir = match &self.temp_dir {
-                Some(d) => d,
-                None => {
-                    let d =
-                        SpillTempDir::new_with_preferred(self.preferred_spill_parent.as_deref())
-                            .map_err(VardictError::Io)?;
-                    #[cfg(test)]
-                    {
-                        assert!(d.path().is_dir(), "spill directory must exist when created");
-                        TEST_LAST_VCF_SPILL_DIR
-                            .with(|slot| *slot.borrow_mut() = Some(d.path().to_path_buf()));
-                    }
-                    self.temp_dir.insert(d)
-                }
-            };
+            let dir_path = Self::ensure_spill_dir(
+                &mut self.temp_dir,
+                self.preferred_spill_parent.as_deref(),
+                true,
+            )?;
             for (chr, map) in self.in_memory_all_alleles.drain(..) {
                 if map.is_empty() {
                     continue;
                 }
                 let mut sorted: Vec<V> = map.into_values().collect();
                 sorted.sort_unstable_by(cmp_all_alleles_emit_order);
-                let path = dir
-                    .path()
-                    .join(format!("vcf_spill_{}.bin", self.next_spill_id));
+                let path = dir_path.join(format!("vcf_spill_{}.bin", self.next_spill_id));
                 self.next_spill_id += 1;
                 let file = create_private_spill_file(&path).map_err(VardictError::Io)?;
                 let mut writer = std::io::BufWriter::with_capacity(BUFFER_CAPACITY, file);
@@ -3403,27 +3503,16 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
             self.current_bytes = 0;
             return Ok(());
         }
-        let dir = match &self.temp_dir {
-            Some(d) => d,
-            None => {
-                let d = SpillTempDir::new_with_preferred(self.preferred_spill_parent.as_deref())
-                    .map_err(VardictError::Io)?;
-                #[cfg(test)]
-                {
-                    assert!(d.path().is_dir(), "spill directory must exist when created");
-                    TEST_LAST_VCF_SPILL_DIR
-                        .with(|slot| *slot.borrow_mut() = Some(d.path().to_path_buf()));
-                }
-                self.temp_dir.insert(d)
-            }
-        };
+        let dir_path = Self::ensure_spill_dir(
+            &mut self.temp_dir,
+            self.preferred_spill_parent.as_deref(),
+            true,
+        )?;
         for (chr, btree) in self.in_memory.drain(..) {
             if btree.is_empty() {
                 continue;
             }
-            let path = dir
-                .path()
-                .join(format!("vcf_spill_{}.bin", self.next_spill_id));
+            let path = dir_path.join(format!("vcf_spill_{}.bin", self.next_spill_id));
             self.next_spill_id += 1;
             let file = create_private_spill_file(&path).map_err(VardictError::Io)?;
             let mut writer = std::io::BufWriter::with_capacity(BUFFER_CAPACITY, file);
@@ -3469,51 +3558,12 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
                     continue;
                 }
 
-                while run_paths.len() > max_fanin {
-                    let mut next_gen = Vec::with_capacity(run_paths.len().div_ceil(max_fanin));
-                    for chunk in run_paths.chunks(max_fanin) {
-                        if let [single] = chunk {
-                            next_gen.push(single.clone());
-                            continue;
-                        }
-                        let dir = match &self.temp_dir {
-                            Some(d) => d,
-                            None => {
-                                let d = SpillTempDir::new_with_preferred(
-                                    self.preferred_spill_parent.as_deref(),
-                                )
-                                .map_err(VardictError::Io)?;
-                                self.temp_dir.insert(d)
-                            }
-                        };
-                        let out_path = dir
-                            .path()
-                            .join(format!("vcf_spill_{}.bin", self.next_spill_id));
-                        self.next_spill_id += 1;
-                        let mut chunk_sources: Vec<RunSource<V>> = Vec::with_capacity(chunk.len());
-                        for p in chunk {
-                            let f = std::fs::File::open(p).map_err(VardictError::Io)?;
-                            chunk_sources.push(RunSource::File(std::io::BufReader::with_capacity(
-                                BUFFER_CAPACITY,
-                                f,
-                            )));
-                        }
-                        let out_file =
-                            create_private_spill_file(&out_path).map_err(VardictError::Io)?;
-                        let mut writer =
-                            std::io::BufWriter::with_capacity(BUFFER_CAPACITY, out_file);
+                run_paths =
+                    self.compact_spilled_runs(run_paths, max_fanin, |chunk_sources, writer| {
                         merge_run_sources_all_alleles(chunk_sources, |winner: V| {
-                            winner.write_to(&mut writer).map_err(VardictError::Io)
-                        })?;
-                        use std::io::Write as _;
-                        writer.flush().map_err(VardictError::Io)?;
-                        for p in chunk {
-                            let _ = std::fs::remove_file(p);
-                        }
-                        next_gen.push(out_path);
-                    }
-                    run_paths = next_gen;
-                }
+                            winner.write_to(writer).map_err(VardictError::Io)
+                        })
+                    })?;
 
                 let mut sources: Vec<RunSource<V>> = Vec::with_capacity(run_paths.len() + 1);
                 for p in &run_paths {
@@ -3542,52 +3592,12 @@ impl<V: SpillableCandidate> SpillableVcfAccumulator<V> {
                 continue;
             }
 
-            // Multi-pass bounded fan-in merge so open file descriptors never exceed `max_fanin`.
-            // Merging contiguous chronological chunks preserves first-seen AF tie-breaking.
-            while run_paths.len() > max_fanin {
-                let mut next_gen = Vec::with_capacity(run_paths.len().div_ceil(max_fanin));
-                for chunk in run_paths.chunks(max_fanin) {
-                    if let [single] = chunk {
-                        next_gen.push(single.clone());
-                        continue;
-                    }
-                    let dir = match &self.temp_dir {
-                        Some(d) => d,
-                        None => {
-                            let d = SpillTempDir::new_with_preferred(
-                                self.preferred_spill_parent.as_deref(),
-                            )
-                            .map_err(VardictError::Io)?;
-                            self.temp_dir.insert(d)
-                        }
-                    };
-                    let out_path = dir
-                        .path()
-                        .join(format!("vcf_spill_{}.bin", self.next_spill_id));
-                    self.next_spill_id += 1;
-                    let mut chunk_sources: Vec<RunSource<V>> = Vec::with_capacity(chunk.len());
-                    for p in chunk {
-                        let f = std::fs::File::open(p).map_err(VardictError::Io)?;
-                        chunk_sources.push(RunSource::File(std::io::BufReader::with_capacity(
-                            BUFFER_CAPACITY,
-                            f,
-                        )));
-                    }
-                    let out_file =
-                        create_private_spill_file(&out_path).map_err(VardictError::Io)?;
-                    let mut writer = std::io::BufWriter::with_capacity(BUFFER_CAPACITY, out_file);
+            run_paths =
+                self.compact_spilled_runs(run_paths, max_fanin, |chunk_sources, writer| {
                     merge_run_sources(chunk_sources, |winner: V| {
-                        winner.write_to(&mut writer).map_err(VardictError::Io)
-                    })?;
-                    use std::io::Write as _;
-                    writer.flush().map_err(VardictError::Io)?;
-                    for p in chunk {
-                        let _ = std::fs::remove_file(p);
-                    }
-                    next_gen.push(out_path);
-                }
-                run_paths = next_gen;
-            }
+                        winner.write_to(writer).map_err(VardictError::Io)
+                    })
+                })?;
 
             let mut sources: Vec<RunSource<V>> = Vec::with_capacity(run_paths.len() + 1);
             for p in &run_paths {
@@ -6187,12 +6197,6 @@ fn run_with_writer_inner<W: EngineWriter>(
                     } else {
                         let start_pos = v.start_pos;
                         let af_4dp = canonical_af_4dp(v.frequency);
-                        let all_alleles = Some(Box::new(AllAllelesMeta {
-                            end_pos: v.end_pos,
-                            ref_allele: v.ref_allele.clone(),
-                            var_allele: v.var_allele.clone(),
-                            seq: 0,
-                        }));
                         let event = crate::output::vcf::build_single_vcf_event(
                             &mut scratch,
                             &v,
@@ -6200,6 +6204,12 @@ fn run_with_writer_inner<W: EngineWriter>(
                             &config_clone,
                             None,
                         );
+                        let all_alleles = Some(AllAllelesMeta::from_owned_boxed(
+                            v.end_pos,
+                            v.ref_allele,
+                            v.var_allele,
+                            0,
+                        ));
                         Some(RawVcfCandidate {
                             start_pos,
                             af_4dp,
@@ -6233,14 +6243,6 @@ fn run_with_writer_inner<W: EngineWriter>(
                     } else {
                         crate::types::round_half_even(v.frequency, 4)
                     };
-                    let all_alleles = config_clone.vcf_all_alleles.then(|| {
-                        Box::new(AllAllelesMeta {
-                            end_pos: v.end_pos,
-                            ref_allele: v.ref_allele.clone(),
-                            var_allele: v.var_allele.clone(),
-                            seq: 0,
-                        })
-                    });
                     let event = crate::output::vcf::build_single_vcf_event(
                         &mut scratch,
                         &v,
@@ -6248,6 +6250,9 @@ fn run_with_writer_inner<W: EngineWriter>(
                         &config_clone,
                         None,
                     );
+                    let all_alleles = config_clone.vcf_all_alleles.then(|| {
+                        AllAllelesMeta::from_owned_boxed(v.end_pos, v.ref_allele, v.var_allele, 0)
+                    });
                     records.push(RawVcfCandidate {
                         start_pos,
                         af_4dp,
@@ -6556,6 +6561,11 @@ fn run_amplicon<W: EngineWriter>(
 
     let segments: Vec<Vec<crate::regions::Region>> =
         segments.into_iter().filter(|s| !s.is_empty()).collect();
+    let strict_chr_intervals: StrictChrIntervals = config
+        .compat
+        .strict_region_bounds
+        .then(|| std::sync::Arc::new(build_strict_chr_target_intervals(&segments)));
+    let strict_chr_intervals_worker = strict_chr_intervals.clone();
     if let Some(tel) = telemetry {
         let total_regions: usize = segments.iter().map(Vec::len).sum();
         tel.regions_count
@@ -6635,10 +6645,9 @@ fn run_amplicon<W: EngineWriter>(
             // BTreeSet iterates ascending: satisfies the sweep precondition,
             // and each covering list comes out in segment order via cached Arc
             // without materializing an intermediate BTreeMap<i32, Vec<_>>.
-            let strict_seg_bounds = config_clone
-                .compat
-                .strict_region_bounds
-                .then(|| crate::postprocess::amplicon::merge_segment_target_ranges(&segment));
+            let strict_chr_bounds = strict_chr_intervals_worker
+                .as_ref()
+                .and_then(|m| m.get(&current_region.chr));
             let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
             let mut results = Vec::new();
             crate::postprocess::amplicon::amplicon_post_process_streaming(
@@ -6651,7 +6660,7 @@ fn run_amplicon<W: EngineWriter>(
                 }),
                 &splice,
                 &mut |av| {
-                    if let Some(ref b) = strict_seg_bounds {
+                    if let Some(b) = strict_chr_bounds {
                         if !interval_set_contains(b, av.variant.start_pos) {
                             return Ok(());
                         }
@@ -6702,14 +6711,6 @@ fn run_amplicon<W: EngineWriter>(
                     } else {
                         crate::types::round_half_even(av.variant.frequency, 4)
                     };
-                    let all_alleles = config_clone.vcf_all_alleles.then(|| {
-                        Box::new(AllAllelesMeta {
-                            end_pos: av.variant.end_pos,
-                            ref_allele: av.variant.ref_allele.clone(),
-                            var_allele: av.variant.var_allele.clone(),
-                            seq: 0,
-                        })
-                    });
                     let event = crate::output::vcf::build_single_vcf_event(
                         &mut scratch,
                         &av.variant,
@@ -6717,6 +6718,14 @@ fn run_amplicon<W: EngineWriter>(
                         &config_clone,
                         Some((av.gdamp, av.tlamp, av.ncamp, av.ampflag)),
                     );
+                    let all_alleles = config_clone.vcf_all_alleles.then(|| {
+                        AllAllelesMeta::from_owned_boxed(
+                            av.variant.end_pos,
+                            av.variant.ref_allele,
+                            av.variant.var_allele,
+                            0,
+                        )
+                    });
                     records.push(RawVcfCandidate {
                         start_pos,
                         af_4dp,
@@ -6751,9 +6760,9 @@ fn run_amplicon<W: EngineWriter>(
                     let Some(current_region) = segment.last() else {
                         return Ok(());
                     };
-                    let strict_seg_bounds = config.compat.strict_region_bounds.then(|| {
-                        crate::postprocess::amplicon::merge_segment_target_ranges(&segment)
-                    });
+                    let strict_chr_bounds = strict_chr_intervals
+                        .as_ref()
+                        .and_then(|m| m.get(&current_region.chr));
                     // Position → covering-amplicon pairs (AmpliconMode.java:57-60).
                     //
                     // -p emits a (null/ref) row at EVERY insert position, even with zero
@@ -6771,7 +6780,7 @@ fn run_amplicon<W: EngineWriter>(
                             crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
                             &mut |av| {
-                                if let Some(ref b) = strict_seg_bounds {
+                                if let Some(b) = strict_chr_bounds {
                                     if !interval_set_contains(b, av.variant.start_pos) {
                                         return Ok(());
                                     }
@@ -6805,7 +6814,7 @@ fn run_amplicon<W: EngineWriter>(
                             crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
                             &mut |av| {
-                                if let Some(ref b) = strict_seg_bounds {
+                                if let Some(b) = strict_chr_bounds {
                                     if !interval_set_contains(b, av.variant.start_pos) {
                                         return Ok(());
                                     }
@@ -6821,14 +6830,6 @@ fn run_amplicon<W: EngineWriter>(
                                 } else {
                                     crate::types::round_half_even(av.variant.frequency, 4)
                                 };
-                                let all_alleles = config.vcf_all_alleles.then(|| {
-                                    Box::new(AllAllelesMeta {
-                                        end_pos: av.variant.end_pos,
-                                        ref_allele: av.variant.ref_allele.clone(),
-                                        var_allele: av.variant.var_allele.clone(),
-                                        seq: 0,
-                                    })
-                                });
                                 let event = crate::output::vcf::build_single_vcf_event(
                                     &mut scratch,
                                     &av.variant,
@@ -6836,6 +6837,14 @@ fn run_amplicon<W: EngineWriter>(
                                     config,
                                     Some((av.gdamp, av.tlamp, av.ncamp, av.ampflag)),
                                 );
+                                let all_alleles = config.vcf_all_alleles.then(|| {
+                                    AllAllelesMeta::from_owned_boxed(
+                                        av.variant.end_pos,
+                                        av.variant.ref_allele,
+                                        av.variant.var_allele,
+                                        0,
+                                    )
+                                });
                                 vcf_acc.insert(
                                     &current_region.chr,
                                     RawVcfCandidate {
@@ -7395,16 +7404,16 @@ fn run_somatic<W: EngineWriter>(
                     } else {
                         let start_pos = sv.variant1.start_pos;
                         let af_4dp = canonical_af_4dp(sv.variant1.frequency);
-                        let all_alleles = Some(Box::new(AllAllelesMeta {
-                            end_pos: sv.variant1.end_pos,
-                            ref_allele: sv.variant1.ref_allele.clone(),
-                            var_allele: sv.variant1.var_allele.clone(),
-                            seq: 0,
-                        }));
                         let record = Some(crate::output::vcf::format_paired_vcf_record(
                             &sv,
                             &builder_region.chr,
                             &config_clone,
+                        ));
+                        let all_alleles = Some(AllAllelesMeta::from_owned_boxed(
+                            sv.variant1.end_pos,
+                            sv.variant1.ref_allele,
+                            sv.variant1.var_allele,
+                            0,
                         ));
                         Some(SomaticVcfCandidate {
                             start_pos,
@@ -7432,16 +7441,16 @@ fn run_somatic<W: EngineWriter>(
                     }
                     let start_pos = sv.variant1.start_pos;
                     let af_4dp = canonical_af_4dp(sv.variant1.frequency);
-                    let all_alleles = Some(Box::new(AllAllelesMeta {
-                        end_pos: sv.variant1.end_pos,
-                        ref_allele: sv.variant1.ref_allele.clone(),
-                        var_allele: sv.variant1.var_allele.clone(),
-                        seq: 0,
-                    }));
                     let record = Some(crate::output::vcf::format_paired_vcf_record(
                         &sv,
                         &builder_region.chr,
                         &config_clone,
+                    ));
+                    let all_alleles = Some(AllAllelesMeta::from_owned_boxed(
+                        sv.variant1.end_pos,
+                        sv.variant1.ref_allele,
+                        sv.variant1.var_allele,
+                        0,
                     ));
                     candidates.push(SomaticVcfCandidate {
                         start_pos,
@@ -12495,12 +12504,7 @@ mod tests {
                 start_pos: pos,
                 af_4dp: af,
                 event,
-                all_alleles: Some(Box::new(AllAllelesMeta {
-                    end_pos: end,
-                    ref_allele: r.to_string(),
-                    var_allele: a.to_string(),
-                    seq: 0,
-                })),
+                all_alleles: Some(AllAllelesMeta::boxed(end, r, a, 0)),
             }
         };
 
