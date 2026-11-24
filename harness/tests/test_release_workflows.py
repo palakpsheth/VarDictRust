@@ -1068,6 +1068,14 @@ esac
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
+        self.assertTrue(hasattr(mod, "REPO_DESCRIPTION"), "configure_github_repo.py must define REPO_DESCRIPTION")
+        self.assertLessEqual(len(mod.REPO_DESCRIPTION), 160)
+        self.assertIn("--compat=off", mod.REPO_DESCRIPTION)
+        self.assertTrue(hasattr(mod, "REPO_TOPICS"), "configure_github_repo.py must define REPO_TOPICS")
+        self.assertEqual(len(mod.REPO_TOPICS), 14)
+        self.assertEqual(mod.configure_metadata(dry_run=True)["description"], mod.REPO_DESCRIPTION)
+        self.assertEqual(mod.configure_topics(dry_run=True)["names"], mod.REPO_TOPICS)
+
         # Case A: current_user_can_bypass == "always" -> keeps creation rule + RepositoryRole actor 5 (no rollback)
         calls_ok = []
 
@@ -1229,8 +1237,8 @@ esac
         skill_path = ROOT_DIR / ".agents" / "skills" / "vardictrust-release" / "SKILL.md"
         skill_text = skill_path.read_text(encoding="utf-8")
         self.assertIn("python3 paper/build_manuscript.py", skill_text)
-        self.assertIn("19 version-bearing files", skill_text)
-        self.assertIn("17 pre-tag files", skill_text)
+        self.assertIn("20 version-bearing files", skill_text)
+        self.assertIn("18 pre-tag files", skill_text)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = pathlib.Path(tmpdir) / "repo"

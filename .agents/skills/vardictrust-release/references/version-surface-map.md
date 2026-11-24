@@ -1,12 +1,12 @@
-# VarDictRust Version Surface Map (`19` Tracked Surfaces)
+# VarDictRust Version Surface Map (`20` Tracked Surfaces)
 
 Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL.md) and [`scripts/check_release_consistency.py`](../scripts/check_release_consistency.py).
 
 ---
 
-## 1. Pre-Tag Surfaces (`--phase pre-tag`, 17 Files Updated in Phase 1 PR)
+## 1. Pre-Tag Surfaces (`--phase pre-tag`, 18 Files Updated in Phase 1 PR)
 
-`harness/engine_fingerprint.sh` hashes the raw `HEAD:<path>` git blob OIDs of all `GATE_FILES` (including surfaces #1–#3: `Cargo.toml`, `crates/vardictrust/Cargo.toml`, and `Cargo.lock`). Bumping `X.Y.Z` in Phase 1 Step 2 therefore advances both `FP` and `PERF_FP`; running `bash harness/recertify.sh` in Phase 1 Step 3 refreshes the 16 `benchmarks/evidence/*.json` files under the release fingerprint and invokes `python3 harness/sync_evidence_docs.py` to auto-sync the `Certified Release Engine Fingerprint`, `perf_fingerprint`, and 16-row §13 SHA-256 table across surfaces #10, #12, #14, #15, and #16.
+`harness/engine_fingerprint.sh` hashes the raw `HEAD:<path>` git blob OIDs of all `GATE_FILES` (including surfaces #1–#3: `Cargo.toml`, `crates/vardictrust/Cargo.toml`, and `Cargo.lock`). Bumping `X.Y.Z` in Phase 1 Step 2 therefore advances both `FP` and `PERF_FP`; running `bash harness/recertify.sh` in Phase 1 Step 3 refreshes the 16 `benchmarks/evidence/*.json` files under the release fingerprint and invokes `python3 harness/sync_evidence_docs.py` to auto-sync the `Certified Release Engine Fingerprint`, `perf_fingerprint`, and 16-row §13 SHA-256 table across surfaces #10, #11, #12, #14, #15, #16, and this file.
 
 | # | File Path | Exact Version / Metadata Pattern | Purpose |
 | :--- | :--- | :--- | :--- |
@@ -27,14 +27,15 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `740` workspace tests (`527` core lib + `110` `corpus_parity` + `38` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `32` bin + `28` CLI integration), `2d82664ff81000f7` | Testing matrix & CI audit specification |
 | 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `2d82664ff81000f7`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
 | 17 | `zensical.toml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `"Release vX.Y.Z Certification" = "docs/release/vX.Y.Z-pr.md"`, `vX.Y.Z` links, and `740` workspace tests | ReadTheDocs navigation & GitHub Wiki |
+| 18 | `.github/SECURITY.md` | **`X.Y.x`** marked `:white_check_mark:` in Supported Versions table (single active `major.minor.x` derived from `Cargo.toml`) | Active supported release branch policy |
 
 ### Additional Pre-Tag Consistency Guards (`check_release_consistency.py` Checks `#18`–`#20`)
 
-In addition to the 17 version-bumped files above, `--phase pre-tag` enforces three cross-surface structural invariants:
+In addition to the 18 pre-tag version surfaces above, `--phase pre-tag` enforces three cross-surface structural invariants:
 
 | Guard | Validated Surfaces | Invariant Enforced |
 | :--- | :--- | :--- |
-| `#18` | `crates/vardictrust/src/{cli.rs,completions_man.rs}`, `README.md`, `ROADMAP.md`, `docs/ecosystem-survey.md`, `docs/migration.md`, `zensical.toml`, & `wiki/_Sidebar.md` | Exact 1:1 short/long CLI flag parity across all `90` `Cli` arguments (`7` functional groups) vs `README.md`'s `90`-row table, plus `var2vcf_*.pl` migration guide links |
+| `#18` | `crates/vardictrust/src/{cli.rs,completions_man.rs}`, `README.md`, `ROADMAP.md`, `docs/ecosystem-survey.md`, `docs/migration.md`, `zensical.toml`, & `wiki/_Sidebar.md` | Exact 1:1 short/long CLI flag parity across all `90` `Cli` arguments (`7` functional groups) vs `README.md`'s `90`-row table, plus `var2vcf_*.pl` and `--compat=off` migration guide checks |
 | `#19` | `UPSTREAM.toml` | Immutable reference comparator pins (`VarDictJava` `1.8.3` commit `0886261`, `VarDict` scripts commit `009e017`, and advisory `vardictcpp` `3` build `hc52dbad_0`) |
 | `#20` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`740` total: `527` `vardictrust-core` lib + `32` `vardictrust` bin + `71` integration + `110` `corpus_parity`) |
 
@@ -42,9 +43,14 @@ In addition to the 17 version-bumped files above, `--phase pre-tag` enforces thr
 
 ## 2. Post-Tag & Downstream Surfaces (Updated in Phases 3A & 3B)
 
-These two surfaces depend on live upstream artifacts and must **not** be hand-edited in Phase 1 (`AGENTS.md` §0b):
+These two surfaces depend on live upstream artifacts and must **not** have their `version`, `sha256`, or container/snapshot pins hand-edited in Phase 1 (`AGENTS.md` §0b):
 
 | # | File Path | Phase Updated | Exact Pattern | Upstream Dependency |
 | :--- | :--- | :--- | :--- | :--- |
-| 18 | `packaging/bioconda/recipes/vardictrust/meta.yaml` | **Phase 3A (`--phase post-bioconda`)** | `{% set version = "X.Y.Z" %}` + live `sha256:` + `build: number: 0` | Requires `https://github.com/palakpsheth/VarDictRust/archive/refs/tags/vX.Y.Z.tar.gz` created in Phase 2 |
-| 19 | `packaging/nf-core/modules/vardictrust/{environment.yml,main.nf,.conda-lock/*.txt,tests/main.nf.test.snap}` | **Phase 3B (`--phase post-nfcore`)** | `bioconda::vardictrust=X.Y.Z`, Wave container URLs, `.conda-lock/` lockfiles, and `["VARDICTRUST", "vardictrust", "X.Y.Z"]` in `main.nf.test.snap` | Requires `bioconda::vardictrust=X.Y.Z` (`linux-64` + `linux-aarch64`) live on `https://api.anaconda.org/package/bioconda/vardictrust` |
+| 19 | `packaging/bioconda/recipes/vardictrust/meta.yaml` | **Phase 3A (`--phase post-bioconda`)** | `{% set version = "X.Y.Z" %}` + live `sha256:` + `build: number: 0` | Requires `https://github.com/palakpsheth/VarDictRust/archive/refs/tags/vX.Y.Z.tar.gz` created in Phase 2 |
+| 20 | `packaging/nf-core/modules/vardictrust/{environment.yml,main.nf,.conda-lock/*.txt,tests/main.nf.test.snap}` | **Phase 3B (`--phase post-nfcore`)** | `bioconda::vardictrust=X.Y.Z`, Wave container URLs, `.conda-lock/` lockfiles, and `["VARDICTRUST", "vardictrust", "X.Y.Z"]` in `main.nf.test.snap` | Requires `bioconda::vardictrust=X.Y.Z` (`linux-64` + `linux-aarch64`) live on `https://api.anaconda.org/package/bioconda/vardictrust` |
+
+### Advisory External Registry Portals (Verified in Phase 3C)
+
+- **ReadTheDocs Project Admin (`vardictrust.readthedocs.io`):** Verify `description` and `project_url` (`https://github.com/palakpsheth/VarDictRust`) in the ReadTheDocs project dashboard alongside `zensical.toml` `site_description`.
+- **ELIXIR `bio.tools` (`biotools:vardictrust`):** Update `version` (`X.Y.Z`), license (`MIT AND GPL-2.0-or-later`), and dual-mode `--compat=vardictjava` / `--compat=off` summary at `https://bio.tools/vardictrust` (matching `packaging/bioconda/recipes/vardictrust/meta.yaml` and `packaging/nf-core/modules/vardictrust/meta.yml`).

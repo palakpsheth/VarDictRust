@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for reporting an issue! Please note that VarDictRust is engineered to match **VarDictJava v1.8.3** output on valid inputs under the [rewrites.bio](https://rewrites.bio) manifesto. If you suspect an output divergence, please include comparison data against VarDictJava.
+        Thank you for reporting an issue! Please note that VarDictRust matches **VarDictJava v1.8.3** output on valid inputs by default (`--compat=vardictjava` / `--parity`) under the [rewrites.bio](https://rewrites.bio) manifesto, while providing opt-in `v1.1+` correctness fixes via `--compat=off` (`CompatProfile`) and `--vcf-all-alleles`. Please specify whether `--compat=off` or `--vcf-all-alleles` was enabled, and include comparison data against VarDictJava if reporting a parity divergence.
   - type: textarea
     id: description
     attributes:
@@ -19,7 +19,7 @@ body:
     id: command
     attributes:
       label: Exact Command Line & Flags
-      description: The exact command line string invoked.
+      description: The exact command line string invoked (including any --compat=vardictjava|off or --vcf-* flags).
       render: shell
       placeholder: vardictrust -G reference.fa -f 0.01 -b sample.bam sample.bed > out.vcf
     validations:

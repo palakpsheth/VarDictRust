@@ -1,8 +1,8 @@
 # Upstream bugs — VarDictJava v1.8.3
 
 Consolidated, actionable list of VarDictJava v1.8.3 behaviors that are part of the
-specification under [rewrites.bio](https://rewrites.bio) §5 (replicate output bugs byte-for-byte, track
-upstream, never silently fix), plus one upstream-repo defect that affects validation
+default parity specification (`--compat=vardictjava`, aliases `vardictjava-1.8.3` / `1.8.3`, or `--parity`) under [rewrites.bio](https://rewrites.bio) §5 (replicate output bugs byte-for-byte by default, track
+upstream, never silently fix; with `v1.1.0+` opt-in corrections gated behind `--compat=off` and `--vcf-all-alleles` per [`ROADMAP.md`](../ROADMAP.md)), plus non-engine validation/environmental items (`UB-4`, `UB-8`) that affect validation
 infrastructure. Supersedes the drafts formerly embedded in [`DIVERGENCES.md`](../DIVERGENCES.md).
 
 **Version pin:** VarDictJava **v1.8.3 @ [`0886261`](https://github.com/AstraZeneca-NGS/VarDictJava/commit/0886261)**, Perl/R submodule @ [`009e017`](https://github.com/AstraZeneca-NGS/VarDict/commit/009e017).

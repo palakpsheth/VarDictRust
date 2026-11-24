@@ -1,7 +1,7 @@
 # VarDictRust Omnibus Empirical Validation Report
 
 **Authoritative Technical Report — VarDictRust v1.0.10 Release Parity Suite**  
-**Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity — Never Fake a Pass, §5 Pure Parity on Valid Inputs)  
+**Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity — Never Fake a Pass, §5 Default `--compat=vardictjava` Parity on Valid Inputs + Opt-In `--compat=off` Governance)  
 **Certified Release Engine Fingerprint:** `2d82664ff81000f7`  
 **Differential Target Oracle:** AstraZeneca VarDictJava v1.8.3 (`0886261`, Perl submodule `009e017`)  
 **Target Architecture:** Rust 2021 Edition (`crates/vardictrust-core`, `crates/vardictrust`)  
@@ -17,7 +17,7 @@
 
 ## 1. Executive Summary & Master Nine-Pillar Parity Scoreboard
 
-Under the **rewrites.bio** manifesto and project contract [`AGENTS.md`](../../AGENTS.md) §5, VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** engineered to produce output **byte-for-byte and floating-point identical to VarDictJava on valid genomic inputs**. It introduces zero heuristic shortcuts, relaxes no filtering thresholds, and alters no variant representations.
+Under the **rewrites.bio** manifesto and project contract [`AGENTS.md`](../../AGENTS.md) §5, VarDictRust is an idiomatic Rust rewrite of **VarDictJava v1.8.3** engineered to produce output **byte-for-byte and floating-point identical to VarDictJava on valid genomic inputs by default (`--compat=vardictjava` / `--parity`)**, while isolating opt-in `v1.1.0+` accuracy, structural-variant, and `--eqx` fixes behind `--compat=off` (`CompatProfile`) and multi-allelic VCF emission behind `--vcf-all-alleles` (see [`ROADMAP.md`](../../ROADMAP.md)). In default parity mode, it introduces zero heuristic shortcuts, relaxes no filtering thresholds, and alters no variant representations.
 
 To provide definitive, reproducible proof of compliance, VarDictRust was evaluated across **ten biological sample cohorts and assay families** comprising deep whole-genome sequencing (WGS), whole exomes (WES), targeted amplicons, cancer cell lines, and multi-ancestry trios spanning 9 human chromosomes across both **GRCh38** and **GRCh37/b37** assemblies:
 
@@ -421,7 +421,7 @@ $$
 
 ### 10.4 Default Filtering Thresholds Table
 
-All VCF-stage post-filter cutoffs below can be overridden independently of pileup engine thresholds via `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist`, and `--vcf-pval` (see [`docs/migration.md`](../migration.md)).
+All VCF-stage post-filter cutoffs below (plus `--pass-only`, `--paired-strict`, `--no-end`, `--no-pstd-filter`, `--min-splitreads`, and `--vcf-all-alleles` / `--all-alleles` across all 18/18 consolidated `var2vcf_*.pl` flags) can be overridden independently of pileup engine thresholds via `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist`, and `--vcf-pval` (see [`docs/migration.md`](../migration.md)).
 
 | Flag | Parameter Name | Default | Evaluation Context & Module | Exact Mathematical Predicate |
 | :---: | :--- | :---: | :--- | :--- |
@@ -475,7 +475,7 @@ The `Cluster0bp` filter description is defined in the standard VCF header emitte
 ```text
 ##FILTER=<ID=Cluster0bp,Description="Two variants are within 0 bp">
 ```
-Preserving the header declaration guarantees 100% byte-identical VCF header parity on valid inputs.
+Preserving the header declaration guarantees 100% byte-identical VCF header parity on valid inputs in default `--compat=vardictjava` mode (whereas opt-in `--compat=off` additionally stamps `##VarDictRustCompat=off` in the VCF header).
 
 ### The `Q0` Filter Gate
 In upstream `var2vcf_valid.pl` line 155:

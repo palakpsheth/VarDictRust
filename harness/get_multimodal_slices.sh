@@ -2,7 +2,7 @@
 # =============================================================================
 # harness/get_multimodal_slices.sh
 # Ingest and stream 18 non-overlapping slices across 6 diverse public sequencing
-# datasets spanning 12 distinct chromosomes for VarDictRust v1.0.0 validation.
+# datasets spanning 12 distinct chromosomes for VarDictRust validation.
 #
 # Adheres to Host Policy A3:
 # - Minimal network bandwidth: streams only small bounded regions via range requests

@@ -48,7 +48,7 @@ python3 harness/compare_var.py <oracle.var> <ours.var>
 ```
 
 ### 3. Check Existing Upstream Catalog Before Filing
-1. Search `docs/upstream-bugs.md`, `DIVERGENCES.md`, and `ROADMAP.md` for known VarDictJava issues (`#341`, `#243`, `#253`, `#283`, `#282`, `#92`, `#62`, `#363`, `#292`, `#342`).
+1. Search `docs/upstream-bugs.md`, `DIVERGENCES.md`, and `ROADMAP.md` for known VarDictJava issues and shipped `v1.1+` `--compat=off` / `--vcf-all-alleles` items (`#341`, `#243`, `#253`, `#283`, `#282`, `#116`, `#342`, `#292`, `#369`, `PR #402`, `--eqx`, `UB-5`, `UB-6`, `#370`, `#92`, `#62`, `#363`).
 2. Search open and closed repository issues:
    ```bash
    gh issue list --repo palakpsheth/VarDictRust --state all --search "<keyword>"
@@ -64,7 +64,7 @@ gh issue create --repo palakpsheth/VarDictRust \
 ### VarDictRust Version & Environment
 - **Version:** `vardictrust 1.0.10` (commit `<sha>`, engine fingerprint `<fp>`)
 - **OS / Arch:** `<uname -srm>`
-- **Execution Mode:** `<Simple | Somatic | Amplicon | Splicing>` (`--fisher` / default)
+- **Execution Mode:** `<Simple | Somatic | Amplicon | Splicing>` (`--fisher` / default; `--compat=vardictjava` default vs `--compat=off` / `--vcf-all-alleles`)
 
 ### Exact Command & Minimal Reproduction
 ```bash

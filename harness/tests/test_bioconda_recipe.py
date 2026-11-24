@@ -493,6 +493,25 @@ class TestBiocondaRecipe(unittest.TestCase):
             meta,
             "Bioconda meta.yaml doc_url must point to https://vardictrust.readthedocs.io/",
         )
+        summary_m = re.search(r'^\s*summary:\s*"([^"]+)"\s*$', meta, re.MULTILINE)
+        self.assertIsNotNone(summary_m, "meta.yaml must define double-quoted about.summary")
+        summary = summary_m.group(1)
+        self.assertLessEqual(
+            len(summary),
+            80,
+            f"Bioconda about.summary must be <= 80 chars (got {len(summary)}): {summary!r}",
+        )
+        self.assertFalse(
+            summary.endswith("."),
+            f"Bioconda about.summary must not end with a period: {summary!r}",
+        )
+        self.assertIn("--compat=off", summary, "Bioconda summary must highlight --compat=off")
+        self.assertIn("biotools:vardictrust", meta, "meta.yaml must list biotools:vardictrust")
+        self.assertIsNone(
+            re.search(r"\bbiotools:vardict\b", meta),
+            "meta.yaml must replace biotools:vardict with biotools:vardictrust",
+        )
+        self.assertNotIn("ultra-fast", meta.lower(), "meta.yaml must not contain 'ultra-fast'")
 
     def test_readme_bioconda_package_name(self):
         readme_path = ROOT_DIR / "README.md"
@@ -568,6 +587,17 @@ class TestNfCoreModulePackaging(unittest.TestCase):
         self.assertIn('pattern: "*.{bam,cram}"', meta_yml)
         self.assertIn("http://edamontology.org/format_3462", meta_yml)
         self.assertIn('pattern: "*.{bai,csi,crai}"', meta_yml)
+        meta_lines = meta_yml.splitlines()
+        self.assertTrue(
+            meta_lines[1].startswith('description: "') and meta_lines[1].endswith('"'),
+            f"nf-core meta.yml:2 description must be double-quoted: {meta_lines[1]!r}",
+        )
+        self.assertIn("--compat=off", meta_lines[1])
+        self.assertIn("--compat=off", meta_lines[10])
+        self.assertIn("--vcf-all-alleles", meta_lines[10])
+        self.assertNotIn("--output", meta_lines[10])
+        self.assertNotIn("--tbi", meta_lines[10])
+        self.assertIn("description: BED with the regions of interest", meta_yml)
 
     def test_nfcore_tests_use_lowercase_channel_factory(self):
         nf_test = (NFCORE_MOD_DIR / "tests" / "main.nf.test").read_text(encoding="utf-8")
@@ -822,6 +852,28 @@ class TestRepoAgentSkills(unittest.TestCase):
             post_tag_errs: list[str] = []
             mod.check_divergences_surface(fake_root, "1.0.8", post_tag_errs, phase="post-tag", require_head_fp=False)
             self.assertTrue(post_tag_errs, "post-tag must reject unfolded Current Workspace Test Suite block")
+
+            sec_dir = fake_root / ".github"
+            sec_dir.mkdir(parents=True, exist_ok=True)
+            (sec_dir / "SECURITY.md").write_text(
+                "| Version | Supported |\n| :--- | :--- |\n| **`1.1.x`** | :white_check_mark: |\n| `< 1.1.0` | :x: |\n",
+                encoding="utf-8",
+            )
+            sec_ok_errs: list[str] = []
+            mod.check_security_policy_surface(fake_root, "1.1.0", sec_ok_errs)
+            self.assertEqual(sec_ok_errs, [], f"Valid 1.1.x SECURITY.md rejected: {sec_ok_errs}")
+
+            sec_stale_errs: list[str] = []
+            mod.check_security_policy_surface(fake_root, "1.2.0", sec_stale_errs)
+            self.assertTrue(sec_stale_errs, "Stale 1.1.x SECURITY.md must fail for 1.2.0")
+
+            (sec_dir / "SECURITY.md").write_text(
+                "| Version | Supported |\n| :--- | :--- |\n| **`1.1.x`** | :white_check_mark: |\n| **`1.0.x`** | :white_check_mark: |\n",
+                encoding="utf-8",
+            )
+            sec_dup_errs: list[str] = []
+            mod.check_security_policy_surface(fake_root, "1.1.0", sec_dup_errs)
+            self.assertTrue(sec_dup_errs, "Multiple :white_check_mark: rows in SECURITY.md must fail")
 
 
 class TestLintRatchet(unittest.TestCase):
