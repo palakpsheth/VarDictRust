@@ -1030,30 +1030,53 @@ fn record_bam_piled_span(spans: &mut Vec<(i32, i32)>, start: i32, end: i32) {
     *spans = crate::merge_i32_intervals(std::mem::take(spans));
 }
 
-#[inline]
-fn ref_loaded_span_for_region(
-    start: i32,
-    end: i32,
-    extension: u32,
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mate FASTA check threads region bounds, read-reach window, and reference context"
+)]
+fn ensure_mate_fasta_loaded(
     chr: &str,
-    config: &Config,
+    reg_start: i32,
+    reg_end: i32,
+    extension: u32,
+    need_lo: i32,
+    need_hi: i32,
     chromosomes_lengths: &HashMap<String, usize>,
-) -> (i32, i32) {
-    let start_val = start.max(1) as u32;
-    let end_val = end.max(1) as u32;
-    let total_ext = (config.extension.max(0) as u32).saturating_add(extension);
-    let seq_start = start_val.saturating_sub(total_ext).max(1);
-    let end_ext = end_val.saturating_add(total_ext);
-    let len = saturated_chr_len(chromosomes_lengths, chr);
-    let seq_end = if len > 0 && end_ext > len {
-        len
+    config: &Config,
+    reference: &mut Reference,
+) -> Result<(), VardictError> {
+    let s = reg_start.max(1);
+    let e = reg_end.max(s);
+    let chr_len_u32 = saturated_chr_len(chromosomes_lengths, chr);
+    let chr_len = i32::try_from(chr_len_u32).unwrap_or(i32::MAX);
+    let (check_lo, check_hi) = if chr_len > 0 && s <= chr_len {
+        let lo = need_lo.min(s).clamp(1, chr_len);
+        let hi = need_hi.max(e).clamp(lo, chr_len);
+        (lo, hi)
     } else {
-        end_ext
+        let lo = need_lo.min(s).max(1);
+        let hi = need_hi.max(e).max(lo);
+        (lo, hi)
     };
-    (
-        i32::try_from(seq_start).unwrap_or(i32::MAX),
-        i32::try_from(seq_end).unwrap_or(i32::MAX),
-    )
+    if !is_loaded(chr, check_lo as u32, check_hi as u32, reference) {
+        let req_pad = u32::try_from(s.saturating_sub(check_lo).max(check_hi.saturating_sub(e)))
+            .unwrap_or(extension);
+        let mod_region = crate::regions::Region {
+            chr: chr.to_string(),
+            start: Pos1(s as u32),
+            end: Pos1(e as u32),
+            gene: String::new(),
+            amplicon: None,
+        };
+        get_reference(
+            &mod_region,
+            extension.max(req_pad),
+            chromosomes_lengths,
+            config,
+            reference,
+        )?;
+    }
+    Ok(())
 }
 
 /// Helper function to perform structural variant calling for inversions.
@@ -1176,16 +1199,17 @@ fn find_inv_sub_paths(
                 false
             };
             if !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1)) && probe_overlaps {
-                if !is_loaded(chr, mstart as u32, mend as u32, reference) {
-                    let mod_region = crate::regions::Region {
-                        chr: chr.to_string(),
-                        start: Pos1(mstart.max(1) as u32),
-                        end: Pos1(mend.max(1) as u32),
-                        gene: String::new(),
-                        amplicon: None,
-                    };
-                    get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
-                }
+                ensure_mate_fasta_loaded(
+                    chr,
+                    mstart,
+                    mend,
+                    500,
+                    widened_lo,
+                    widened_hi,
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
                 partial_pipeline_paths(
                     bam_paths,
                     var_data,
@@ -1196,10 +1220,7 @@ fn find_inv_sub_paths(
                     config,
                     chromosomes_lengths,
                 )?;
-                let (ref_seq_start, ref_seq_end) =
-                    ref_loaded_span_for_region(mstart, mend, 500, chr, config, chromosomes_lengths);
                 record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
-                record_bam_piled_span(bam_piled_spans, ref_seq_start, ref_seq_end);
             }
         } else if !is_loaded(chr, mstart as u32, mend as u32, reference) {
             let mod_region = crate::regions::Region {
@@ -1453,6 +1474,18 @@ fn find_inv_sub_paths(
             if config.compat.sv_lazy_mate_pileup
                 && !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1))
             {
+                let eff_max_rl = max_read_length.max(0);
+                ensure_mate_fasta_loaded(
+                    chr,
+                    mstart,
+                    mend,
+                    500,
+                    mate_lo.saturating_sub(eff_max_rl),
+                    mate_hi.saturating_add(eff_max_rl),
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
                 partial_pipeline_paths(
                     bam_paths,
                     var_data,
@@ -1463,10 +1496,7 @@ fn find_inv_sub_paths(
                     config,
                     chromosomes_lengths,
                 )?;
-                let (ref_seq_start, ref_seq_end) =
-                    ref_loaded_span_for_region(mstart, mend, 500, chr, config, chromosomes_lengths);
                 record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
-                record_bam_piled_span(bam_piled_spans, ref_seq_start, ref_seq_end);
             }
             let len = gap.saturating_add(1);
             let sv_flank = 50; // Configuration.SVFLANK
@@ -1820,19 +1850,21 @@ fn find_del_paths(
             let seq: &[u8] = seq_stack.get(..seq_len).unwrap_or(&seq_heap);
 
             if config.compat.sv_lazy_mate_pileup {
-                if !is_loaded(chr, mstart as u32, mend as u32, reference) {
-                    let mod_region = crate::regions::Region {
-                        chr: chr.to_string(),
-                        start: Pos1(mstart.max(1) as u32),
-                        end: Pos1(mend.max(1) as u32),
-                        gene: String::new(),
-                        amplicon: None,
-                    };
-                    get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
-                }
                 if !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1)) {
                     let mate_lo = mstart.saturating_sub(200).max(1);
                     let mate_hi = mend.saturating_add(200);
+                    let eff_max_rl = var_data.max_read_length.max(0);
+                    ensure_mate_fasta_loaded(
+                        chr,
+                        mstart,
+                        mend,
+                        300,
+                        mate_lo.saturating_sub(eff_max_rl),
+                        mate_hi.saturating_add(eff_max_rl),
+                        chromosomes_lengths,
+                        config,
+                        reference,
+                    )?;
                     partial_pipeline_paths(
                         bam_paths,
                         var_data,
@@ -1843,16 +1875,16 @@ fn find_del_paths(
                         config,
                         chromosomes_lengths,
                     )?;
-                    let (ref_seq_start, ref_seq_end) = ref_loaded_span_for_region(
-                        mstart,
-                        mend,
-                        300,
-                        chr,
-                        config,
-                        chromosomes_lengths,
-                    );
                     record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
-                    record_bam_piled_span(bam_piled_spans, ref_seq_start, ref_seq_end);
+                } else if !is_loaded(chr, mstart as u32, mend as u32, reference) {
+                    let mod_region = crate::regions::Region {
+                        chr: chr.to_string(),
+                        start: Pos1(mstart.max(1) as u32),
+                        end: Pos1(mend.max(1) as u32),
+                        gene: String::new(),
+                        amplicon: None,
+                    };
+                    get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
                 }
             } else if !is_loaded(chr, mstart as u32, mend as u32, reference) {
                 let mod_region = crate::regions::Region {
@@ -2188,19 +2220,21 @@ fn find_del_paths(
             let seq: &[u8] = seq_stack.get(..seq_len).unwrap_or(&seq_heap);
 
             if config.compat.sv_lazy_mate_pileup {
-                if !is_loaded(chr, mstart as u32, mend as u32, reference) {
-                    let mod_region = crate::regions::Region {
-                        chr: chr.to_string(),
-                        start: Pos1(mstart.max(1) as u32),
-                        end: Pos1(mend.max(1) as u32),
-                        gene: String::new(),
-                        amplicon: None,
-                    };
-                    get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
-                }
                 if !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1)) {
                     let mate_lo = mstart.saturating_sub(200).max(1);
                     let mate_hi = mend.saturating_add(200);
+                    let eff_max_rl = var_data.max_read_length.max(0);
+                    ensure_mate_fasta_loaded(
+                        chr,
+                        mstart,
+                        mend,
+                        300,
+                        mate_lo.saturating_sub(eff_max_rl),
+                        mate_hi.saturating_add(eff_max_rl),
+                        chromosomes_lengths,
+                        config,
+                        reference,
+                    )?;
                     partial_pipeline_paths(
                         bam_paths,
                         var_data,
@@ -2211,16 +2245,16 @@ fn find_del_paths(
                         config,
                         chromosomes_lengths,
                     )?;
-                    let (ref_seq_start, ref_seq_end) = ref_loaded_span_for_region(
-                        mstart,
-                        mend,
-                        300,
-                        chr,
-                        config,
-                        chromosomes_lengths,
-                    );
                     record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
-                    record_bam_piled_span(bam_piled_spans, ref_seq_start, ref_seq_end);
+                } else if !is_loaded(chr, mstart as u32, mend as u32, reference) {
+                    let mod_region = crate::regions::Region {
+                        chr: chr.to_string(),
+                        start: Pos1(mstart.max(1) as u32),
+                        end: Pos1(mend.max(1) as u32),
+                        gene: String::new(),
+                        amplicon: None,
+                    };
+                    get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
                 }
             } else {
                 let is_loaded_before = is_loaded(chr, mstart as u32, mend as u32, reference);
@@ -3690,13 +3724,7 @@ fn find_dup_disc_paths(
         let mut pe = end;
         let mut mark_pe = pe;
 
-        let mate_unpiled = if config.compat.sv_lazy_mate_pileup {
-            !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1))
-        } else {
-            !is_loaded(chr, mstart as u32, mend as u32, reference)
-        };
-        if mate_unpiled {
-            let prev_loaded = reference.loaded_regions.len();
+        if config.compat.sv_lazy_mate_pileup {
             if reference.get_base(chr, bp as u32).is_none() {
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
@@ -3707,32 +3735,54 @@ fn find_dup_disc_paths(
                 };
                 get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
             }
-            let mate_lo = mstart.saturating_sub(200).max(1);
-            let mate_hi = mend.saturating_add(200);
+            if !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1)) {
+                let mate_lo = mstart.saturating_sub(200).max(1);
+                let mate_hi = mend.saturating_add(200);
+                let eff_max_rl = var_data.max_read_length.max(0);
+                ensure_mate_fasta_loaded(
+                    chr,
+                    mstart,
+                    mend,
+                    300,
+                    mate_lo.saturating_sub(eff_max_rl),
+                    mate_hi.saturating_add(eff_max_rl),
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
+                partial_pipeline_paths(
+                    bam_paths,
+                    var_data,
+                    reference,
+                    chr,
+                    mate_lo,
+                    mate_hi,
+                    config,
+                    chromosomes_lengths,
+                )?;
+                record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
+            }
+        } else if !is_loaded(chr, mstart as u32, mend as u32, reference) {
+            if reference.get_base(chr, bp as u32).is_none() {
+                let mod_region = crate::regions::Region {
+                    chr: chr.to_string(),
+                    start: Pos1(bp.saturating_sub(150).max(1) as u32),
+                    end: Pos1(bp.saturating_add(150).max(1) as u32),
+                    gene: String::new(),
+                    amplicon: None,
+                };
+                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
+            }
             partial_pipeline_paths(
                 bam_paths,
                 var_data,
                 reference,
                 chr,
-                mate_lo,
-                mate_hi,
+                mstart.saturating_sub(200).max(1),
+                mend.saturating_add(200),
                 config,
                 chromosomes_lengths,
             )?;
-            if config.compat.sv_lazy_mate_pileup {
-                record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
-                if let Some(new_regions) = reference.loaded_regions.get(prev_loaded..) {
-                    for lr in new_regions {
-                        if lr.chr == chr {
-                            record_bam_piled_span(
-                                bam_piled_spans,
-                                i32::try_from(lr.sequence_start).unwrap_or(i32::MAX),
-                                i32::try_from(lr.sequence_end).unwrap_or(i32::MAX),
-                            );
-                        }
-                    }
-                }
-            }
         }
 
         let mut cntf = vars_count;
@@ -3926,13 +3976,7 @@ fn find_dup_disc_paths(
             .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
         let mut tpe64 = i64::from(pe);
 
-        let mate_unpiled = if config.compat.sv_lazy_mate_pileup {
-            !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1))
-        } else {
-            !is_loaded(chr, mstart as u32, mend as u32, reference)
-        };
-        if mate_unpiled {
-            let prev_loaded = reference.loaded_regions.len();
+        if config.compat.sv_lazy_mate_pileup {
             if reference.get_base(chr, pe as u32).is_none() {
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
@@ -3943,32 +3987,54 @@ fn find_dup_disc_paths(
                 };
                 get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
             }
-            let mate_lo = mstart.saturating_sub(200).max(1);
-            let mate_hi = mend.saturating_add(200);
+            if !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1)) {
+                let mate_lo = mstart.saturating_sub(200).max(1);
+                let mate_hi = mend.saturating_add(200);
+                let eff_max_rl = var_data.max_read_length.max(0);
+                ensure_mate_fasta_loaded(
+                    chr,
+                    mstart,
+                    mend,
+                    300,
+                    mate_lo.saturating_sub(eff_max_rl),
+                    mate_hi.saturating_add(eff_max_rl),
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
+                partial_pipeline_paths(
+                    bam_paths,
+                    var_data,
+                    reference,
+                    chr,
+                    mate_lo,
+                    mate_hi,
+                    config,
+                    chromosomes_lengths,
+                )?;
+                record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
+            }
+        } else if !is_loaded(chr, mstart as u32, mend as u32, reference) {
+            if reference.get_base(chr, pe as u32).is_none() {
+                let mod_region = crate::regions::Region {
+                    chr: chr.to_string(),
+                    start: Pos1(pe.saturating_sub(150).max(1) as u32),
+                    end: Pos1(pe.saturating_add(150).max(1) as u32),
+                    gene: String::new(),
+                    amplicon: None,
+                };
+                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
+            }
             partial_pipeline_paths(
                 bam_paths,
                 var_data,
                 reference,
                 chr,
-                mate_lo,
-                mate_hi,
+                mstart.saturating_sub(200).max(1),
+                mend.saturating_add(200),
                 config,
                 chromosomes_lengths,
             )?;
-            if config.compat.sv_lazy_mate_pileup {
-                record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
-                if let Some(new_regions) = reference.loaded_regions.get(prev_loaded..) {
-                    for lr in new_regions {
-                        if lr.chr == chr {
-                            record_bam_piled_span(
-                                bam_piled_spans,
-                                i32::try_from(lr.sequence_start).unwrap_or(i32::MAX),
-                                i32::try_from(lr.sequence_end).unwrap_or(i32::MAX),
-                            );
-                        }
-                    }
-                }
-            }
         }
 
         let mut cntf = vars_count;
@@ -7345,10 +7411,20 @@ mod tests {
             for k in 0..12 {
                 write_rec(&format!("mate200_{k}"), 195, ref_seq[194..214].to_vec(), 0);
             }
+            for k in 0..7 {
+                let mut s = ref_seq[1079..1099].to_vec();
+                s[5] = if s[5] == b'A' { b'G' } else { b'A' }; // 1-based 1085
+                write_rec(&format!("mate1085_{k}"), 1080, s, 1);
+            }
             for k in 0..8 {
                 let mut s = ref_seq[1544..1564].to_vec();
                 s[5] = if s[5] == b'A' { b'G' } else { b'A' }; // 1-based 1550
                 write_rec(&format!("mate1550_{k}"), 1545, s, 1);
+            }
+            for k in 0..6 {
+                let mut s = ref_seq[2009..2029].to_vec();
+                s[5] = if s[5] == b'A' { b'G' } else { b'A' }; // 1-based 2015
+                write_rec(&format!("mate2015_{k}"), 2010, s, 1);
             }
             writer.try_finish().unwrap();
             bam::bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
@@ -7588,6 +7664,141 @@ mod tests {
                 "Case-1 find_inv_sub_paths must guard get_reference with !is_loaded after find_del ext=300 FASTA load"
             );
             assert_eq!(vd.ref_coverage.get(&1_550), Some(&8));
+        }
+
+        // 5. Reproducer (a): After svfdel (softp_cand == 0, +300 -> [1220, 1880]) + find_inv_paths on [1520, 1580],
+        //    bam_piled_spans must record ONLY [1320, 1780] (NOT phantom [1020, 2080]!), so a downstream cluster on
+        //    [1050, 1150] runs partial_pipeline_paths (ref_coverage[1085] == 7) AND find_dup_disc_paths emits a
+        //    non-empty 50-bp reference flank around <dup...>!
+        {
+            let mut reference = Reference::new();
+            get_reference(&primary_reg, 0, &chr_lengths, &cfg_off, &mut reference).unwrap();
+
+            let mut vd = crate::variations::VariationData::default();
+            vd.sv_structures_filtered = true;
+            vd.max_read_length = 100;
+
+            let mut fdel_no_soft = Sclip::new();
+            fdel_no_soft.start = 1_820;
+            fdel_no_soft.end = 1_860;
+            fdel_no_soft.mstart = 1_520;
+            fdel_no_soft.mend = 1_580;
+            fdel_no_soft.variation.cnt = 4;
+            vd.sv_structures.svfdel.push(fdel_no_soft);
+
+            let mut inv_case1 = Sclip::new();
+            inv_case1.start = 1_800;
+            inv_case1.end = 1_820;
+            inv_case1.mstart = 1_520;
+            inv_case1.mend = 1_580;
+            inv_case1.mlen = -300;
+            inv_case1.soft.insert(1_820, 4);
+            inv_case1.variation.cnt = 4;
+            vd.sv_structures.svfinv5.push(inv_case1);
+
+            let mut fdup_1050 = Sclip::new();
+            fdup_1050.start = 1_820;
+            fdup_1050.end = 1_860;
+            fdup_1050.mstart = 1_050;
+            fdup_1050.mend = 1_150;
+            fdup_1050.variation.cnt = 10;
+            fdup_1050.variation.mqmean = 600.0;
+            fdup_1050.variation.qmean = 350.0;
+            fdup_1050.variation.pmean = 200.0;
+            vd.sv_structures.svfdup.push(fdup_1050);
+
+            find_all_sv_paths(
+                &mut vd,
+                &bam_paths,
+                &mut reference,
+                chr,
+                ref_len as u32,
+                &primary_reg,
+                &cfg_off,
+                &chr_lengths,
+            )
+            .unwrap();
+
+            assert_eq!(
+                vd.ref_coverage.get(&1_085),
+                Some(&7),
+                "downstream [1050, 1150] cluster must NOT be starved by phantom +500 bam_piled_spans"
+            );
+            // bp = 1050 - (100 / 10) / 2 = 1045; verify 50-bp ins5 flank before "<dup"
+            let dup_entry = vd
+                .insertion_variants
+                .get(&1_045)
+                .expect("expected DUP insertion at bp=1045");
+            let dup_key = dup_entry.map.keys().next().unwrap();
+            let prefix_before_dup = dup_key.split("<dup").next().unwrap();
+            assert_eq!(
+                prefix_before_dup.len(),
+                1 + 50,
+                "expected '+' + 50-bp loaded reference flank before <dup, got {dup_key}"
+            );
+        }
+
+        // 6. Reproducer (b): Primary tile 100..=300; svfdel (softp_cand == 0 on [1500, 1600] -> FASTA [1200, 1900])
+        //    followed by shifted svrdel (softp_cand != 0) on [1750, 1850] (mate_hi = 2050):
+        //    must load FASTA over 1901..=2150 BEFORE partial_pipeline_paths so reads at 2010..=2029 pile up cleanly!
+        {
+            let low_primary_reg = crate::regions::Region {
+                chr: chr.to_string(),
+                start: Pos1(100),
+                end: Pos1(300),
+                gene: String::new(),
+                amplicon: None,
+            };
+            let mut reference = Reference::new();
+            get_reference(&low_primary_reg, 0, &chr_lengths, &cfg_off, &mut reference).unwrap();
+
+            let mut vd = crate::variations::VariationData::default();
+            vd.sv_structures_filtered = true;
+            vd.max_read_length = 100;
+
+            let mut fdel_no_soft = Sclip::new();
+            fdel_no_soft.start = 150;
+            fdel_no_soft.end = 200;
+            fdel_no_soft.mstart = 1_500;
+            fdel_no_soft.mend = 1_600;
+            fdel_no_soft.variation.cnt = 4;
+            vd.sv_structures.svfdel.push(fdel_no_soft);
+
+            let mut rdel_shifted = Sclip::new();
+            rdel_shifted.start = 220;
+            rdel_shifted.end = 260;
+            rdel_shifted.mstart = 1_750;
+            rdel_shifted.mend = 1_850;
+            rdel_shifted.soft.insert(220, 5);
+            rdel_shifted.variation.cnt = 4;
+            vd.sv_structures.svrdel.push(rdel_shifted);
+
+            let mut sc5_220 = Sclip::new();
+            sc5_220.sequence = Some(vec![b'T'; 20]);
+            sc5_220.variation.cnt = 5;
+            vd.soft_clips_5_end.insert(220, sc5_220);
+
+            find_all_sv_paths(
+                &mut vd,
+                &bam_paths,
+                &mut reference,
+                chr,
+                ref_len as u32,
+                &low_primary_reg,
+                &cfg_off,
+                &chr_lengths,
+            )
+            .unwrap();
+
+            assert!(
+                is_loaded(chr, 1_901, 2_150, &reference),
+                "shifted [1750, 1850] mate pileup must load FASTA across [mate_lo - max_rl, mate_hi + max_rl]"
+            );
+            assert_eq!(
+                vd.ref_coverage.get(&2_015),
+                Some(&6),
+                "reads at 2010..=2029 in mate_hi window must see loaded FASTA bases during partial_pipeline_paths"
+            );
         }
     }
 }
