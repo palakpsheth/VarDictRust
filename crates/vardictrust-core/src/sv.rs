@@ -1176,14 +1176,16 @@ fn find_inv_sub_paths(
                 false
             };
             if !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1)) && probe_overlaps {
-                let mod_region = crate::regions::Region {
-                    chr: chr.to_string(),
-                    start: Pos1(mstart.max(1) as u32),
-                    end: Pos1(mend.max(1) as u32),
-                    gene: String::new(),
-                    amplicon: None,
-                };
-                get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+                if !is_loaded(chr, mstart as u32, mend as u32, reference) {
+                    let mod_region = crate::regions::Region {
+                        chr: chr.to_string(),
+                        start: Pos1(mstart.max(1) as u32),
+                        end: Pos1(mend.max(1) as u32),
+                        gene: String::new(),
+                        amplicon: None,
+                    };
+                    get_reference(&mod_region, 500, chromosomes_lengths, config, reference)?;
+                }
                 partial_pipeline_paths(
                     bam_paths,
                     var_data,
@@ -1196,6 +1198,7 @@ fn find_inv_sub_paths(
                 )?;
                 let (ref_seq_start, ref_seq_end) =
                     ref_loaded_span_for_region(mstart, mend, 500, chr, config, chromosomes_lengths);
+                record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
                 record_bam_piled_span(bam_piled_spans, ref_seq_start, ref_seq_end);
             }
         } else if !is_loaded(chr, mstart as u32, mend as u32, reference) {
@@ -1462,6 +1465,7 @@ fn find_inv_sub_paths(
                 )?;
                 let (ref_seq_start, ref_seq_end) =
                     ref_loaded_span_for_region(mstart, mend, 500, chr, config, chromosomes_lengths);
+                record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
                 record_bam_piled_span(bam_piled_spans, ref_seq_start, ref_seq_end);
             }
             let len = gap.saturating_add(1);
@@ -1730,6 +1734,11 @@ pub fn find_del(
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
     let paths = single_bam_paths(bam_path);
+    let mut bam_piled_spans = if config.compat.sv_lazy_mate_pileup {
+        seed_bam_piled_spans(chr, reference)
+    } else {
+        Vec::new()
+    };
     find_del_paths(
         var_data,
         &paths,
@@ -1737,6 +1746,7 @@ pub fn find_del(
         chr,
         config,
         chromosomes_lengths,
+        &mut bam_piled_spans,
     )
 }
 
@@ -1747,6 +1757,7 @@ fn find_del_paths(
     chr: &str,
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
+    bam_piled_spans: &mut Vec<(i32, i32)>,
 ) -> Result<(), VardictError> {
     if var_data.sv_structures.svfdel.is_empty() && var_data.sv_structures.svrdel.is_empty() {
         return Ok(());
@@ -1808,7 +1819,42 @@ fn find_del_paths(
             };
             let seq: &[u8] = seq_stack.get(..seq_len).unwrap_or(&seq_heap);
 
-            if !is_loaded(chr, mstart as u32, mend as u32, reference) {
+            if config.compat.sv_lazy_mate_pileup {
+                if !is_loaded(chr, mstart as u32, mend as u32, reference) {
+                    let mod_region = crate::regions::Region {
+                        chr: chr.to_string(),
+                        start: Pos1(mstart.max(1) as u32),
+                        end: Pos1(mend.max(1) as u32),
+                        gene: String::new(),
+                        amplicon: None,
+                    };
+                    get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
+                }
+                if !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1)) {
+                    let mate_lo = mstart.saturating_sub(200).max(1);
+                    let mate_hi = mend.saturating_add(200);
+                    partial_pipeline_paths(
+                        bam_paths,
+                        var_data,
+                        reference,
+                        chr,
+                        mate_lo,
+                        mate_hi,
+                        config,
+                        chromosomes_lengths,
+                    )?;
+                    let (ref_seq_start, ref_seq_end) = ref_loaded_span_for_region(
+                        mstart,
+                        mend,
+                        300,
+                        chr,
+                        config,
+                        chromosomes_lengths,
+                    );
+                    record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
+                    record_bam_piled_span(bam_piled_spans, ref_seq_start, ref_seq_end);
+                }
+            } else if !is_loaded(chr, mstart as u32, mend as u32, reference) {
                 let mod_region = crate::regions::Region {
                     chr: chr.to_string(),
                     start: Pos1(mstart.max(1) as u32),
@@ -2141,26 +2187,63 @@ fn find_del_paths(
             };
             let seq: &[u8] = seq_stack.get(..seq_len).unwrap_or(&seq_heap);
 
-            let is_loaded_before = is_loaded(chr, mstart as u32, mend as u32, reference);
-            if !is_loaded_before {
-                let mod_region = crate::regions::Region {
-                    chr: chr.to_string(),
-                    start: Pos1(mstart.max(1) as u32),
-                    end: Pos1(mend.max(1) as u32),
-                    gene: String::new(),
-                    amplicon: None,
-                };
-                get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
-                partial_pipeline_paths(
-                    bam_paths,
-                    var_data,
-                    reference,
-                    chr,
-                    mstart.saturating_sub(200).max(1),
-                    mend.saturating_add(200),
-                    config,
-                    chromosomes_lengths,
-                )?;
+            if config.compat.sv_lazy_mate_pileup {
+                if !is_loaded(chr, mstart as u32, mend as u32, reference) {
+                    let mod_region = crate::regions::Region {
+                        chr: chr.to_string(),
+                        start: Pos1(mstart.max(1) as u32),
+                        end: Pos1(mend.max(1) as u32),
+                        gene: String::new(),
+                        amplicon: None,
+                    };
+                    get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
+                }
+                if !spans_contain(bam_piled_spans, mstart.max(1), mend.max(1)) {
+                    let mate_lo = mstart.saturating_sub(200).max(1);
+                    let mate_hi = mend.saturating_add(200);
+                    partial_pipeline_paths(
+                        bam_paths,
+                        var_data,
+                        reference,
+                        chr,
+                        mate_lo,
+                        mate_hi,
+                        config,
+                        chromosomes_lengths,
+                    )?;
+                    let (ref_seq_start, ref_seq_end) = ref_loaded_span_for_region(
+                        mstart,
+                        mend,
+                        300,
+                        chr,
+                        config,
+                        chromosomes_lengths,
+                    );
+                    record_bam_piled_span(bam_piled_spans, mate_lo, mate_hi);
+                    record_bam_piled_span(bam_piled_spans, ref_seq_start, ref_seq_end);
+                }
+            } else {
+                let is_loaded_before = is_loaded(chr, mstart as u32, mend as u32, reference);
+                if !is_loaded_before {
+                    let mod_region = crate::regions::Region {
+                        chr: chr.to_string(),
+                        start: Pos1(mstart.max(1) as u32),
+                        end: Pos1(mend.max(1) as u32),
+                        gene: String::new(),
+                        amplicon: None,
+                    };
+                    get_reference(&mod_region, 300, chromosomes_lengths, config, reference)?;
+                    partial_pipeline_paths(
+                        bam_paths,
+                        var_data,
+                        reference,
+                        chr,
+                        mstart.saturating_sub(200).max(1),
+                        mend.saturating_add(200),
+                        config,
+                        chromosomes_lengths,
+                    )?;
+                }
             }
 
             let match_res = find_match(seq, reference, softp_cand, -1, 17, 3, chr, verbose);
@@ -4096,6 +4179,12 @@ pub fn find_all_sv_paths(
     }
     filter_all_sv_structures(var_data);
 
+    let mut bam_piled_spans = if config.compat.sv_lazy_mate_pileup {
+        seed_bam_piled_spans(chr, reference)
+    } else {
+        Vec::new()
+    };
+
     if verbose_log(config) {
         crate::verbose_eprintln!("Start Structural Variants: DEL\n");
     }
@@ -4106,13 +4195,8 @@ pub fn find_all_sv_paths(
         chr,
         config,
         chromosomes_lengths,
+        &mut bam_piled_spans,
     )?;
-
-    let mut bam_piled_spans = if config.compat.sv_lazy_mate_pileup {
-        seed_bam_piled_spans(chr, reference)
-    } else {
-        Vec::new()
-    };
 
     if verbose_log(config) {
         crate::verbose_eprintln!("Start Structural Variants: INV\n");
@@ -7162,6 +7246,348 @@ mod tests {
                     "{label}: swapped softp=201 MUST read mate-window ref_coverage[200] == 12"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn find_del_fasta_only_load_does_not_starve_svrdel_side3_inv_or_dup_disc_mate_pileup() {
+        use noodles::bam;
+        use noodles::core::Position;
+        use noodles::csi::binning_index::index::reference_sequence::bin::Chunk;
+        use noodles::csi::binning_index::index::reference_sequence::index::LinearIndex;
+        use noodles::csi::binning_index::Indexer;
+        use noodles::sam;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::cigar::Op;
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+        use noodles::sam::alignment::record_buf::{
+            Cigar, Data, QualityScores, RecordBuf, Sequence,
+        };
+        use std::num::NonZeroUsize;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let chr = "chr1";
+        let ref_len = 3_000usize;
+        let motif = b"ACGTACGTAGCTAGCTTGCAACGTTAGCATGC";
+        let mut ref_seq: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+        let inv3_target_200 = b"GGGAAATTTCCCGGGAAATT";
+        ref_seq[180..200].copy_from_slice(inv3_target_200);
+        ref_seq[200] = b'A';
+        ref_seq[1898] = b'A';
+        ref_seq[1899] = b'T';
+        ref_seq[199] = b'T';
+
+        let fasta_path = dir.path().join("del_fasta_only.fa");
+        let fai_path = dir.path().join("del_fasta_only.fa.fai");
+        std::fs::write(
+            &fasta_path,
+            format!(">{chr}\n{}\n", String::from_utf8_lossy(&ref_seq)),
+        )
+        .unwrap();
+        std::fs::write(
+            &fai_path,
+            format!("{chr}\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .unwrap();
+
+        let bam_path = dir.path().join("del_fasta_only.bam");
+        let bai_path = dir.path().join("del_fasta_only.bam.bai");
+        {
+            let header = sam::Header::builder()
+                .add_reference_sequence(
+                    chr,
+                    sam::header::record::value::Map::<
+                        sam::header::record::value::map::ReferenceSequence,
+                    >::new(NonZeroUsize::new(ref_len).unwrap()),
+                )
+                .build();
+            let mut writer = bam::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            writer.write_header(&header).unwrap();
+            let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+
+            let mut write_rec = |name: &str, start_1based: usize, seq_bytes: Vec<u8>, nm: i32| {
+                let len = seq_bytes.len();
+                let cigar: Cigar = [Op::new(Kind::Match, len)].into_iter().collect();
+                let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(nm))]
+                    .into_iter()
+                    .collect();
+                let rec = RecordBuf::builder()
+                    .set_name(name)
+                    .set_flags(sam::alignment::record::Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1based).unwrap())
+                    .set_mapping_quality(
+                        sam::alignment::record::MappingQuality::try_from(60).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(Sequence::from(seq_bytes))
+                    .set_quality_scores(QualityScores::from(vec![35u8; len]))
+                    .set_data(data)
+                    .build();
+                let start_vp = writer.get_ref().virtual_position();
+                writer.write_alignment_record(&header, &rec).unwrap();
+                let end_vp = writer.get_ref().virtual_position();
+                indexer
+                    .add_record(
+                        Some((
+                            0,
+                            Position::try_from(start_1based).unwrap(),
+                            Position::try_from(start_1based + len - 1).unwrap(),
+                            true,
+                        )),
+                        Chunk::new(start_vp, end_vp),
+                    )
+                    .unwrap();
+            };
+
+            for k in 0..12 {
+                write_rec(&format!("mate200_{k}"), 195, ref_seq[194..214].to_vec(), 0);
+            }
+            for k in 0..8 {
+                let mut s = ref_seq[1544..1564].to_vec();
+                s[5] = if s[5] == b'A' { b'G' } else { b'A' }; // 1-based 1550
+                write_rec(&format!("mate1550_{k}"), 1545, s, 1);
+            }
+            writer.try_finish().unwrap();
+            bam::bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+        }
+
+        let chr_lengths = HashMap::from([(chr.to_string(), ref_len)]);
+        let primary_reg = crate::regions::Region {
+            chr: chr.to_string(),
+            start: Pos1(1_800),
+            end: Pos1(2_200),
+            gene: String::new(),
+            amplicon: None,
+        };
+        let bam_paths = vec![bam_path.to_string_lossy().into_owned()];
+
+        let mut cfg_off = Config::default();
+        cfg_off.min_reads = 2;
+        cfg_off.reference = fasta_path.to_string_lossy().into_owned();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+
+        // 1. svfdel (softp_cand == 0, FASTA-only get_reference on [190, 220]) -> Side::Three find_inv_paths:
+        //    must STILL run partial_pipeline_paths, populate ref_coverage[201] == 12, and record 201 in merge_planted!
+        {
+            let mut reference = Reference::new();
+            get_reference(&primary_reg, 0, &chr_lengths, &cfg_off, &mut reference).unwrap();
+
+            let mut vd = crate::variations::VariationData::default();
+            vd.sv_structures_filtered = true;
+            vd.owning_range = Some((Pos1(1_800), Pos1(2_200)));
+            vd.max_read_length = 100;
+            vd.ref_coverage.insert(1_900, 30);
+
+            let mut fdel_no_soft = Sclip::new();
+            fdel_no_soft.start = 1_820;
+            fdel_no_soft.end = 1_860;
+            fdel_no_soft.mstart = 190;
+            fdel_no_soft.mend = 220;
+            fdel_no_soft.variation.cnt = 4;
+            vd.sv_structures.svfdel.push(fdel_no_soft);
+
+            let mut inv3 = Sclip::new();
+            inv3.start = 1_850;
+            inv3.end = 1_900;
+            inv3.mstart = 190;
+            inv3.mend = 220;
+            inv3.mlen = -1_300;
+            inv3.soft.insert(1_900, 5);
+            inv3.variation.cnt = 3;
+            vd.sv_structures.svfinv3.push(inv3);
+
+            let mut rc_200 = inv3_target_200.to_vec();
+            crate::util::reverse_complement(&mut rc_200);
+            let mut sc3_1900 = Sclip::new();
+            sc3_1900.sequence = Some(rc_200);
+            sc3_1900.variation.cnt = 5;
+            sc3_1900.variation.hicnt = 5;
+            sc3_1900.variation.qmean = 175.0;
+            sc3_1900.variation.mqmean = 300.0;
+            sc3_1900.variation.pmean = 100.0;
+            vd.soft_clips_3_end.insert(1_900, sc3_1900);
+
+            find_all_sv_paths(
+                &mut vd,
+                &bam_paths,
+                &mut reference,
+                chr,
+                ref_len as u32,
+                &primary_reg,
+                &cfg_off,
+                &chr_lengths,
+            )
+            .unwrap();
+
+            assert!(
+                vd.merge_planted.contains(&201),
+                "Side::Three swapped softp=201 must still be recorded in merge_planted after svfdel softp_cand==0 FASTA load"
+            );
+            assert_eq!(
+                vd.ref_coverage.get(&201),
+                Some(&12),
+                "Side::Three swapped softp=201 must read mate-window ref_coverage[200] == 12 after svfdel softp_cand==0 FASTA load"
+            );
+            assert_eq!(
+                reference.loaded_regions.len(),
+                2,
+                "svfdel softp_cand==0 + Side::Three INV must not append duplicate LoadedRegions"
+            );
+        }
+
+        // 2. svfdel (softp_cand == 0, FASTA-only get_reference on [1500, 1600]) -> svrdel (softp_cand != 0):
+        //    svrdel must STILL run partial_pipeline_paths and populate mate-window ref_coverage[1550] == 8!
+        {
+            let mut reference = Reference::new();
+            get_reference(&primary_reg, 0, &chr_lengths, &cfg_off, &mut reference).unwrap();
+
+            let mut vd = crate::variations::VariationData::default();
+            vd.sv_structures_filtered = true;
+            vd.max_read_length = 100;
+
+            let mut fdel_no_soft = Sclip::new();
+            fdel_no_soft.start = 1_820;
+            fdel_no_soft.end = 1_860;
+            fdel_no_soft.mstart = 1_500;
+            fdel_no_soft.mend = 1_600;
+            fdel_no_soft.variation.cnt = 4;
+            vd.sv_structures.svfdel.push(fdel_no_soft);
+
+            let mut rdel_with_soft = Sclip::new();
+            rdel_with_soft.start = 1_950;
+            rdel_with_soft.end = 1_990;
+            rdel_with_soft.mstart = 1_500;
+            rdel_with_soft.mend = 1_600;
+            rdel_with_soft.soft.insert(1_950, 5);
+            rdel_with_soft.variation.cnt = 4;
+            vd.sv_structures.svrdel.push(rdel_with_soft);
+
+            let mut sc5_1950 = Sclip::new();
+            sc5_1950.sequence = Some(vec![b'T'; 20]); // >= 12 bp so svrdel enters mate-load block
+            sc5_1950.variation.cnt = 5;
+            vd.soft_clips_5_end.insert(1_950, sc5_1950);
+
+            find_all_sv_paths(
+                &mut vd,
+                &bam_paths,
+                &mut reference,
+                chr,
+                ref_len as u32,
+                &primary_reg,
+                &cfg_off,
+                &chr_lengths,
+            )
+            .unwrap();
+
+            assert_eq!(
+                vd.ref_coverage.get(&1_550),
+                Some(&8),
+                "svrdel softp_cand!=0 must still run partial_pipeline_paths after svfdel softp_cand==0 FASTA load"
+            );
+            assert!(vd.non_insertion_variants.contains_key(&1_550));
+        }
+
+        // 3. svfdel (softp_cand == 0, FASTA-only get_reference on [1500, 1600]) -> find_dup_disc_paths:
+        //    find_dup_disc_paths must STILL run partial_pipeline_paths and populate ref_coverage[1550] == 8!
+        {
+            let mut reference = Reference::new();
+            get_reference(&primary_reg, 0, &chr_lengths, &cfg_off, &mut reference).unwrap();
+
+            let mut vd = crate::variations::VariationData::default();
+            vd.sv_structures_filtered = true;
+            vd.max_read_length = 100;
+
+            let mut fdel_no_soft = Sclip::new();
+            fdel_no_soft.start = 1_820;
+            fdel_no_soft.end = 1_860;
+            fdel_no_soft.mstart = 1_500;
+            fdel_no_soft.mend = 1_600;
+            fdel_no_soft.variation.cnt = 4;
+            vd.sv_structures.svfdel.push(fdel_no_soft);
+
+            let mut fdup = Sclip::new();
+            fdup.start = 1_820;
+            fdup.end = 1_860;
+            fdup.mstart = 1_500;
+            fdup.mend = 1_600;
+            fdup.variation.cnt = 10;
+            fdup.variation.mqmean = 600.0;
+            fdup.variation.qmean = 350.0;
+            fdup.variation.pmean = 200.0;
+            vd.sv_structures.svfdup.push(fdup);
+
+            find_all_sv_paths(
+                &mut vd,
+                &bam_paths,
+                &mut reference,
+                chr,
+                ref_len as u32,
+                &primary_reg,
+                &cfg_off,
+                &chr_lengths,
+            )
+            .unwrap();
+
+            assert_eq!(
+                vd.ref_coverage.get(&1_550),
+                Some(&8),
+                "find_dup_disc_paths must still run partial_pipeline_paths after svfdel softp_cand==0 FASTA load"
+            );
+            assert!(vd.non_insertion_variants.contains_key(&1_550));
+        }
+
+        // 4. svfdel (softp_cand == 0, ext=300 FASTA load on [1520, 1580] -> LoadedRegion 1220..=1880)
+        //    followed by Case-1 probe-overlapping svfinv5 (softp = 1820 inside widened [1220, 1880]):
+        //    must NOT append a duplicate ext=500 LoadedRegion AND must still run partial_pipeline_paths!
+        {
+            let mut reference = Reference::new();
+            get_reference(&primary_reg, 0, &chr_lengths, &cfg_off, &mut reference).unwrap();
+
+            let mut vd = crate::variations::VariationData::default();
+            vd.sv_structures_filtered = true;
+            vd.max_read_length = 100;
+
+            let mut fdel_no_soft = Sclip::new();
+            fdel_no_soft.start = 1_820;
+            fdel_no_soft.end = 1_860;
+            fdel_no_soft.mstart = 1_520;
+            fdel_no_soft.mend = 1_580;
+            fdel_no_soft.variation.cnt = 4;
+            vd.sv_structures.svfdel.push(fdel_no_soft);
+
+            let mut inv_case1 = Sclip::new();
+            inv_case1.start = 1_800;
+            inv_case1.end = 1_820;
+            inv_case1.mstart = 1_520;
+            inv_case1.mend = 1_580;
+            inv_case1.mlen = -300;
+            inv_case1.soft.insert(1_820, 4);
+            inv_case1.variation.cnt = 4;
+            vd.sv_structures.svfinv5.push(inv_case1);
+
+            find_all_sv_paths(
+                &mut vd,
+                &bam_paths,
+                &mut reference,
+                chr,
+                ref_len as u32,
+                &primary_reg,
+                &cfg_off,
+                &chr_lengths,
+            )
+            .unwrap();
+
+            assert_eq!(
+                reference.loaded_regions.len(),
+                2,
+                "Case-1 find_inv_sub_paths must guard get_reference with !is_loaded after find_del ext=300 FASTA load"
+            );
+            assert_eq!(vd.ref_coverage.get(&1_550), Some(&8));
         }
     }
 }
