@@ -174,7 +174,7 @@ data" is actionable; "port the whole pipeline" is not.
 ---
 
 ## 12. Unsupported features error loudly
-If a flag/mode isn't implemented: `return Err(VardictError::Unsupported("--foo not implemented in VarDictRust; use VarDictJava"))` (e.g., `-C`, `-Z`/`--downsample`, `-VS STRICT`, and `#378` paired `-b "tumor|normal"` + `-a` in VCF mode), and reject unknown or conflicting `--compat` targets with `VardictError::Parse`.
+If a flag/mode isn't implemented: `return Err(VardictError::Unsupported("--foo not implemented in VarDictRust; use VarDictJava"))` (e.g., `-C`, `-Z`/`--downsample`, `-VS STRICT`, and `#378` paired `-b "tumor|normal"` + `-a` in VCF mode), reject unknown `--compat` targets with `VardictError::Unsupported`, and reject conflicting `--compat`/`--parity` flags with `VardictError::Parse`.
 **Never** silently ignore a flag or emit wrong output.
 
 ---

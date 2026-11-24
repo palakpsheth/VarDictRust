@@ -33,6 +33,7 @@ impl<T> From<T> for VcfThreshold<T> {
 }
 
 /// Compatibility profile selector modeled on `bwa-mem3`'s `--compat` target enum.
+///
 /// Default across `v1.x` is [`Self::VardictJava183`] (100% VarDictJava v1.8.3 / `var2vcf` parity).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -141,6 +142,12 @@ impl Default for CompatProfile {
 }
 
 /// Parse a `--compat <TARGET>` string into [`CompatTarget`].
+///
+/// # Errors
+///
+/// Returns [`crate::types::VardictError::Unsupported`] (`Err(VardictError::Unsupported(...))`)
+/// when `raw` is not a recognized compatibility target (`vardictjava`, `vardictjava-1.8.3`,
+/// `1.8.3`, or `off`).
 pub fn parse_compat_target(raw: &str) -> Result<CompatTarget, crate::types::VardictError> {
     let trimmed = raw.trim();
     if trimmed.eq_ignore_ascii_case("vardictjava")
@@ -339,7 +346,7 @@ pub struct Config {
     pub vcf_msi: Option<VcfThreshold<f64>>,
     /// Opt-in VCF SNV cluster window in bp (`--vcf-cluster-dist`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -c`).
     pub vcf_cluster_dist: Option<VcfThreshold<i32>>,
-    /// Compatibility profile (`--compat=vardictjava|off`; default: `COMPAT_VARDICTJAVA_1_8_3`).
+    /// Compatibility profile (`--compat=vardictjava|off`; default: [`COMPAT_VARDICTJAVA_1_8_3`]).
     pub compat: CompatProfile,
     /// Emit all alleles passing filters at the same locus in VCF output (`--vcf-all-alleles` / `--all-alleles`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -A`).
     pub vcf_all_alleles: bool,

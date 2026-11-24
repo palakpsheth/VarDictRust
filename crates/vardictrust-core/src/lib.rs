@@ -14,8 +14,8 @@
 //!   ([`config::CompatTarget::Off`]) enables all 13 [`config::CompatProfile`] accuracy,
 //!   bounded-scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `=`/`X` (`--eqx`) CIGAR fixes
 //!   and stamps `##VarDictRustCompat=off` in the VCF header; full 18/18 `var2vcf` post-filtering
-//!   (including multi-allelic emission via `Config::vcf_all_alleles` / `--vcf-all-alleles`) works
-//!   under both profiles.
+//!   (including multi-allelic emission via [`config::Config::vcf_all_alleles`] /
+//!   `--vcf-all-alleles`) works under both profiles.
 //!
 //! # Safety
 //! This crate forbids unsafe code: `#![forbid(unsafe_code)]`.

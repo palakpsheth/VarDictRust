@@ -27,17 +27,17 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `740` workspace tests (`527` core lib + `110` `corpus_parity` + `38` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `32` bin + `28` CLI integration), `2d82664ff81000f7` | Testing matrix & CI audit specification |
 | 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `2d82664ff81000f7`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
 | 17 | `zensical.toml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `"Release vX.Y.Z Certification" = "docs/release/vX.Y.Z-pr.md"`, `vX.Y.Z` links, and `740` workspace tests | ReadTheDocs navigation & GitHub Wiki |
-| 18 | `.github/SECURITY.md` | **`X.Y.x`** marked `:white_check_mark:` in Supported Versions table (single active `major.minor.x` derived from `Cargo.toml`) | Active supported release branch policy |
+| 18 | `.github/SECURITY.md` | **`X.Y.x`** \| `:white_check_mark:` and `< X.Y.0` \| `:x:` in Supported Versions table (single active `major.minor.x` derived from `Cargo.toml`) | Active supported release branch policy |
 
-### Additional Pre-Tag Consistency Guards (`check_release_consistency.py` Checks `#18`–`#20`)
+### Additional Pre-Tag Consistency Guards (`check_release_consistency.py` Guards `G1`–`G3`)
 
 In addition to the 18 pre-tag version surfaces above, `--phase pre-tag` enforces three cross-surface structural invariants:
 
 | Guard | Validated Surfaces | Invariant Enforced |
 | :--- | :--- | :--- |
-| `#18` | `crates/vardictrust/src/{cli.rs,completions_man.rs}`, `README.md`, `ROADMAP.md`, `docs/ecosystem-survey.md`, `docs/migration.md`, `zensical.toml`, & `wiki/_Sidebar.md` | Exact 1:1 short/long CLI flag parity across all `90` `Cli` arguments (`7` functional groups) vs `README.md`'s `90`-row table, plus `var2vcf_*.pl` and `--compat=off` migration guide checks |
-| `#19` | `UPSTREAM.toml` | Immutable reference comparator pins (`VarDictJava` `1.8.3` commit `0886261`, `VarDict` scripts commit `009e017`, and advisory `vardictcpp` `3` build `hc52dbad_0`) |
-| `#20` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`740` total: `527` `vardictrust-core` lib + `32` `vardictrust` bin + `71` integration + `110` `corpus_parity`) |
+| `G1` | `crates/vardictrust/src/{cli.rs,completions_man.rs}`, `README.md`, `ROADMAP.md`, `docs/ecosystem-survey.md`, `docs/migration.md`, `zensical.toml`, & `wiki/_Sidebar.md` | Exact 1:1 short/long CLI flag parity across all `90` `Cli` arguments (`7` functional groups) vs `README.md`'s `90`-row table, plus `var2vcf_*.pl` and `--compat=off` migration guide checks |
+| `G2` | `UPSTREAM.toml` | Immutable reference comparator pins (`VarDictJava` `1.8.3` commit `0886261`, `VarDict` scripts commit `009e017`, and advisory `vardictcpp` `3` build `hc52dbad_0`) |
+| `G3` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`740` total: `527` `vardictrust-core` lib + `32` `vardictrust` bin + `71` integration + `110` `corpus_parity`) |
 
 ---
 

@@ -36,14 +36,16 @@ about:
     - LICENSE
     - LICENSE-3RD-PARTY
     - THIRDPARTY.yml
-  summary: "Fast, memory-safe Rust NGS variant caller (VarDictJava parity & --compat=off)"
+  summary: "Fast, memory-safe Rust variant caller (VarDictJava parity; v1.1+ --compat=off)"
   description: |
     VarDictRust is a fast, memory-safe Rust somatic and germline variant caller
     that consolidates the VarDictJava v1.8.3 + R + Perl pipeline into a single
     binary with bounded-memory WGS tiling, default byte-identical VarDictJava
-    v1.8.3 parity (--compat=vardictjava), opt-in --compat=off accuracy, SV, and
-    minimap2 --eqx fixes (13 switches), full 18/18 var2vcf post-filtering
-    (--vcf-all-alleles), and native multithreaded BGZF and Tabix/CSI VCF output.
+    v1.8.3 parity on valid inputs (v1.0.10 default; --compat=vardictjava in
+    v1.1.0+), native multithreaded BGZF and Tabix/CSI VCF output, and (in
+    v1.1.0+) opt-in --compat=off correctness, SV, and SAM =/X (--eqx) alignment
+    fixes (13 switches) plus 18/18 var2vcf post-filtering including
+    --vcf-all-alleles multi-allelic VCF output.
   doc_url: https://vardictrust.readthedocs.io/
   dev_url: https://github.com/palakpsheth/VarDictRust
 

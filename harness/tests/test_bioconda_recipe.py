@@ -885,6 +885,22 @@ class TestRepoAgentSkills(unittest.TestCase):
             mod.check_security_policy_surface(fake_root, "1.1.0", sec_dup_errs)
             self.assertTrue(sec_dup_errs, "Multiple :white_check_mark: rows in SECURITY.md must fail")
 
+            (sec_dir / "SECURITY.md").write_text("", encoding="utf-8")
+            sec_empty_errs: list[str] = []
+            mod.check_security_policy_surface(fake_root, "1.1.0", sec_empty_errs)
+            self.assertTrue(sec_empty_errs, "Empty 0-byte SECURITY.md must fail check_security_policy_surface")
+
+            (sec_dir / "SECURITY.md").write_text(
+                "| Version | Supported |\n| :--- | :--- |\n| **`1.1.x`** | :white_check_mark: |\n| `< 1.0.0` | :x: |\n",
+                encoding="utf-8",
+            )
+            sec_stale_floor_errs: list[str] = []
+            mod.check_security_policy_surface(fake_root, "1.1.0", sec_stale_floor_errs)
+            self.assertTrue(
+                sec_stale_floor_errs,
+                "1.1.x active row paired with stale < 1.0.0 floor row must fail for 1.1.0",
+            )
+
 
 class TestLintRatchet(unittest.TestCase):
     """Verify 11-lint safety/hygiene + unsafe_code zero-allow ratchet across both crates and CI (AR-1)."""

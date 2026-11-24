@@ -623,8 +623,15 @@ def check_security_policy_surface(
         f".github/SECURITY.md Supported Versions marks {major}.{minor}.x active (:white_check_mark:)",
         errors,
     )
+    require_regex(
+        repo_root,
+        ".github/SECURITY.md",
+        rf"^\|\s*`<\s*{re.escape(major)}\.{re.escape(minor)}\.0`\s*\|\s*:x:",
+        f".github/SECURITY.md Supported Versions marks < {major}.{minor}.0 unsupported (:x:)",
+        errors,
+    )
     sec_text = read_text(repo_root, ".github/SECURITY.md", errors)
-    if sec_text:
+    if sec_text is not None:
         active_rows = re.findall(
             r"^\|\s*[^|\n]+\|\s*:white_check_mark:",
             sec_text,
@@ -1056,10 +1063,10 @@ def check_pre_tag_surfaces(
     # 18. .github/SECURITY.md Supported Versions SemVer branch
     check_security_policy_surface(repo_root, version, errors)
 
-    # Guard #18. CLI 90-flag / 7-group & Migration Guide surfaces
+    # G1. CLI 90-flag / 7-group & Migration Guide surfaces
     check_cli_and_migration_surfaces(repo_root, errors)
 
-    # Guard #19. UPSTREAM.toml commit & comparator pins
+    # G2. UPSTREAM.toml commit & comparator pins
     require_regex(
         repo_root,
         "UPSTREAM.toml",
@@ -1082,7 +1089,7 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # Guard #20. .github/workflows/ci.yml test-count synchronization (:71 and :175-177)
+    # G3. .github/workflows/ci.yml test-count synchronization (:71 and :175-177)
     int_suite_total = (
         tc["engine_behavior"]
         + tc["amplicon_stream_mem"]
@@ -1143,7 +1150,7 @@ def check_pre_tag_surfaces(
         repo_root,
         surface_map_rel,
         rf"\(`{tc['total_workspace']}` total: `{tc['core_lib']}` `vardictrust-core` lib \+ `{tc['cli_bin']}` `vardictrust` bin \+ `{int_suite_total}` integration \+ `{tc['corpus_parity']}` `corpus_parity`\)",
-        f"{surface_map_rel} Guard #20 cites {tc['total_workspace']} total ({tc['core_lib']} + {tc['cli_bin']} + {int_suite_total} + {tc['corpus_parity']})",
+        f"{surface_map_rel} G3 cites {tc['total_workspace']} total ({tc['core_lib']} + {tc['cli_bin']} + {int_suite_total} + {tc['corpus_parity']})",
         errors,
     )
     forbid_regex(

@@ -22,7 +22,7 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
 
 | Phase | Branch / Context | Validator Flag | Key Deliverables & Upstream Dependency |
 | :--- | :--- | :--- | :--- |
-| **Phase 1 (`pre-tag`)** | `release/vX.Y.Z` PR $\to$ `main` | `--phase pre-tag --require-head-fingerprint` | Bump 18 pre-tag version surfaces (including `.github/SECURITY.md` `X.Y.x` when `major.minor` advances), author `docs/release/vX.Y.Z-pr.md`, run `bash harness/recertify.sh` (refreshing all 16 `benchmarks/evidence/*.json` files + `sync_evidence_docs.py` + `acceptance.sh` 8/8) + `pr_check.sh` (6/6), squash-merge to `main`. |
+| **Phase 1 (`pre-tag`)** | `release/vX.Y.Z` PR $\to$ `main` | `--phase pre-tag --require-head-fingerprint` | Bump 18 pre-tag version surfaces (including `.github/SECURITY.md` **`X.Y.x`** \| `:white_check_mark:` and `< X.Y.0` \| `:x:` when `major.minor` advances), author `docs/release/vX.Y.Z-pr.md`, run `bash harness/recertify.sh` (refreshing all 16 `benchmarks/evidence/*.json` files + `sync_evidence_docs.py` + `acceptance.sh` 8/8) + `pr_check.sh` (6/6), squash-merge to `main`. |
 | **Phase 2 (`post-tag`)** | Annotated tag `vX.Y.Z` on `main` | `--phase post-tag` | Push `vX.Y.Z` tag $\to$ `.github/workflows/release.yml` publishes GitHub Release + SLSA provenance + Crates.io (`vardictrust-core`, `vardictrust`). |
 | **Phase 3A (`post-bioconda`)** | Post-GitHub tarball `vX.Y.Z.tar.gz` | `--phase post-bioconda` | Run `bash packaging/bioconda/prepare_bioconda_pr.sh X.Y.Z` + `bash harness/test_bioconda_recipe.sh`, sync `meta.yaml` to `VarDictRust` `main` (`chore/bioconda-vX.Y.Z`), open PR on `bioconda/bioconda-recipes`. |
 | **Phase 3B (`post-nfcore`)** | Post-Anaconda `linux-64` + `linux-aarch64` upload | `--phase post-nfcore` | Once `api.anaconda.org/package/bioconda/vardictrust` lists both `linux-64` and `linux-aarch64` tarballs for `X.Y.Z`, run `bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z`, sync `packaging/nf-core/`, and push to `nf-core/modules`. |
@@ -34,7 +34,7 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
 
 ### Phase 1: Pre-Tag Release Branch & PR (`--phase pre-tag`)
 1. Create branch `git checkout -b release/vX.Y.Z origin/main`.
-2. Update all 18 pre-tag files listed in [`references/version-surface-map.md`](references/version-surface-map.md) (updating `.github/SECURITY.md` Supported Versions to `X.Y.x` `:white_check_mark:` whenever `major.minor` changes) and run `cargo update -w`.
+2. Update all 18 pre-tag files listed in [`references/version-surface-map.md`](references/version-surface-map.md) (updating `.github/SECURITY.md` Supported Versions to **`X.Y.x`** | `:white_check_mark:` and `< X.Y.0` | `:x:` whenever `major.minor` changes) and run `cargo update -w`.
 3. Create `docs/release/vX.Y.Z-pr.md` and add a superseded note at the top of the prior `docs/release/v*-pr.md`.
 4. Commit the version surfaces (`git commit -m "release: prepare VarDictRust vX.Y.Z"`, zero `Co-Authored-By` trailers), then run `bash harness/recertify.sh` to refresh all 15 non-scale `benchmarks/evidence/*.json` files to the release `FP`, auto-sync `README.md` / `omnibus-empirical-validation.md` / `DIVERGENCES.md` / `test-matrix-and-ci-audit.md` / `benchmarks/README.md` / `docs/ecosystem-survey.md` / `docs/release/vX.Y.Z-pr.md` / `version-surface-map.md` via `python3 harness/sync_evidence_docs.py`, re-compile `paper/` manuscript artifacts via `python3 paper/build_manuscript.py`, and verify the full gate suite:
    ```bash
