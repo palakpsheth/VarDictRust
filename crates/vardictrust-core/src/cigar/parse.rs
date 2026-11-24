@@ -332,7 +332,6 @@ impl<'a> CigarParser<'a> {
     /// Record live `(total_reads, duplicate_reads)` `u64` counts from `RecordPreprocessor`
     /// for `COMPAT_OFF` `DUPRATE` computation.
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn set_live_read_counts(&mut self, total_reads: u64, duplicate_reads: u64) {
         self.live_read_counts = Some((total_reads, duplicate_reads));
     }

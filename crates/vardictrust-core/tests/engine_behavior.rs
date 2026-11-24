@@ -1,10 +1,10 @@
-//! First-class functional engine behavior integration suite (`34` tests).
+//! First-class functional engine behavior integration suite (`37` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
-//! structural variant calling, read/pileup filtering flags, hostile inputs, and
-//! multi-thread tile determinism entirely in-process via
-//! `vardictrust_core::run_with_writer` with zero `samtools` or `vardictrust`
-//! subprocesses.
+//! structural variant calling, read/pileup filtering flags, hostile inputs,
+//! multi-thread tile determinism, CI-portable Perl `-A` (`var2vcf_{valid,paired}.pl -A`)
+//! multi-allelic differential equivalence, and `--compat=off` (`COMPAT_OFF`)
+//! end-to-end switches via `vardictrust_core::run_with_writer`.
 
 use std::fs;
 use std::sync::atomic::Ordering;
@@ -3215,6 +3215,1618 @@ mod parity_edge_cases {
         assert_eq!(
             v.debug_variants_content(),
             "C:1:F-1:R-0:0.0000:0;1:12.2:1:30.2:1:0.0000:60.0:0.000"
+        );
+    }
+}
+
+// 9. mod vcf_all_alleles_and_compat_off (3 tests)
+mod vcf_all_alleles_and_compat_off {
+    use super::*;
+    use noodles::bam::bai;
+    use noodles::csi::binning_index::index::reference_sequence::{bin::Chunk, index::LinearIndex};
+    use noodles::csi::binning_index::Indexer;
+    use noodles::sam::{
+        alignment::{io::Write as _, record::Flags},
+        header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+        Header,
+    };
+    use std::io::Write as _;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use vardictrust_core::config::{VcfThreshold, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
+
+    fn lcg_ref_bytes(mut seed: u64, len: usize) -> Vec<u8> {
+        let bases = [b'A', b'C', b'G', b'T'];
+        (0..len)
+            .map(|i| {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let mut b = bases[((seed >> 33) & 3) as usize];
+                // Prevent accidental homopolymer >= 6 runs so synthetic non-MSI tests stay deterministic
+                if i % 5 == 0 {
+                    b = bases[(i / 5) % 4];
+                }
+                b
+            })
+            .collect()
+    }
+
+    fn write_multi_contig_fasta(dir: &Path, stem: &str, contigs: &[(&str, &[u8])]) -> PathBuf {
+        let fa_path = dir.join(format!("{stem}.fa"));
+        let fai_path = dir.join(format!("{stem}.fa.fai"));
+        let mut fa_bytes = Vec::new();
+        let mut fai_text = String::new();
+        let mut offset = 0usize;
+        for &(name, seq) in contigs {
+            fa_bytes.push(b'>');
+            fa_bytes.extend_from_slice(name.as_bytes());
+            fa_bytes.push(b'\n');
+            offset += name.len() + 2;
+            let len = seq.len();
+            use std::fmt::Write as _;
+            let _ = writeln!(fai_text, "{name}\t{len}\t{offset}\t{len}\t{}", len + 1);
+            fa_bytes.extend_from_slice(seq);
+            fa_bytes.push(b'\n');
+            offset += len + 1;
+        }
+        fs::write(&fa_path, &fa_bytes).expect("write multi-contig fasta");
+        fs::write(&fai_path, &fai_text).expect("write multi-contig fai");
+        fa_path
+    }
+
+    fn write_multi_contig_bam(
+        path: &Path,
+        contigs: &[(&str, usize)],
+        mut recs: Vec<RecordBuf>,
+    ) -> std::io::Result<()> {
+        recs.sort_by_key(|r| {
+            (
+                r.reference_sequence_id().expect("ref_id"),
+                r.alignment_start().expect("alignment_start").get(),
+            )
+        });
+        let mut hdr_builder = Header::builder();
+        for &(name, len) in contigs {
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(len.try_into().expect("nonzero contig len"))
+                .build()
+                .expect("valid contig map");
+            hdr_builder = hdr_builder.add_reference_sequence(name, rs);
+        }
+        let hd = hdr_builder.build();
+        let bgzf = noodles::bgzf::io::Writer::new(fs::File::create(path)?);
+        let mut w = noodles::bam::io::Writer::from(bgzf);
+        w.write_alignment_header(&hd)?;
+        let mut indexer = Indexer::<LinearIndex>::new(14, 5).expect("valid BAI parameters");
+        for rec in &recs {
+            let vstart = w.get_ref().virtual_position();
+            w.write_alignment_record(&hd, rec)?;
+            let vend = w.get_ref().virtual_position();
+            let ref_id = rec.reference_sequence_id().expect("ref_id");
+            let s = rec.alignment_start().expect("alignment_start");
+            let span = rec.cigar().alignment_span().saturating_sub(1).max(1);
+            let e = Position::new(s.get() + span).unwrap_or(Position::MIN);
+            indexer
+                .add_record(Some((ref_id, s, e, true)), Chunk::new(vstart, vend))
+                .map_err(std::io::Error::other)?;
+        }
+        w.try_finish()?;
+        let mut bai_path = PathBuf::from(path);
+        bai_path.set_extension("bam.bai");
+        bai::io::Writer::new(fs::File::create(bai_path)?).write_index(&indexer.build(contigs.len()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn mk_contig_rec(
+        name: &str,
+        ref_id: usize,
+        flags: Flags,
+        pos_1b: usize,
+        ops: &[(usize, Kind)],
+        seq: Vec<u8>,
+        qual: Vec<u8>,
+        mate: Option<(usize, usize, i32)>,
+    ) -> RecordBuf {
+        let cigar: Cigar = ops.iter().map(|&(l, k)| Op::new(k, l)).collect();
+        let mut b = RecordBuf::builder()
+            .set_name(name)
+            .set_flags(flags)
+            .set_reference_sequence_id(ref_id)
+            .set_alignment_start(Position::try_from(pos_1b).expect("pos"))
+            .set_mapping_quality(noodles::sam::alignment::record::MappingQuality::new(60).unwrap())
+            .set_cigar(cigar)
+            .set_sequence(seq.into())
+            .set_quality_scores(qual.into());
+        if let Some((m_ref_id, m_pos_1b, tlen)) = mate {
+            b = b
+                .set_mate_reference_sequence_id(m_ref_id)
+                .set_mate_alignment_start(Position::try_from(m_pos_1b).expect("mate pos"))
+                .set_template_length(tlen);
+        }
+        b.build()
+    }
+
+    fn perl_var2vcf_script(script_name: &str) -> PathBuf {
+        let ws = workspace_root()
+            .join("VarDictJava/VarDict")
+            .join(script_name);
+        if ws.is_file() {
+            return ws;
+        }
+        let dr = data_root().join("VarDictJava/VarDict").join(script_name);
+        assert!(
+            dr.is_file(),
+            "missing in-tree Perl oracle script {}: checked {} and {}",
+            script_name,
+            ws.display(),
+            dr.display()
+        );
+        dr
+    }
+
+    fn run_perl_var2vcf(script_name: &str, args: &[&str], var_stdin: &str) -> Vec<String> {
+        let script = perl_var2vcf_script(script_name);
+        let mut child = Command::new("perl")
+            .env("LC_ALL", "C")
+            .arg(&script)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn system perl for var2vcf_*.pl");
+        child
+            .stdin
+            .take()
+            .expect("perl stdin")
+            .write_all(var_stdin.as_bytes())
+            .expect("write .var to perl stdin");
+        let out = child.wait_with_output().expect("wait perl var2vcf");
+        assert!(
+            out.status.success(),
+            "perl {} {:?} failed: {}",
+            script.display(),
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        extract_variants(&String::from_utf8(out.stdout).expect("perl utf8 stdout"))
+    }
+
+    #[test]
+    fn perl_all_alleles_simple_and_amplicon_differential_equivalence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ref_len = 400usize;
+        let mut chr1_seq = lcg_ref_bytes(0x1234_5678_9ABC_DEF0, ref_len);
+        let mut chr2_seq = lcg_ref_bytes(0xFEDC_BA98_7654_3210, ref_len);
+        // Pin reference bases at multi-allelic and cluster loci so non-ref alleles are explicit
+        chr1_seq[99] = b'A'; // chr1:100
+        chr1_seq[100] = b'T'; // avoid homopolymer run with +GG / +CC
+        chr1_seq[105] = b'A'; // chr1:106 (6 bp downstream for Cluster10bp)
+        chr1_seq[119] = b'A'; // chr1:120 (overlapping 2-amplicon multi-allelic locus)
+        chr1_seq[127] = b'A'; // chr1:128 (overlapping 2-amplicon PASS locus)
+        chr1_seq[179] = b'A'; // chr1:180 (single-amplicon AMP_B multi-allelic PASS locus)
+        chr1_seq[185] = b'A'; // chr1:186 (single-amplicon AMP_B cluster SNV locus)
+        chr2_seq[149] = b'A'; // chr2:150
+
+        let fa_path = write_multi_contig_fasta(
+            dir.path(),
+            "perl_aa_simple",
+            &[("chr1", &chr1_seq), ("chr2", &chr2_seq)],
+        );
+
+        let mut simple_recs = Vec::new();
+        // Locus chr1:100 — 3 PASS SNVs ('G' 9 reads, 'C' 4 reads tie #1, 'T' 4 reads tie #2)
+        // + 1 PASS 2bp insertion ('+GG', 3 reads) + 1 filtered 2bp insertion ('+CC', 2 reads at start=94 -> PMEAN=6 < 8, PSTD=0)
+        // + 5 ref reads (also carrying SNV 'G' on 6 reads at chr1:106).
+        let snv_specs: &[(u8, usize, usize)] = &[(b'G', 9, 0), (b'C', 4, 10), (b'T', 4, 20)];
+        for &(alt_b, count, tag_base) in snv_specs {
+            for i in 0..count {
+                let start = 78 + (i % 6);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = chr1_seq[start - 1..start - 1 + 50].to_vec();
+                seq[100 - start] = alt_b;
+                simple_recs.push(mk_contig_rec(
+                    &format!("c1_snv_{}_{}", alt_b as char, tag_base + i),
+                    0,
+                    flags,
+                    start,
+                    &[(50, Kind::Match)],
+                    seq,
+                    vec![38; 50],
+                    None,
+                ));
+            }
+        }
+        // Co-located PASS insertion +GG at chr1:100 (3 reads with varied starts 80, 82, 84)
+        for i in 0..3usize {
+            let start = 80 + i * 2;
+            let left_len = 100 - start + 1;
+            let right_len = 25usize;
+            let mut seq = chr1_seq[start - 1..100].to_vec();
+            seq.extend_from_slice(b"GG");
+            seq.extend_from_slice(&chr1_seq[100..100 + right_len]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            simple_recs.push(mk_contig_rec(
+                &format!("c1_ins_gg_{i}"),
+                0,
+                flags,
+                start,
+                &[
+                    (left_len, Kind::Match),
+                    (2, Kind::Insertion),
+                    (right_len, Kind::Match),
+                ],
+                seq,
+                vec![38; left_len + 2 + right_len],
+                None,
+            ));
+        }
+        // Co-located filtered insertion +CC at chr1:100 (2 reads both starting at 94 -> PMEAN=7 < 8, PSTD=0 -> p8;pSTD)
+        for i in 0..2usize {
+            let start = 94usize;
+            let left_len = 100 - start + 1; // 7M -> PMEAN = 7 < 8, > engine read_pos 5!
+            let right_len = 35usize;
+            let mut seq = chr1_seq[start - 1..100].to_vec();
+            seq.extend_from_slice(b"CC");
+            seq.extend_from_slice(&chr1_seq[100..100 + right_len]);
+            let flags = if i == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            simple_recs.push(mk_contig_rec(
+                &format!("c1_ins_cc_filt_{i}"),
+                0,
+                flags,
+                start,
+                &[
+                    (left_len, Kind::Match),
+                    (2, Kind::Insertion),
+                    (right_len, Kind::Match),
+                ],
+                seq,
+                vec![38; left_len + 2 + right_len],
+                None,
+            ));
+        }
+        // Nearby PASS SNV 'G' at chr1:106 (6 reads, ref at chr1:100 -> also serves as ref depth at chr1:100)
+        for i in 0..6usize {
+            let start = 82 + (i % 5);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut seq = chr1_seq[start - 1..start - 1 + 50].to_vec();
+            seq[106 - start] = b'G';
+            simple_recs.push(mk_contig_rec(
+                &format!("c1_cluster106_{i}"),
+                0,
+                flags,
+                start,
+                &[(50, Kind::Match)],
+                seq,
+                vec![39; 50],
+                None,
+            ));
+        }
+        // Contig chr2:150 — bi-allelic PASS SNVs 'C' (6 reads) and 'G' (4 reads) + 5 ref reads
+        for &(alt_b, count, tag_base) in &[(b'C', 6usize, 0usize), (b'G', 4, 10), (b'A', 5, 20)] {
+            for i in 0..count {
+                let start = 128 + (i % 5);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = chr2_seq[start - 1..start - 1 + 50].to_vec();
+                seq[150 - start] = alt_b;
+                simple_recs.push(mk_contig_rec(
+                    &format!("c2_150_{}_{}", alt_b as char, tag_base + i),
+                    1,
+                    flags,
+                    start,
+                    &[(50, Kind::Match)],
+                    seq,
+                    vec![39; 50],
+                    None,
+                ));
+            }
+        }
+
+        let simple_bam = dir.path().join("simple_aa.bam");
+        write_multi_contig_bam(
+            &simple_bam,
+            &[("chr1", ref_len), ("chr2", ref_len)],
+            simple_recs,
+        )
+        .expect("write simple_aa.bam");
+
+        let simple_bed = dir.path().join("simple_aa.bed");
+        fs::write(
+            &simple_bed,
+            "chr1\t49\t220\tG_CHR1\nchr2\t99\t220\tG_CHR2\n",
+        )
+        .expect("write simple_aa.bed");
+
+        let base_simple = Config {
+            reference: fa_path.to_string_lossy().into_owned(),
+            bam: simple_bam.to_string_lossy().into_owned(),
+            sample: "SMPL".to_string(),
+            sample_explicit: true,
+            bed: Some(simple_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            omit_end_tag: false,
+            realign: 0,
+            fisher: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            threads: 1,
+            ..Config::default()
+        };
+
+        // Baseline without --vcf-all-alleles emits only 1 record at chr1:100
+        let single_winner_vars =
+            extract_variants(&run_core_vcf(&base_simple).expect("single winner"));
+        assert_eq!(
+            single_winner_vars
+                .iter()
+                .filter(|l| l.starts_with("chr1\t100\t"))
+                .count(),
+            1,
+            "default vcf_all_alleles=false must emit exactly 1 record at chr1:100"
+        );
+
+        let simple_var_table = run_core_var(&base_simple).expect("simple --fisher .var");
+        let mut simple_all = base_simple.clone();
+        simple_all.vcf_all_alleles = true;
+
+        // 1. Default --vcf-all-alleles (with END tag) vs perl var2vcf_valid.pl -A
+        let rust_all_default_vcf = run_core_vcf(&simple_all).expect("rust simple all-alleles");
+        let rust_all_default = extract_variants(&rust_all_default_vcf);
+        let perl_all_default = run_perl_var2vcf(
+            "var2vcf_valid.pl",
+            &["-A", "-N", "SMPL", "-f", "0.01"],
+            &simple_var_table,
+        );
+        assert_eq!(rust_all_default, perl_all_default);
+        let c1_100_alts: Vec<&str> = rust_all_default
+            .iter()
+            .filter(|l| l.starts_with("chr1\t100\t"))
+            .map(|l| l.split('\t').nth(4).unwrap())
+            .collect();
+        assert_eq!(
+            c1_100_alts,
+            vec!["G", "C", "T", "AGG", "ACC"],
+            "expected 3 SNVs (including C/T AF tie in first-seen order) + PASS AGG + filtered ACC at chr1:100"
+        );
+        assert!(
+            rust_all_default
+                .iter()
+                .any(|l| l.starts_with("chr1\t100\t.\tA\tACC\t") && !l.contains("\tPASS\t")),
+            "expected ACC at chr1:100 to carry non-PASS filter"
+        );
+        assert_eq!(
+            rust_all_default
+                .iter()
+                .filter(|l| l.starts_with("chr2\t150\t"))
+                .count(),
+            2,
+            "expected both alleles on chr2:150"
+        );
+
+        // 2. --no-end vs perl -A -E
+        let mut simple_no_end = simple_all.clone();
+        simple_no_end.omit_end_tag = true;
+        assert_eq!(
+            extract_variants(&run_core_vcf(&simple_no_end).expect("no-end")),
+            run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-A", "-E", "-N", "SMPL", "-f", "0.01"],
+                &simple_var_table,
+            )
+        );
+
+        // 3. --pass-only vs perl -A -S
+        let mut simple_pass = simple_all.clone();
+        simple_pass.vcf_pass_only = true;
+        let rust_pass = extract_variants(&run_core_vcf(&simple_pass).expect("pass-only"));
+        assert_eq!(
+            rust_pass,
+            run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-A", "-S", "-N", "SMPL", "-f", "0.01"],
+                &simple_var_table,
+            )
+        );
+        assert_eq!(
+            rust_pass
+                .iter()
+                .filter(|l| l.starts_with("chr1\t100\t"))
+                .count(),
+            4,
+            "--pass-only must drop filtered ACC and retain all 4 PASS alleles at chr1:100"
+        );
+
+        // 4. --vcf-cluster-dist 10 (with and without --pass-only) vs perl -A -c 10 [-S]
+        let mut simple_cluster = simple_all.clone();
+        simple_cluster.vcf_cluster_dist = Some(VcfThreshold::new(10));
+        let rust_cluster = extract_variants(&run_core_vcf(&simple_cluster).expect("cluster 10"));
+        assert_eq!(
+            rust_cluster,
+            run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-A", "-c", "10", "-N", "SMPL", "-f", "0.01"],
+                &simple_var_table,
+            )
+        );
+        assert!(
+            rust_cluster.iter().any(|l| l.contains("Cluster10bp")),
+            "expected Cluster10bp filter under --vcf-cluster-dist 10"
+        );
+
+        let mut simple_cluster_pass = simple_cluster.clone();
+        simple_cluster_pass.vcf_pass_only = true;
+        assert_eq!(
+            extract_variants(&run_core_vcf(&simple_cluster_pass).expect("cluster 10 pass-only")),
+            run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-A", "-c", "10", "-S", "-N", "SMPL", "-f", "0.01"],
+                &simple_var_table,
+            )
+        );
+
+        // 5. Split tiles (--tile-size 60, threads = 4) must match untiled and Perl -A byte-for-byte
+        let mut simple_tiled = simple_cluster.clone();
+        simple_tiled.tile_size = Some(60);
+        simple_tiled.threads = 4;
+        let mut tiled_buf = Vec::new();
+        vardictrust_core::run_with_writer(&simple_tiled, &mut tiled_buf).expect("tiled simple -A");
+        let tiled_vcf = String::from_utf8(tiled_buf).expect("utf8");
+        assert_eq!(
+            extract_variants(&tiled_vcf),
+            rust_cluster,
+            "split-tile multi-allelic Simple VCF (--tile-size 60, -c 10) must match untiled and Perl -A"
+        );
+
+        // --- Amplicon mode (8-col BED with 2 overlapping amplicons + AMPBIAS + multi-allelic locus) ---
+        let mut amp_recs = Vec::new();
+        // Amp A: 1-based [70, 170], insert [75, 165] (reads start=70, len=101 -> 100% overlap)
+        //   6 'G' at 120, 4 'C' at 120 (AMP_A only -> AMPBIAS!), 4 'T' at 120, 5 'G' at 128
+        for &(pos_v, alt_b, count, tag) in &[
+            (120usize, b'G', 6usize, "a_g120"),
+            (120, b'C', 4, "a_c120_bias"),
+            (120, b'T', 4, "a_t120"),
+            (128, b'G', 5, "a_g128"),
+        ] {
+            for i in 0..count {
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = chr1_seq[69..170].to_vec();
+                seq[pos_v - 70] = alt_b;
+                amp_recs.push(mk_contig_rec(
+                    &format!("{tag}_{i}"),
+                    0,
+                    flags,
+                    70,
+                    &[(101, Kind::Match)],
+                    seq,
+                    vec![39; 101],
+                    None,
+                ));
+            }
+        }
+        // Amp B: 1-based [95, 195], insert [100, 190] (reads start=95, len=101 -> 100% overlap)
+        //   - At overlapping chr1:120: 6 'G', 0 'C' (GDAMP=1 < TLAMP=2), 4 'T'
+        //   - At overlapping chr1:128: 5 'G' (1 allele in both amplicons -> PASS)
+        //   - At AMP_B-only chr1:180: multi-allelic 6 'G' + 4 'T' (1 amplicon -> PASS!) + cluster 'G' at 186
+        for &(pos_v, alt_b, count, tag) in &[
+            (120usize, b'G', 6usize, "b_g120"),
+            (120, b'T', 4, "b_t120"),
+            (128, b'G', 5, "b_g128"),
+            (180, b'G', 6, "b_g180"),
+            (180, b'T', 4, "b_t180"),
+            (186, b'G', 5, "b_g186"),
+            (120, b'A', 4, "b_ref"),
+        ] {
+            for i in 0..count {
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = chr1_seq[94..195].to_vec();
+                seq[pos_v - 95] = alt_b;
+                amp_recs.push(mk_contig_rec(
+                    &format!("{tag}_{i}"),
+                    0,
+                    flags,
+                    95,
+                    &[(101, Kind::Match)],
+                    seq,
+                    vec![39; 101],
+                    None,
+                ));
+            }
+        }
+
+        let amp_bam = dir.path().join("amp_aa.bam");
+        write_multi_contig_bam(&amp_bam, &[("chr1", ref_len), ("chr2", ref_len)], amp_recs)
+            .expect("write amp_aa.bam");
+        let amp_bed = dir.path().join("amp_aa.bed");
+        fs::write(
+            &amp_bed,
+            "chr1\t69\t170\tAMP_A\t0\t+\t74\t165\nchr1\t94\t195\tAMP_B\t0\t+\t99\t190\n",
+        )
+        .expect("write amp_aa.bed");
+
+        let mut amp_cfg = Config {
+            reference: fa_path.to_string_lossy().into_owned(),
+            bam: amp_bam.to_string_lossy().into_owned(),
+            sample: "AMP_SMPL".to_string(),
+            sample_explicit: true,
+            bed: Some(amp_bed.to_string_lossy().into_owned()),
+            amplicon: Some("10:0.95".to_string()),
+            zero_based: true,
+            zero_based_defined: true,
+            omit_end_tag: true,
+            fisher: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            vcf_all_alleles: true,
+            threads: 1,
+            ..Config::default()
+        };
+        let amp_var_table = run_core_var(&amp_cfg).expect("amp --fisher .var");
+        let rust_amp_all = extract_variants(&run_core_vcf(&amp_cfg).expect("amp all-alleles"));
+        assert_eq!(
+            rust_amp_all,
+            run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-A", "-a", "-E", "-N", "AMP_SMPL", "-f", "0.01"],
+                &amp_var_table,
+            )
+        );
+        assert!(
+            rust_amp_all
+                .iter()
+                .any(|l| l.starts_with("chr1\t120\t.\tA\tC\t")
+                    && l.contains("\tAMPBIAS\t")
+                    && l.contains(";GDAMP=1;TLAMP=2;")),
+            "expected 'C' at chr1:120 to carry AMPBIAS with GDAMP=1;TLAMP=2, got:\n{}",
+            rust_amp_all.join("\n")
+        );
+        assert_eq!(
+            rust_amp_all
+                .iter()
+                .filter(|l| l.starts_with("chr1\t120\t"))
+                .count(),
+            3,
+            "expected all 3 alleles (G, C, T) emitted at overlapping chr1:120"
+        );
+        assert_eq!(
+            rust_amp_all
+                .iter()
+                .filter(|l| l.starts_with("chr1\t180\t") && l.contains("\tPASS\t"))
+                .count(),
+            2,
+            "expected both 'G' and 'T' at chr1:180 to PASS, got:\n{}",
+            rust_amp_all.join("\n")
+        );
+
+        // Amplicon --pass-only & --vcf-cluster-dist 15 vs perl -A -a
+        amp_cfg.vcf_pass_only = true;
+        assert_eq!(
+            extract_variants(&run_core_vcf(&amp_cfg).expect("amp pass-only")),
+            run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-A", "-a", "-E", "-S", "-N", "AMP_SMPL", "-f", "0.01"],
+                &amp_var_table,
+            )
+        );
+        amp_cfg.vcf_pass_only = false;
+        amp_cfg.vcf_cluster_dist = Some(VcfThreshold::new(15));
+        assert_eq!(
+            extract_variants(&run_core_vcf(&amp_cfg).expect("amp cluster 15")),
+            run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-A", "-a", "-E", "-c", "15", "-N", "AMP_SMPL", "-f", "0.01"],
+                &amp_var_table,
+            )
+        );
+    }
+
+    #[test]
+    fn perl_all_alleles_somatic_differential_equivalence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ref_len = 400usize;
+        let mut chr1_seq = lcg_ref_bytes(0xCAFE_BABE_1122_3344, ref_len);
+        let mut chr2_seq = lcg_ref_bytes(0x5566_7788_DEAD_BEEF, ref_len);
+        chr1_seq[119] = b'A'; // chr1:120 multi-allelic somatic + germline + indel + filtered
+        chr1_seq[120] = b'T';
+        chr1_seq[125] = b'A'; // chr1:126 somatic cluster SNV
+        chr2_seq[149] = b'A'; // chr2:150 bi-allelic somatic SNVs
+
+        let fa_path = write_multi_contig_fasta(
+            dir.path(),
+            "perl_aa_som",
+            &[("chr1", &chr1_seq), ("chr2", &chr2_seq)],
+        );
+
+        let mut tum_recs = Vec::new();
+        let mut norm_recs = Vec::new();
+
+        // Tumor chr1:120 — 'G' (10 reads, StrongSomatic), 'C' (6 reads, Germline), '+GG' (5 reads, StrongSomatic),
+        // 'T' (2 reads at start=114 -> filtered v3;p8;pSTD), plus 8 reads with SNV 'G' at chr1:126 (ref at 120)
+        for &(alt_b, count, tag_base) in &[(b'G', 10usize, 0usize), (b'C', 6, 20)] {
+            for i in 0..count {
+                let start = 98 + (i % 6);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = chr1_seq[start - 1..start - 1 + 50].to_vec();
+                seq[120 - start] = alt_b;
+                tum_recs.push(mk_contig_rec(
+                    &format!("tum_c1_{}_{}", alt_b as char, tag_base + i),
+                    0,
+                    flags,
+                    start,
+                    &[(50, Kind::Match)],
+                    seq,
+                    vec![39; 50],
+                    None,
+                ));
+            }
+        }
+        for i in 0..5usize {
+            let start = 100 + (i % 5);
+            let left_len = 120 - start + 1;
+            let right_len = 25usize;
+            let mut seq = chr1_seq[start - 1..120].to_vec();
+            seq.extend_from_slice(b"GG");
+            seq.extend_from_slice(&chr1_seq[120..120 + right_len]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            tum_recs.push(mk_contig_rec(
+                &format!("tum_c1_ins_{i}"),
+                0,
+                flags,
+                start,
+                &[
+                    (left_len, Kind::Match),
+                    (2, Kind::Insertion),
+                    (right_len, Kind::Match),
+                ],
+                seq,
+                vec![39; left_len + 2 + right_len],
+                None,
+            ));
+        }
+        // Filtered tumor SNV 'T' at chr1:120 (2 reads at start=114 -> VD=2 < 3, PMEAN=7 < 8, PSTD=0)
+        for i in 0..2usize {
+            let start = 114usize;
+            let flags = if i == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut seq = chr1_seq[start - 1..start - 1 + 45].to_vec();
+            seq[120 - start] = b'T';
+            tum_recs.push(mk_contig_rec(
+                &format!("tum_c1_filt_t_{i}"),
+                0,
+                flags,
+                start,
+                &[(45, Kind::Match)],
+                seq,
+                vec![39; 45],
+                None,
+            ));
+        }
+        // Somatic SNV 'G' at chr1:126 (8 reads, ref 'A' at chr1:120)
+        for i in 0..8usize {
+            let start = 102 + (i % 5);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut seq = chr1_seq[start - 1..start - 1 + 50].to_vec();
+            seq[126 - start] = b'G';
+            tum_recs.push(mk_contig_rec(
+                &format!("tum_c1_126_{i}"),
+                0,
+                flags,
+                start,
+                &[(50, Kind::Match)],
+                seq,
+                vec![39; 50],
+                None,
+            ));
+        }
+        // Normal chr1: 8 reads with Germline 'C' at chr1:120 + 12 pure reference reads
+        for i in 0..20usize {
+            let start = 98 + (i % 6);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut seq = chr1_seq[start - 1..start - 1 + 50].to_vec();
+            if i < 8 {
+                seq[120 - start] = b'C';
+            }
+            norm_recs.push(mk_contig_rec(
+                &format!("norm_c1_{i}"),
+                0,
+                flags,
+                start,
+                &[(50, Kind::Match)],
+                seq,
+                vec![39; 50],
+                None,
+            ));
+        }
+
+        // Contig chr2:150 — bi-allelic StrongSomatic SNVs 'G' (7 reads) and 'T' (5 reads) + 8 ref in tumor; 16 ref in normal
+        for &(alt_b, count, tag) in &[(b'G', 7usize, "g"), (b'T', 5, "t"), (b'A', 8, "ref")] {
+            for i in 0..count {
+                let start = 128 + (i % 5);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = chr2_seq[start - 1..start - 1 + 50].to_vec();
+                seq[150 - start] = alt_b;
+                tum_recs.push(mk_contig_rec(
+                    &format!("tum_c2_{tag}_{i}"),
+                    1,
+                    flags,
+                    start,
+                    &[(50, Kind::Match)],
+                    seq,
+                    vec![39; 50],
+                    None,
+                ));
+            }
+        }
+        for i in 0..16usize {
+            let start = 128 + (i % 5);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let seq = chr2_seq[start - 1..start - 1 + 50].to_vec();
+            norm_recs.push(mk_contig_rec(
+                &format!("norm_c2_{i}"),
+                1,
+                flags,
+                start,
+                &[(50, Kind::Match)],
+                seq,
+                vec![39; 50],
+                None,
+            ));
+        }
+
+        let tum_bam = dir.path().join("som_tum.bam");
+        let norm_bam = dir.path().join("som_norm.bam");
+        write_multi_contig_bam(&tum_bam, &[("chr1", ref_len), ("chr2", ref_len)], tum_recs)
+            .expect("write som_tum.bam");
+        write_multi_contig_bam(
+            &norm_bam,
+            &[("chr1", ref_len), ("chr2", ref_len)],
+            norm_recs,
+        )
+        .expect("write som_norm.bam");
+
+        let som_bed = dir.path().join("som_aa.bed");
+        fs::write(&som_bed, "chr1\t79\t220\tG1\nchr2\t99\t220\tG2\n").expect("write som_aa.bed");
+
+        let base_som = Config {
+            reference: fa_path.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", tum_bam.display(), norm_bam.display()),
+            sample: "TUM|NORM".to_string(),
+            sample_explicit: true,
+            bed: Some(som_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            realign: 0,
+            fisher: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            threads: 1,
+            ..Config::default()
+        };
+
+        assert_eq!(
+            extract_variants(&run_core_vcf(&base_som).expect("som single winner"))
+                .iter()
+                .filter(|l| l.starts_with("chr1\t120\t"))
+                .count(),
+            1,
+            "somatic vcf_all_alleles=false must emit 1 winner at chr1:120"
+        );
+
+        let som_var_table = run_core_var(&base_som).expect("somatic --fisher .var");
+        let mut som_all = base_som.clone();
+        som_all.vcf_all_alleles = true;
+
+        // 1. Default -A
+        let rust_som_default = extract_variants(&run_core_vcf(&som_all).expect("som -A"));
+        assert_eq!(
+            rust_som_default,
+            run_perl_var2vcf(
+                "var2vcf_paired.pl",
+                &["-A", "-N", "TUM|NORM", "-f", "0.01"],
+                &som_var_table,
+            )
+        );
+        assert_eq!(
+            rust_som_default
+                .iter()
+                .filter(|l| l.starts_with("chr1\t120\t"))
+                .count(),
+            4,
+            "somatic vcf_all_alleles=true must emit all 4 alleles (G, C, AGG, T) at chr1:120"
+        );
+
+        // 2. --pass-only (-S), --paired-strict (-M), --paired-strict + --pass-only (-M -S), and --vcf-cluster-dist 10 (-c 10)
+        let mut som_pass = som_all.clone();
+        som_pass.vcf_pass_only = true;
+        assert_eq!(
+            extract_variants(&run_core_vcf(&som_pass).expect("som -A -S")),
+            run_perl_var2vcf(
+                "var2vcf_paired.pl",
+                &["-A", "-S", "-N", "TUM|NORM", "-f", "0.01"],
+                &som_var_table,
+            )
+        );
+
+        let mut som_strict = som_all.clone();
+        som_strict.vcf_paired_strict = true;
+        assert_eq!(
+            extract_variants(&run_core_vcf(&som_strict).expect("som -A -M")),
+            run_perl_var2vcf(
+                "var2vcf_paired.pl",
+                &["-A", "-M", "-N", "TUM|NORM", "-f", "0.01"],
+                &som_var_table,
+            )
+        );
+
+        let mut som_strict_pass = som_strict.clone();
+        som_strict_pass.vcf_pass_only = true;
+        assert_eq!(
+            extract_variants(&run_core_vcf(&som_strict_pass).expect("som -A -M -S")),
+            run_perl_var2vcf(
+                "var2vcf_paired.pl",
+                &["-A", "-M", "-S", "-N", "TUM|NORM", "-f", "0.01"],
+                &som_var_table,
+            )
+        );
+
+        let mut som_cluster = som_all.clone();
+        som_cluster.vcf_cluster_dist = Some(VcfThreshold::new(10));
+        let rust_som_cluster = extract_variants(&run_core_vcf(&som_cluster).expect("som -A -c 10"));
+        assert_eq!(
+            rust_som_cluster,
+            run_perl_var2vcf(
+                "var2vcf_paired.pl",
+                &["-A", "-c", "10", "-N", "TUM|NORM", "-f", "0.01"],
+                &som_var_table,
+            )
+        );
+        assert!(
+            rust_som_cluster.iter().any(|l| l.contains("Cluster10bp")),
+            "expected Cluster10bp in somatic -A -c 10 VCF"
+        );
+
+        // 3. Split tiles (--tile-size 60, threads = 4) must match untiled and Perl -A
+        let mut som_tiled = som_cluster.clone();
+        som_tiled.tile_size = Some(60);
+        som_tiled.threads = 4;
+        let mut som_tiled_buf = Vec::new();
+        vardictrust_core::run_with_writer(&som_tiled, &mut som_tiled_buf).expect("som tiled -A");
+        assert_eq!(
+            extract_variants(&String::from_utf8(som_tiled_buf).expect("utf8")),
+            rust_som_cluster,
+            "split-tile multi-allelic Somatic VCF (--tile-size 60, -c 10) must match untiled and Perl -A"
+        );
+    }
+
+    #[test]
+    fn compat_off_all_seven_switches_and_mixed_contigs_e2e() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // --- Switch 1 & Switch 2: ##VarDictRustCompat=off header + #116 bijective INFO/SAMPLE ---
+        let mut single_dot_vj = base_micro_config();
+        single_dot_vj.sample = ".".to_string();
+        single_dot_vj.sample_explicit = true;
+        let vcf_dot_vj = run_core_vcf(&single_dot_vj).expect("single '.' VJ");
+        assert!(!vcf_dot_vj.contains("##VarDictRustCompat=off"));
+        assert!(extract_variants(&vcf_dot_vj)[0].contains("\tSAMPLE=.;TYPE="));
+
+        let mut single_dot_off = single_dot_vj.clone();
+        single_dot_off.compat = COMPAT_OFF;
+        let vcf_dot_off = run_core_vcf(&single_dot_off).expect("single '.' OFF");
+        assert!(vcf_dot_off.contains("##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n"));
+        assert!(extract_variants(&vcf_dot_off)[0].contains("\tSAMPLE=%2E;TYPE="));
+
+        // Paired somatic header + bijective INFO/SAMPLE ("TUM;X=1,Y%20|NORM")
+        let som_ref_seq = lcg_ref_bytes(0x9988_7766_5544_3322, 300);
+        let som_fa = write_multi_contig_fasta(dir.path(), "compat_som", &[("chr1", &som_ref_seq)]);
+        let som_t_bam = dir.path().join("compat_t.bam");
+        let som_n_bam = dir.path().join("compat_n.bam");
+        let alt_120 = if som_ref_seq[119] == b'A' { b'G' } else { b'A' };
+        let mut som_t_recs = Vec::new();
+        let mut som_n_recs = Vec::new();
+        for i in 0..6usize {
+            let start = 100 + i;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut tseq = som_ref_seq[start - 1..start - 1 + 45].to_vec();
+            tseq[120 - start] = alt_120;
+            som_t_recs.push(mk_contig_rec(
+                &format!("ct_{i}"),
+                0,
+                flags,
+                start,
+                &[(45, Kind::Match)],
+                tseq,
+                vec![39; 45],
+                None,
+            ));
+            som_n_recs.push(mk_contig_rec(
+                &format!("cn_{i}"),
+                0,
+                flags,
+                start,
+                &[(45, Kind::Match)],
+                som_ref_seq[start - 1..start - 1 + 45].to_vec(),
+                vec![39; 45],
+                None,
+            ));
+        }
+        write_multi_contig_bam(&som_t_bam, &[("chr1", 300)], som_t_recs).expect("compat_t.bam");
+        write_multi_contig_bam(&som_n_bam, &[("chr1", 300)], som_n_recs).expect("compat_n.bam");
+
+        let som_vj_cfg = Config {
+            reference: som_fa.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", som_t_bam.display(), som_n_bam.display()),
+            sample: "TUM;X=1,Y%20|NORM".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:80-180".to_string()),
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let som_vj_vcf = run_core_vcf(&som_vj_cfg).expect("paired VJ");
+        assert!(!som_vj_vcf.contains("##VarDictRustCompat=off"));
+        assert!(extract_variants(&som_vj_vcf)[0].contains(";SAMPLE=TUM;X=1,Y%20;TYPE="));
+
+        let mut som_off_cfg = som_vj_cfg.clone();
+        som_off_cfg.compat = COMPAT_OFF;
+        let som_off_vcf = run_core_vcf(&som_off_cfg).expect("paired OFF");
+        assert!(som_off_vcf.contains("##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n"));
+        assert!(som_off_vcf.contains("\tFORMAT\tTUM;X=1,Y%20\tNORM\n"));
+        assert!(extract_variants(&som_off_vcf)[0].contains(";SAMPLE=TUM%3BX%3D1%2CY%2520;TYPE="));
+
+        // --- Switch 3: #342 <DUP> normalization end-to-end when mlen < 100 ---
+        let dup_ref_seq = lcg_ref_bytes(0x4242_1337_A5A5_5A5A, 500);
+        let dup_fa = write_multi_contig_fasta(dir.path(), "compat_dup", &[("chr1", &dup_ref_seq)]);
+        let dup_bam = dir.path().join("compat_dup80.bam");
+        let mut dup_recs = Vec::new();
+        // 4 reference reads covering bp=200..280
+        for i in 0..4usize {
+            let start = 185 + i * 2;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            dup_recs.push(mk_contig_rec(
+                &format!("dup_ref_{i}"),
+                0,
+                flags,
+                start,
+                &[(105, Kind::Match)],
+                dup_ref_seq[start - 1..start - 1 + 105].to_vec(),
+                vec![40; 105],
+                None,
+            ));
+        }
+        // 8 discordant forward reads at pos=230 (50M20S -> end=279, soft3=280; 20S = ref[200..220]),
+        // mate reverse at 200, tlen = -80 -> mlen = 280 - 200 = 80 < 100 (<dup-20>) with splits = 8
+        for i in 0..8usize {
+            let mut seq = dup_ref_seq[229..279].to_vec();
+            seq.extend_from_slice(&dup_ref_seq[199..219]);
+            dup_recs.push(mk_contig_rec(
+                &format!("dup_disc_f_{i}"),
+                0,
+                Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                230,
+                &[(50, Kind::Match), (20, Kind::SoftClip)],
+                seq,
+                vec![40; 70],
+                Some((0, 200, -80)),
+            ));
+        }
+        write_multi_contig_bam(&dup_bam, &[("chr1", 500)], dup_recs).expect("compat_dup80.bam");
+
+        let dup_vj_cfg = Config {
+            reference: dup_fa.to_string_lossy().into_owned(),
+            bam: dup_bam.to_string_lossy().into_owned(),
+            sample: "DUP_S".to_string(),
+            region: Some("chr1:150-350".to_string()),
+            omit_end_tag: false,
+            realign: 0,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let dup_vj_vcf = run_core_vcf(&dup_vj_cfg).expect("dup VJ VCF");
+        assert!(
+            dup_vj_vcf.contains("<dup-20>"),
+            "COMPAT_VARDICTJAVA_1_8_3 must preserve upstream #342 <dup-20>, got:\n{dup_vj_vcf}"
+        );
+
+        let mut dup_off_cfg = dup_vj_cfg.clone();
+        dup_off_cfg.compat = COMPAT_OFF;
+        let dup_off_vcf = run_core_vcf(&dup_off_cfg).expect("dup OFF VCF");
+        let dup_off_vars = extract_variants(&dup_off_vcf);
+        assert_eq!(dup_off_vars.len(), 1);
+        assert!(
+            !dup_off_vcf.contains("<dup-")
+                && dup_off_vars[0].starts_with(&format!(
+                    "chr1\t200\t.\t{}\t<DUP>\t",
+                    dup_ref_seq[199] as char
+                ))
+                && dup_off_vars[0].contains(";END=279;")
+                && dup_off_vars[0].contains(";SVTYPE=DUP;SVLEN=79;"),
+            "COMPAT_OFF must normalize #342 mlen=80 <dup-20> to POS=200 ALT=<DUP> END=279 SVTYPE=DUP SVLEN=79, got:\n{}",
+            dup_off_vars[0]
+        );
+
+        // --- Switch 4 & Switch 5: #292 -3 allele shift + #369 strict_region_bounds ---
+        let mut s3_seq = lcg_ref_bytes(0x7777_8888_1234_4321, 350);
+        // Locus A (110..=115 = G A T A C G): 2bp deletion of AT at 111..=112 shifts 3' by 1 to POS=111 (ATA -> A)
+        for (off, b) in [b'G', b'A', b'T', b'A', b'C', b'G'].into_iter().enumerate() {
+            s3_seq[109 + off] = b;
+        }
+        // Locus B (160..=165 = G A T A C G): 2bp insertion +AT after 160:G shifts 3' by 3 to POS=163 (A -> ATA)
+        for (off, b) in [b'G', b'A', b'T', b'A', b'C', b'G'].into_iter().enumerate() {
+            s3_seq[159 + off] = b;
+        }
+        // Boundary locus (99..=101 = C G T): left-anchored 1bp deletion of pos 100 anchored at pos 99 = region.start - 1
+        s3_seq[98] = b'C';
+        s3_seq[99] = b'G';
+        s3_seq[100] = b'T';
+        // Right-boundary -3 locus (199..=204 = G A T A C G): +AT at 199 shifts 3' to POS=202 > BED end 200!
+        for (off, b) in [b'G', b'A', b'T', b'A', b'C', b'G'].into_iter().enumerate() {
+            s3_seq[198 + off] = b;
+        }
+        // Overlap locus (145): SNV inside overlapping BED intervals [100, 150] and [140, 200]
+        s3_seq[144] = b'A';
+
+        let s3_fa = write_multi_contig_fasta(dir.path(), "compat_s3_bounds", &[("chr1", &s3_seq)]);
+        let s3_bam = dir.path().join("compat_s3_bounds.bam");
+        let mut s3_recs = Vec::new();
+
+        // Reads with left-anchored 1D at pos 99 (deleting base 100 inside [100, 150])
+        for i in 0..4usize {
+            let start = 80 + i;
+            let left = 99 - start + 1;
+            let right = 25usize;
+            let mut seq = s3_seq[start - 1..99].to_vec();
+            seq.extend_from_slice(&s3_seq[100..100 + right]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            s3_recs.push(mk_contig_rec(
+                &format!("b_del99_{i}"),
+                0,
+                flags,
+                start,
+                &[
+                    (left, Kind::Match),
+                    (1, Kind::Deletion),
+                    (right, Kind::Match),
+                ],
+                seq,
+                vec![39; left + right],
+                None,
+            ));
+        }
+        // Reads with 2D at 111..=112 (anchored at 110 in CIGAR -> shifts to POS=111 under -3)
+        for i in 0..5usize {
+            let start = 92 + i;
+            let left = 110 - start + 1;
+            let right = 25usize;
+            let mut seq = s3_seq[start - 1..110].to_vec();
+            seq.extend_from_slice(&s3_seq[112..112 + right]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            s3_recs.push(mk_contig_rec(
+                &format!("s3_del111_{i}"),
+                0,
+                flags,
+                start,
+                &[
+                    (left, Kind::Match),
+                    (2, Kind::Deletion),
+                    (right, Kind::Match),
+                ],
+                seq,
+                vec![39; left + right],
+                None,
+            ));
+        }
+        // Reads with SNV A->G at 145 (inside overlap of [100, 150] and [140, 200])
+        for i in 0..5usize {
+            let start = 126 + i;
+            let mut seq = s3_seq[start - 1..start - 1 + 40].to_vec();
+            seq[145 - start] = b'G';
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            s3_recs.push(mk_contig_rec(
+                &format!("ov_snv145_{i}"),
+                0,
+                flags,
+                start,
+                &[(40, Kind::Match)],
+                seq,
+                vec![39; 40],
+                None,
+            ));
+        }
+        // Reads with +AT after 160:G (shifts to POS=163 REF=A ALT=ATA under -3 + COMPAT_OFF)
+        for i in 0..5usize {
+            let start = 142 + i;
+            let left = 160 - start + 1;
+            let right = 25usize;
+            let mut seq = s3_seq[start - 1..160].to_vec();
+            seq.extend_from_slice(b"AT");
+            seq.extend_from_slice(&s3_seq[160..160 + right]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            s3_recs.push(mk_contig_rec(
+                &format!("s3_ins160_{i}"),
+                0,
+                flags,
+                start,
+                &[
+                    (left, Kind::Match),
+                    (2, Kind::Insertion),
+                    (right, Kind::Match),
+                ],
+                seq,
+                vec![39; left + 2 + right],
+                None,
+            ));
+        }
+        // Reads with +AT after 199:G (shifts 3' by 3 to POS=202 > BED end 200!)
+        for i in 0..5usize {
+            let start = 180 + i;
+            let left = 199 - start + 1;
+            let right = 25usize;
+            let mut seq = s3_seq[start - 1..199].to_vec();
+            seq.extend_from_slice(b"AT");
+            seq.extend_from_slice(&s3_seq[199..199 + right]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            s3_recs.push(mk_contig_rec(
+                &format!("s3_ins199_oob_{i}"),
+                0,
+                flags,
+                start,
+                &[
+                    (left, Kind::Match),
+                    (2, Kind::Insertion),
+                    (right, Kind::Match),
+                ],
+                seq,
+                vec![39; left + 2 + right],
+                None,
+            ));
+        }
+        write_multi_contig_bam(&s3_bam, &[("chr1", 350)], s3_recs).expect("s3_bam");
+
+        // Overlapping 0-based BED intervals: [99, 150) -> 1-based [100, 150] and [139, 200) -> 1-based [140, 200]
+        let ov_bed = dir.path().join("ov_bounds.bed");
+        fs::write(&ov_bed, "chr1\t99\t150\tSEG1\nchr1\t139\t200\tSEG2\n").expect("write ov_bed");
+
+        let s3_vj_cfg = Config {
+            reference: s3_fa.to_string_lossy().into_owned(),
+            bam: s3_bam.to_string_lossy().into_owned(),
+            sample: "S3B".to_string(),
+            bed: Some(ov_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            three_prime: true,
+            realign: 0,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let s3_vj_vars = extract_variants(&run_core_vcf(&s3_vj_cfg).expect("s3+bounds VJ"));
+        // Legacy emits out-of-bounds pos 99 & pos 202 (#369) and unshifted alleles GAT->G at 111 & G->GAT at 163 (#292)
+        assert!(s3_vj_vars.iter().any(|l| l.starts_with("chr1\t99\t")));
+        assert!(s3_vj_vars.iter().any(|l| l.starts_with("chr1\t202\t")));
+        assert!(s3_vj_vars
+            .iter()
+            .any(|l| l.starts_with("chr1\t111\t.\tGAT\tG\t")));
+        assert!(s3_vj_vars
+            .iter()
+            .any(|l| l.starts_with("chr1\t163\t.\tG\tGAT\t")));
+
+        let mut s3_off_cfg = s3_vj_cfg.clone();
+        s3_off_cfg.compat = COMPAT_OFF;
+        let s3_off_vars = extract_variants(&run_core_vcf(&s3_off_cfg).expect("s3+bounds OFF"));
+        assert!(
+            !s3_off_vars.iter().any(|l| l.starts_with("chr1\t99\t"))
+                && !s3_off_vars.iter().any(|l| l.starts_with("chr1\t202\t")),
+            "COMPAT_OFF strict_region_bounds must drop out-of-BED variants at pos 99 and 202, got:\n{}",
+            s3_off_vars.join("\n")
+        );
+        assert!(
+            s3_off_vars
+                .iter()
+                .any(|l| l.starts_with("chr1\t111\t.\tATA\tA\t"))
+                && s3_off_vars
+                    .iter()
+                    .any(|l| l.starts_with("chr1\t163\t.\tA\tATA\t"))
+                && s3_off_vars
+                    .iter()
+                    .any(|l| l.starts_with("chr1\t145\t.\tA\tG\t")),
+            "COMPAT_OFF must emit FASTA-matched 3'-shifted alleles at 111 & 163 and preserve overlap SNV at 145, got:\n{}",
+            s3_off_vars.join("\n")
+        );
+        // Verify every emitted COMPAT_OFF record's REF matches the exact FASTA slice at POS
+        for line in &s3_off_vars {
+            let cols: Vec<&str> = line.split('\t').collect();
+            let pos: usize = cols[1].parse().unwrap();
+            let ref_col = cols[3].as_bytes();
+            assert_eq!(
+                ref_col,
+                &s3_seq[pos - 1..pos - 1 + ref_col.len()],
+                "COMPAT_OFF REF mismatch vs FASTA at POS={pos}: {line}"
+            );
+        }
+
+        // Multi-amplicon 8-col BED under COMPAT_OFF strict_region_bounds + Switch 6 (UB-1/UB-2 -p sentinels)
+        let amp_bounds_bed = dir.path().join("amp_bounds.bed");
+        // AMP_LEFT [80,109] insert [100,109] (del at 99 < 100), overlapping AMP_OV1 [126,169] insert [135,155]
+        // + AMP_OV2 [127,170] insert [140,165] (snv at 145 inside both!), AMP_RIGHT [180,226] insert [185,200]
+        // (+AT at 199 shifts -3 to 202 > 200!), and AMP_EMPTY [260,270] insert [260,270] (0 reads for -p UB-2)
+        fs::write(
+            &amp_bounds_bed,
+            "chr1\t79\t109\tAMP_LEFT\t0\t+\t99\t109\n\
+             chr1\t125\t169\tAMP_OV1\t0\t+\t134\t155\n\
+             chr1\t126\t170\tAMP_OV2\t0\t+\t139\t165\n\
+             chr1\t179\t226\tAMP_RIGHT\t0\t+\t184\t200\n\
+             chr1\t259\t270\tAMP_EMPTY\t0\t+\t259\t270\n",
+        )
+        .expect("write amp_bounds_bed");
+        let mut amp_off_cfg = Config {
+            reference: s3_fa.to_string_lossy().into_owned(),
+            bam: s3_bam.to_string_lossy().into_owned(),
+            sample: "AMP_OFF".to_string(),
+            bed: Some(amp_bounds_bed.to_string_lossy().into_owned()),
+            amplicon: Some("10:0.8".to_string()),
+            zero_based: true,
+            zero_based_defined: true,
+            three_prime: true,
+            realign: 0,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let amp_vj_vars = extract_variants(&run_core_vcf(&amp_off_cfg).expect("amp VJ bounds"));
+        assert!(
+            amp_vj_vars.iter().any(|l| l.starts_with("chr1\t202\t"))
+                && amp_vj_vars.iter().any(|l| l.starts_with("chr1\t145\t")),
+            "legacy Amplicon VCF must emit -3 out-of-insert variant at 202 (#369), got:\n{}",
+            amp_vj_vars.join("\n")
+        );
+        amp_off_cfg.compat = COMPAT_OFF;
+        let amp_off_vars = extract_variants(&run_core_vcf(&amp_off_cfg).expect("amp OFF bounds"));
+        assert!(
+            !amp_off_vars.iter().any(|l| l.starts_with("chr1\t99\t"))
+                && !amp_off_vars.iter().any(|l| l.starts_with("chr1\t202\t"))
+                && amp_off_vars
+                    .iter()
+                    .any(|l| l.starts_with("chr1\t145\t") && l.contains(";GDAMP=2;TLAMP=2;")),
+            "COMPAT_OFF amplicon strict_region_bounds must drop out-of-insert 99/202 and keep multi-amplicon 145, got:\n{}",
+            amp_off_vars.join("\n")
+        );
+
+        // --- Switch 6: UB-1 / UB-2 -p pileup zero-depth sentinel rows suppressed in Simple & Amplicon ---
+        amp_off_cfg.pileup = true;
+        amp_off_cfg.compat = COMPAT_VARDICTJAVA_1_8_3;
+        let amp_p_vj = run_core_var(&amp_off_cfg).expect("amp -p VJ .var");
+        amp_off_cfg.compat = COMPAT_OFF;
+        let amp_p_off = run_core_var(&amp_off_cfg).expect("amp -p OFF .var");
+        assert!(
+            amp_p_vj
+                .lines()
+                .any(|l| l.contains("\t265\t265\t\t\t0\t0\t")),
+            "legacy Amplicon -p must emit zero-depth UB-2 sentinel rows on uncovered [260, 270]"
+        );
+        assert!(
+            !amp_p_off.lines().any(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                c.get(3) == Some(&"0") || c.get(5) == Some(&"")
+            }) && !amp_p_off.trim().is_empty(),
+            "COMPAT_OFF Amplicon -p must suppress zero-depth sentinel rows while keeping covered rows"
+        );
+
+        ensure_fastas_converted();
+        let droot = data_root();
+        let hc_bam = droot
+            .join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/hard_clip_next_to_del_test2.bam")
+            .to_string_lossy()
+            .into_owned();
+        let mut simple_p_cfg = Config {
+            reference: droot
+                .join("VarDictJava/testdata/fastas/hard_clip_case.fa")
+                .to_string_lossy()
+                .into_owned(),
+            sample: "HC".to_string(),
+            bam: hc_bam,
+            zero_based: true,
+            zero_based_defined: true,
+            region: Some("test:6434-6564:testbed".to_string()),
+            freq: 0.0,
+            af_threshold: 0.0,
+            min_reads: 1,
+            pileup: true,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let simple_p_vj = run_core_var(&simple_p_cfg).expect("simple -p VJ .var");
+        simple_p_cfg.compat = COMPAT_OFF;
+        let simple_p_off = run_core_var(&simple_p_cfg).expect("simple -p OFF .var");
+        assert!(
+            simple_p_vj.lines().any(|l| l.contains("\ttest\t0\t0\t")),
+            "legacy Simple -p must emit UB-1 pos 0/0 sentinel row"
+        );
+        assert!(
+            !simple_p_off.lines().any(|l| {
+                let c: Vec<&str> = l.split('\t').collect();
+                c.get(3) == Some(&"0") || c.get(5) == Some(&"")
+            }) && simple_p_off.lines().count() >= 5,
+            "COMPAT_OFF Simple -p must suppress UB-1/UB-2 sentinel rows while retaining >=5 real rows, got:\n{simple_p_off}"
+        );
+
+        // --- Switch 7: live_duprate (dedup = true) untiled vs split-tile (--tile-size 60) ---
+        // 8 single-end reads across chr1:1..300 -> 3 duplicates + 5 unique => dup/total = 3/8 = 0.375
+        let dup_rate_seq = lcg_ref_bytes(0x3141_5926_5358_9793, 320);
+        let dup_rate_fa = write_multi_contig_fasta(
+            dir.path(),
+            "compat_live_duprate",
+            &[("chr1", &dup_rate_seq)],
+        );
+        let dup_rate_bam = dir.path().join("compat_live_duprate.bam");
+        let alt_95 = if dup_rate_seq[94] == b'A' { b'G' } else { b'A' };
+        let mk_se_var = |name: &str, start: usize, carry_snv: bool| -> RecordBuf {
+            let mut seq = dup_rate_seq[start - 1..start - 1 + 45].to_vec();
+            if carry_snv && (start..start + 45).contains(&95) {
+                seq[95 - start] = alt_95;
+            }
+            mk_contig_rec(
+                name,
+                0,
+                Flags::empty(),
+                start,
+                &[(45, Kind::Match)],
+                seq,
+                vec![40; 45],
+                None,
+            )
+        };
+        let dr_recs = vec![
+            mk_se_var("r70_a", 70, true),
+            mk_se_var("r70_dup1", 70, true),
+            mk_se_var("r70_dup2", 70, true),
+            mk_se_var("r72_u", 72, true),
+            mk_se_var("r74_u", 74, true),
+            mk_se_var("r76_ref", 76, false),
+            mk_se_var("r210_u", 210, false),
+            mk_se_var("r210_dup3", 210, false),
+        ];
+        write_multi_contig_bam(&dup_rate_bam, &[("chr1", 320)], dr_recs)
+            .expect("compat_live_duprate.bam");
+
+        let mut dr_cfg = Config {
+            reference: dup_rate_fa.to_string_lossy().into_owned(),
+            bam: dup_rate_bam.to_string_lossy().into_owned(),
+            sample: "DR".to_string(),
+            region: Some("chr1:50-280".to_string()),
+            dedup: true,
+            fisher: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_OFF,
+            threads: 1,
+            ..Config::default()
+        };
+        // 3 / 8 = 0.375 -> Simple38 & --fisher VCF format 2dp HALF_EVEN = "0.38"
+        let dr_var_untiled = run_core_var(&dr_cfg).expect("dr untiled .var");
+        let dr_vcf_untiled = run_core_vcf(&dr_cfg).expect("dr untiled .vcf");
+        assert!(
+            dr_var_untiled.lines().next().unwrap().split('\t').nth(36) == Some("0.38"),
+            "expected Simple38 Duprate=0.38 for 3/8=0.375 under COMPAT_OFF, got: {dr_var_untiled}"
+        );
+        assert!(
+            extract_variants(&dr_vcf_untiled)[0].contains(";DUPRATE=0.38;"),
+            "expected VCF INFO DUPRATE=0.38 under COMPAT_OFF --fisher, got: {}",
+            extract_variants(&dr_vcf_untiled)[0]
+        );
+
+        dr_cfg.tile_size = Some(60);
+        dr_cfg.threads = 4;
+        let mut dr_var_tiled = Vec::new();
+        let mut dr_var_tiled_cfg = dr_cfg.clone();
+        dr_var_tiled_cfg.emit_intermediate = true;
+        vardictrust_core::run_with_writer(&dr_var_tiled_cfg, &mut dr_var_tiled)
+            .expect("dr tiled .var");
+        assert_eq!(
+            String::from_utf8(dr_var_tiled).unwrap(),
+            dr_var_untiled,
+            "COMPAT_OFF live_duprate .var must match across untiled and split-tile (--tile-size 60) runs"
+        );
+        let mut dr_vcf_tiled = Vec::new();
+        vardictrust_core::run_with_writer(&dr_cfg, &mut dr_vcf_tiled).expect("dr tiled .vcf");
+        assert_eq!(
+            String::from_utf8(dr_vcf_tiled).unwrap(),
+            dr_vcf_untiled,
+            "COMPAT_OFF live_duprate VCF must match across untiled and split-tile (--tile-size 60) runs"
+        );
+
+        // --- Switch 8: Mixed sex/mito contigs (X + chrX, Y + chrY, MT + chrM) ---
+        let sex_names = ["chrM", "MT", "chrY", "Y", "chrX", "X"];
+        let sex_seq = lcg_ref_bytes(0x2468_ACE0_1357_9BDF, 200);
+        let sex_contigs_fa: Vec<(&str, &[u8])> =
+            sex_names.iter().map(|&n| (n, sex_seq.as_slice())).collect();
+        let sex_contigs_bam: Vec<(&str, usize)> = sex_names.iter().map(|&n| (n, 200)).collect();
+        let sex_fa = write_multi_contig_fasta(dir.path(), "compat_sex", &sex_contigs_fa);
+        let sex_bam = dir.path().join("compat_sex.bam");
+        let alt_100 = if sex_seq[99] == b'A' { b'G' } else { b'A' };
+        let mut sex_recs = Vec::new();
+        for (cid, &cname) in sex_names.iter().enumerate() {
+            for i in 0..4usize {
+                let start = 80 + i * 2;
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = sex_seq[start - 1..start - 1 + 45].to_vec();
+                seq[100 - start] = alt_100;
+                sex_recs.push(mk_contig_rec(
+                    &format!("{cname}_{i}"),
+                    cid,
+                    flags,
+                    start,
+                    &[(45, Kind::Match)],
+                    seq,
+                    vec![40; 45],
+                    None,
+                ));
+            }
+        }
+        write_multi_contig_bam(&sex_bam, &sex_contigs_bam, sex_recs).expect("compat_sex.bam");
+        let sex_bed = dir.path().join("compat_sex.bed");
+        let sex_bed_text: String = sex_names
+            .iter()
+            .map(|n| format!("{n}\t49\t160\tG_{n}\n"))
+            .collect();
+        fs::write(&sex_bed, sex_bed_text).expect("write compat_sex.bed");
+
+        let mut sex_cfg = Config {
+            reference: sex_fa.to_string_lossy().into_owned(),
+            bam: sex_bam.to_string_lossy().into_owned(),
+            sample: "SEX_S".to_string(),
+            bed: Some(sex_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 1,
+            col_seg_end: 2,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            freq: 0.01,
+            af_threshold: 0.01,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let sex_chrs_vj: Vec<String> = extract_variants(&run_core_vcf(&sex_cfg).expect("sex VJ"))
+            .iter()
+            .map(|l| l.split('\t').next().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            sex_chrs_vj,
+            vec!["X", "Y", "MT"],
+            "COMPAT_VARDICTJAVA_1_8_3 must replicate Perl sub reorder drop of chrX/chrY/chrM"
+        );
+
+        sex_cfg.compat = COMPAT_OFF;
+        let sex_chrs_off: Vec<String> = extract_variants(&run_core_vcf(&sex_cfg).expect("sex OFF"))
+            .iter()
+            .map(|l| l.split('\t').next().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            sex_chrs_off,
+            vec!["X", "chrX", "Y", "chrY", "MT", "chrM"],
+            "COMPAT_OFF must preserve all 6 mixed sex/mitochondrial contigs in canonical order"
         );
     }
 }

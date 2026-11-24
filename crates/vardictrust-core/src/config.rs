@@ -1015,10 +1015,14 @@ mod tests {
             assert_eq!(err.to_string(), format!("unsupported: {expected_msg}"));
         }
 
-        // Cross-module Wave-1 stub contract checks
+        // Cross-module Wave-1/Wave-2 contract checks
+        assert_eq!(
+            crate::output::vcf::reorder_chromosomes_with_compat(&["chrX", "X", "chr1"], false),
+            crate::output::vcf::perl_reorder_chromosomes(&["chrX", "X", "chr1"])
+        );
         assert_eq!(
             crate::output::vcf::reorder_chromosomes_with_compat(&["chrX", "X", "chr1"], true),
-            crate::output::vcf::perl_reorder_chromosomes(&["chrX", "X", "chr1"])
+            vec!["chr1", "X", "chrX"]
         );
         let reference = crate::reference::Reference::new();
         let region = crate::regions::Region {

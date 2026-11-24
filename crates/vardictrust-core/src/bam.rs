@@ -7032,8 +7032,8 @@ impl std::hash::Hash for DupKey {
 pub struct RecordPreprocessor {
     pub duplicates: rustc_hash::FxHashSet<DupKey>,
     pub first_matching_position: i32,
-    pub total_reads: u32,
-    pub duplicate_reads: u32,
+    pub total_reads: u64,
+    pub duplicate_reads: u64,
 }
 
 impl RecordPreprocessor {
@@ -11533,18 +11533,25 @@ mod tests {
         assert!(prep.preprocess_record(&ok_rec, &config));
         assert_eq!(prep.total_reads, 1);
 
-        // total_reads and duplicate_reads saturate at u32::MAX without debug panic
+        // total_reads and duplicate_reads advance past u32::MAX and saturate at u64::MAX without panic
         config.dedup = true;
-        prep.total_reads = u32::MAX;
-        prep.duplicate_reads = u32::MAX;
+        prep.total_reads = u64::from(u32::MAX);
+        prep.duplicate_reads = u64::from(u32::MAX);
         let dup_rec = SamRecord {
             mate_alignment_start: Some(Pos1(5)),
             ..base
         };
         assert!(prep.preprocess_record(&dup_rec, &config));
-        assert_eq!(prep.total_reads, u32::MAX);
+        assert_eq!(prep.total_reads, u64::from(u32::MAX) + 1);
         assert!(!prep.preprocess_record(&dup_rec, &config));
-        assert_eq!(prep.duplicate_reads, u32::MAX);
+        assert_eq!(prep.total_reads, u64::from(u32::MAX) + 2);
+        assert_eq!(prep.duplicate_reads, u64::from(u32::MAX) + 1);
+
+        prep.total_reads = u64::MAX;
+        prep.duplicate_reads = u64::MAX;
+        assert!(!prep.preprocess_record(&dup_rec, &config));
+        assert_eq!(prep.total_reads, u64::MAX);
+        assert_eq!(prep.duplicate_reads, u64::MAX);
     }
 
     #[test]

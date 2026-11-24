@@ -433,9 +433,7 @@ fuzz_target!(|data: &[u8]| {
     }
     if base_cfg.compat.strict_region_bounds {
         for row in &simple_rows {
-            assert!(
-                row.start_pos >= region.start.0 as i32 && row.start_pos <= region.end.0 as i32
-            );
+            assert!(row.start_pos >= region.start.0 as i32 && row.start_pos <= region.end.0 as i32);
         }
     }
 

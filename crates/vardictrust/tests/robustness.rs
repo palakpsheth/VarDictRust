@@ -1,4 +1,4 @@
-//! Process-level CLI smoke and robustness tests (`23` tests).
+//! Process-level CLI smoke and robustness tests (`24` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
@@ -7572,5 +7572,326 @@ fn threads_flag_positional_bed_and_commons_cli_duplicate_parity() {
     assert!(
         stderr6.contains("bogus"),
         "stderr must mention invalid thread value 'bogus', got: {stderr6}"
+    );
+}
+
+#[test]
+fn vcf_all_alleles_and_compat_off_bgzf_tbi_and_csi_e2e() {
+    use noodles::bam::bai;
+    use noodles::core::Position;
+    use noodles::csi::binning_index::index::reference_sequence::{bin::Chunk, index::LinearIndex};
+    use noodles::csi::binning_index::Indexer;
+    use noodles::csi::BinningIndex as _;
+    use noodles::sam::{
+        alignment::{
+            io::Write as _,
+            record::{
+                cigar::{op::Kind, Op},
+                Flags, MappingQuality,
+            },
+            record_buf::{Cigar, RecordBuf},
+        },
+        header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+        Header,
+    };
+    use std::io::Read as _;
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let ref_len = 240usize;
+    let motif = b"ACGTTGCAAGCTACGTGCAT";
+    let mut ref_seq: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+    ref_seq[99] = b'A'; // pos 100 multi-allelic locus on X
+    ref_seq[119] = b'A'; // pos 120 locus on chrX
+
+    let fa_path = dir.path().join("mixed_aa.fa");
+    let fai_path = dir.path().join("mixed_aa.fa.fai");
+    let seq_str = String::from_utf8(ref_seq.clone()).expect("ascii ref");
+    let fa_text = format!(">X\n{seq_str}\n>chrX\n{seq_str}\n");
+    std::fs::write(&fa_path, &fa_text).expect("write mixed_aa.fa");
+    let x_off = 3usize; // ">X\n"
+    let chrx_off = x_off + ref_len + 1 + 6; // + "\n>chrX\n"
+    std::fs::write(
+        &fai_path,
+        format!(
+            "X\t{ref_len}\t{x_off}\t{ref_len}\t{}\nchrX\t{ref_len}\t{chrx_off}\t{ref_len}\t{}\n",
+            ref_len + 1,
+            ref_len + 1
+        ),
+    )
+    .expect("write mixed_aa.fa.fai");
+
+    let mk_read = |name: &str, ref_id: usize, start_1: usize, pos_1: usize, alt: u8, rev: bool| {
+        let mut seq = ref_seq[start_1 - 1..start_1 - 1 + 45].to_vec();
+        seq[pos_1 - start_1] = alt;
+        let flags = if rev {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        let cigar: Cigar = [Op::new(Kind::Match, 45)].into_iter().collect();
+        RecordBuf::builder()
+            .set_name(name)
+            .set_flags(flags)
+            .set_reference_sequence_id(ref_id)
+            .set_alignment_start(Position::try_from(start_1).expect("pos"))
+            .set_mapping_quality(MappingQuality::new(60).unwrap())
+            .set_cigar(cigar)
+            .set_sequence(seq.into())
+            .set_quality_scores(vec![39u8; 45].into())
+            .build()
+    };
+
+    let mut recs = Vec::new();
+    // Contig 0 ("X") pos 100: multi-allelic 'G' (7 reads), 'C' (4 reads), 'T' (4 reads), ref 'A' (3 reads)
+    for (idx, alt) in (0..7)
+        .map(|_| b'G')
+        .chain((0..4).map(|_| b'C'))
+        .chain((0..4).map(|_| b'T'))
+        .chain((0..3).map(|_| b'A'))
+        .enumerate()
+    {
+        recs.push(mk_read(
+            &format!("x_{idx}"),
+            0,
+            80 + (idx % 5),
+            100,
+            alt,
+            idx % 2 == 1,
+        ));
+    }
+    // Contig 1 ("chrX") pos 120: SNV 'G' (6 reads) + ref 'A' (2 reads)
+    for idx in 0..8usize {
+        let alt = if idx < 6 { b'G' } else { b'A' };
+        recs.push(mk_read(
+            &format!("chrx_{idx}"),
+            1,
+            100 + (idx % 4),
+            120,
+            alt,
+            idx % 2 == 1,
+        ));
+    }
+    recs.sort_by_key(|r| {
+        (
+            r.reference_sequence_id().unwrap(),
+            r.alignment_start().unwrap().get(),
+        )
+    });
+
+    let bam_path = dir.path().join("mixed_aa.bam");
+    {
+        let rs_x = HeaderMap::<RefSeqMap>::builder()
+            .set_length(ref_len.try_into().unwrap())
+            .build()
+            .unwrap();
+        let rs_chrx = HeaderMap::<RefSeqMap>::builder()
+            .set_length(ref_len.try_into().unwrap())
+            .build()
+            .unwrap();
+        let hd = Header::builder()
+            .add_reference_sequence("X", rs_x)
+            .add_reference_sequence("chrX", rs_chrx)
+            .build();
+        let bgzf = noodles::bgzf::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+        let mut w = noodles::bam::io::Writer::from(bgzf);
+        w.write_alignment_header(&hd).unwrap();
+        let mut indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+        for rec in &recs {
+            let vs = w.get_ref().virtual_position();
+            w.write_alignment_record(&hd, rec).unwrap();
+            let ve = w.get_ref().virtual_position();
+            let rid = rec.reference_sequence_id().unwrap();
+            let s = rec.alignment_start().unwrap();
+            let e = Position::new(s.get() + 44).unwrap();
+            indexer
+                .add_record(Some((rid, s, e, true)), Chunk::new(vs, ve))
+                .unwrap();
+        }
+        w.try_finish().unwrap();
+        let mut bai_path = bam_path.clone();
+        bai_path.set_extension("bam.bai");
+        bai::io::Writer::new(std::fs::File::create(bai_path).unwrap())
+            .write_index(&indexer.build(2))
+            .unwrap();
+    }
+
+    let bed_path = dir.path().join("mixed_aa.bed");
+    std::fs::write(&bed_path, "X\t49\t180\tGX\nchrX\t49\t180\tGCHRX\n")
+        .expect("write mixed_aa.bed");
+
+    let bed_cols = ["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z"];
+
+    // 0. Baseline default CLI (no --vcf-all-alleles, --compat=vardictjava): 1 record on X, chrX dropped, no compat header
+    let baseline = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&bam_path)
+        .args(bed_cols)
+        .args(["-N", "SMPL;A=1", "--threads=2"])
+        .arg(&bed_path)
+        .output()
+        .expect("spawn baseline");
+    assert!(
+        baseline.status.success(),
+        "baseline failed: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+    let base_text = String::from_utf8(baseline.stdout).expect("utf8");
+    assert!(!base_text.contains("##VarDictRustCompat=off"));
+    let base_vars: Vec<&str> = base_text
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    assert_eq!(base_vars.len(), 1);
+    assert!(base_vars[0].starts_with("X\t100\t.\tA\tG\t"));
+
+    // 1. --vcf-all-alleles --compat=off --output out.vcf.gz --tbi
+    let out_tbi_vcf = dir.path().join("out.vcf.gz");
+    let out_tbi_idx = dir.path().join("out.vcf.gz.tbi");
+    let tbi_run = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&bam_path)
+        .args(bed_cols)
+        .args([
+            "-N",
+            "SMPL;A=1",
+            "--threads=2",
+            "--vcf-all-alleles",
+            "--compat=off",
+            "--tbi",
+        ])
+        .arg("--output")
+        .arg(&out_tbi_vcf)
+        .arg(&bed_path)
+        .output()
+        .expect("spawn --vcf-all-alleles --compat=off --tbi");
+    assert!(
+        tbi_run.status.success(),
+        "--tbi run failed: {}",
+        String::from_utf8_lossy(&tbi_run.stderr)
+    );
+    assert!(tbi_run.stdout.is_empty());
+
+    let mut dec_tbi = String::new();
+    noodles::bgzf::io::Reader::new(std::fs::File::open(&out_tbi_vcf).expect("open out.vcf.gz"))
+        .read_to_string(&mut dec_tbi)
+        .expect("decompress out.vcf.gz");
+    assert!(dec_tbi.contains("##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n"));
+    let tbi_vars: Vec<&str> = dec_tbi
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    assert_eq!(
+        tbi_vars.len(),
+        4,
+        "expected 3 alleles on X:100 + 1 allele on chrX:120, got:\n{}",
+        tbi_vars.join("\n")
+    );
+    let locus_alleles: Vec<(&str, &str, &str)> = tbi_vars
+        .iter()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c[0], c[1], c[4])
+        })
+        .collect();
+    assert_eq!(
+        locus_alleles,
+        vec![
+            ("X", "100", "G"),
+            ("X", "100", "C"),
+            ("X", "100", "T"),
+            ("chrX", "120", "G"),
+        ]
+    );
+    assert!(tbi_vars[0].contains("\tSAMPLE=SMPL%3BA%3D1;TYPE="));
+
+    assert!(std::fs::metadata(&out_tbi_idx).expect("stat .tbi").len() > 0);
+    let tbi = noodles::tabix::fs::read(&out_tbi_idx).expect("read out.vcf.gz.tbi");
+    let tbi_hdr = tbi.header().expect("tabix header");
+    assert_eq!(
+        tbi_hdr.format(),
+        noodles::csi::binning_index::index::header::Format::Vcf
+    );
+    let tbi_names: Vec<String> = tbi_hdr
+        .reference_sequence_names()
+        .iter()
+        .map(|b| String::from_utf8_lossy(b.as_ref()).into_owned())
+        .collect();
+    assert_eq!(tbi_names, vec!["X".to_string(), "chrX".to_string()]);
+    assert_eq!(
+        tbi.reference_sequences()
+            .iter()
+            .filter(|rs| !rs.bins().is_empty())
+            .count(),
+        2,
+        "both X and chrX must have indexed bins in .vcf.gz.tbi"
+    );
+
+    // 2. --all-alleles --compat off --output out_csi.vcf.gz --csi
+    let out_csi_vcf = dir.path().join("out_csi.vcf.gz");
+    let out_csi_idx = dir.path().join("out_csi.vcf.gz.csi");
+    let csi_run = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&bam_path)
+        .args(bed_cols)
+        .args([
+            "-N",
+            "SMPL;A=1",
+            "--threads=2",
+            "--all-alleles",
+            "--compat",
+            "off",
+            "--csi",
+        ])
+        .arg("--output")
+        .arg(&out_csi_vcf)
+        .arg(&bed_path)
+        .output()
+        .expect("spawn --all-alleles --compat off --csi");
+    assert!(
+        csi_run.status.success(),
+        "--csi run failed: {}",
+        String::from_utf8_lossy(&csi_run.stderr)
+    );
+    assert!(csi_run.stdout.is_empty());
+
+    let mut dec_csi = String::new();
+    noodles::bgzf::io::Reader::new(std::fs::File::open(&out_csi_vcf).expect("open out_csi.vcf.gz"))
+        .read_to_string(&mut dec_csi)
+        .expect("decompress out_csi.vcf.gz");
+    assert_eq!(
+        dec_csi, dec_tbi,
+        "decompressed BGZF bytes from --all-alleles --csi must match --vcf-all-alleles --tbi"
+    );
+
+    assert!(std::fs::metadata(&out_csi_idx).expect("stat .csi").len() > 0);
+    let csi = noodles::csi::io::Reader::new(
+        std::fs::File::open(&out_csi_idx).expect("open out_csi.vcf.gz.csi"),
+    )
+    .read_index()
+    .expect("read out_csi.vcf.gz.csi");
+    let csi_hdr = csi.header().expect("csi VCF header");
+    assert_eq!(
+        csi_hdr.format(),
+        noodles::csi::binning_index::index::header::Format::Vcf
+    );
+    let csi_names: Vec<String> = csi_hdr
+        .reference_sequence_names()
+        .iter()
+        .map(|b| String::from_utf8_lossy(b.as_ref()).into_owned())
+        .collect();
+    assert_eq!(csi_names, vec!["X".to_string(), "chrX".to_string()]);
+    assert_eq!(
+        csi.reference_sequences()
+            .iter()
+            .filter(|rs| !rs.bins().is_empty())
+            .count(),
+        2,
+        "both X and chrX must have indexed bins in .vcf.gz.csi"
     );
 }

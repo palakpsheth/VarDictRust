@@ -729,10 +729,7 @@ fn run_pipeline_on_records_ext(
         if let Some((parent_total, parent_dup)) = parent_live_read_counts {
             parser.set_live_read_counts(parent_total, parent_dup);
         } else {
-            parser.set_live_read_counts(
-                preprocessor.total_reads as u64,
-                preprocessor.duplicate_reads as u64,
-            );
+            parser.set_live_read_counts(preprocessor.total_reads, preprocessor.duplicate_reads);
         }
     }
     let mut var_data = parser.into_variation_data();
@@ -1625,10 +1622,7 @@ fn stream_band_sequential(
         same_start_ends.push(read_end);
     }
     let (tot, dup) = if config.dedup {
-        (
-            preprocessor.total_reads as u64,
-            preprocessor.duplicate_reads as u64,
-        )
+        (preprocessor.total_reads, preprocessor.duplicate_reads)
     } else {
         (0, 0)
     };
@@ -1950,10 +1944,7 @@ fn scan_band_candidates(
     }
 
     let (total_reads, duplicate_reads) = if config.dedup {
-        (
-            preprocessor.total_reads as u64,
-            preprocessor.duplicate_reads as u64,
-        )
+        (preprocessor.total_reads, preprocessor.duplicate_reads)
     } else {
         (0, 0)
     };
@@ -2448,10 +2439,7 @@ fn scan_multi_tile_max_read_lengths(
     }
 
     let (tot, dup) = if config.dedup {
-        (
-            preprocessor.total_reads as u64,
-            preprocessor.duplicate_reads as u64,
-        )
+        (preprocessor.total_reads, preprocessor.duplicate_reads)
     } else {
         (0, 0)
     };
@@ -12800,10 +12788,7 @@ mod tests {
                 let _ = untiled_pre.preprocess_record(&rec, &dup_cfg);
             }
         }
-        let want_counts = (
-            untiled_pre.total_reads as u64,
-            untiled_pre.duplicate_reads as u64,
-        );
+        let want_counts = (untiled_pre.total_reads, untiled_pre.duplicate_reads);
         assert_eq!(want_counts, (9, 4));
 
         let seq_scan = scan_multi_tile_max_read_lengths(

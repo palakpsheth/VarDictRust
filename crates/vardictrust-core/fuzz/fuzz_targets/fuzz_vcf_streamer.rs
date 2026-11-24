@@ -252,10 +252,7 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
     } else {
         let flag_extra = usize::from(
             config.vcf_paired_strict
-                && matches!(
-                    entries.last().copied(),
-                    Some("P0.01Likely" | "InDelLikely")
-                ),
+                && matches!(entries.last().copied(), Some("P0.01Likely" | "InDelLikely")),
         );
         13 + flag_extra
     };
