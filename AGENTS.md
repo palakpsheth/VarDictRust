@@ -8,8 +8,8 @@ NGS), consolidating its fragmented Java→R→Perl pipeline into a single, stati
 binary that **scales to deep WGS**. It is built under the [rewrites.bio](https://rewrites.bio) manifesto.
 
 - **Reference implementation:** `./VarDictJava` (v1.8.3, commit `0886261`; Perl/R submodule `./VarDictJava/VarDict`, commit `009e017`).
-- **Prime directive:** a faster, more robust tool that produces output **identical to VarDictJava v1.8.3 on valid inputs**. We are *not* writing a new caller and *not* transliterating Java line-by-line.
-- **Architecture & Governance:** see [ROADMAP.md](ROADMAP.md) for candidate fixes, opt-in flags, and post-1.0 governance.
+- **Prime directive:** a faster, more robust tool that produces output **identical to VarDictJava v1.8.3 on valid inputs by default** (`--compat=vardictjava` / `--parity`), with opt-in `--compat=off` (`CompatProfile`) correctness fixes and explicit CLI capabilities (`--vcf-all-alleles`, `--output`, `--tbi`/`--csi`). We are *not* writing a speculative caller and *not* transliterating Java line-by-line.
+- **Architecture & Governance:** see [ROADMAP.md](ROADMAP.md) for `--compat=vardictjava|off` (`CompatProfile`) governance, consolidated `var2vcf` flags, and roadmap milestones.
 - **Testing & Verification Matrix:** see [docs/testing/test-matrix-and-ci-audit.md](docs/testing/test-matrix-and-ci-audit.md) and [harness/README.md](harness/README.md). This file is the always-loaded agent contract.
 
 ---
@@ -59,7 +59,7 @@ Before implementing:
 - If you write 200 lines and it could be 50, rewrite it.
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-- **VR:** the one exception is **fidelity** — replicating VarDict's exact heuristics and edge cases *is* the task, so it is never "speculative." But never add capability beyond what the port requires.
+- **VR:** the primary exception is **fidelity** — replicating VarDict's exact heuristics and edge cases in default `--compat=vardictjava` mode *is* the task, so it is never "speculative." Beyond parity, only governed opt-in `CompatProfile` (`--compat=off`) corrections and explicit CLI flags (`--vcf-all-alleles`, `--output`, `--tbi`/`--csi`, `--stats-json`) in [ROADMAP.md](ROADMAP.md) are permitted.
 
 ## 3. Surgical Changes
 **Touch only what you must. Clean up only your own mess.**
@@ -100,12 +100,12 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 ## 5. Emulate exactly (the rewrites.bio prime directive)
-Output must match **VarDictJava v1.8.3** on valid inputs:
+Default output (`--compat=vardictjava` / `--parity`) must match **VarDictJava v1.8.3** on valid inputs:
 - **Exact:** the variant set (chrom/pos/ref/alt), every FILTER decision, the INFO/FORMAT keys present, genotypes, TYPE, somatic STATUS, and the **intermediate column counts & order** — Simple **36/38**, Amplicon **38/40**, Somatic **55/61** (no-`--fisher` / with-`--fisher`).
 - **Float tolerance:** Fisher p-values/SBF/SSF, odds ratios, AF/AdjAF/HIAF, QUAL means within **ε = 1e-6**, after replicating R's 5-decimal **HALF_EVEN** rounding (Fisher MLE tol `ulp(1)^0.25`).
-- **Bug policy (v1.0):** if v1.8.3 has an **output** bug, **replicate it** and open a tracked issue — do **not** silently "fix" it. Where v1.8.3 **crashes** (e.g. `modifyCigar`), do **not** crash: produce the same output it would on valid inputs. That is allowed and is the whole point.
-- **Three commitments:** credit the original ([README.md](README.md)/`--version`/[Lai et al. 2016](https://doi.org/10.1093/nar/gkw227)/AstraZeneca-NGS); emulate exactly; be transparent about AI (document tools, role, and exactly what was/wasn't validated, against which version + dataset).
-- **Release policy (v1.0 Parity vs v1.1+ Corrections):** v1.0.x = parity with v1.8.3: no output-changing fixes and no fix flags — except *parity-restoring* fixes, which ship UNGATED as default. A fix qualifies iff (a) flag-on MATCHes the v1.8.3 oracle everywhere measured, (b) the prior default never matched the oracle on that path (Rust-only artifact, no upstream behavior replicated), and (c) its `--fix` id is unreleased (plumbing removed, not kept as no-op). Precedent: `splice-tile-ownership`, `mate-window-ownership` (ROADMAP "Landed as Default"). True output-changing corrections still ship from v1.1.0 per [ROADMAP.md](ROADMAP.md), each behind `--fix <id>` (default off) with a diff-confinement gate.
+- **Bug policy (`v1.x` default parity vs `--compat=off`):** if v1.8.3 has an **output** bug, **replicate it** under default `--compat=vardictjava` (`--parity`) and track it — do **not** silently change default output. Bona fide corrections to upstream output bugs ship under opt-in `--compat=off` (`CompatProfile`, stamping `##VarDictRustCompat=off` in VCF headers). Where v1.8.3 **crashes** (e.g. `modifyCigar`), do **not** crash: produce the same output it would on valid inputs. That is allowed and is the whole point.
+- **Three commitments:** credit the original ([README.md](README.md)/`--version`/[Lai et al. 2016](https://doi.org/10.1093/nar/gkw227)/AstraZeneca-NGS); emulate exactly by default; be transparent about AI (document tools, role, and exactly what was/wasn't validated, against which version + dataset).
+- **Release policy (`v1.x` Default Parity vs `v1.1.0+` `CompatProfile` & Opt-In Flags):** Default invocations across `v1.x` (`--compat=vardictjava`, aliases `vardictjava-1.8.3` / `1.8.3`, or `--parity`) preserve 100% byte-for-byte parity with v1.8.3: no default output-changing fixes and zero per-bug `--fix` CLI flags — except *parity-restoring* fixes, which ship UNGATED as default. A fix qualifies iff (a) it MATCHes the v1.8.3 oracle everywhere measured, (b) the prior default never matched the oracle on that path (Rust-only artifact, no upstream behavior replicated), and (c) any unreleased gating plumbing is removed rather than kept as a no-op. Precedent: `splice-tile-ownership`, `mate-window-ownership` ([ROADMAP.md](ROADMAP.md) "Landed as Default"). True output-changing corrections to upstream v1.8.3 bugs ship from `v1.1.0+` per [ROADMAP.md](ROADMAP.md) as fields on `CompatProfile` activated together by `--compat=off` (default off, zero per-bug `--fix` flags) with a diff-confinement gate, alongside explicit opt-in CLI feature flags (`--vcf-all-alleles` / `--all-alleles`, `--output`, `--tbi` / `--csi`, `--stats-json`).
 
 ---
 
@@ -134,7 +134,7 @@ data" is actionable; "port the whole pipeline" is not.
 
 ## 8. Fidelity hazards (these break output equivalence silently)
 - **Iteration order is correctness.** Use `indexmap::IndexMap` where Java uses `LinkedHashMap`, `BTreeMap` where Java uses `TreeMap`. **Never** iterate a `HashMap` in an output/realignment path.
-- **Rounding.** Every float written to a `.var`/VCF field goes through [`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even) (banker's rounding), never Rust's default. Replicate the formatter split: no-`--fisher` keeps trailing zeros (`x==0?0:fmt`); `--fisher` strips trailing zeros.
+- **Rounding.** Every float written to a `.var`/VCF field goes through [`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even) (default `--compat=vardictjava` OpenJDK `DecimalFormat` banker's rounding) or `round_half_even_compat` (when `CompatProfile::exact_binary_half_even` is active under `--compat=off`), never Rust's default. Replicate the formatter split: no-`--fisher` keeps trailing zeros (`x==0?0:fmt`); `--fisher` strips trailing zeros.
 - **Sequences are bytes.** Use `&[u8]`/`Vec<u8>`, never `String`. Replace Java's negative-index `charAt`/`substr` with bounds-checked slice helpers returning `Option`.
 - **Quality is Phred+33.** `Phred(byte.saturating_sub(33))`.
 - **`maxReadLength` propagation** matters: SomaticMode seeds BAM2's pipeline with BAM1's value.
@@ -165,19 +165,16 @@ data" is actionable; "port the whole pipeline" is not.
 
 ---
 
-## 11. Which VarDictJava issues we fix (v1.0 = robustness only)
-v1.0 fixes **only** issues that change **no valid-input output** (so v1.0 stays byte-comparable to v1.8.3 *and*
-is strictly more robust): the `modifyCigar` crash family (#341/#243/#253/#283/#7/#38/…), NPE/AIOOBE/div-by-zero,
-OOM (#197/#384 — fixed by the tiling in §10), CRAM (#249/#380 — noodles + `-G` decode), locale-independent
-formatting, fail-fast on missing index (#187), lenient SAM validation, nondeterminism (#282/#181/#356), and
-correct `##contig` lengths from the `.fai` (#320). **Output-changing** corrections (#92 VD>DP, #62 over-filtering,
-#363 realignment drops, #292 SHIFT3, #342 `<dup-N>` ALT, …) and **new features** (UMI, long reads) are deferred
-to post-1.0 behind individual opt-in flags. See [ROADMAP.md](ROADMAP.md) and [docs/upstream-bugs.md](docs/upstream-bugs.md). Post-1.0 = v1.1.0+, governed by [ROADMAP.md](ROADMAP.md).
+<a id="11-which-vardictjava-issues-we-fix-v10--robustness-only"></a>
+## 11. Which VarDictJava issues we fix (default parity vs --compat=off)
+- **Default parity (`--compat=vardictjava` / `--parity`):** fixes **only** issues that change **no valid-input output** (staying byte-comparable to v1.8.3 while strictly more robust): the `modifyCigar` crash family (#341/#243/#253/#283/#7/#38/…), NPE/AIOOBE/div-by-zero, OOM (#197/#384 — fixed by tiling in §10), CRAM (#249/#380 — noodles + `-G` decode), locale-independent formatting, fail-fast on missing index (#187), lenient SAM validation, nondeterminism (#282/#181/#356), and correct `##contig` lengths from `.fai` (#320).
+- **Opt-in `v1.1.0` `--compat=off` (`CompatProfile`, `##VarDictRustCompat=off`) & `--vcf-all-alleles`:** activates 13 verified correctness fixes without per-bug `--fix` flags (`sanitize_sample_info` #116, `standard_dup_symbolic_alt` #342 `<dup-N>` $\to$ `<DUP>`, `shift3_3prime_alleles` #292, `strict_region_bounds` #369, `suppress_pileup_sentinels` UB-1/UB-2, `live_duprate`, `preserve_mixed_sex_contigs`, `cigar_homopolymer_merge` PR #402, `eqx_cigar_read_length` SAM `=`/`X`, `preserve_discordant_svs` UB-5, `mark_dup_sv_inclusive_end` UB-6, `sv_lazy_mate_pileup`, and `exact_binary_half_even`), while explicit `--vcf-all-alleles` (`--all-alleles`) resolves UB-7/#65 multi-allelic collapsing (`var2vcf_*.pl -A`).
+- **Deferred (`v1.1.1+` / `v2.0`):** specification-gated calling heuristics (#92 `VD > DP`, #62 over-filtering, #363 realignment drops, #381 low-AF noise, #264 indel boundaries), #378 paired somatic amplicon VCF, cleanroom MIT `rmath` (#92), and next-generation features (UMI, `F1R2`/`F2R1` orientation bias, long-read `--preset hifi|ont`). See [ROADMAP.md](ROADMAP.md) and [docs/upstream-bugs.md](docs/upstream-bugs.md).
 
 ---
 
 ## 12. Unsupported features error loudly
-If a flag/mode isn't implemented yet: `return Err(VardictError::Unsupported("--foo not implemented in v1.0; use VarDictJava"))`.
+If a flag/mode isn't implemented: `return Err(VardictError::Unsupported("--foo not implemented in VarDictRust; use VarDictJava"))` (e.g., `-C`, `-Z`/`--downsample`, `-VS STRICT`, and `#378` paired `-b "tumor|normal"` + `-a` in VCF mode), reject unknown `--compat` targets with `VardictError::Unsupported`, and reject conflicting `--compat`/`--parity` flags with `VardictError::Parse`.
 **Never** silently ignore a flag or emit wrong output.
 
 ---
@@ -236,7 +233,7 @@ harness/               compare.sh, compare_var.py, compare_vcf.py, slice.sh, run
 golden/                versioned oracle outputs (.vcf, .var) + PROVENANCE
 benchmarks/            hardware, datasets, exact commands
 VarDictJava/           the v1.8.3 reference (read-only; the source of truth for ports)
-ROADMAP.md             post-1.0 candidate flags and architecture roadmap
+ROADMAP.md             --compat=vardictjava|off (CompatProfile) governance and architecture roadmap
 ```
 
 ## 17. Quick map: where things live in VarDictJava (for porting)
@@ -255,7 +252,7 @@ Never commit secrets, **data** (BAM/CRAM/FASTA/VCF beyond the tiny `golden/` fix
 <a id="19-repository-specific-agent-skills"></a>
 ## 19. Repository-Specific Agent Skills (`.agents/skills/`)
 Specialized workflow skills live under `.agents/skills/<name>/SKILL.md` (validated by `harness/tests/test_bioconda_recipe.py`):
-- **[`vardictrust-issue`](.agents/skills/vardictrust-issue/SKILL.md):** Filing, triaging, reproducing, or auditing GitHub issues (`v1.0.x` parity/robustness vs `v1.1+ --fix <id>` classification, `harness/slice.sh` minimal slices, and `compare.sh` oracle receipts).
+- **[`vardictrust-issue`](.agents/skills/vardictrust-issue/SKILL.md):** Filing, triaging, reproducing, or auditing GitHub issues (default `--compat=vardictjava` parity/robustness vs `v1.1+ --compat=off` `CompatProfile` classification, `harness/slice.sh` minimal slices, and `compare.sh` oracle receipts).
 - **[`vardictrust-pr`](.agents/skills/vardictrust-pr/SKILL.md):** Opening, updating, reviewing, recertifying (`harness/recertify.sh`), or squash-merging pull requests, completing `.github/pull_request_template.md`, and replying inline to review comments.
 - **[`vardictrust-profiling`](.agents/skills/vardictrust-profiling/SKILL.md):** Profiling CPU (`profile-cpu`), jemalloc heap (`profile-heap`), or DHAT allocation churn (`profile-dhat`) via `harness/profile.sh` and `harness/profile_catalog.py` ([`references/rust-profiling-api.md`](.agents/skills/vardictrust-profiling/references/rust-profiling-api.md)).
 - **[`vardictrust-release`](.agents/skills/vardictrust-release/SKILL.md):** Multi-channel release engineering across GitHub Releases (`cargo-dist` SLSA Level 3), Crates.io, Bioconda, Nextflow `nf-core/modules`, and ReadTheDocs ([`scripts/check_release_consistency.py`](.agents/skills/vardictrust-release/scripts/check_release_consistency.py) and [`references/version-surface-map.md`](.agents/skills/vardictrust-release/references/version-surface-map.md)).

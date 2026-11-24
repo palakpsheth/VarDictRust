@@ -479,6 +479,13 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     migration_text = read_text(repo_root, "docs/migration.md", errors)
     if migration_text and "var2vcf_valid.pl" not in migration_text:
         errors.append("docs/migration.md: missing var2vcf_valid.pl migration table")
+    require_regex(
+        repo_root,
+        "docs/migration.md",
+        r"--compat=off",
+        "docs/migration.md documents --compat=off profile",
+        errors,
+    )
     zensical_text = read_text(repo_root, "zensical.toml", errors)
     if zensical_text:
         nav_entries = parse_zensical_nav_entries(zensical_text)
@@ -493,6 +500,20 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
         "wiki/_Sidebar.md links to docs/migration.md",
         errors,
     )
+    for rel_path in (
+        "crates/vardictrust/src/cli.rs",
+        "README.md",
+        "AGENTS.md",
+        "DIVERGENCES.md",
+        "docs/migration.md",
+    ):
+        forbid_regex(
+            repo_root,
+            rel_path,
+            r"not implemented in v1\.0",
+            f"{rel_path} stale 'not implemented in v1.0' unsupported-flag phrasing",
+            errors,
+        )
 
 
 def check_divergences_surface(
@@ -589,6 +610,37 @@ def check_divergences_surface(
         "DIVERGENCES.md stale fingerprint/test name/speedup/RSS/commit",
         errors,
     )
+
+
+def check_security_policy_surface(
+    repo_root: Path, version: str, errors: list[str]
+) -> None:
+    major, minor, _ = version.split(".")
+    require_regex(
+        repo_root,
+        ".github/SECURITY.md",
+        rf"^\|\s*\*\*`{re.escape(major)}\.{re.escape(minor)}\.x`\*\*\s*\|\s*:white_check_mark:",
+        f".github/SECURITY.md Supported Versions marks {major}.{minor}.x active (:white_check_mark:)",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        ".github/SECURITY.md",
+        rf"^\|\s*`<\s*{re.escape(major)}\.{re.escape(minor)}\.0`\s*\|\s*:x:",
+        f".github/SECURITY.md Supported Versions marks < {major}.{minor}.0 unsupported (:x:)",
+        errors,
+    )
+    sec_text = read_text(repo_root, ".github/SECURITY.md", errors)
+    if sec_text is not None:
+        active_rows = re.findall(
+            r"^\|\s*[^|\n]+\|\s*:white_check_mark:",
+            sec_text,
+            re.MULTILINE,
+        )
+        if len(active_rows) != 1:
+            errors.append(
+                f".github/SECURITY.md: expected exactly 1 active :white_check_mark: row ({major}.{minor}.x), found {len(active_rows)}"
+            )
 
 
 def check_pre_tag_surfaces(
@@ -1008,10 +1060,13 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # 18. CLI 90-flag / 7-group & Migration Guide surfaces
+    # 18. .github/SECURITY.md Supported Versions SemVer branch
+    check_security_policy_surface(repo_root, version, errors)
+
+    # G1. CLI 90-flag / 7-group & Migration Guide surfaces
     check_cli_and_migration_surfaces(repo_root, errors)
 
-    # 19. UPSTREAM.toml commit & comparator pins
+    # G2. UPSTREAM.toml commit & comparator pins
     require_regex(
         repo_root,
         "UPSTREAM.toml",
@@ -1034,7 +1089,7 @@ def check_pre_tag_surfaces(
         errors,
     )
 
-    # 20. .github/workflows/ci.yml test-count synchronization (:71 and :175-177)
+    # G3. .github/workflows/ci.yml test-count synchronization (:71 and :175-177)
     int_suite_total = (
         tc["engine_behavior"]
         + tc["amplicon_stream_mem"]
@@ -1095,7 +1150,7 @@ def check_pre_tag_surfaces(
         repo_root,
         surface_map_rel,
         rf"\(`{tc['total_workspace']}` total: `{tc['core_lib']}` `vardictrust-core` lib \+ `{tc['cli_bin']}` `vardictrust` bin \+ `{int_suite_total}` integration \+ `{tc['corpus_parity']}` `corpus_parity`\)",
-        f"{surface_map_rel} Guard #20 cites {tc['total_workspace']} total ({tc['core_lib']} + {tc['cli_bin']} + {int_suite_total} + {tc['corpus_parity']})",
+        f"{surface_map_rel} G3 cites {tc['total_workspace']} total ({tc['core_lib']} + {tc['cli_bin']} + {int_suite_total} + {tc['corpus_parity']})",
         errors,
     )
     forbid_regex(
@@ -1376,7 +1431,7 @@ def main() -> int:
     parser.add_argument(
         "--version",
         default=None,
-        help="Target SemVer (e.g. 1.0.7); defaults to [workspace.package].version in Cargo.toml",
+        help="Target SemVer (e.g. 1.1.0); defaults to [workspace.package].version in Cargo.toml",
     )
     parser.add_argument(
         "--phase",

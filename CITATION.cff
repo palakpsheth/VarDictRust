@@ -1,7 +1,15 @@
 cff-version: 1.2.0
 message: "If you use VarDictRust in published research, please cite both the original VarDict publication (Lai et al. 2016) and this software implementation."
 title: "VarDictRust: Memory-Safe, High-Performance Variant Calling for NGS"
-abstract: "VarDictRust is an idiomatic Rust rewrite of VarDictJava v1.8.3, consolidating its fragmented Java->R->Perl pipeline into a single, memory-safe, statically-compiled binary that scales to deep whole-genome sequencing with bounded memory."
+abstract: >-
+  VarDictRust is a fast, memory-safe Rust NGS variant caller for somatic and
+  germline sequencing that consolidates the Java, R, and Perl VarDict pipeline
+  into a single statically-compiled binary with bounded whole-genome memory and
+  native multithreaded BGZF, Tabix (.tbi), and CSI (.csi) indexing. It delivers
+  byte-identical output to VarDictJava v1.8.3 by default (in v1.0.10 and under
+  --compat=vardictjava in v1.1.0+), while v1.1.0+ adds opt-in --compat=off
+  accuracy, structural-variant, mate-pileup, and SAM =/X (--eqx) alignment
+  fixes alongside --vcf-all-alleles multi-allelic VCF emission.
 version: 1.0.10
 date-released: "2026-11-18"
 license:
@@ -15,6 +23,9 @@ keywords:
   - "somatic"
   - "ngs"
   - "cancer-genomics"
+  - "rust"
+  - "germline"
+  - "structural-variants"
 authors:
   - family-names: "Sheth"
     given-names: "Palak"

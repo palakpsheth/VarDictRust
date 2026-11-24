@@ -1,4 +1,4 @@
-//! Configuration — mirrors VarDictJava's `Configuration` (§4.2 defaults).
+//! Engine, var2vcf post-filter, and [`CompatProfile`] compatibility configuration.
 
 /// Opt-in VCF post-filter numeric override carrying an optional normalized CLI token
 /// (<= 64 ASCII bytes) so `##FILTER=<ID=...>` and record `FILTER` tags reproduce Perl
@@ -33,14 +33,15 @@ impl<T> From<T> for VcfThreshold<T> {
 }
 
 /// Compatibility profile selector modeled on `bwa-mem3`'s `--compat` target enum.
-/// Default in `v1.1.x` remains `VardictJava183` (100% VarDictJava v1.8.3 / var2vcf parity).
+///
+/// Default across `v1.x` is [`Self::VardictJava183`] (100% VarDictJava v1.8.3 / `var2vcf` parity).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum CompatTarget {
-    /// Exact VarDictJava v1.8.3 (`0886261`) + `var2vcf_*.pl` (`009e017`) output parity.
+    /// Exact VarDictJava v1.8.3 (`0886261`) + `var2vcf_*.pl` (`009e017`) output parity (`--compat=vardictjava`).
     #[default]
     VardictJava183,
-    /// Compatibility off: enables bonafide correctness fixes over upstream bugs.
+    /// Compatibility off (`--compat=off`): enables all 13 [`CompatProfile`] accuracy, scale, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
     Off,
 }
 
@@ -64,7 +65,7 @@ impl CompatTarget {
     }
 }
 
-/// Resolved compatibility behavior switches derived from [`CompatTarget`].
+/// Resolved compatibility behavior switches (13 independent correctness, scale, and `--eqx` flags) derived from [`CompatTarget`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CompatProfile {
@@ -97,7 +98,7 @@ pub struct CompatProfile {
     pub exact_binary_half_even: bool,
 }
 
-/// Default VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`).
+/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 13 [`CompatProfile`] fixes disabled).
 pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     target: CompatTarget::VardictJava183,
     sanitize_sample_info: false,
@@ -115,7 +116,7 @@ pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     exact_binary_half_even: false,
 };
 
-/// Compatibility-off profile (`--compat=off`) enabling bonafide correctness fixes.
+/// Compatibility-off profile (`--compat=off`) enabling all 13 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `--eqx` fixes.
 pub const COMPAT_OFF: CompatProfile = CompatProfile {
     target: CompatTarget::Off,
     sanitize_sample_info: true,
@@ -141,6 +142,12 @@ impl Default for CompatProfile {
 }
 
 /// Parse a `--compat <TARGET>` string into [`CompatTarget`].
+///
+/// # Errors
+///
+/// Returns [`crate::types::VardictError::Unsupported`] (`Err(VardictError::Unsupported(...))`)
+/// when `raw` is not a recognized compatibility target (`vardictjava`, `vardictjava-1.8.3`,
+/// `1.8.3`, or `off`).
 pub fn parse_compat_target(raw: &str) -> Result<CompatTarget, crate::types::VardictError> {
     let trimmed = raw.trim();
     if trimmed.eq_ignore_ascii_case("vardictjava")
@@ -157,10 +164,11 @@ pub fn parse_compat_target(raw: &str) -> Result<CompatTarget, crate::types::Vard
     }
 }
 
-/// Central configuration struct.
+/// Central engine and `var2vcf` post-filter configuration struct.
 ///
-/// All VarDictJava defaults from §4.2 are preserved here. Constructed from
-/// the CLI args via `From<Cli>`.
+/// Preserves all VarDictJava v1.8.3 (`Configuration.java`) and `var2vcf_*.pl` defaults;
+/// constructed programmatically via [`Config::default()`] or from CLI arguments via
+/// `Cli::to_config()` in the `vardictrust` binary crate.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub exception_counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -225,7 +233,7 @@ pub struct Config {
     pub extension: i32,
     /// Number of bases to extend for reads (default: 2).
     pub extension_nuc: i32,
-    /// Include 3' UTR.
+    /// Shift indels to 3'-most alternative alignment (-3 / moveIndelsTo3).
     pub three_prime: bool,
     /// Minimum # of reads to call with (default: 2).
     pub min_reads_bias: u32,
@@ -338,7 +346,7 @@ pub struct Config {
     pub vcf_msi: Option<VcfThreshold<f64>>,
     /// Opt-in VCF SNV cluster window in bp (`--vcf-cluster-dist`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -c`).
     pub vcf_cluster_dist: Option<VcfThreshold<i32>>,
-    /// Compatibility profile (`--compat=vardictjava|off`; default: `COMPAT_VARDICTJAVA_1_8_3`).
+    /// Compatibility profile (`--compat=vardictjava|off`; default: [`COMPAT_VARDICTJAVA_1_8_3`]).
     pub compat: CompatProfile,
     /// Emit all alleles passing filters at the same locus in VCF output (`--vcf-all-alleles` / `--all-alleles`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -A`).
     pub vcf_all_alleles: bool,

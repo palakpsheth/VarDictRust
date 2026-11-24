@@ -1,5 +1,5 @@
 name: "vardictrust"
-description: Memory-safe Rust rewrite of VarDictJava for single and paired sample variant calling
+description: "Fast, memory-safe Rust somatic and germline variant caller with VarDictJava v1.8.3 parity and opt-in --compat=off fixes"
 keywords:
   - variant calling
   - vcf
@@ -8,7 +8,7 @@ keywords:
   - indel
 tools:
   - "vardictrust":
-      description: "Fast, memory-safe Rust rewrite of VarDictJava v1.8.3 for single and paired sample variant calling (upstream VarDictJava: https://github.com/AstraZeneca-NGS/VarDictJava)"
+      description: "Fast, memory-safe Rust variant caller consolidating VarDictJava v1.8.3 + R + Perl with default byte-identical parity, opt-in v1.1.0+ --compat=off fixes, and 18/18 var2vcf post-filters including --vcf-all-alleles via task.ext.args (upstream VarDictJava: https://github.com/AstraZeneca-NGS/VarDictJava)"
       homepage: "https://github.com/palakpsheth/VarDictRust"
       documentation: "https://vardictrust.readthedocs.io/"
       tool_dev_url: "https://github.com/palakpsheth/VarDictRust"

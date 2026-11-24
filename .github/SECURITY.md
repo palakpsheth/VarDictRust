@@ -1,6 +1,6 @@
 # Security Policy: VarDictRust
 
-The VarDictRust project takes the security, memory safety, and integrity of scientific genomics workflows seriously. As an idiomatic Rust rewrite engineered to process large, untrusted Next-Generation Sequencing (NGS) files (BAM, CRAM, FASTA, BED), VarDictRust enforces `#![forbid(unsafe_code)]` in its core variant calling engine (`crates/vardictrust-core`) to eliminate entire classes of memory corruption vulnerabilities by construction.
+The VarDictRust project takes the security, memory safety, and integrity of scientific genomics workflows seriously. Consolidating the legacy Java, R, and Perl pipeline into a single Rust binary engineered to process large, untrusted Next-Generation Sequencing (NGS) files (BAM, CRAM, BGZF FASTA, BED) across both default `--compat=vardictjava` parity and opt-in `--compat=off` modes, VarDictRust enforces `#![forbid(unsafe_code)]` in its core variant calling engine (`crates/vardictrust-core`) to eliminate entire classes of memory corruption vulnerabilities by construction.
 
 ---
 
@@ -61,5 +61,5 @@ We commit to the following Service Level Agreement (SLA) for confirmed reports:
 - CI/CD workflow security, GitHub Actions permission escalation, or release provenance tampering.
 
 ### Out of Scope (Scientific Parity Heuristics)
-- Differences in variant calling sensitivity, specificity, or allele frequency thresholds that reflect intentional adherence to the **VarDictJava v1.8.3 reference implementation** (the project's prime directive).
+- Differences in variant calling sensitivity, specificity, or allele frequency thresholds in default parity mode (`--compat=vardictjava` / `--parity`) that reflect intentional adherence to the **VarDictJava v1.8.3 reference implementation** (the project's default parity directive).
 - Known upstream VarDictJava algorithmic quirks, edge-case arithmetic, or heuristics (which are documented in [`DIVERGENCES.md`](../DIVERGENCES.md), cataloged in [`docs/upstream-bugs.md`](../docs/upstream-bugs.md), and governed post-1.0 by opt-in `--compat=off` (`CompatProfile`) per [`ROADMAP.md`](../ROADMAP.md)).

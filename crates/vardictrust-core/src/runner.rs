@@ -286,7 +286,7 @@ where
     })
 }
 
-/// Executes `f` on a scoped worker thread configured with [`worker_thread_stack_bytes`]
+/// Executes `f` on a scoped worker thread configured with `worker_thread_stack_bytes`
 /// (16 MiB floor, respecting `RUST_MIN_STACK`) so single-threaded (`-th 1`) and
 /// amplicon runs receive the same stack headroom as multi-threaded Rayon workers (`R5`).
 #[deprecated(since = "1.0.10", note = "use runner::run_with_worker_stack_for_bam")]
@@ -298,7 +298,7 @@ where
     run_with_worker_stack_bytes(worker_thread_stack_bytes(), f)
 }
 
-/// Executes `f` on a scoped worker thread configured with [`worker_thread_stack_bytes_for_bam`]
+/// Executes `f` on a scoped worker thread configured with `worker_thread_stack_bytes_for_bam`
 /// (64 MiB floor when `bam_spec` includes `.cram`, 16 MiB otherwise, respecting `RUST_MIN_STACK`).
 pub fn run_with_worker_stack_for_bam<F, R>(bam_spec: &str, f: F) -> Result<R, VardictError>
 where

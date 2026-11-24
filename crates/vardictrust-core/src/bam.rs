@@ -6606,7 +6606,7 @@ fn fetch_cram_container_in(
 }
 
 /// CRAM arm of the feed: lazily streams one decoded container at a time from
-/// [`CRAM_CONTAINER_CACHE`] / [`CRAM_READER_POOL`] (`AR-4`), refilling `out`
+/// `CRAM_CONTAINER_CACHE` / `CRAM_READER_POOL` (`AR-4`), refilling `out`
 /// in place via [`SamRecord::clone_from_record`].
 pub struct CramFeed {
     inner: CramFeedInner,

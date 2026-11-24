@@ -45,7 +45,7 @@ TMPDIR=$(mktemp -d /tmp/vardict_multimodal_concordance_XXXXXX)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 echo "================================================================================"
-echo " VarDictRust v1.0.0 Expanded Tier 4 Truth Concordance Suite"
+echo " VarDictRust Expanded Tier 4 Truth Concordance Suite"
 echo " Evaluating HG005 (GRCh38) and NA24385 (GRCh37/b37)"
 echo " Cache: $CACHE_DIR | Temp: $TMPDIR"
 echo "================================================================================"

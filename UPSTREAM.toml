@@ -1,4 +1,4 @@
-# Upstream provenance manifest for VarDictRust (AGENTS.md §5)
+# Upstream oracle provenance manifest for VarDictRust default parity mode (--compat=vardictjava / --parity; AGENTS.md §5)
 
 [vardictjava]
 repository = "https://github.com/AstraZeneca-NGS/VarDictJava"
@@ -21,6 +21,7 @@ ported_components = ["Cigar", "SAMRecord", "SequenceUtil"]
 source = "R nmath standalone (dhyper, phyper, dbinom_raw, stirlerr, bd0)"
 module = "crates/vardictrust-core/src/stats/rmath"
 license = "GPL-2.0-or-later"
+# Default --compat=vardictjava preserves exact R 4.x 5-decimal tie parity; cleanroom MIT Fisher math slated for --compat=off (v1.1.1+)
 v2_cleanroom_issue = 92
 
 [ported_libraries.commons_math3]

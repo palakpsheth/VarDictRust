@@ -8,10 +8,10 @@ This document serves as the authoritative, standalone manual for developing, tes
 
 ## 1. The rewrites.bio Parity Mission
 
-VarDictRust is built with one central commitment: **to produce output identical to VarDictJava v1.8.3 on valid inputs while scaling gracefully to deep whole-genome sequencing (WGS).**
+VarDictRust is built with one central commitment: **to produce output identical to VarDictJava v1.8.3 on valid inputs by default (`--compat=vardictjava` / `--parity`) while scaling gracefully to deep whole-genome sequencing (WGS), with opt-in `--compat=off` (`CompatProfile`) correctness fixes and consolidated VCF capabilities.**
 
 ### 1.1 The Prime Directive ([AGENTS.md §5](AGENTS.md#5-emulate-exactly-the-rewritesbio-prime-directive))
-All variant calling output on valid genomic inputs must match VarDictJava v1.8.3:
+All variant calling output on valid genomic inputs must match VarDictJava v1.8.3 by default (`--compat=vardictjava` / `--parity`):
 - **Exact Variant Parity:** The variant set (`CHROM`, `POS`, `REF`, `ALT`), every `FILTER` decision, `INFO` and `FORMAT` tags, genotypes (`GT`), variant `TYPE`, and somatic `STATUS` must match upstream VarDictJava.
 - **Float Tolerance:** P-values, odds ratios, and allele frequencies must match within **$\varepsilon = 10^{-6}$**, adhering strictly to IEEE 754 half-even banker's rounding ([`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even)).
 - **Intermediate Column Counts:** Intermediate `.var` tables must strictly adhere to upstream column schemas:
@@ -141,7 +141,7 @@ VarDictRust ships four repository-specific [Agent Skills](AGENTS.md#19-repositor
 | **`vardictrust-issue`** | [`.agents/skills/vardictrust-issue/SKILL.md`](.agents/skills/vardictrust-issue/SKILL.md) | Filing, triaging, or reproducing GitHub issues (default `--compat=vardictjava` parity/crash bugs vs `v1.1+ --compat=off` `CompatProfile` proposals) with `harness/slice.sh` and `harness/compare.sh`. |
 | **`vardictrust-pr`** | [`.agents/skills/vardictrust-pr/SKILL.md`](.agents/skills/vardictrust-pr/SKILL.md) | Opening, recertifying (`harness/recertify.sh`), reviewing, or squash-merging PRs, completing `.github/pull_request_template.md`, and replying inline to review threads. |
 | **`vardictrust-profiling`** | [`.agents/skills/vardictrust-profiling/SKILL.md`](.agents/skills/vardictrust-profiling/SKILL.md) | Running `profile-cpu`, `profile-heap`, or `profile-dhat` via `harness/profile.sh` and `harness/profile_catalog.py` ([API reference](.agents/skills/vardictrust-profiling/references/rust-profiling-api.md)). |
-| **`vardictrust-release`** | [`.agents/skills/vardictrust-release/SKILL.md`](.agents/skills/vardictrust-release/SKILL.md) | Cutting a release across GitHub Releases, Crates.io, Bioconda, Nextflow `nf-core/modules`, and ReadTheDocs ([consistency validator](.agents/skills/vardictrust-release/scripts/check_release_consistency.py) & [19-file surface map](.agents/skills/vardictrust-release/references/version-surface-map.md)). |
+| **`vardictrust-release`** | [`.agents/skills/vardictrust-release/SKILL.md`](.agents/skills/vardictrust-release/SKILL.md) | Cutting a release across GitHub Releases, Crates.io, Bioconda, Nextflow `nf-core/modules`, and ReadTheDocs ([consistency validator](.agents/skills/vardictrust-release/scripts/check_release_consistency.py) & [20-file surface map](.agents/skills/vardictrust-release/references/version-surface-map.md)). |
 
 **Discovery across AI tools:** `.agents/skills/` is committed in-tree and discovered automatically by Gemini CLI, OpenAI Codex, GitHub Copilot, Cursor, and OpenCode. Contributors can also run the bundled release consistency validator directly:
 ```bash
@@ -165,7 +165,7 @@ All contributions to `crates/vardictrust-core/` and `crates/vardictrust/` must a
 - **Strict Conversions:** Always convert via `.to_one_based()` and `.to_zero_based()`. Never add a raw integer to a coordinate.
 
 ### 4.3 Determinism & Fidelity Hazards ([AGENTS.md §8](AGENTS.md#8-fidelity-hazards-these-break-output-equivalence-silently))
-- **Banker's Rounding:** Every floating-point metric written to table or VCF output must use IEEE 754 half-even rounding via [`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even). Never use Rust's default formatter rounding.
+- **Banker's Rounding:** Every floating-point metric written to table or VCF output must use IEEE 754 half-even rounding via [`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even) (default `--compat=vardictjava` OpenJDK `DecimalFormat` underflow-tie parity) or `round_half_even_compat` (exact binary IEEE 754 ties under `--compat=off`). Never use Rust's default formatter rounding.
 - **Java HashMap Iteration Parity:** Java's `HashMap` iteration order is emulated using deterministic [`JavaHashMap`](DIVERGENCES.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family), which reproduces OpenJDK 8+ hash bucket spread, binning, and iteration semantics. Never replace it with `std::collections::HashMap` in output or realignment paths.
 - **Sequences as Bytes:** Biological sequences are byte slices (`&[u8]` or `Vec<u8>`), never `String`.
 - **Phred Quality Scores:** Encoded as Phred+33: `Phred(byte.saturating_sub(33))`.
@@ -313,7 +313,7 @@ Releases are executed through a disciplined **three-phase workflow** (Pre-Releas
 
 ### 9.1 Release Policy & SemVer Governance
 - **`v1.0.x` Patch / Maintenance Releases:** Preserve pure byte-for-byte and floating-point parity ($\varepsilon = 10^{-6}$) with **VarDictJava v1.8.3** on valid inputs ([`AGENTS.md §5`](AGENTS.md#5-emulate-exactly-the-rewritesbio-prime-directive)). Allowed changes include crash/robustness fixes, harness/reproducibility additions, packaging, and documentation updates.
-- **`v1.1.0+` Feature & `--compat=off` Releases:** Default invocations remain 100% byte-identical to VarDictJava v1.8.3 (`--compat=vardictjava`, aliases `vardictjava-1.8.3` / `1.8.3`, or `--parity`). Output-changing corrections to upstream VarDictJava bugs ship only behind explicit opt-in `--compat=off` (`CompatProfile`, stamping `##VarDictRustCompat=off` in VCF headers) with a strict diff-confinement gate per [`ROADMAP.md`](ROADMAP.md).
+- **`v1.1.0+` Feature & `--compat=off` Releases:** Default invocations remain 100% byte-identical to VarDictJava v1.8.3 (`--compat=vardictjava`, aliases `vardictjava-1.8.3` / `1.8.3`, or `--parity`). Output-changing corrections to upstream VarDictJava bugs ship only behind explicit opt-in `--compat=off` (`CompatProfile`, stamping `##VarDictRustCompat=off` in VCF headers) with a strict diff-confinement gate, alongside explicit opt-in CLI features (`--vcf-all-alleles` / `--all-alleles`, `--output`, `--tbi`/`--csi`, `--stats-json`, `--completions`, `--manpage`) per [`ROADMAP.md`](ROADMAP.md).
 
 ### 9.2 Phase 1 — Pre-Release Branch, Version Bump & Fingerprint Rule
 1. **Branch off fresh `origin/main`:**
@@ -321,10 +321,10 @@ Releases are executed through a disciplined **three-phase workflow** (Pre-Releas
    git fetch origin
    git checkout -b release/vX.Y.Z origin/main
    ```
-2. **Update version-bearing files (keep `packaging/bioconda/recipes/vardictrust/meta.yaml` for Phase 3):**
+2. **Update the 20 version-bearing surfaces (`18` pre-tag files; keep `packaging/bioconda/recipes/vardictrust/meta.yaml` and `packaging/nf-core/modules/vardictrust/` for Phase 3):**
    - [`Cargo.toml`](Cargo.toml) (`[workspace.package] version = "X.Y.Z"`) and [`crates/vardictrust/Cargo.toml`](crates/vardictrust/Cargo.toml) (`vardictrust-core = { version = "X.Y.Z", path = "../vardictrust-core" }`), followed by `cargo update -w` so [`Cargo.lock`](Cargo.lock) updates only the workspace packages.
    - [`CHANGELOG.md`](CHANGELOG.md): add `## [X.Y.Z] - YYYY-MM-DD` (required by `cargo-dist` to populate GitHub Release notes) and preserve exact Bioconda subdir names (`linux-64`, `linux-aarch64`, `osx-arm64`, `osx-64`).
-   - [`CITATION.cff`](CITATION.cff) (`version` and `date-released`), [`README.md`](README.md) (install tags and BibTeX version), [`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml), and [`packaging/bioconda/prepare_bioconda_pr.sh`](packaging/bioconda/prepare_bioconda_pr.sh) (`VERSION="${1:-X.Y.Z}"`).
+   - [`CITATION.cff`](CITATION.cff) (`version` and `date-released`), [`README.md`](README.md) (install tags and BibTeX version), [`.github/ISSUE_TEMPLATE/bug_report.yml`](.github/ISSUE_TEMPLATE/bug_report.yml), [`.github/SECURITY.md`](.github/SECURITY.md) (active `X.Y.x` Supported Versions row), [`packaging/bioconda/prepare_bioconda_pr.sh`](packaging/bioconda/prepare_bioconda_pr.sh), and [`packaging/nf-core/prepare_nfcore_pr.sh`](packaging/nf-core/prepare_nfcore_pr.sh) (`VERSION="${1:-X.Y.Z}"`).
    - Release certification dossier `docs/release/vX.Y.Z-pr.md` and release metadata references in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md), [`docs/validation/omnibus-empirical-validation.md`](docs/validation/omnibus-empirical-validation.md), [`DIVERGENCES.md`](DIVERGENCES.md), [`benchmarks/README.md`](benchmarks/README.md), [`harness/README.md`](harness/README.md), [`zensical.toml`](zensical.toml), and [`wiki/`](wiki/).
 3. **Engine Fingerprint & Live Recertification Rule (`AGENTS.md §0b`):**
    - [`harness/engine_fingerprint.sh`](harness/engine_fingerprint.sh) hashes the raw `HEAD:<path>` git blob OIDs of all `GATE_FILES` (including `Cargo.toml`, `crates/vardictrust/Cargo.toml`, and `Cargo.lock`), so bumping `X.Y.Z` in Step 2 advances `FP` and `PERF_FP` and requires running `bash harness/recertify.sh` on `release/vX.Y.Z` to certify all 16 evidence JSONs in [`benchmarks/evidence/`](benchmarks/evidence/).

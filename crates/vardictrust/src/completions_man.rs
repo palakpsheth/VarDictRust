@@ -477,7 +477,10 @@ pub(crate) fn write_manpage<W: Write>(out: &mut W) -> io::Result<()> {
     writeln!(out, ".SH NAME")?;
     writeln!(
         out,
-        "vardictrust \\- single\\-binary somatic and germline variant caller (VarDictJava v1.8.3\\-compatible)"
+        "{}",
+        escape_roff(
+            "vardictrust - fast, memory-safe Rust somatic and germline NGS variant caller (VarDictJava v1.8.3 parity + opt-in --compat=off fixes)"
+        )
     )?;
     writeln!(out, ".SH SYNOPSIS")?;
     writeln!(
@@ -502,7 +505,7 @@ pub(crate) fn write_manpage<W: Write>(out: &mut W) -> io::Result<()> {
         out,
         "{}",
         escape_roff(
-            "VarDictRust consolidates the three-stage VarDictJava v1.8.3 + R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) variant-calling pipeline into a single statically-compiled binary with bounded-memory WGS tiling, native BAM/CRAM and BGZF FASTA/BED support, and direct BGZF + Tabix (.tbi) / CSI (.csi) VCF 4.2 (VCFv4.2) emission."
+            "VarDictRust consolidates the three-stage VarDictJava v1.8.3 + R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) variant-calling pipeline into a single statically-compiled binary with bounded-memory WGS tiling, native BAM/CRAM and BGZF FASTA/BED support, direct BGZF + Tabix (.tbi) / CSI (.csi) VCF 4.2 (VCFv4.2) emission, full 18/18 var2vcf post-filtering (including --vcf-all-alleles), and dual-mode compatibility (--compat=vardictjava default parity; --compat=off opt-in accuracy, scale, and --eqx fixes)."
         )
     )?;
     writeln!(out, ".PP")?;

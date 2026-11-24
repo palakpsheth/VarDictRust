@@ -36,11 +36,16 @@ about:
     - LICENSE
     - LICENSE-3RD-PARTY
     - THIRDPARTY.yml
-  summary: "Fast, memory-safe, idiomatic Rust rewrite of VarDictJava v1.8.3"
+  summary: "Fast, memory-safe Rust variant caller (VarDictJava parity; v1.1+ --compat=off)"
   description: |
-    VarDictRust is an ultra-fast, memory-safe, idiomatic-Rust variant caller
-    producing 100% parity against VarDictJava v1.8.3 across germline, somatic,
-    and amplicon sequencing assays, scaling to deep whole-genome sequencing (WGS).
+    VarDictRust is a fast, memory-safe Rust somatic and germline variant caller
+    that consolidates the VarDictJava v1.8.3 + R + Perl pipeline into a single
+    binary with bounded-memory WGS tiling, default byte-identical VarDictJava
+    v1.8.3 parity on valid inputs (v1.0.10 default; --compat=vardictjava in
+    v1.1.0+), native multithreaded BGZF and Tabix/CSI VCF output, and (in
+    v1.1.0+) opt-in --compat=off correctness, SV, and SAM =/X (--eqx) alignment
+    fixes (13 switches) plus 18/18 var2vcf post-filtering including
+    --vcf-all-alleles multi-allelic VCF output.
   doc_url: https://vardictrust.readthedocs.io/
   dev_url: https://github.com/palakpsheth/VarDictRust
 
@@ -52,4 +57,4 @@ extra:
     - palakpsheth
   identifiers:
     - doi:10.1093/nar/gkw227
-    - biotools:vardict
+    - biotools:vardictrust

@@ -1,7 +1,7 @@
 # VarDictRust Master Test Matrix & CI/CD Pipeline Audit
 
 **Authoritative Technical Reference — Seven-Level Test Architecture & Verification Matrix**  
-**Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity, §5 Pure Parity on Valid Inputs)  
+**Governing Standard:** [rewrites.bio](https://rewrites.bio) Manifesto (§0 Evidence Before Completion, §0b Integrity, §5 Default `--compat=vardictjava` Parity on Valid Inputs + Opt-In `--compat=off` Diff-Confinement)  
 **Target Release:** VarDictRust v1.0.10 (`release/v1.0.10`)  
 **Certified Release Engine Fingerprint:** `2d82664ff81000f7` (Certified Invariant)  
 **Repository:** [https://github.com/palakpsheth/VarDictRust](https://github.com/palakpsheth/VarDictRust)  
@@ -112,7 +112,7 @@ VarDictRust organizes scientific variant calling validation into three rigorous 
 - **Architectural Mapping:** Operationalized in **Level 1** (table serialization unit tests) and **Level 2** (the 92-fixture upstream integration regression corpus; Release Acceptance Gate Item 2).
 
 #### Tier-2: Live Dual-Engine Differential Parity (VCF Differential vs Oracle)
-- **Definition:** Executes VarDictRust and VarDictJava v1.8.3 concurrently on identical BAM/CRAM alignment inputs, feeding both outputs into `harness/compare_vcf.py` under strict IEEE 754 half-even float tolerance $\varepsilon \le 10^{-6}$.
+- **Definition:** Executes VarDictRust (in default `--compat=vardictjava` parity mode) and VarDictJava v1.8.3 concurrently on identical BAM/CRAM alignment inputs, feeding both outputs into `harness/compare_vcf.py` under strict IEEE 754 half-even float tolerance $\varepsilon \le 10^{-6}$ (complemented by targeted `--compat=off` diff-confinement tests in `engine_behavior.rs` and `robustness.rs`).
 - **Validation Scope:** Aligns records strictly by `CHROM:POS:REF:ALT`, asserting 100% exact parity across FILTER decisions, INFO tags, FORMAT genotype fields, and variant types. Requires exactly **0 variant discrepancies**.
 - **Architectural Mapping:** Operationalized as **Level 3: Dual-Engine Differential Parity Testing** (micro fixture, 10 standard slices `s1a`–`s9`, 17-modality extended coverage suite, 18 multimodal slices across 6 cohorts, and whole-cohort WGS/WES sweeps; Release Acceptance Gate Item 3).
 
@@ -220,7 +220,7 @@ Located in `crates/vardictrust/src/cli.rs` (27 tests), `crates/vardictrust/src/p
 - Verifies CLI argument parsing via `clap`, including Commons-CLI single-dash long-flag normalization (`-adaptor`, `-crispr`, `-fisher`, `-deldupvar`, `-nosv`, `-splice`, `-chimeric`, `-dedup`, `-amplicon`, `-trim`, `-VS`, etc.) and boolean-prefix short-option cluster splitting (`-pz`, `-uk`, `-ua`, `-pR`).
 - Thread count resolution: verifies explicit `-th 4`, bare `-th` / `--threads` (including positional-BED-safe `-th <bed>` and Commons-CLI duplicate first-wins parity), `RAYON_NUM_THREADS` fallback when `-th` is omitted (otherwise all cores), and `-th 0` normalization to 1 core.
 - Verifies header flag `-h` prints table headers (and does not trigger help), while `-H` / `-?` / `--help` render the 7-section grouped CLI help screen.
-- Verifies `--completions <SHELL>` (`bash`, `zsh`, `fish`) and `--manpage` (`roff` `vardictrust(1)`) generation, `--output` / `--tbi` (`--index`) / `--csi` / `--no-end` / `--stats-json` / `--parity` / `--compat vardictjava|off` validation, all consolidated `var2vcf` post-filter and threshold options across the 90-flag CLI surface (7 functional groups: `--pass-only`, `--paired-strict`, `--vcf-all-alleles` / `--all-alleles`, `--vcf-pval`, `--min-splitreads`, `--no-pstd-filter`, `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist` + single-dash GNU typo guards), newly ported upstream flags (`-T` / `--trim`, `-n`, `-VS SILENT|LENIENT`), accepted upstream compatibility flags (`-v`, `--default-printer`), multi-sample BAM header extraction (`-b "b1|b2"`), and value-aware `UNSUPPORTED_FLAGS` / mode rejection (`-C`, `-Z` / `-downsample` / `--downsample`, `-VS STRICT`, `--modern`, `--fix`, `AGENTS.md §12`).
+- Verifies `--completions <SHELL>` (`bash`, `zsh`, `fish`) and `--manpage` (`roff` `vardictrust(1)`) generation, `--output` / `--tbi` (`--index`) / `--csi` / `--no-end` / `--stats-json` / `--parity` / `--compat vardictjava|off` validation, all consolidated `var2vcf` post-filter and threshold options across the 90-flag CLI surface (7 functional groups: `--pass-only`, `--paired-strict`, `--vcf-all-alleles` / `--all-alleles`, `--vcf-pval`, `--min-splitreads`, `--no-pstd-filter`, `--vcf-af`, `--vcf-min-depth`, `--vcf-min-vd`, `--vcf-qmean`, `--vcf-mapq`, `--vcf-pmean`, `--vcf-sn`, `--vcf-max-nm`, `--vcf-gt-freq`, `--vcf-msi`, `--vcf-cluster-dist` + single-dash GNU typo guards), newly ported upstream flags (`-T` / `--trim`, `-n`, `-VS SILENT|LENIENT`), accepted upstream compatibility flags (`-v`, `--default-printer`), multi-sample BAM header extraction (`-b "b1|b2"`), and value-aware `UNSUPPORTED_FLAGS` / unsupported-mode rejection (`-C`, `-Z` / `-downsample` / `--downsample`, and `-VS STRICT` via `AGENTS.md §12`, plus invalid `--compat modern` target rejection in `parse_compat_target`).
 - Verifies error propagation on invalid flag arguments (`-F bogus`, 0-valued `-c/-S/-E/-s/-e` BED columns, `-d` empty, `--adaptor` non-ACGTN) and zero tile size (`--tile-size 0`).
 
 ### 3.3 CLI Integration Test Binaries (`crates/vardictrust/tests/` — 28 Tests)
@@ -236,7 +236,7 @@ Located in `crates/vardictrust/tests/`:
    - `jemalloc_startup_emits_no_stderr_warnings`: verifies that `_rjem_malloc_conf` startup emits zero allocator warnings on `stderr` and rejects corrupt/truncated BGZF BAM streams with an actionable `UnexpectedEof` error.
    - `upstream_toml_manifest_present_and_pinned`: verifies `UPSTREAM.toml` pins `VarDictJava v1.8.3` (`0886261`), `VarDict` (`009e017`), and `vardictcpp 3` (`hc52dbad_0`).
    - `output_plain_and_bgzf_match_stdout_and_stats_json_emits_telemetry`: verifies `--output` plain/BGZF `.vcf.gz` output parity with `stdout` and `--stats-json` telemetry emission.
-   - `output_bgzf_tbi_and_parity_compat_flags`: verifies `--tbi` Tabix index creation alongside `--parity` / `--compat vardictjava-1.8.3` acceptance and `--modern` rejection.
+   - `output_bgzf_tbi_and_parity_compat_flags`: verifies `--tbi` / `--csi` index creation alongside `--parity` and `--compat` (`vardictjava` / `vardictjava-1.8.3` / `1.8.3`) byte-identical parity acceptance and invalid `--compat modern` target rejection.
    - `broken_pipe_stdout_and_stderr_exit_cleanly_and_preserve_stats_json`: verifies clean exit `0` on `SIGPIPE` / `BrokenPipe` (`stdout` and `-y` `stderr`) while still flushing `--stats-json`.
    - `output_and_stats_json_reject_input_collisions_and_leave_no_empty_residue`: verifies `--output`, `--tbi`, and `--stats-json` reject paths colliding with inputs or each other and leave zero empty output/BGZF residue on failure.
    - `bgzf_tbi_somatic_amplicon_and_sv_end_to_end`: verifies end-to-end `.vcf.gz` + `.tbi` generation and Tabix region queries across somatic, amplicon, and `<DEL>`/`<INV>`/`<DUP>` structural variants (`END=` span indexing).
@@ -343,10 +343,10 @@ A foundational question in scientific verification is: **Why are certain dataset
 - **Level 4 (Ground Truth Concordance Gate, Tier-3):** Evaluates variant calling performance ($F_1$, Precision, Recall) using `rtg vcfeval` against physical biological reality. **Requires independent consortium ground truth VCF + high-confidence BED.**
 
 ### The rewrites.bio Principle of Transitivity:
-For any dataset $D$ and benchmark truth set $T$:
-$$\text{VarDictRust}(D) \equiv \text{VarDictJava}(D) \implies \text{rtg}(\text{VarDictRust}(D), T) \equiv \text{rtg}(\text{VarDictJava}(D), T)$$
+For any dataset $D$ and benchmark truth set $T$ under default `--compat=vardictjava` (`--parity`) execution:
+$$\text{VarDictRust}_{\text{compat=vardictjava}}(D) \equiv \text{VarDictJava}(D) \implies \text{rtg}\!\left(\text{VarDictRust}_{\text{compat=vardictjava}}(D), T\right) \equiv \text{rtg}(\text{VarDictJava}(D), T)$$
 
-Because VarDictRust produces 0 variant discrepancies and 0 filter differences compared to VarDictJava, `rtg vcfeval` yields **100% identical True Positives, False Positives, False Negatives, and identical $F_1$ scores (0 site diffs)**. Level 4 proves biological equivalence to the original caller.
+Because VarDictRust in default `--compat=vardictjava` mode produces 0 variant discrepancies and 0 filter differences compared to VarDictJava, `rtg vcfeval` yields **100% identical True Positives, False Positives, False Negatives, and identical $F_1$ scores (0 site diffs)**. Level 4 proves biological equivalence to the original caller (while opt-in `--compat=off` switches are verified via targeted diff-confinement gates).
 
 | Dataset / Assay | Modality & Reference Build | BAM / CRAM Source | Level 3 (Differential Parity) | vardictcpp (advisory) | Level 4 (Truth Concordance) | Reason / Ground Truth Asset |
 | :--- | :--- | :--- | :---: | :---: | :--- | :--- |

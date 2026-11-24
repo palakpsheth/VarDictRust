@@ -9,7 +9,7 @@ description: Use when opening, updating, reviewing, recertifying, or merging pul
 
 Every change to `VarDictRust` lands via a feature branch off `origin/main` and a pull request completing `.github/pull_request_template.md` (`AGENTS.md` §§0, 0b, 14, 15, 18). Direct pushes to `main` are blocked by `.githooks/pre-push`.
 
-**Core principle:** Evidence before completion (`AGENTS.md` §0) and Class-0 integrity (`AGENTS.md` §0b). Never hand-edit `benchmarks/evidence/*.json`, never relax `--eps` or `--cols`, and never mark engine checkboxes `N/A` when engine, `Cargo.*`, `harness/`, or workflow files change.
+**Core principle:** Evidence before completion (`AGENTS.md` §0) and Class-0 integrity (`AGENTS.md` §0b). Never hand-edit `benchmarks/evidence/*.json`, never relax `--eps` or `--cols`, never regress default `--compat=vardictjava` parity, and never mark engine checkboxes `N/A` when engine, `Cargo.*`, `harness/`, or workflow files change.
 
 ---
 
@@ -36,7 +36,7 @@ git checkout -b <type>/<slug> origin/main
 - Allowed `<type>` prefixes: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `chore`, `release`.
 - **Commit hygiene (`AGENTS.md` §18):** Atomic commits (`git commit -m "<type>: <short desc>"`). **Never** include `Co-Authored-By` trailers.
 - **Validation statement (`AGENTS.md` §15.5):** Engine commits/PRs must state:
-  `validated vs VarDictJava 1.8.3, dataset <name>, cmd <…>`
+  `validated vs VarDictJava 1.8.3, dataset <name>, cmd <…>` (and include targeted `--compat=off` diff-confinement tests in `engine_behavior.rs` / `robustness.rs` when modifying `CompatProfile` paths).
 
 ### 2. Pre-PR Verification Sequence
 Commit your changes first, then run:

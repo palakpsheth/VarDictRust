@@ -1,6 +1,6 @@
 # JVM & R Kernel Oracles (`fixtures/jvm-oracles/`)
 
-Deterministic oracle generators for VarDictJava v1.8.3 (`0886261` / `009e017`) formatting, `java.util.HashMap` operation traces, and Fisher's exact test (`FisherExact.java` and R `stats::fisher.test`).
+Deterministic oracle generators for VarDictJava v1.8.3 (`0886261` / `009e017`) default `--compat=vardictjava` (`--parity`) formatting, `java.util.HashMap` operation traces, and Fisher's exact test (`FisherExact.java` and R `stats::fisher.test`; contrasted with opt-in `--compat=off` `exact_binary_half_even` tie rounding).
 
 ## Provenance & Regeneration
 
