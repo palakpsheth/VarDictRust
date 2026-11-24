@@ -138,58 +138,92 @@ impl TableModeStyle {
     const fn is_fisher(self) -> bool {
         matches!(self, Self::Simple38 | Self::Amplicon40 | Self::Somatic61)
     }
+}
+
+/// `.var` row formatting configuration pairing the column schema (`TableModeStyle`)
+/// with the rounding tie mode (`exact_binary_half_even`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TableFmt {
+    style: TableModeStyle,
+    exact_binary_half_even: bool,
+}
+
+impl TableFmt {
+    #[inline]
+    const fn new(style: TableModeStyle, exact_binary_half_even: bool) -> Self {
+        Self {
+            style,
+            exact_binary_half_even,
+        }
+    }
+
+    #[inline]
+    const fn is_fisher(self) -> bool {
+        self.style.is_fisher()
+    }
 
     #[inline]
     fn push_float(self, buf: &mut String, v: f64, digits: i32) {
         if self.is_fisher() {
-            push_java_rounded(buf, v, digits);
+            push_java_rounded_compat(buf, v, digits, self.exact_binary_half_even);
         } else {
-            push_keep(buf, v, digits);
+            push_keep_compat(buf, v, digits, self.exact_binary_half_even);
         }
     }
 
     /// `AR-09` Quirk 1: `Simple38` & `Amplicon40` keep trailing zeros on `hi_freq`,
-    /// whereas `Somatic61` strips trailing zeros (`push_java_rounded`).
+    /// whereas `Somatic61` strips trailing zeros (`push_java_rounded_compat`).
     #[inline]
     fn push_hi_freq(self, buf: &mut String, hi_freq: f64) {
-        match self {
-            Self::Somatic61 => push_java_rounded(buf, hi_freq, 4),
-            Self::Simple36
-            | Self::Simple38
-            | Self::Amplicon38
-            | Self::Amplicon40
-            | Self::Somatic55 => push_keep(buf, hi_freq, 4),
+        match self.style {
+            TableModeStyle::Somatic61 => {
+                push_java_rounded_compat(buf, hi_freq, 4, self.exact_binary_half_even);
+            }
+            TableModeStyle::Simple36
+            | TableModeStyle::Simple38
+            | TableModeStyle::Amplicon38
+            | TableModeStyle::Amplicon40
+            | TableModeStyle::Somatic55 => {
+                push_keep_compat(buf, hi_freq, 4, self.exact_binary_half_even);
+            }
         }
     }
 
-    /// `AR-09` Quirk 2: `Simple38` & `Amplicon40` format `nm` via `push_nm` (keeping `.0`),
-    /// whereas `Somatic61` formats positive `nm` via `push_java_rounded(..., 1)`.
+    /// `AR-09` Quirk 2: `Simple38` & `Amplicon40` format `nm` via `push_nm_compat` (keeping `.0`),
+    /// whereas `Somatic61` formats positive `nm` via `push_java_rounded_compat(..., 1, ...)`.
     #[inline]
     fn push_nm_cell(self, buf: &mut String, nm: f64) {
-        match self {
-            Self::Somatic61 => {
+        match self.style {
+            TableModeStyle::Somatic61 => {
                 if nm > 0.0 {
-                    push_java_rounded(buf, nm, 1);
+                    push_java_rounded_compat(buf, nm, 1, self.exact_binary_half_even);
                 } else {
                     buf.push('0');
                 }
             }
-            Self::Simple36
-            | Self::Simple38
-            | Self::Amplicon38
-            | Self::Amplicon40
-            | Self::Somatic55 => push_nm(buf, nm),
+            TableModeStyle::Simple36
+            | TableModeStyle::Simple38
+            | TableModeStyle::Amplicon38
+            | TableModeStyle::Amplicon40
+            | TableModeStyle::Somatic55 => {
+                push_nm_compat(buf, nm, self.exact_binary_half_even);
+            }
         }
     }
 
-    /// `AR-09` Quirk 3: `Somatic61` keeps trailing zeros on `msi` (`push_keep(..., 3)`),
-    /// whereas `Simple38` & `Amplicon40` strip trailing zeros (`push_java_rounded(..., 3)`).
+    /// `AR-09` Quirk 3: `Somatic61` keeps trailing zeros on `msi` (`push_keep_compat(..., 3, ...)`),
+    /// whereas `Simple38` & `Amplicon40` strip trailing zeros (`push_java_rounded_compat(..., 3, ...)`).
     #[inline]
     fn push_msi_cell(self, buf: &mut String, msi: f64) {
-        match self {
-            Self::Simple38 | Self::Amplicon40 => push_java_rounded(buf, msi, 3),
-            Self::Simple36 | Self::Amplicon38 | Self::Somatic55 | Self::Somatic61 => {
-                push_keep(buf, msi, 3);
+        match self.style {
+            TableModeStyle::Simple38 | TableModeStyle::Amplicon40 => {
+                push_java_rounded_compat(buf, msi, 3, self.exact_binary_half_even);
+            }
+            TableModeStyle::Simple36
+            | TableModeStyle::Amplicon38
+            | TableModeStyle::Somatic55
+            | TableModeStyle::Somatic61 => {
+                push_keep_compat(buf, msi, 3, self.exact_binary_half_even);
             }
         }
     }
@@ -198,11 +232,18 @@ impl TableModeStyle {
     /// `Somatic55`, and `Somatic61` format `duprate` to 1 decimal.
     #[inline]
     fn push_duprate_cell(self, buf: &mut String, duprate: f64) {
-        match self {
-            Self::Simple38 => push_java_rounded(buf, duprate, 2),
-            Self::Somatic61 => push_java_rounded(buf, duprate, 1),
-            Self::Simple36 | Self::Somatic55 | Self::Amplicon38 | Self::Amplicon40 => {
-                push_keep(buf, duprate, 1);
+        match self.style {
+            TableModeStyle::Simple38 => {
+                push_java_rounded_compat(buf, duprate, 2, self.exact_binary_half_even);
+            }
+            TableModeStyle::Somatic61 => {
+                push_java_rounded_compat(buf, duprate, 1, self.exact_binary_half_even);
+            }
+            TableModeStyle::Simple36
+            | TableModeStyle::Somatic55
+            | TableModeStyle::Amplicon38
+            | TableModeStyle::Amplicon40 => {
+                push_keep_compat(buf, duprate, 1, self.exact_binary_half_even);
             }
         }
     }
@@ -288,7 +329,7 @@ fn push_single_core(
     sample_name: &str,
     region: &Region,
     amplicon_seg: Option<&str>,
-    style: TableModeStyle,
+    fmt: TableFmt,
 ) {
     push_row_prefix_7(buf, sample_name, region, variant);
     push_allele_counts_6(buf, variant);
@@ -297,45 +338,45 @@ fn push_single_core(
         buf.push_str(variant.genotype.as_deref().unwrap_or("0"));
     }
     buf.push('\t');
-    style.push_float(buf, variant.frequency, 4);
+    fmt.push_float(buf, variant.frequency, 4);
     buf.push('\t');
     buf.push_str(&variant.bias);
     buf.push('\t');
-    style.push_float(buf, variant.mean_position, 1);
+    fmt.push_float(buf, variant.mean_position, 1);
     buf.push('\t');
     buf.push(if variant.pstd { '1' } else { '0' });
     buf.push('\t');
-    style.push_float(buf, variant.mean_quality, 1);
+    fmt.push_float(buf, variant.mean_quality, 1);
     buf.push('\t');
     buf.push(if variant.qstd { '1' } else { '0' });
     buf.push('\t');
-    if style.is_fisher() {
+    if fmt.is_fisher() {
         let fisher = crate::stats::FisherExact::new_java(
             variant.ref_fwd_cov,
             variant.ref_rev_cov,
             variant.fwd,
             variant.rev,
         );
-        push_java_rounded(buf, fisher.get_p_value(), 5);
+        push_java_rounded_compat(buf, fisher.get_p_value(), 5, fmt.exact_binary_half_even);
         buf.push('\t');
         fisher.write_odds_ratio_into(buf);
         buf.push('\t');
     }
-    style.push_float(buf, variant.mean_mapping_quality, 1);
+    fmt.push_float(buf, variant.mean_mapping_quality, 1);
     buf.push('\t');
-    style.push_float(buf, variant.hq_lq_ratio, 3);
+    fmt.push_float(buf, variant.hq_lq_ratio, 3);
     buf.push('\t');
-    style.push_hi_freq(buf, variant.hi_freq);
+    fmt.push_hi_freq(buf, variant.hi_freq);
     buf.push('\t');
-    style.push_float(buf, variant.extra_freq, 4);
+    fmt.push_float(buf, variant.extra_freq, 4);
     buf.push('\t');
     crate::util::push_i32(buf, variant.shift3);
     buf.push('\t');
-    style.push_msi_cell(buf, variant.msi);
+    fmt.push_msi_cell(buf, variant.msi);
     buf.push('\t');
     crate::util::push_i32(buf, variant.msint);
     buf.push('\t');
-    style.push_nm_cell(buf, variant.nm);
+    fmt.push_nm_cell(buf, variant.nm);
     buf.push('\t');
     crate::util::push_i32(buf, variant.hicnt);
     buf.push('\t');
@@ -356,12 +397,12 @@ fn simple_append_styled(
     region: &Region,
     sample_name: &str,
     sv: &str,
-    style: TableModeStyle,
+    fmt: TableFmt,
 ) {
-    buf.reserve(if style.is_fisher() { 320 } else { 256 });
-    push_single_core(buf, variant, sample_name, region, None, style);
+    buf.reserve(if fmt.is_fisher() { 320 } else { 256 });
+    push_single_core(buf, variant, sample_name, region, None, fmt);
     buf.push('\t');
-    style.push_duprate_cell(buf, variant.duprate);
+    fmt.push_duprate_cell(buf, variant.duprate);
     buf.push('\t');
     push_nonempty_or_zero(buf, sv);
 }
@@ -372,11 +413,11 @@ fn amplicon_append_styled(
     region: &Region,
     sample_name: &str,
     debug: bool,
-    style: TableModeStyle,
+    fmt: TableFmt,
 ) {
-    buf.reserve(if style.is_fisher() { 320 } else { 256 });
+    buf.reserve(if fmt.is_fisher() { 320 } else { 256 });
     let variant = &av.variant;
-    push_single_core(buf, variant, sample_name, region, Some(&av.region), style);
+    push_single_core(buf, variant, sample_name, region, Some(&av.region), fmt);
     buf.push('\t');
     crate::util::push_i32(buf, av.gdamp);
     buf.push('\t');
@@ -396,7 +437,10 @@ fn amplicon_append_styled(
         buf.push_str("\tGood");
         crate::util::push_usize(buf, i);
         buf.push(' ');
-        buf.push_str(&debug_amp_variant(v.as_ref()));
+        buf.push_str(&debug_amp_variant_compat(
+            v.as_ref(),
+            fmt.exact_binary_half_even,
+        ));
         buf.push(' ');
         buf.push_str(r);
     }
@@ -404,7 +448,10 @@ fn amplicon_append_styled(
         buf.push_str("\tBad");
         crate::util::push_usize(buf, i);
         buf.push(' ');
-        buf.push_str(&debug_amp_variant(v.as_ref()));
+        buf.push_str(&debug_amp_variant_compat(
+            v.as_ref(),
+            fmt.exact_binary_half_even,
+        ));
         buf.push(' ');
         buf.push_str(r);
     }
@@ -440,7 +487,7 @@ pub(crate) fn simple_36_append(
         region,
         sample_name,
         sv,
-        TableModeStyle::Simple36,
+        TableFmt::new(TableModeStyle::Simple36, false),
     );
 }
 
@@ -480,7 +527,7 @@ pub(crate) fn simple_38_append(
         region,
         sample_name,
         sv,
-        TableModeStyle::Simple38,
+        TableFmt::new(TableModeStyle::Simple38, false),
     );
 }
 
@@ -520,7 +567,7 @@ pub(crate) fn amplicon_38_append(
         region,
         sample_name,
         debug,
-        TableModeStyle::Amplicon38,
+        TableFmt::new(TableModeStyle::Amplicon38, false),
     );
 }
 
@@ -565,7 +612,7 @@ pub(crate) fn amplicon_40_append(
         region,
         sample_name,
         debug,
-        TableModeStyle::Amplicon40,
+        TableFmt::new(TableModeStyle::Amplicon40, false),
     );
 }
 
@@ -587,27 +634,44 @@ pub fn amplicon_40(
 /// 17 fields; zero-valued freq fields print as "0", position/quality/mapq/qratio are
 /// always decimal-formatted. Java dereferences a null variant here (NPE on the
 /// no-data bad-variant path); we render an all-zero record instead.
-fn fmt_4dp(v: f64) -> String {
+fn fmt_4dp_compat(v: f64, exact_binary_half_even: bool) -> String {
     if v == 0.0 {
         "0".to_string()
     } else {
-        format!("{:.4}", crate::types::round_half_even(v, 4))
+        format!(
+            "{:.4}",
+            crate::types::round_half_even_compat(v, 4, exact_binary_half_even)
+        )
     }
 }
 
+#[cfg(test)]
 fn debug_amp_variant(v: Option<&Variant>) -> String {
+    debug_amp_variant_compat(v, false)
+}
+
+fn debug_amp_variant_compat(v: Option<&Variant>, exact_binary_half_even: bool) -> String {
     let default = Variant::new();
     let v = v.unwrap_or(&default);
     let genotype = v.genotype.as_deref().unwrap_or("0");
     let pstd = if v.pstd { 1 } else { 0 };
     let qstd = if v.qstd { 1 } else { 0 };
-    let mean_pos = format!("{:.1}", crate::types::round_half_even(v.mean_position, 1));
-    let mean_qual = format!("{:.1}", crate::types::round_half_even(v.mean_quality, 1));
+    let mean_pos = format!(
+        "{:.1}",
+        crate::types::round_half_even_compat(v.mean_position, 1, exact_binary_half_even)
+    );
+    let mean_qual = format!(
+        "{:.1}",
+        crate::types::round_half_even_compat(v.mean_quality, 1, exact_binary_half_even)
+    );
     let mapq = format!(
         "{:.1}",
-        crate::types::round_half_even(v.mean_mapping_quality, 1)
+        crate::types::round_half_even_compat(v.mean_mapping_quality, 1, exact_binary_half_even)
     );
-    let qratio = format!("{:.3}", crate::types::round_half_even(v.hq_lq_ratio, 3));
+    let qratio = format!(
+        "{:.3}",
+        crate::types::round_half_even_compat(v.hq_lq_ratio, 3, exact_binary_half_even)
+    );
     format!(
         "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
         v.total_pos_cov,
@@ -617,7 +681,7 @@ fn debug_amp_variant(v: Option<&Variant>) -> String {
         v.fwd,
         v.rev,
         genotype,
-        fmt_4dp(v.frequency),
+        fmt_4dp_compat(v.frequency, exact_binary_half_even),
         v.bias,
         mean_pos,
         pstd,
@@ -625,8 +689,8 @@ fn debug_amp_variant(v: Option<&Variant>) -> String {
         qstd,
         mapq,
         qratio,
-        fmt_4dp(v.hi_freq),
-        fmt_4dp(v.extra_freq),
+        fmt_4dp_compat(v.hi_freq, exact_binary_half_even),
+        fmt_4dp_compat(v.extra_freq, exact_binary_half_even),
     )
 }
 
@@ -640,10 +704,14 @@ pub(crate) fn get_rounded_value_to_print(value: f64, digits: i32) -> String {
     buf
 }
 
-/// Push `Utils.getRoundedValueToPrint` directly into `buf` without a temp `String`.
-/// Used by all `--fisher` `.var` writers (`SimpleOutputVariant` 38-col,
-/// `AmpliconOutputVariant` 40-col, `SomaticOutputVariant` 61-col).
-pub(crate) fn push_java_rounded(buf: &mut String, value: f64, digits: i32) {
+/// Push `Utils.getRoundedValueToPrint` directly into `buf` without a temp `String`,
+/// parameterized by `exact_binary_half_even`.
+pub(crate) fn push_java_rounded_compat(
+    buf: &mut String,
+    value: f64,
+    digits: i32,
+    exact_binary_half_even: bool,
+) {
     if value.is_nan() || value.is_infinite() {
         let _ = write!(buf, "{}", value);
         return;
@@ -660,7 +728,7 @@ pub(crate) fn push_java_rounded(buf: &mut String, value: f64, digits: i32) {
         }
         return;
     }
-    let rounded = crate::types::round_half_even(value, digits);
+    let rounded = crate::types::round_half_even_compat(value, digits, exact_binary_half_even);
     let start = buf.len();
     let _ = write!(buf, "{:.*}", digits.max(0) as usize, rounded);
     while buf.len() > start && buf.as_bytes().get(buf.len() - 1) == Some(&b'0') {
@@ -668,10 +736,29 @@ pub(crate) fn push_java_rounded(buf: &mut String, value: f64, digits: i32) {
     }
 }
 
-/// Keep-mode float cell: HALF_EVEN at `digits` decimals with trailing zeros
-/// kept (`"0"` when zero). Ports the `DecimalFormat("0.0000"/"0.0"/"0.000")`
-/// cells of the no-`--fisher` writers.
-pub(crate) fn push_keep(buf: &mut String, v: f64, digits: i32) {
+/// Push `Utils.getRoundedValueToPrint` directly into `buf` without a temp `String`.
+/// Used by all `--fisher` `.var` writers (`SimpleOutputVariant` 38-col,
+/// `AmpliconOutputVariant` 40-col, `SomaticOutputVariant` 61-col).
+#[inline]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "default compat=vardictjava wrapper retained alongside push_java_rounded_compat"
+    )
+)]
+pub(crate) fn push_java_rounded(buf: &mut String, value: f64, digits: i32) {
+    push_java_rounded_compat(buf, value, digits, false);
+}
+
+/// Keep-mode float cell parameterized by `exact_binary_half_even`: HALF_EVEN at `digits`
+/// decimals with trailing zeros kept (`"0"` when zero).
+pub(crate) fn push_keep_compat(
+    buf: &mut String,
+    v: f64,
+    digits: i32,
+    exact_binary_half_even: bool,
+) {
     if v == 0.0 {
         buf.push('0');
     } else {
@@ -679,20 +766,41 @@ pub(crate) fn push_keep(buf: &mut String, v: f64, digits: i32) {
             buf,
             "{:.*}",
             digits as usize,
-            crate::types::round_half_even(v, digits)
+            crate::types::round_half_even_compat(v, digits, exact_binary_half_even)
         );
     }
 }
 
-/// Strip-mode float cell for R `write.table` / Perl `var2vcf_*.pl` VCF output:
-/// HALF_EVEN at `digits` decimals with trailing zeros AND trailing decimal point
-/// stripped (`"0"` when rounded == 0, integers without a dot).
-pub(crate) fn push_stripped(buf: &mut String, value: f64, digits: i32) {
+/// Keep-mode float cell: HALF_EVEN at `digits` decimals with trailing zeros
+/// kept (`"0"` when zero). Ports the `DecimalFormat("0.0000"/"0.0"/"0.000")`
+/// cells of the no-`--fisher` writers.
+#[inline]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "default compat=vardictjava wrapper retained alongside push_keep_compat"
+    )
+)]
+pub(crate) fn push_keep(buf: &mut String, v: f64, digits: i32) {
+    push_keep_compat(buf, v, digits, false);
+}
+
+/// Strip-mode float cell for R `write.table` / Perl `var2vcf_*.pl` VCF output,
+/// parameterized by `exact_binary_half_even`: HALF_EVEN at `digits` decimals with
+/// trailing zeros AND trailing decimal point stripped (`"0"` when rounded == 0,
+/// integers without a dot).
+pub(crate) fn push_stripped_compat(
+    buf: &mut String,
+    value: f64,
+    digits: i32,
+    exact_binary_half_even: bool,
+) {
     if value.is_nan() || value.is_infinite() {
         let _ = write!(buf, "{}", value);
         return;
     }
-    let rounded = crate::types::round_half_even(value, digits);
+    let rounded = crate::types::round_half_even_compat(value, digits, exact_binary_half_even);
     if rounded == 0.0 {
         buf.push('0');
     } else if rounded == rounded.round() {
@@ -706,46 +814,74 @@ pub(crate) fn push_stripped(buf: &mut String, value: f64, digits: i32) {
     }
 }
 
-/// NM cell: keep-mode 1dp when positive, `"0"` otherwise (matches `fmt_nm`).
-pub(crate) fn push_nm(buf: &mut String, v: f64) {
+/// Strip-mode float cell for R `write.table` / Perl `var2vcf_*.pl` VCF output:
+/// HALF_EVEN at `digits` decimals with trailing zeros AND trailing decimal point
+/// stripped (`"0"` when rounded == 0, integers without a dot).
+#[inline]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "default compat=vardictjava wrapper retained alongside push_stripped_compat"
+    )
+)]
+pub(crate) fn push_stripped(buf: &mut String, value: f64, digits: i32) {
+    push_stripped_compat(buf, value, digits, false);
+}
+
+/// NM cell parameterized by `exact_binary_half_even`: keep-mode 1dp when positive, `"0"` otherwise.
+pub(crate) fn push_nm_compat(buf: &mut String, v: f64, exact_binary_half_even: bool) {
     if v > 0.0 {
-        push_keep(buf, v, 1);
+        push_keep_compat(buf, v, 1, exact_binary_half_even);
     } else {
         buf.push('0');
     }
 }
 
+/// NM cell: keep-mode 1dp when positive, `"0"` otherwise (matches `fmt_nm`).
+#[inline]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "default compat=vardictjava wrapper retained alongside push_nm_compat"
+    )
+)]
+pub(crate) fn push_nm(buf: &mut String, v: f64) {
+    push_nm_compat(buf, v, false);
+}
+
 /// Push the 18-column (`Somatic55`) or 20-column (`Somatic61`) per-sample allele block.
-fn push_somatic_sample_cols(buf: &mut String, v: &Variant, style: TableModeStyle) {
+fn push_somatic_sample_cols(buf: &mut String, v: &Variant, fmt: TableFmt) {
     push_allele_counts_6(buf, v);
     buf.push_str(v.genotype.as_deref().unwrap_or("0"));
     buf.push('\t');
-    style.push_float(buf, v.frequency, 4);
+    fmt.push_float(buf, v.frequency, 4);
     buf.push('\t');
     buf.push_str(&v.bias);
     buf.push('\t');
-    style.push_float(buf, v.mean_position, 1);
+    fmt.push_float(buf, v.mean_position, 1);
     buf.push('\t');
     buf.push(if v.pstd { '1' } else { '0' });
     buf.push('\t');
-    style.push_float(buf, v.mean_quality, 1);
+    fmt.push_float(buf, v.mean_quality, 1);
     buf.push('\t');
     buf.push(if v.qstd { '1' } else { '0' });
     buf.push('\t');
-    style.push_float(buf, v.mean_mapping_quality, 1);
+    fmt.push_float(buf, v.mean_mapping_quality, 1);
     buf.push('\t');
-    style.push_float(buf, v.hq_lq_ratio, 3);
+    fmt.push_float(buf, v.hq_lq_ratio, 3);
     buf.push('\t');
-    style.push_hi_freq(buf, v.hi_freq);
+    fmt.push_hi_freq(buf, v.hi_freq);
     buf.push('\t');
-    style.push_float(buf, v.extra_freq, 4);
+    fmt.push_float(buf, v.extra_freq, 4);
     buf.push('\t');
-    style.push_nm_cell(buf, v.nm);
-    if style.is_fisher() {
+    fmt.push_nm_cell(buf, v.nm);
+    if fmt.is_fisher() {
         let fisher =
             crate::stats::FisherExact::new_java(v.ref_fwd_cov, v.ref_rev_cov, v.fwd, v.rev);
         buf.push('\t');
-        push_java_rounded(buf, fisher.get_p_value(), 5);
+        push_java_rounded_compat(buf, fisher.get_p_value(), 5, fmt.exact_binary_half_even);
         buf.push('\t');
         fisher.write_odds_ratio_into(buf);
     }
@@ -779,9 +915,9 @@ fn somatic_append_styled(
     sv1: &str,
     sv2: &str,
     end_is_variant2: bool,
-    style: TableModeStyle,
+    fmt: TableFmt,
 ) {
-    buf.reserve(if style.is_fisher() { 448 } else { 384 });
+    buf.reserve(if fmt.is_fisher() { 448 } else { 384 });
     // endVariant supplies shift3/msi/msint/left/right seq (Java SomaticOutputVariant).
     let end_var = if end_is_variant2 {
         normal.unwrap_or(tumor)
@@ -790,11 +926,11 @@ fn somatic_append_styled(
     };
 
     push_row_prefix_7(buf, sample_name, region, tumor);
-    push_somatic_sample_cols(buf, tumor, style);
+    push_somatic_sample_cols(buf, tumor, fmt);
     buf.push('\t');
     match normal {
-        Some(n) => push_somatic_sample_cols(buf, n, style),
-        None => buf.push_str(if style.is_fisher() {
+        Some(n) => push_somatic_sample_cols(buf, n, fmt),
+        None => buf.push_str(if fmt.is_fisher() {
             VARIANT_20COLS_FISHER_EMPTY
         } else {
             VARIANT_18COLS_EMPTY
@@ -803,7 +939,7 @@ fn somatic_append_styled(
     buf.push('\t');
     crate::util::push_i32(buf, end_var.shift3);
     buf.push('\t');
-    style.push_msi_cell(buf, end_var.msi);
+    fmt.push_msi_cell(buf, end_var.msi);
     buf.push('\t');
     crate::util::push_i32(buf, end_var.msint);
     buf.push('\t');
@@ -814,18 +950,18 @@ fn somatic_append_styled(
     buf.push('\t');
     buf.push_str(&tumor.var_type);
     buf.push('\t');
-    style.push_duprate_cell(buf, tumor.duprate);
+    fmt.push_duprate_cell(buf, tumor.duprate);
     buf.push('\t');
     push_nonempty_or_zero(buf, sv1);
     buf.push('\t');
     match normal {
-        Some(n) => style.push_duprate_cell(buf, n.duprate),
+        Some(n) => fmt.push_duprate_cell(buf, n.duprate),
         None => buf.push('0'),
     }
     buf.push('\t');
     push_nonempty_or_zero(buf, sv2);
 
-    if style.is_fisher() {
+    if fmt.is_fisher() {
         let (tvar_cov, ttotal_cov) = (tumor.pos_coverage, tumor.total_pos_cov);
         let (nvar_cov, ntotal_cov) = match normal {
             Some(n) => (n.pos_coverage, n.total_pos_cov),
@@ -844,7 +980,7 @@ fn somatic_append_styled(
             pvalue_greater
         };
         buf.push('\t');
-        push_java_rounded(buf, total_pvalue, 5);
+        push_java_rounded_compat(buf, total_pvalue, 5, fmt.exact_binary_half_even);
         buf.push('\t');
         fisher_total.write_odds_ratio_into(buf);
     }
@@ -900,7 +1036,7 @@ pub(crate) fn somatic_55_append(
         sv1,
         sv2,
         end_is_variant2,
-        TableModeStyle::Somatic55,
+        TableFmt::new(TableModeStyle::Somatic55, false),
     );
 }
 
@@ -981,7 +1117,7 @@ pub(crate) fn somatic_61_append(
         sv1,
         sv2,
         end_is_variant2,
-        TableModeStyle::Somatic61,
+        TableFmt::new(TableModeStyle::Somatic61, false),
     );
 }
 
@@ -1010,6 +1146,168 @@ pub fn somatic_61(
         end_is_variant2,
     );
     buf
+}
+
+pub(crate) fn simple_row_append_compat(
+    buf: &mut String,
+    variant: &Variant,
+    region: &Region,
+    sample_name: &str,
+    sv: &str,
+    fisher: bool,
+    exact_binary_half_even: bool,
+) {
+    let style = if fisher {
+        TableModeStyle::Simple38
+    } else {
+        TableModeStyle::Simple36
+    };
+    simple_append_styled(
+        buf,
+        variant,
+        region,
+        sample_name,
+        sv,
+        TableFmt::new(style, exact_binary_half_even),
+    );
+}
+
+#[doc(hidden)]
+pub fn simple_row_into_compat(
+    buf: &mut String,
+    variant: &Variant,
+    region: &Region,
+    sample_name: &str,
+    sv: &str,
+    fisher: bool,
+    exact_binary_half_even: bool,
+) {
+    buf.clear();
+    simple_row_append_compat(
+        buf,
+        variant,
+        region,
+        sample_name,
+        sv,
+        fisher,
+        exact_binary_half_even,
+    );
+}
+
+pub(crate) fn amplicon_row_append_compat(
+    buf: &mut String,
+    av: &crate::postprocess::amplicon::AmpliconVariant,
+    region: &Region,
+    sample_name: &str,
+    debug: bool,
+    fisher: bool,
+    exact_binary_half_even: bool,
+) {
+    let style = if fisher {
+        TableModeStyle::Amplicon40
+    } else {
+        TableModeStyle::Amplicon38
+    };
+    amplicon_append_styled(
+        buf,
+        av,
+        region,
+        sample_name,
+        debug,
+        TableFmt::new(style, exact_binary_half_even),
+    );
+}
+
+#[doc(hidden)]
+pub fn amplicon_row_into_compat(
+    buf: &mut String,
+    av: &crate::postprocess::amplicon::AmpliconVariant,
+    region: &Region,
+    sample_name: &str,
+    debug: bool,
+    fisher: bool,
+    exact_binary_half_even: bool,
+) {
+    buf.clear();
+    amplicon_row_append_compat(
+        buf,
+        av,
+        region,
+        sample_name,
+        debug,
+        fisher,
+        exact_binary_half_even,
+    );
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "paired somatic row formatter mirrors SomaticOutputVariant 55/61-column arguments plus fisher/compat selectors"
+)]
+pub(crate) fn somatic_row_append_compat(
+    buf: &mut String,
+    tumor: &Variant,
+    normal: Option<&Variant>,
+    region: &Region,
+    sample_name: &str,
+    status: &str,
+    sv1: &str,
+    sv2: &str,
+    end_is_variant2: bool,
+    fisher: bool,
+    exact_binary_half_even: bool,
+) {
+    let style = if fisher {
+        TableModeStyle::Somatic61
+    } else {
+        TableModeStyle::Somatic55
+    };
+    somatic_append_styled(
+        buf,
+        tumor,
+        normal,
+        region,
+        sample_name,
+        status,
+        sv1,
+        sv2,
+        end_is_variant2,
+        TableFmt::new(style, exact_binary_half_even),
+    );
+}
+
+#[doc(hidden)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "paired somatic row formatter mirrors SomaticOutputVariant 55/61-column arguments plus fisher/compat selectors"
+)]
+pub fn somatic_row_into_compat(
+    buf: &mut String,
+    tumor: &Variant,
+    normal: Option<&Variant>,
+    region: &Region,
+    sample_name: &str,
+    status: &str,
+    sv1: &str,
+    sv2: &str,
+    end_is_variant2: bool,
+    fisher: bool,
+    exact_binary_half_even: bool,
+) {
+    buf.clear();
+    somatic_row_append_compat(
+        buf,
+        tumor,
+        normal,
+        region,
+        sample_name,
+        status,
+        sv1,
+        sv2,
+        end_is_variant2,
+        fisher,
+        exact_binary_half_even,
+    );
 }
 
 #[cfg(test)]
@@ -2120,5 +2418,201 @@ mod tests {
         assert_eq!(som55[53], "0.1");
         assert_eq!(som61[55], "0.1");
         assert_eq!(som61[57], "0.1");
+    }
+
+    #[test]
+    fn table_fmt_exact_binary_half_even_ties_and_debug_amp_variant() {
+        let tie_3dp = f64::from_bits(0x3f40_624d_d2f1_a9fc); // 5e-4
+        let tie_4dp = f64::from_bits(0x3f0a_36e2_eb1c_432d); // 5e-5
+        let tie_5dp = f64::from_bits(0x3ed4_f8b5_88e3_68f1); // 5e-6
+
+        let mut b = String::new();
+        // Default wrappers (exact_binary_half_even = false)
+        push_java_rounded(&mut b, tie_4dp, 4);
+        assert_eq!(b, "0.");
+        b.clear();
+        push_keep(&mut b, tie_4dp, 4);
+        assert_eq!(b, "0.0000");
+        b.clear();
+        push_stripped(&mut b, tie_4dp, 4);
+        assert_eq!(b, "0");
+        b.clear();
+        push_nm(&mut b, 1.25);
+        assert_eq!(b, "1.2");
+        b.clear();
+        push_nm_compat(&mut b, 0.0, true);
+        assert_eq!(b, "0");
+
+        for (val, digits, vj_java, vj_keep, vj_strip, off_str) in [
+            (tie_3dp, 3, "0.", "0.000", "0", "0.001"),
+            (tie_4dp, 4, "0.", "0.0000", "0", "0.0001"),
+            (tie_5dp, 5, "0.", "0.00000", "0", "0.00001"),
+        ] {
+            b.clear();
+            push_java_rounded_compat(&mut b, val, digits, false);
+            assert_eq!(b, vj_java);
+            b.clear();
+            push_java_rounded_compat(&mut b, val, digits, true);
+            assert_eq!(b, off_str);
+
+            b.clear();
+            push_keep_compat(&mut b, val, digits, false);
+            assert_eq!(b, vj_keep);
+            b.clear();
+            push_keep_compat(&mut b, val, digits, true);
+            assert_eq!(b, off_str);
+
+            b.clear();
+            push_stripped_compat(&mut b, val, digits, false);
+            assert_eq!(b, vj_strip);
+            b.clear();
+            push_stripped_compat(&mut b, val, digits, true);
+            assert_eq!(b, off_str);
+        }
+
+        let reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut v = Variant::new();
+        v.start_pos = 100;
+        v.end_pos = 100;
+        v.ref_allele = "A".to_string();
+        v.var_allele = "G".to_string();
+        v.var_type = "SNV".to_string();
+        v.frequency = tie_4dp;
+        v.hi_freq = tie_4dp;
+        v.extra_freq = tie_4dp;
+        v.hq_lq_ratio = tie_3dp;
+        v.msi = tie_3dp;
+        v.debug = "DBG".to_string();
+
+        // Simple 36 / 38 default vs COMPAT_OFF
+        let mut row = String::new();
+        simple_row_into_compat(&mut row, &v, &reg, "S", "", false, false);
+        assert_eq!(row, simple_36(&v, &reg, "S", ""));
+        let c36_vj: Vec<&str> = row.split('\t').collect();
+        assert_eq!(c36_vj[14], "0.0000");
+        assert_eq!(c36_vj[21], "0.000");
+        assert_eq!(c36_vj[22], "0.0000");
+        assert_eq!(c36_vj[23], "0.0000");
+        assert_eq!(c36_vj[25], "0.000");
+
+        simple_row_into_compat(&mut row, &v, &reg, "S", "", false, true);
+        let c36_off: Vec<&str> = row.split('\t').collect();
+        assert_eq!(c36_off[14], "0.0001");
+        assert_eq!(c36_off[21], "0.001");
+        assert_eq!(c36_off[22], "0.0001");
+        assert_eq!(c36_off[23], "0.0001");
+        assert_eq!(c36_off[25], "0.001");
+
+        simple_row_into_compat(&mut row, &v, &reg, "S", "", true, false);
+        assert_eq!(row, simple_38(&v, &reg, "S", ""));
+        let c38_vj: Vec<&str> = row.split('\t').collect();
+        assert_eq!(c38_vj[14], "0.");
+        assert_eq!(c38_vj[23], "0.");
+        assert_eq!(c38_vj[24], "0.0000");
+        assert_eq!(c38_vj[25], "0.");
+        assert_eq!(c38_vj[27], "0.");
+
+        simple_row_into_compat(&mut row, &v, &reg, "S", "", true, true);
+        let c38_off: Vec<&str> = row.split('\t').collect();
+        assert_eq!(c38_off[14], "0.0001");
+        assert_eq!(c38_off[23], "0.001");
+        assert_eq!(c38_off[24], "0.0001");
+        assert_eq!(c38_off[25], "0.0001");
+        assert_eq!(c38_off[27], "0.001");
+
+        // Amplicon 38 / 40 + -D debug_amp_variant (qratio = 5e-4, freqs = 5e-5)
+        let av = AmpliconVariant {
+            variant: v.clone(),
+            gdamp: 1,
+            tlamp: 1,
+            ncamp: 0,
+            ampflag: false,
+            region: "chr1:1-200".to_string(),
+            good_variants: vec![(Some(v.clone()), "chr1:1-200".to_string())],
+            bad_variants: vec![(Some(v.clone()), "chr1:50-150".to_string())],
+        };
+        amplicon_row_into_compat(&mut row, &av, &reg, "S", true, false, false);
+        assert_eq!(row, amplicon_38(&av, &reg, "S", true));
+        assert!(
+            row.contains(
+                "Good0 0 0 0 0 0 0 0 0.0000 0 0.0 0 0.0 0 0.0 0.000 0.0000 0.0000 chr1:1-200"
+            ),
+            "unexpected default debug_amp_variant: {row}"
+        );
+
+        amplicon_row_into_compat(&mut row, &av, &reg, "S", true, false, true);
+        assert!(
+            row.contains(
+                "Good0 0 0 0 0 0 0 0 0.0001 0 0.0 0 0.0 0 0.0 0.001 0.0001 0.0001 chr1:1-200"
+            ),
+            "unexpected COMPAT_OFF debug_amp_variant: {row}"
+        );
+        assert!(
+            row.contains(
+                "Bad0 0 0 0 0 0 0 0 0.0001 0 0.0 0 0.0 0 0.0 0.001 0.0001 0.0001 chr1:50-150"
+            ),
+            "unexpected COMPAT_OFF bad debug_amp_variant: {row}"
+        );
+
+        // Somatic 55 / 61 default vs COMPAT_OFF
+        somatic_row_into_compat(
+            &mut row,
+            &v,
+            Some(&v),
+            &reg,
+            "S",
+            "StrongSomatic",
+            "",
+            "",
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            row,
+            somatic_55(&v, Some(&v), &reg, "S", "StrongSomatic", "", "", false)
+        );
+        somatic_row_into_compat(
+            &mut row,
+            &v,
+            Some(&v),
+            &reg,
+            "S",
+            "StrongSomatic",
+            "",
+            "",
+            false,
+            true,
+            false,
+        );
+        assert_eq!(
+            row,
+            somatic_61(&v, Some(&v), &reg, "S", "StrongSomatic", "", "", false)
+        );
+        somatic_row_into_compat(
+            &mut row,
+            &v,
+            Some(&v),
+            &reg,
+            "S",
+            "StrongSomatic",
+            "",
+            "",
+            false,
+            true,
+            true,
+        );
+        let cs61_off: Vec<&str> = row.split('\t').collect();
+        assert_eq!(cs61_off[14], "0.0001");
+        assert_eq!(cs61_off[21], "0.001");
+        assert_eq!(cs61_off[22], "0.0001");
+        assert_eq!(cs61_off[23], "0.0001");
+        assert_eq!(cs61_off[48], "0.001");
     }
 }

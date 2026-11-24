@@ -86,7 +86,7 @@ pub fn amplicon_post_process<R: std::borrow::Borrow<Region>>(
     }
 
     if !config.emit_intermediate && !config.vcf_all_alleles {
-        results = amplicon_select_vcf_rows(results);
+        results = amplicon_select_vcf_rows_compat(results, config.compat.exact_binary_half_even);
     }
 
     Ok(results)
@@ -735,18 +735,31 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
 /// as the deletion `-1` anchor can move a row's start across positions), so
 /// only the intermediate (-p table) path streams rows straight to the writer.
 pub fn amplicon_select_vcf_rows(results: Vec<AmpliconVariant>) -> Vec<AmpliconVariant> {
+    amplicon_select_vcf_rows_compat(results, false)
+}
+
+/// Global top-1-per-raw-start selection for VCF mode parameterized by `exact_binary_half_even`.
+pub fn amplicon_select_vcf_rows_compat(
+    results: Vec<AmpliconVariant>,
+    exact_binary_half_even: bool,
+) -> Vec<AmpliconVariant> {
     // VCF mode: same var2vcf_valid.pl selection as simple mode (:41,129-137) —
     // bucket rows by the RAW .var start column, stable af-desc sort per bucket,
     // emit only the top row ($ALL = 1 without -A). See postprocess/simple.rs.
     let mut buckets: BTreeMap<i32, AmpliconVariant> = BTreeMap::new();
     for av in results {
-        let v_af = crate::types::round_half_even(av.variant.frequency, 4);
+        let v_af =
+            crate::types::round_half_even_compat(av.variant.frequency, 4, exact_binary_half_even);
         match buckets.entry(av.variant.start_pos) {
             std::collections::btree_map::Entry::Vacant(e) => {
                 e.insert(av);
             }
             std::collections::btree_map::Entry::Occupied(mut e) => {
-                let cur_af = crate::types::round_half_even(e.get().variant.frequency, 4);
+                let cur_af = crate::types::round_half_even_compat(
+                    e.get().variant.frequency,
+                    4,
+                    exact_binary_half_even,
+                );
                 if v_af > cur_af {
                     e.insert(av);
                 }
@@ -2243,5 +2256,31 @@ mod tests {
         assert_eq!(p_streamed.len(), 1);
         assert_eq!(p_streamed[0].variant.start_pos, 101);
         assert!(!p_streamed[0].variant.null_record);
+
+        // 4. exact_binary_half_even (5e-5 AF tie) in amplicon_select_vcf_rows_compat & amplicon_post_process:
+        let tie_4dp = f64::from_bits(0x3f0a_36e2_eb1c_432d); // 5e-5
+        let mk_av_tie = |alt: &str, af: f64| AmpliconVariant {
+            variant: mk_good(120, 120, "A", alt, af),
+            gdamp: 1,
+            tlamp: 1,
+            ncamp: 0,
+            ampflag: false,
+            region: "chr1:100-150".to_string(),
+            good_variants: Vec::new(),
+            bad_variants: Vec::new(),
+        };
+        let vj_sel = amplicon_select_vcf_rows_compat(
+            vec![mk_av_tie("G", 0.0), mk_av_tie("T", tie_4dp)],
+            false,
+        );
+        assert_eq!(vj_sel.len(), 1);
+        assert_eq!(vj_sel[0].variant.var_allele, "G");
+
+        let off_sel = amplicon_select_vcf_rows_compat(
+            vec![mk_av_tie("G", 0.0), mk_av_tie("T", tie_4dp)],
+            true,
+        );
+        assert_eq!(off_sel.len(), 1);
+        assert_eq!(off_sel[0].variant.var_allele, "T");
     }
 }
