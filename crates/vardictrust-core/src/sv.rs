@@ -1088,7 +1088,7 @@ const MIN_INV_SCLIP_LEN: usize = 12;
 /// `CompatProfile::sv_respect_min_len` (`AstraZeneca-NGS/VarDictJava#328`,
 /// `AstraZeneca-NGS/VarDict#157`) so huge `-L` settings (e.g. `-L 1000000`) keep
 /// bounded per-tile heap usage (`AGENTS.md §10`).
-const MAX_EXPLICIT_SV_SEQ_BP: i32 = 32_768;
+pub(crate) const MAX_EXPLICIT_SV_SEQ_BP: i32 = 32_768;
 
 fn ensure_explicit_sv_span_loaded(
     chr: &str,

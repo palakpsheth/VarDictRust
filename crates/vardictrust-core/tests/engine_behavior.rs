@@ -4412,7 +4412,28 @@ mod vcf_all_alleles_and_compat_off {
 
         let mut dup_off_cfg = dup_vj_cfg.clone();
         dup_off_cfg.compat = COMPAT_OFF;
-        let dup_off_vcf = run_core_vcf(&dup_off_cfg).expect("dup OFF VCF");
+        // Under default `-L 1000` (`sv_respect_min_len`), `mlen = 80 < 1000` materializes
+        // the split-refined `<DUP>` into an explicit `TYPE=Insertion` allele (`AstraZeneca-NGS/VarDictJava#328`).
+        let dup_off_default_l_vcf = run_core_vcf(&dup_off_cfg).expect("dup OFF default -L VCF");
+        let dup_off_default_l_vars = extract_variants(&dup_off_default_l_vcf);
+        assert_eq!(dup_off_default_l_vars.len(), 1);
+        let expected_explicit_dup = format!(
+            "chr1\t199\t.\t{}\t{}{}\t",
+            dup_ref_seq[198] as char,
+            dup_ref_seq[198] as char,
+            std::str::from_utf8(&dup_ref_seq[199..279]).expect("ascii ref"),
+        );
+        assert!(
+            dup_off_default_l_vars[0].starts_with(&expected_explicit_dup)
+                && dup_off_default_l_vars[0].contains(";TYPE=Insertion;")
+                && !dup_off_default_l_vars[0].contains(";END="),
+            "COMPAT_OFF with default -L 1000 must materialize mlen=80 <DUP> as explicit Insertion without non-SV END, got:\n{}",
+            dup_off_default_l_vars[0]
+        );
+        // With `-L 50` (`mlen = 80 >= 50`), `COMPAT_OFF` keeps the symbolic `<DUP>` and
+        // normalizes `<dup-20>` to canonical 1-bp upstream `POS=199 ALT=<DUP> END=279 SVTYPE=DUP SVLEN=80`.
+        dup_off_cfg.sv_min_len = 50;
+        let dup_off_vcf = run_core_vcf(&dup_off_cfg).expect("dup OFF -L 50 VCF");
         let dup_off_vars = extract_variants(&dup_off_vcf);
         assert_eq!(dup_off_vars.len(), 1);
         assert!(
@@ -4423,7 +4444,7 @@ mod vcf_all_alleles_and_compat_off {
                 ))
                 && dup_off_vars[0].contains(";END=279;")
                 && dup_off_vars[0].contains(";SVTYPE=DUP;SVLEN=80;"),
-            "COMPAT_OFF must normalize AstraZeneca-NGS/VarDictJava#342 + clintval/vartovcf#192 mlen=80 <dup-20> to canonical 1-bp upstream POS=199 ALT=<DUP> END=279 SVTYPE=DUP SVLEN=80, got:\n{}",
+            "COMPAT_OFF (-L 50) must normalize AstraZeneca-NGS/VarDictJava#342 + clintval/vartovcf#192 mlen=80 <dup-20> to canonical 1-bp upstream POS=199 ALT=<DUP> END=279 SVTYPE=DUP SVLEN=80, got:\n{}",
             dup_off_vars[0]
         );
 
@@ -4774,8 +4795,8 @@ mod vcf_all_alleles_and_compat_off {
             !simple_p_off.lines().any(|l| {
                 let c: Vec<&str> = l.split('\t').collect();
                 c.get(3) == Some(&"0") || c.get(5) == Some(&"")
-            }) && simple_p_off.lines().count() >= 5,
-            "COMPAT_OFF Simple -p must suppress UB-1/UB-2 sentinel rows while retaining >=5 real rows, got:\n{simple_p_off}"
+            }) && simple_p_off.lines().count() >= 2,
+            "COMPAT_OFF Simple -p must suppress UB-1/UB-2 sentinel rows while retaining >=2 real rows, got:\n{simple_p_off}"
         );
 
         // --- Switch 7: live_duprate (dedup = true) untiled vs split-tile (--tile-size 60) ---
@@ -5572,10 +5593,10 @@ mod vcf_all_alleles_and_compat_off {
         assert!(
             !pr402_off_var.trim().is_empty()
                 && pr402_off_vars[0].starts_with("chr1\t115\t.\tAGAA\tA\t")
-                && pr402_off_vars[0].contains("TYPE=Complex;")
+                && pr402_off_vars[0].contains("TYPE=Deletion;")
                 && pr402_off_vars[1].starts_with("chr1\t118\t.\tAAAAAAAAAG\tA\t")
                 && pr402_off_vars[1].contains("TYPE=Deletion;"),
-            "expected rescued Complex + Deletion variants from PR #402 read, got:\n{}",
+            "expected rescued Deletion variants (with trimmed 14D11I -> AGAA/A reclassified from stale Complex to Deletion by clintval/vartovcf#109) from AstraZeneca-NGS/VarDictJava#402 read, got:\n{}",
             pr402_off_vars.join("\n")
         );
 
@@ -5654,6 +5675,7 @@ mod vcf_all_alleles_and_compat_off {
             sample: "UB5_S".to_string(),
             sample_explicit: true,
             region: Some("chr1:150-1350".to_string()),
+            sv_min_len: 100,
             freq: 0.01,
             af_threshold: 0.01,
             compat: COMPAT_VARDICTJAVA_1_8_3,
@@ -5762,6 +5784,7 @@ mod vcf_all_alleles_and_compat_off {
             sample: "UB6_S".to_string(),
             sample_explicit: true,
             region: Some("chr1:150-700".to_string()),
+            sv_min_len: 100,
             realign: 0,
             freq: 0.01,
             af_threshold: 0.01,
@@ -5882,9 +5905,10 @@ mod vcf_all_alleles_and_compat_off {
         assert!(
             inv3_vcf_u.contains("chr1\t200\t.\t")
                 && inv3_vcf_u.contains("\t<INV>\t")
-                && inv3_vcf_u.contains(";DP=12;END=9899;VD=8;")
-                && inv3_vcf_u.contains(";SVTYPE=INV;SVLEN=9699;"),
-            "expected canonical 1-bp upstream Side::Three <INV> at chr1:200 (AstraZeneca-NGS/VarDictJava#398) with END=9899 and mate-window DP=12 under COMPAT_OFF, got:\n{inv3_vcf_u}"
+                && inv3_vcf_u.contains(";DP=20;END=9899;VD=8;")
+                && inv3_vcf_u.contains(";SVTYPE=INV;SVLEN=9699;")
+                && inv3_vcf_u.contains("\t0/1:20:8:12,8:"),
+            "expected canonical 1-bp upstream Side::Three <INV> at chr1:200 (AstraZeneca-NGS/VarDictJava#398) with END=9899 and reconciled mate-window DP=20 (RD=12 + VD=8) under COMPAT_OFF, got:\n{inv3_vcf_u}"
         );
         let mut inv3_tiled_cfg = inv3_untiled_cfg.clone();
         inv3_tiled_cfg.tile_size = Some(1_000);
@@ -6009,10 +6033,11 @@ mod vcf_all_alleles_and_compat_off {
         );
         let tie_off_line = &extract_variants(&tie_off_vcf)[0];
         assert!(
-            tie_off_line.contains(";DP=20000;END=90;VD=1;AF=0.0001;")
+            tie_off_line.contains(";DP=20000;VD=1;AF=0.0001;")
+                && !tie_off_line.contains(";END=")
                 && tie_off_line.contains(";HIAF=0.0001;")
                 && tie_off_line.contains(":0.0001:"),
-            "COMPAT_OFF 1/20000 (5e-5) .vcf must emit AF=0.0001, HIAF=0.0001, and FORMAT AF=0.0001, got: {tie_off_line}"
+            "COMPAT_OFF 1/20000 (5e-5) .vcf must omit non-SV END= and emit AF=0.0001, HIAF=0.0001, and FORMAT AF=0.0001, got: {tie_off_line}"
         );
 
         // =========================================================================
@@ -6139,10 +6164,10 @@ mod vcf_all_alleles_and_compat_off {
         );
         assert!(
             inv_disc_vars_u[0].contains("\t<INV>\t")
-                && inv_disc_vars_u[0].contains(";DP=120;")
+                && inv_disc_vars_u[0].contains(";DP=134;")
                 && inv_disc_vars_u[0].contains(";VD=14;")
-                && inv_disc_vars_u[0].contains(";SPLITREAD=0;SPANPAIR=8\t"),
-            "COMPAT_OFF <INV> must report true mate-window DP=120 (NOT fabricated 2*cnt=16!) with SPLITREAD=0;SPANPAIR=8, got:\n{}",
+                && inv_disc_vars_u[0].contains(";SPLITREAD=0;SPANPAIR=8\tGT:DP:VD:AD:AF:RD:ALD\t0/1:134:14:120,14:"),
+            "COMPAT_OFF <INV> must report reconciled mate-window DP=134 (RD=120 + VD=14, NOT fabricated 2*cnt=16!) with SPLITREAD=0;SPANPAIR=8, got:\n{}",
             inv_disc_vars_u[0]
         );
 
@@ -6535,20 +6560,43 @@ mod vcf_all_alleles_and_compat_off {
         let native_vars = extract_variants(&sort_off_vcf_u);
         assert_eq!(native_vars.len(), 4);
 
-        // Pipe `COMPAT_OFF` `.var` into `perl VarDictJava/VarDict/var2vcf_valid.pl`
+        // Pipe isolated `coordinate_sorted_vars` `.var` into `perl VarDictJava/VarDict/var2vcf_valid.pl`
         if Command::new("perl")
             .arg("-v")
             .output()
             .is_ok_and(|o| o.status.success())
         {
+            let mut sort_iso_cfg = sort_vj_cfg.clone();
+            sort_iso_cfg.compat.coordinate_sorted_vars = true;
+            let sort_iso_var = run_core_var(&sort_iso_cfg).expect("sort_iso_var");
+            let sort_iso_vars =
+                extract_variants(&run_core_vcf(&sort_iso_cfg).expect("sort_iso_vcf"));
+            let perl_iso_vars = run_perl_var2vcf(
+                "var2vcf_valid.pl",
+                &["-N", "SORT_SMPL", "-E", "-f", "0.01"],
+                &sort_iso_var,
+            );
+            assert_eq!(
+                sort_iso_vars, perl_iso_vars,
+                "isolated coordinate_sorted_vars VCF must match perl var2vcf_valid.pl byte-for-byte"
+            );
+
             let perl_vars = run_perl_var2vcf(
                 "var2vcf_valid.pl",
                 &["-N", "SORT_SMPL", "-E", "-f", "0.01"],
                 &sort_off_var_u,
             );
+            let perl_canonical_gt: Vec<String> = perl_vars
+                .iter()
+                .map(|l| l.replace("\t1/0:", "\t0/1:"))
+                .collect();
+            assert!(
+                native_vars.iter().all(|l| !l.contains("\t1/0:")),
+                "COMPAT_OFF must canonicalize 1/0 -> 0/1: {native_vars:?}"
+            );
             assert_eq!(
-                native_vars, perl_vars,
-                "native COMPAT_OFF VCF must match perl var2vcf_valid.pl on coordinate-sorted .var"
+                native_vars, perl_canonical_gt,
+                "native COMPAT_OFF VCF must match perl var2vcf_valid.pl on coordinate-sorted .var with canonical 0/1 GT"
             );
         }
 
@@ -7522,6 +7570,344 @@ mod vcf_all_alleles_and_compat_off {
             run_core_vcf(&clean_som_vj).expect("clean som vj"),
             run_core_vcf(&clean_som_s21).expect("clean som s21"),
             "Switch 21 negative control must have 0-byte VCF diff on non-amplicon somatic pair"
+        );
+    }
+
+    #[test]
+    fn wave5_cross_module_compat_off_e2e() {
+        let dir = TempDir::new().expect("tempdir");
+
+        // =========================================================================
+        // 1. `-p` `pileup_preserve_shifted_ref` (`AstraZeneca-NGS/VarDictJava#330`)
+        //    + `strict_vcf_ad_number_r` (`clintval/vartovcf#101`)
+        //    + `omit_nonsv_vcf_end` (`clintval/vartovcf#105`):
+        //    At homopolymer start pos=61 (8-bp A run at 61..=68), all reads carry
+        //    either a 2D (61..=62) or 3D (61..=63) deletion with zero reference 'A'
+        //    reads at 61; both deletions shift 3' (`start_pos > 61`), leaving zero
+        //    variants at `start_pos == 61` and `ref_variant == None` under default `-p`.
+        //    Default `-p` drops pos 61; `COMPAT_OFF` hydrates & emits `ref_variant` at
+        //    pos 61 (`ALT=.`, single `AD`), monotonically sorted, and byte-identical
+        //    across untiled and `--tile-size 10`!
+        // =========================================================================
+        let mut p_ref = lcg_ref_bytes(0x0A15_0330_1234_5678, 220);
+        p_ref[59] = b'C'; // pos 60
+        for b in &mut p_ref[60..68] {
+            *b = b'A'; // 8-bp homopolymer at 61..=68 -> 2D & 3D both shift 3' past pos 61!
+        }
+        p_ref[68] = b'G'; // pos 69
+        let p_fa = write_multi_contig_fasta(dir.path(), "w5_pileup_330", &[("chr1", &p_ref)]);
+        let p_bam = dir.path().join("w5_pileup_330.bam");
+        let mut p_recs = Vec::new();
+        for (del_len, tag) in [(2usize, "d2"), (3usize, "d3")] {
+            for i in 0..4usize {
+                let start = 42 + (i % 2);
+                let left = 60 - start + 1; // match through pos 60, then del_len D starting at pos 61!
+                let right = 40usize;
+                let mut seq = p_ref[start - 1..60].to_vec();
+                seq.extend_from_slice(&p_ref[60 + del_len..60 + del_len + right]);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                p_recs.push(mk_contig_rec(
+                    &format!("p_{tag}_{i}"),
+                    0,
+                    flags,
+                    start,
+                    &[
+                        (left, Kind::Match),
+                        (del_len, Kind::Deletion),
+                        (right, Kind::Match),
+                    ],
+                    seq,
+                    vec![38; left + right],
+                    None,
+                ));
+            }
+        }
+        write_multi_contig_bam(&p_bam, &[("chr1", p_ref.len())], p_recs)
+            .expect("write w5_pileup_330.bam");
+
+        let p_vj_cfg = Config {
+            reference: p_fa.to_string_lossy().into_owned(),
+            bam: p_bam.to_string_lossy().into_owned(),
+            sample: "P330".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:55-75".to_string()),
+            pileup: true,
+            freq: -1.0,
+            af_threshold: 0.0,
+            omit_end_tag: false,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let p_vj_vcf = run_core_vcf(&p_vj_cfg).expect("p_vj_vcf");
+        let p_vj_pos: Vec<i32> = extract_variants(&p_vj_vcf)
+            .iter()
+            .map(|l| l.split('\t').nth(1).unwrap().parse::<i32>().unwrap())
+            .collect();
+        assert!(
+            !p_vj_pos.contains(&61),
+            "default VarDictJava -p must replicate AstraZeneca-NGS/VarDictJava#330 dropped anchor coordinate 61, got: {p_vj_pos:?}"
+        );
+
+        let mut p_off_cfg = p_vj_cfg.clone();
+        p_off_cfg.compat = COMPAT_OFF;
+        let p_off_var_u = run_core_var(&p_off_cfg).expect("p_off_var_u");
+        let p_off_vcf_u = run_core_vcf(&p_off_cfg).expect("p_off_vcf_u");
+        let mut p_off_tiled = p_off_cfg.clone();
+        p_off_tiled.tile_size = Some(10);
+        p_off_tiled.threads = 4;
+        assert_eq!(
+            p_off_var_u,
+            run_core_var(&p_off_tiled).expect("p_off_var_t"),
+            "COMPAT_OFF -p .var must match across untiled and split-tile runs"
+        );
+        assert_eq!(
+            p_off_vcf_u,
+            run_core_vcf(&p_off_tiled).expect("p_off_vcf_t"),
+            "COMPAT_OFF -p .vcf must match across untiled and split-tile runs"
+        );
+        let p_off_rows = extract_variants(&p_off_vcf_u);
+        let p_off_pos: Vec<i32> = p_off_rows
+            .iter()
+            .map(|l| l.split('\t').nth(1).unwrap().parse::<i32>().unwrap())
+            .collect();
+        // Positions 55..=61 and 64..=75 are covered (62..=63 are 100% deleted across all 8 reads, cov=0);
+        // crucially pos 61 (multi-deletion shifted anchor) IS retained under COMPAT_OFF!
+        for exp_p in (55..=61).chain(64..=75) {
+            assert!(
+                p_off_pos.contains(&exp_p),
+                "COMPAT_OFF -p must retain coordinate {exp_p}, got: {p_off_pos:?}"
+            );
+        }
+        assert!(
+            p_off_pos.windows(2).all(|w| w[0] <= w[1]) && !p_off_pos.contains(&0),
+            "COMPAT_OFF -p coordinates must be monotonic and free of pos-0 sentinels: {p_off_pos:?}"
+        );
+        for row in &p_off_rows {
+            let cols: Vec<&str> = row.split('\t').collect();
+            let alt = cols[4];
+            let info = cols[7];
+            let fmt_vals: Vec<&str> = cols[9].split(':').collect();
+            let ad_parts: Vec<&str> = fmt_vals[3].split(',').collect();
+            assert!(!info.contains(";END="), "non-SV row must omit END=: {row}");
+            if alt == "." {
+                assert_eq!(
+                    ad_parts.len(),
+                    1,
+                    "ALT=. must emit single-element AD (Number=R): {row}"
+                );
+            } else {
+                assert_eq!(
+                    ad_parts.len(),
+                    2,
+                    "ALT!=. must emit two-element AD (RD,VD): {row}"
+                );
+            }
+        }
+
+        // =========================================================================
+        // 2. `cigar_strip_outer_hard_clips` (`AstraZeneca-NGS/VarDictJava#341`,
+        //    `AstraZeneca-NGS/VarDictJava#103`, `Kennedy-Lab-UW/VarDictJava@9a0beb0d`):
+        //    Full `prescan -> CigarModifier -> cigar/parse -> tovars -> vcf` on
+        //    `SEQ`-matched `90M3D15M3I` vs `12H90M3D15M3I20H` vs `45M4P45M3D15M3I20H`
+        //    across untiled and `--tile-size 60` multi-tile runs.
+        // =========================================================================
+        let mut hc_ref = Vec::with_capacity(400);
+        for i in 0..400usize {
+            hc_ref.push(b"ACGT"[(i * 5 + (i / 3) * 3 + (i / 11)) % 4]);
+        }
+        let hc_fa = write_multi_contig_fasta(dir.path(), "w5_hc_twin", &[("chr1", &hc_ref)]);
+        let bam_clean = dir.path().join("w5_hc_clean.bam");
+        let bam_hclip = dir.path().join("w5_hc_outer.bam");
+        let bam_pad = dir.path().join("w5_hc_pad.bam");
+        let mut recs_clean = Vec::new();
+        let mut recs_hclip = Vec::new();
+        let mut recs_pad = Vec::new();
+        for i in 0..6usize {
+            let start = 80 + (i % 3);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt_seq = hc_ref[start - 1..start - 1 + 120].to_vec();
+            let wt_q = vec![38u8; 120];
+            let rname = format!("hc_wt_{i}");
+            recs_clean.push(mk_contig_rec(
+                &rname,
+                0,
+                flags,
+                start,
+                &[(120, Kind::Match)],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            recs_hclip.push(mk_contig_rec(
+                &rname,
+                0,
+                flags,
+                start,
+                &[
+                    (12, Kind::HardClip),
+                    (120, Kind::Match),
+                    (20, Kind::HardClip),
+                ],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            recs_pad.push(mk_contig_rec(
+                &rname,
+                0,
+                flags,
+                start,
+                &[
+                    (12, Kind::HardClip),
+                    (60, Kind::Match),
+                    (4, Kind::Pad),
+                    (60, Kind::Match),
+                    (20, Kind::HardClip),
+                ],
+                wt_seq,
+                wt_q,
+                None,
+            ));
+        }
+        // `90M3D15M3I` starting at pos 85: trailing `3I` adjacent to `20H` triggers AstraZeneca-NGS/VarDictJava#341 & AstraZeneca-NGS/VarDictJava#103!
+        for i in 0..6usize {
+            let start = 85;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut vseq = hc_ref[start - 1..start - 1 + 90].to_vec(); // 90M (85..=174)
+                                                                       // 3D skips 175..=177
+            vseq.extend_from_slice(&hc_ref[177..177 + 15]); // 15M (178..=192)
+            vseq.extend_from_slice(b"ACG"); // trailing 3I -> SEQ len = 108!
+            let vqual = vec![39u8; vseq.len()];
+            let rname = format!("hc_var_{i}");
+            recs_clean.push(mk_contig_rec(
+                &rname,
+                0,
+                flags,
+                start,
+                &[
+                    (90, Kind::Match),
+                    (3, Kind::Deletion),
+                    (15, Kind::Match),
+                    (3, Kind::Insertion),
+                ],
+                vseq.clone(),
+                vqual.clone(),
+                None,
+            ));
+            recs_hclip.push(mk_contig_rec(
+                &rname,
+                0,
+                flags,
+                start,
+                &[
+                    (12, Kind::HardClip),
+                    (90, Kind::Match),
+                    (3, Kind::Deletion),
+                    (15, Kind::Match),
+                    (3, Kind::Insertion),
+                    (20, Kind::HardClip),
+                ],
+                vseq.clone(),
+                vqual.clone(),
+                None,
+            ));
+            recs_pad.push(mk_contig_rec(
+                &rname,
+                0,
+                flags,
+                start,
+                &[
+                    (12, Kind::HardClip),
+                    (45, Kind::Match),
+                    (4, Kind::Pad),
+                    (45, Kind::Match),
+                    (3, Kind::Deletion),
+                    (15, Kind::Match),
+                    (3, Kind::Insertion),
+                    (20, Kind::HardClip),
+                ],
+                vseq,
+                vqual,
+                None,
+            ));
+        }
+        write_multi_contig_bam(&bam_clean, &[("chr1", hc_ref.len())], recs_clean)
+            .expect("bam_clean");
+        write_multi_contig_bam(&bam_hclip, &[("chr1", hc_ref.len())], recs_hclip)
+            .expect("bam_hclip");
+        write_multi_contig_bam(&bam_pad, &[("chr1", hc_ref.len())], recs_pad).expect("bam_pad");
+
+        let mk_hc_cfg = |bam_p: &std::path::Path, compat, tile: Option<u32>| Config {
+            reference: hc_fa.to_string_lossy().into_owned(),
+            bam: bam_p.to_string_lossy().into_owned(),
+            sample: "HC_TWIN".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:70-260".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            tile_size: tile,
+            threads: if tile.is_some() { 4 } else { 1 },
+            compat,
+            ..Config::default()
+        };
+        let vj_clean_vcf = run_core_vcf(&mk_hc_cfg(&bam_clean, COMPAT_VARDICTJAVA_1_8_3, None))
+            .expect("vj_clean_vcf");
+        let vj_hclip_vcf = run_core_vcf(&mk_hc_cfg(&bam_hclip, COMPAT_VARDICTJAVA_1_8_3, None))
+            .expect("vj_hclip_vcf");
+        assert_ne!(
+            vj_clean_vcf, vj_hclip_vcf,
+            "default VarDictJava mode must preserve upstream AstraZeneca-NGS/VarDictJava#341 & AstraZeneca-NGS/VarDictJava#103 divergence on 12H90M3D15M3I20H"
+        );
+
+        let off_clean_var_u =
+            run_core_var(&mk_hc_cfg(&bam_clean, COMPAT_OFF, None)).expect("off_clean_var_u");
+        let off_hclip_var_u =
+            run_core_var(&mk_hc_cfg(&bam_hclip, COMPAT_OFF, None)).expect("off_hclip_var_u");
+        let off_pad_var_u =
+            run_core_var(&mk_hc_cfg(&bam_pad, COMPAT_OFF, None)).expect("off_pad_var_u");
+        let off_clean_vcf_u =
+            run_core_vcf(&mk_hc_cfg(&bam_clean, COMPAT_OFF, None)).expect("off_clean_vcf_u");
+        let off_hclip_vcf_u =
+            run_core_vcf(&mk_hc_cfg(&bam_hclip, COMPAT_OFF, None)).expect("off_hclip_vcf_u");
+        let off_pad_vcf_u =
+            run_core_vcf(&mk_hc_cfg(&bam_pad, COMPAT_OFF, None)).expect("off_pad_vcf_u");
+        assert!(
+            !extract_variants(&off_clean_vcf_u).is_empty(),
+            "expected rescued deletion/insertion calls on 90M3D15M3I"
+        );
+        assert_eq!(
+            off_clean_var_u, off_hclip_var_u,
+            "untiled .var clean == outer H"
+        );
+        assert_eq!(
+            off_clean_var_u, off_pad_var_u,
+            "untiled .var clean == outer H + interior P"
+        );
+        assert_eq!(
+            off_clean_vcf_u, off_hclip_vcf_u,
+            "untiled .vcf clean == outer H"
+        );
+        assert_eq!(
+            off_clean_vcf_u, off_pad_vcf_u,
+            "untiled .vcf clean == outer H + interior P"
+        );
+        assert_eq!(
+            off_clean_vcf_u,
+            run_core_vcf(&mk_hc_cfg(&bam_hclip, COMPAT_OFF, Some(60))).expect("off_hclip_vcf_t60"),
+            "multi-tile (--tile-size 60) .vcf on 12H90M3D15M3I20H must match untiled clean BAM byte-for-byte"
         );
     }
 }

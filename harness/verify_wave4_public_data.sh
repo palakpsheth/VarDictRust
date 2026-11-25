@@ -651,7 +651,7 @@ sv_cases = [
     ("Colo829_DELDiscReverse", fa_hg19, f"{vj_bams}/Colo829.chr10.DELDiscReverse.bam", ["-R", "chr10:89700380-89713976", "-f", "0.001"]),
     ("Colo829_LGDEL3", fa_hg19, f"{vj_bams}/Colo829.chr10.LGDEL3.bam", ["-R", "chr10:127187158-127201055", "-f", "0.001"]),
     ("Colo829_DELSV3Unhappy", fa_hg19, f"{vj_bams}/Colo829.chr20.DELSV3Unhappy.bam", ["-R", "chr20:54434600-54441423", "-f", "0.001"]),
-    ("Colo829_DUPDiscSV", fa_hg19, f"{vj_bams}/Colo829.chr20.DUPDiscSV.bam", ["-R", "chr20:47124929-47131802", "-f", "0.001"]),
+    ("Colo829_DUPDiscSV", fa_hg19, f"{vj_bams}/Colo829.chr20.DUPDiscSV.bam", ["-R", "chr20:47124929-47131802", "-f", "0.001", "-L", "500"]),
     ("Colo829_INVSV", fa_hg19, f"{vj_bams}/Colo829.chr20.INVSV.bam", ["-R", "chr20:46841554-46845755", "-f", "0.001"]),
     ("Colo829_MarkingDUPSV", fa_hg19, f"{vj_bams}/Colo829.chr20.MarkingDUPSV.bam", ["-R", "chr20:47131954-47132045", "-f", "0.001", "-L", "100"]),
     ("Colo829_CandDel5SV", fa_hg19, f"{vj_bams}/Colo829.chr20.CandDel5SV.bam", ["-R", "chr20:506395-507295", "-f", "0.001", "-L", "100"]),

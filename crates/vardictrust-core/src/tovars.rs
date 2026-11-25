@@ -100,7 +100,12 @@ fn clamp_nonneg_pos_zero(v: f64) -> f64 {
 /// (`AstraZeneca-NGS/VarDictJava#316`, `clintval/vartovcf#120`, `clintval/vartovcf#142`)
 /// into `(vd, fwd, rev, hicnt, locnt)` without signed `.clamp(0, cnt)` panics or `0 / 0`.
 #[inline]
-fn reconcile_strand_and_hq(cnt: i32, fwd: i32, rev: i32, hicnt: i32) -> (i32, i32, i32, i32, i32) {
+pub(crate) fn reconcile_strand_and_hq(
+    cnt: i32,
+    fwd: i32,
+    rev: i32,
+    hicnt: i32,
+) -> (i32, i32, i32, i32, i32) {
     let vd = cnt.max(0);
     let hicnt_eff = hicnt.max(0).min(vd);
     let locnt_eff = vd.saturating_sub(hicnt_eff);
@@ -1725,7 +1730,13 @@ impl<'a> ToVarsBuilder<'a> {
         if !variations_at_pos.variants.is_empty() {
             let standard_dup_symbolic_alt = self.config.compat.standard_dup_symbolic_alt;
             let canonical_sv_vcf_anchoring = self.config.compat.canonical_sv_vcf_anchoring;
-            let sv_min_len = self.config.sv_min_len;
+            let sv_min_len = if self.config.compat.sv_respect_min_len {
+                self.config
+                    .sv_min_len
+                    .min(crate::sv::MAX_EXPLICIT_SV_SEQ_BP as u32)
+            } else {
+                self.config.sv_min_len
+            };
             let mut gt1_buf = crate::types::StackBuf::<24>::new();
             let genotype1_current: std::borrow::Cow<'_, str> =
                 if let Some(ref ref_var) = variations_at_pos.ref_variant {

@@ -4325,7 +4325,12 @@ pub fn realignlgins(
         (0, 0)
     };
     let min_reads = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
-    let sv_min_len = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
+    let raw_sv_min_len = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
+    let sv_min_len = if config.compat.sv_respect_min_len {
+        raw_sv_min_len.min(crate::sv::MAX_EXPLICIT_SV_SEQ_BP)
+    } else {
+        raw_sv_min_len
+    };
     let extension = 5000;
     let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
     let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
