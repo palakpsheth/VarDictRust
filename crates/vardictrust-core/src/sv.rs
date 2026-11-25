@@ -1328,6 +1328,15 @@ fn find_inv_sub_paths(
     let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
+    let conseq_dir = if config.compat.adaptor_all_consensus_dirs {
+        if dir == 1 {
+            3
+        } else {
+            5
+        }
+    } else {
+        0
+    };
     let max_read_length = var_data.max_read_length;
     let mut max_extra_ref_span = if config.compat.sv_lazy_mate_pileup {
         max_splice_and_del_ref_span(var_data)
@@ -1457,7 +1466,7 @@ fn find_inv_sub_paths(
             }
             seq = crate::variations::util::find_conseq_sets(
                 scv_mut,
-                0,
+                conseq_dir,
                 &adaptor_forward,
                 &adaptor_reverse,
             );
@@ -1513,7 +1522,7 @@ fn find_inv_sub_paths(
                 }
                 let seq_check = crate::variations::util::find_conseq_sets(
                     scv_mut,
-                    0,
+                    conseq_dir,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
@@ -1993,6 +2002,11 @@ fn find_del_paths(
     let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
+    let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
+        (5, 3)
+    } else {
+        (0, 0)
+    };
     let mut seq_stack = [0u8; 512];
     let mut seq_heap = Vec::new();
     let mut key_buf = crate::types::StackBuf::<16>::new();
@@ -2030,7 +2044,7 @@ fn find_del_paths(
                 }
                 let s = crate::variations::util::find_conseq_slice(
                     scv,
-                    0,
+                    conseq_dir3,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
@@ -2222,7 +2236,7 @@ fn find_del_paths(
                 }
                 let seq = crate::variations::util::find_conseq_slice(
                     scv,
-                    0,
+                    conseq_dir3,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
@@ -2356,7 +2370,7 @@ fn find_del_paths(
                 }
                 let s = crate::variations::util::find_conseq_slice(
                     scv,
-                    0,
+                    conseq_dir5,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
@@ -2512,7 +2526,7 @@ fn find_del_paths(
                 }
                 let seq = crate::variations::util::find_conseq_slice(
                     scv,
-                    0,
+                    conseq_dir5,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
@@ -2675,6 +2689,11 @@ pub fn find_sv(
     }
 
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
+    let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
+        (5, 3)
+    } else {
+        (0, 0)
+    };
     let softp2sv = build_softp2sv_map(&var_data.sv_structures);
     let mut key_buf = crate::types::StackBuf::<16>::new();
     let mut key_heap = String::new();
@@ -2706,7 +2725,7 @@ pub fn find_sv(
             };
             let seq = crate::variations::util::find_conseq_sets(
                 sc5v,
-                0,
+                conseq_dir5,
                 &adaptor_forward,
                 &adaptor_reverse,
             );
@@ -2908,7 +2927,7 @@ pub fn find_sv(
             };
             let seq = crate::variations::util::find_conseq_sets(
                 sc3v,
-                0,
+                conseq_dir3,
                 &adaptor_forward,
                 &adaptor_reverse,
             );
@@ -3882,6 +3901,35 @@ fn find_dup_disc_paths(
     let min_reads_plus_5 = i64::from(config.min_reads) + 5;
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
+    let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
+        (5, 3)
+    } else {
+        (0, 0)
+    };
+
+    /// Under `CompatProfile::canonical_sv_vcf_anchoring` (`clintval/vartovcf#192`), shift
+    /// discordant/clip `<dupN>` map keys from `bp` to `bp - 1` (`pre_anchored_dup = true`)
+    /// whenever `bp > 1` and `reference` holds a loaded non-`N` base at `bp - 1`, aligning
+    /// `sv.rs` `<DUP>` keys with `realignlgins` (`bi = bp - 1`) for paired `SomaticMode`.
+    #[inline]
+    fn resolve_dup_anchor(
+        reference: &Reference,
+        chr: &str,
+        bp: i32,
+        canonical_sv_vcf_anchoring: bool,
+    ) -> (i32, bool) {
+        if canonical_sv_vcf_anchoring
+            && bp > 1
+            && u32::try_from(bp - 1)
+                .ok()
+                .and_then(|pos| reference.get_base(chr, pos))
+                .is_some_and(|b| b != b'N' && b != b'n')
+        {
+            (bp - 1, true)
+        } else {
+            (bp, false)
+        }
+    }
 
     let n_svfdup = var_data.sv_structures.svfdup.len();
     for idx in 0..n_svfdup {
@@ -3969,7 +4017,7 @@ fn find_dup_disc_paths(
 
                 let seq = crate::variations::util::find_conseq_slice(
                     current_sclip3,
-                    0,
+                    conseq_dir3,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
@@ -4019,15 +4067,17 @@ fn find_dup_disc_paths(
         let ins5 = crate::util::join_ref(reference, chr, bp, bp.saturating_add(49));
         let ins3 = crate::util::join_ref(reference, chr, pe.saturating_sub(49), pe);
         let ins = format!("{}<dup{}>{}", ins5, mlen.saturating_sub(100), ins3);
+        let plus_ins = format!("+{}", ins);
+        let (anchor, pre_anchored_dup) =
+            resolve_dup_anchor(reference, chr, bp, config.compat.canonical_sv_vcf_anchoring);
 
-        let vref = crate::variations::get_variation(
-            &mut var_data.insertion_variants,
-            bp,
-            &format!("+{}", ins),
-        );
+        let vref =
+            crate::variations::get_variation(&mut var_data.insertion_variants, anchor, &plus_ins);
         vref.cnt = 0;
+        vref.pre_anchored_dup = pre_anchored_dup;
 
-        let sv = crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
+        let sv =
+            crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, anchor);
         sv.r#type = "DUP".to_string();
         sv.pairs = sv.pairs.saturating_add(vars_count);
         let dup_softp = var_data
@@ -4056,24 +4106,22 @@ fn find_dup_disc_paths(
         tmp.mqmean = Qmeanf + Qmeanr;
         tmp.nm = nmf + nmr;
 
-        let vref_mut = crate::variations::get_variation(
-            &mut var_data.insertion_variants,
-            bp,
-            &format!("+{}", ins),
-        );
+        let vref_mut =
+            crate::variations::get_variation(&mut var_data.insertion_variants, anchor, &plus_ins);
         crate::variations::util::adj_cnt(vref_mut, &tmp, None);
+        vref_mut.pre_anchored_dup = pre_anchored_dup;
 
         if let Some(dup_mut) = var_data.sv_structures.svfdup.get_mut(idx) {
             dup_mut.used = true;
         }
 
-        if !var_data.ref_coverage.contains_key(&bp) {
-            var_data.ref_coverage.insert(bp, tcnt);
+        if !var_data.ref_coverage.contains_key(&anchor) {
+            var_data.ref_coverage.insert(anchor, tcnt);
         }
-        let bp_cov = var_data.ref_coverage.get(&bp).copied().unwrap_or(0);
+        let anchor_cov = var_data.ref_coverage.get(&anchor).copied().unwrap_or(0);
         let end_cov = var_data.ref_coverage.get(&end).copied().unwrap_or(0);
-        if bp_cov < end_cov {
-            var_data.ref_coverage.insert(bp, end_cov);
+        if anchor_cov < end_cov {
+            var_data.ref_coverage.insert(anchor, end_cov);
         }
 
         let mut svrdup_mut_refs = [&mut var_data.sv_structures.svrdup];
@@ -4090,8 +4138,10 @@ fn find_dup_disc_paths(
             verbose,
         );
         {
-            let sv =
-                crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
+            let sv = crate::variations::VariationMap::get_sv(
+                &mut var_data.non_insertion_variants,
+                anchor,
+            );
             sv.clusters = sv.clusters.saturating_add(clusters);
         }
     }
@@ -4175,7 +4225,7 @@ fn find_dup_disc_paths(
 
                 let seq = crate::variations::util::find_conseq_slice(
                     current_sclip5,
-                    0,
+                    conseq_dir5,
                     &adaptor_forward,
                     &adaptor_reverse,
                 );
@@ -4220,17 +4270,20 @@ fn find_dup_disc_paths(
         let ins5 = crate::util::join_ref(reference, chr, bp, bp.saturating_add(49));
         let ins3 = crate::util::join_ref(reference, chr, pe.saturating_sub(49), pe);
         let ins = format!("{}<dup{}>{}", ins5, mlen.saturating_sub(100), ins3);
+        let plus_ins = format!("+{}", ins);
+        let (anchor, pre_anchored_dup) =
+            resolve_dup_anchor(reference, chr, bp, config.compat.canonical_sv_vcf_anchoring);
 
-        let vref = crate::variations::get_variation(
-            &mut var_data.insertion_variants,
-            bp,
-            &format!("+{}", ins),
-        );
+        let vref =
+            crate::variations::get_variation(&mut var_data.insertion_variants, anchor, &plus_ins);
         vref.cnt = 0;
+        vref.pre_anchored_dup = pre_anchored_dup;
 
         {
-            let sv =
-                crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
+            let sv = crate::variations::VariationMap::get_sv(
+                &mut var_data.non_insertion_variants,
+                anchor,
+            );
             sv.r#type = "DUP".to_string();
             sv.pairs = sv.pairs.saturating_add(vars_count);
             sv.splits = sv.splits.saturating_add(
@@ -4264,24 +4317,22 @@ fn find_dup_disc_paths(
         tmp.mqmean = Qmeanf + Qmeanr;
         tmp.nm = nmf + nmr;
 
-        let vref_mut = crate::variations::get_variation(
-            &mut var_data.insertion_variants,
-            bp,
-            &format!("+{}", ins),
-        );
+        let vref_mut =
+            crate::variations::get_variation(&mut var_data.insertion_variants, anchor, &plus_ins);
         crate::variations::util::adj_cnt(vref_mut, &tmp, None);
+        vref_mut.pre_anchored_dup = pre_anchored_dup;
 
         if let Some(dup_mut) = var_data.sv_structures.svrdup.get_mut(idx) {
             dup_mut.used = true;
         }
 
-        if !var_data.ref_coverage.contains_key(&bp) {
-            var_data.ref_coverage.insert(bp, tcnt);
+        if !var_data.ref_coverage.contains_key(&anchor) {
+            var_data.ref_coverage.insert(anchor, tcnt);
         }
-        let bp_cov = var_data.ref_coverage.get(&bp).copied().unwrap_or(0);
+        let anchor_cov = var_data.ref_coverage.get(&anchor).copied().unwrap_or(0);
         let mend_cov = var_data.ref_coverage.get(&mend).copied().unwrap_or(0);
-        if bp_cov < mend_cov {
-            var_data.ref_coverage.insert(bp, mend_cov);
+        if anchor_cov < mend_cov {
+            var_data.ref_coverage.insert(anchor, mend_cov);
         }
 
         let mut svfdup_mut_refs = [&mut var_data.sv_structures.svfdup];
@@ -4293,8 +4344,10 @@ fn find_dup_disc_paths(
             verbose,
         );
         {
-            let sv =
-                crate::variations::VariationMap::get_sv(&mut var_data.non_insertion_variants, bp);
+            let sv = crate::variations::VariationMap::get_sv(
+                &mut var_data.non_insertion_variants,
+                anchor,
+            );
             sv.clusters = sv.clusters.saturating_add(clusters);
         }
     }
@@ -6847,15 +6900,30 @@ mod tests {
             .unwrap();
         assert_eq!(sv_leg.clusters, 1);
 
+        let vd_ub6_only = run_split_case(crate::config::CompatProfile {
+            mark_dup_sv_inclusive_end: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        });
+        assert_eq!(
+            vd_ub6_only
+                .non_insertion_variants
+                .get(&200)
+                .and_then(|vm| vm.sv.as_ref())
+                .unwrap()
+                .clusters,
+            2
+        );
+
         let vd_off = run_split_case(crate::config::COMPAT_OFF);
+        // Under full `COMPAT_OFF` (`canonical_sv_vcf_anchoring = true`), `<dupN>` shifts from
+        // `bp = 200` to `anchor = bp - 1 = 199` while keeping identical `ins5`/`ins3` flanks.
         let sv_off = vd_off
             .non_insertion_variants
-            .get(&200)
+            .get(&199)
             .and_then(|vm| vm.sv.as_ref())
             .unwrap();
         assert_eq!(sv_off.clusters, 2);
         assert!(vd_off.sv_structures.svrdup[0].used);
-        // Verify ins3 / allele description at bp=200 is identical (pe = 499 kept for ins3 and end).
         let keys_leg: Vec<&str> = vd_leg
             .insertion_variants
             .get(&200)
@@ -6865,7 +6933,7 @@ mod tests {
             .collect();
         let keys_off: Vec<&str> = vd_off
             .insertion_variants
-            .get(&200)
+            .get(&199)
             .unwrap()
             .map
             .keys()
@@ -7917,11 +7985,12 @@ mod tests {
                 Some(&7),
                 "downstream [1050, 1150] cluster must NOT be starved by phantom +500 bam_piled_spans"
             );
-            // bp = 1050 - (100 / 10) / 2 = 1045; verify 50-bp ins5 flank before "<dup"
+            // bp = 1050 - (100 / 10) / 2 = 1045 (`COMPAT_OFF` shifts `<dupN>` key to `bp - 1 = 1044`);
+            // verify 50-bp ins5 flank before "<dup"
             let dup_entry = vd
                 .insertion_variants
-                .get(&1_045)
-                .expect("expected DUP insertion at bp=1045");
+                .get(&1_044)
+                .expect("expected DUP insertion at anchor = bp - 1 = 1044 under COMPAT_OFF");
             let dup_key = dup_entry.map.keys().next().unwrap();
             let prefix_before_dup = dup_key.split("<dup").next().unwrap();
             assert_eq!(
@@ -8273,6 +8342,599 @@ mod tests {
                 vd.non_insertion_variants.contains_key(&3_902),
                 "expected INV at softp=3902 when mend > chr_len clamps cleanly"
             );
+        }
+    }
+
+    mod wave4_task_2d_tests {
+        use super::*;
+        use std::collections::BTreeMap;
+
+        const TRUSEQ_ADAPTER_3P: &[u8] = b"AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC";
+        const TRUSEQ_ADAPTER_5P: &[u8] = b"TCTAGCCTTCTCGTGTGCAGACTTGAGGTCAGTG";
+
+        fn fresh_sclip_with_nt(seq: &[u8], cnt: i32) -> Sclip {
+            let mut sc = Sclip::new();
+            sc.variation.cnt = cnt;
+            sc.variation.hicnt = cnt;
+            sc.variation.fwd = cnt / 2;
+            sc.variation.rev = cnt - cnt / 2;
+            sc.variation.qmean = 35.0 * (cnt as f64);
+            sc.variation.mqmean = 60.0 * (cnt as f64);
+            sc.variation.pmean = 25.0 * (cnt as f64);
+            for (idx, &b) in seq.iter().enumerate() {
+                sc.nt.insert(idx as i32, BTreeMap::from([(b, cnt)]));
+            }
+            assert!(sc.sequence.is_none());
+            sc
+        }
+
+        fn build_ref(chr: &str, ref_len: usize) -> (Reference, Vec<u8>) {
+            let motif = b"ACGTTGCAAGCTTAGCGATCGATCCGTAAGCT";
+            let seq: Vec<u8> = (0..ref_len).map(|i| motif[i % motif.len()]).collect();
+            let mut r = Reference::new();
+            r.loaded_regions.push(crate::reference::LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: ref_len as u32,
+            });
+            r.region_sequences.push(seq.clone());
+            r.reference_sequences.insert(chr.to_string(), seq.clone());
+            (r, seq)
+        }
+
+        /// Exercises all 10 flipped `sv.rs` `find_conseq*` call sites (`find_inv_sub_paths`
+        /// `:1458` & `:1514` across both `dir == 1` and `dir == -1`, `find_del_paths` `:2031`,
+        /// `:2223`, `:2357`, `:2513`, `find_sv` `:2707`, `:2909`, and `find_dup_disc_paths`
+        /// `:3970`, `:4176`) under `adaptor_all_consensus_dirs` (`AstraZeneca-NGS/VarDictJava#240`,
+        /// `AstraZeneca-NGS/VarDictJava#241`, `AstraZeneca-NGS/VarDict#119`).
+        #[test]
+        fn sv_all_10_consensus_sites_strip_3p_and_5p_truseq_adapters() {
+            let chr = "chr1";
+            let ref_len = 2_000usize;
+            let chr_lengths = HashMap::from([(chr.to_string(), ref_len)]);
+            let truseq_vec = vec![String::from_utf8_lossy(TRUSEQ_ADAPTER_3P).into_owned()];
+
+            let run_all_10_sv_sites = |compat: crate::config::CompatProfile| {
+                let (mut reference, _) = build_ref(chr, ref_len);
+                let mut cfg = Config::default();
+                cfg.min_reads = 2;
+                cfg.adaptor = truseq_vec.clone();
+                cfg.compat = compat;
+
+                let mut vd = crate::variations::VariationData::default();
+                vd.max_read_length = 100;
+                vd.sv_structures_filtered = true;
+                let mut bam_piled = vec![(1, ref_len as i32)];
+
+                // Sites 1 & 2 (`find_inv_sub_paths` `:1458` softp != 0 & `:1514` softp == 0 scan,
+                // across both `dir = 1` -> `soft_clips_3_end` and `dir = -1` -> `soft_clips_5_end`):
+                let mut inv_f5_soft = Sclip::new();
+                inv_f5_soft.start = 100;
+                inv_f5_soft.end = 150;
+                inv_f5_soft.mstart = 400;
+                inv_f5_soft.mend = 450;
+                inv_f5_soft.variation.cnt = 4;
+                inv_f5_soft.soft.insert(150, 4);
+                vd.sv_structures.svfinv5.push(inv_f5_soft);
+                vd.soft_clips_3_end
+                    .insert(150, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 4));
+
+                let mut inv_f5_scan = Sclip::new();
+                inv_f5_scan.start = 200;
+                inv_f5_scan.end = 250;
+                inv_f5_scan.mstart = 500;
+                inv_f5_scan.mend = 550;
+                inv_f5_scan.variation.cnt = 4;
+                vd.sv_structures.svfinv5.push(inv_f5_scan);
+                vd.soft_clips_3_end
+                    .insert(260, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 4));
+
+                let mut inv_r5_soft = Sclip::new();
+                inv_r5_soft.start = 300;
+                inv_r5_soft.end = 350;
+                inv_r5_soft.mstart = 600;
+                inv_r5_soft.mend = 650;
+                inv_r5_soft.variation.cnt = 4;
+                inv_r5_soft.soft.insert(300, 4);
+                vd.sv_structures.svrinv5.push(inv_r5_soft);
+                vd.soft_clips_5_end
+                    .insert(300, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 4));
+
+                let mut inv_r5_scan = Sclip::new();
+                inv_r5_scan.start = 380;
+                inv_r5_scan.end = 420;
+                inv_r5_scan.mstart = 700;
+                inv_r5_scan.mend = 750;
+                inv_r5_scan.variation.cnt = 4;
+                vd.sv_structures.svrinv5.push(inv_r5_scan);
+                vd.soft_clips_5_end
+                    .insert(370, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 4));
+
+                find_inv_sub_paths(
+                    0,
+                    1,
+                    Side::Five,
+                    &mut vd,
+                    &[],
+                    &mut reference,
+                    chr,
+                    &cfg,
+                    &chr_lengths,
+                    &mut bam_piled,
+                )
+                .unwrap();
+                find_inv_sub_paths(
+                    1,
+                    -1,
+                    Side::Five,
+                    &mut vd,
+                    &[],
+                    &mut reference,
+                    chr,
+                    &cfg,
+                    &chr_lengths,
+                    &mut bam_piled,
+                )
+                .unwrap();
+
+                // Sites 3, 4, 5, 6 (`find_del_paths`: `:2031`, `:2223`, `:2357`, `:2513`):
+                let mut fdel_soft = Sclip::new();
+                fdel_soft.start = 800;
+                fdel_soft.end = 850;
+                fdel_soft.mstart = 1_100;
+                fdel_soft.mend = 1_150;
+                fdel_soft.variation.cnt = 4;
+                fdel_soft.soft.insert(850, 4);
+                vd.sv_structures.svfdel.push(fdel_soft);
+                vd.soft_clips_3_end
+                    .insert(850, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 4));
+
+                let mut fdel_scan = Sclip::new();
+                fdel_scan.start = 900;
+                fdel_scan.end = 950;
+                fdel_scan.mstart = 1_200;
+                fdel_scan.mend = 1_250;
+                fdel_scan.variation.cnt = 4;
+                vd.sv_structures.svfdel.push(fdel_scan);
+                vd.soft_clips_3_end
+                    .insert(960, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 4));
+
+                let mut rdel_soft = Sclip::new();
+                rdel_soft.start = 1_300;
+                rdel_soft.end = 1_350;
+                rdel_soft.mstart = 1_000;
+                rdel_soft.mend = 1_050;
+                rdel_soft.variation.cnt = 4;
+                rdel_soft.soft.insert(1_300, 4);
+                vd.sv_structures.svrdel.push(rdel_soft);
+                vd.soft_clips_5_end
+                    .insert(1_300, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 4));
+
+                let mut rdel_scan = Sclip::new();
+                rdel_scan.start = 1_400;
+                rdel_scan.end = 1_450;
+                rdel_scan.mstart = 1_060;
+                rdel_scan.mend = 1_090;
+                rdel_scan.variation.cnt = 4;
+                vd.sv_structures.svrdel.push(rdel_scan);
+                vd.soft_clips_5_end
+                    .insert(1_390, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 4));
+
+                find_del_paths(
+                    &mut vd,
+                    &[],
+                    &mut reference,
+                    chr,
+                    &cfg,
+                    &chr_lengths,
+                    &mut bam_piled,
+                )
+                .unwrap();
+
+                // Sites 7 & 8 (`find_sv`: `:2707` tmp5 & `:2909` tmp3):
+                let mut vd_sv = crate::variations::VariationData::default();
+                vd_sv.max_read_length = 100;
+                vd_sv
+                    .soft_clips_5_end
+                    .insert(500, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 5));
+                vd_sv
+                    .soft_clips_3_end
+                    .insert(550, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 5));
+                find_sv(
+                    &mut vd_sv,
+                    &mut reference,
+                    chr,
+                    1,
+                    ref_len as i32,
+                    &cfg,
+                    &chr_lengths,
+                )
+                .unwrap();
+
+                // Sites 9 & 10 (`find_dup_disc_paths`: `:3970` svfdup & `:4176` svrdup):
+                let mut vd_dup = crate::variations::VariationData::default();
+                vd_dup.max_read_length = 100;
+                let mut fdup = Sclip::new();
+                fdup.start = 1_550;
+                fdup.end = 1_600;
+                fdup.mstart = 1_200;
+                fdup.mend = 1_250;
+                fdup.variation.cnt = 10;
+                fdup.variation.mqmean = 600.0;
+                fdup.variation.qmean = 350.0;
+                fdup.variation.pmean = 200.0;
+                fdup.softp = 1_600;
+                fdup.soft.insert(1_600, 5);
+                vd_dup.sv_structures.svfdup.push(fdup);
+                vd_dup
+                    .soft_clips_3_end
+                    .insert(1_600, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 5));
+
+                let mut rdup = Sclip::new();
+                rdup.start = 1_650;
+                rdup.end = 1_700;
+                rdup.mstart = 1_850;
+                rdup.mend = 1_900;
+                rdup.variation.cnt = 10;
+                rdup.variation.mqmean = 600.0;
+                rdup.variation.qmean = 350.0;
+                rdup.variation.pmean = 200.0;
+                rdup.softp = 1_650;
+                rdup.soft.insert(1_650, 5);
+                vd_dup.sv_structures.svrdup.push(rdup);
+                vd_dup
+                    .soft_clips_5_end
+                    .insert(1_650, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 5));
+
+                find_dup_disc_paths(
+                    &mut vd_dup,
+                    &[],
+                    &mut reference,
+                    chr,
+                    &cfg,
+                    &chr_lengths,
+                    &mut bam_piled,
+                )
+                .unwrap();
+
+                (vd, vd_sv, vd_dup)
+            };
+
+            let (vd_leg, vd_sv_leg, vd_dup_leg) =
+                run_all_10_sv_sites(crate::config::COMPAT_VARDICTJAVA_1_8_3);
+            for pos3 in [150, 260, 850, 960] {
+                assert_eq!(
+                    vd_leg.soft_clips_3_end[&pos3].sequence.as_deref(),
+                    Some(TRUSEQ_ADAPTER_3P),
+                    "legacy pos3={pos3}"
+                );
+            }
+            for pos5 in [300, 370, 1_300, 1_390] {
+                assert_eq!(
+                    vd_leg.soft_clips_5_end[&pos5].sequence.as_deref(),
+                    Some(TRUSEQ_ADAPTER_5P),
+                    "legacy pos5={pos5}"
+                );
+            }
+            assert_eq!(
+                vd_sv_leg.soft_clips_5_end[&500].sequence.as_deref(),
+                Some(TRUSEQ_ADAPTER_5P)
+            );
+            assert_eq!(
+                vd_sv_leg.soft_clips_3_end[&550].sequence.as_deref(),
+                Some(TRUSEQ_ADAPTER_3P)
+            );
+            assert_eq!(
+                vd_dup_leg.soft_clips_3_end[&1_600].sequence.as_deref(),
+                Some(TRUSEQ_ADAPTER_3P)
+            );
+            assert_eq!(
+                vd_dup_leg.soft_clips_5_end[&1_650].sequence.as_deref(),
+                Some(TRUSEQ_ADAPTER_5P)
+            );
+
+            let (vd_off, vd_sv_off, vd_dup_off) = run_all_10_sv_sites(crate::config::COMPAT_OFF);
+            for pos3 in [150, 260, 850, 960] {
+                assert_eq!(
+                    vd_off.soft_clips_3_end[&pos3].sequence.as_deref(),
+                    Some(&b""[..]),
+                    "COMPAT_OFF must strip 3' TruSeq adapter at pos3={pos3}"
+                );
+            }
+            for pos5 in [300, 370, 1_300, 1_390] {
+                assert_eq!(
+                    vd_off.soft_clips_5_end[&pos5].sequence.as_deref(),
+                    Some(&b""[..]),
+                    "COMPAT_OFF must strip 5' TruSeq adapter at pos5={pos5}"
+                );
+            }
+            assert_eq!(
+                vd_sv_off.soft_clips_5_end[&500].sequence.as_deref(),
+                Some(&b""[..]),
+                "find_sv tmp5 must strip 5' TruSeq adapter"
+            );
+            assert_eq!(
+                vd_sv_off.soft_clips_3_end[&550].sequence.as_deref(),
+                Some(&b""[..]),
+                "find_sv tmp3 must strip 3' TruSeq adapter"
+            );
+            assert_eq!(
+                vd_dup_off.soft_clips_3_end[&1_600].sequence.as_deref(),
+                Some(&b""[..]),
+                "find_dup_disc svfdup must strip 3' TruSeq adapter"
+            );
+            assert_eq!(
+                vd_dup_off.soft_clips_5_end[&1_650].sequence.as_deref(),
+                Some(&b""[..]),
+                "find_dup_disc svrdup must strip 5' TruSeq adapter"
+            );
+        }
+
+        /// Verifies Tumor split-read `<DUP>` (`realignlgins` at `bp - 1`) and Normal discordant
+        /// `<DUP>` (`sv.rs` `svfdup` and `svrdup` shifted to `bp - 1`) land at the identical map
+        /// key `bp - 1` with `pre_anchored_dup == true` under `canonical_sv_vcf_anchoring`
+        /// (`clintval/vartovcf#192`), while falling back to `bp` (`pre_anchored_dup == false`)
+        /// under `COMPAT_VARDICTJAVA_1_8_3`, `bp == 1`, or unloaded/`'N'` `bp - 1`.
+        #[test]
+        fn dup_key_alignment_pairs_tumor_realignlgins_and_normal_sv_at_bp_minus_1_with_fallbacks() {
+            let chr = "chr1";
+            let ref_len = 1_200usize;
+            let chr_lengths = HashMap::from([(chr.to_string(), ref_len)]);
+            let region = crate::regions::Region {
+                chr: chr.to_string(),
+                start: Pos1(1),
+                end: Pos1(ref_len as u32),
+                gene: String::new(),
+                amplicon: None,
+            };
+
+            let (mut reference, mut ref_seq) = build_ref(chr, ref_len);
+            ref_seq[298] = b'G'; // 1-based 299 (anchor = bp - 1)
+            ref_seq[599] = b'T'; // 1-based 600 (pe)
+            let anchor_581_600 = b"CGATCGTTAACCGGTTAACC"; // 1-based 581..=600
+            ref_seq[580..600].copy_from_slice(anchor_581_600);
+            reference.region_sequences[0].clone_from(&ref_seq);
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq);
+            reference
+                .seed
+                .insert_for_test(&anchor_581_600[3..20], vec![584]);
+
+            let mut cfg_off = Config::default();
+            cfg_off.bam = "tumor.bam|normal.bam".to_string();
+            cfg_off.min_reads = 2;
+            cfg_off.sv_min_len = 100;
+            cfg_off.compat = crate::config::COMPAT_OFF;
+
+            // 1. Tumor sample: split-read `<dup201>` on [300..=600] via `realignlgins` -> key 299
+            let mut vd_tumor = crate::variations::VariationData::default();
+            vd_tumor.max_read_length = 100;
+            vd_tumor.ref_coverage.insert(299, 30);
+            vd_tumor.ref_coverage.insert(300, 30);
+            vd_tumor.ref_coverage.insert(600, 30);
+            let mut rev_581_600 = anchor_581_600.to_vec();
+            rev_581_600.reverse();
+            vd_tumor
+                .soft_clips_5_end
+                .insert(300, fresh_sclip_with_nt(&rev_581_600, 8));
+            let mut splice = rustc_hash::FxHashSet::default();
+            crate::realign::realignlgins(
+                None,
+                &mut reference,
+                chr,
+                ref_len as u32,
+                &region,
+                &cfg_off,
+                &mut vd_tumor.non_insertion_variants,
+                &mut vd_tumor.insertion_variants,
+                &mut vd_tumor.ref_coverage,
+                &mut vd_tumor.soft_clips_5_end,
+                &mut vd_tumor.soft_clips_3_end,
+                vd_tumor.max_read_length,
+                &mut vd_tumor.sv_structures.svfdup,
+                &mut vd_tumor.sv_structures.svrdup,
+                &mut splice,
+            );
+
+            // 2. Normal sample (`svfdup` AND `svrdup` discordant-only `<dup201>` on [300..=600]):
+            //    `max_read_length = 100, cnt = 10 -> max_read_length / cnt = 10`:
+            //    - `svfdup`: `mstart = 305, end = 591` -> `bp = 305 - 5 = 300`, `pe = 591`? Wait:
+            //      for exact `[300..=600]` (`pe = 600, mlen = 301`): `end = 600` -> `pe = 600`,
+            //      `mstart = 305` -> `bp = 305 - 5 = 300`, `mlen = 600 - 305 + 10 = 305`? Let's set
+            //      `max_read_length = 16, cnt = 10 -> 16 / 10 = 1, (16 / 10) / 2 = 0`:
+            //      - `svfdup`: `mstart = 300, end = 600` -> `bp = 300, pe = 600, mlen = 600 - 300 + 1 = 301`!
+            //      - `svrdup`: `start = 300, mend = 600` -> `bp = 300, mlen = 600 - 300 + 1 = 301, pe = 301 + 300 - 1 = 600`!
+            for use_svfdup in [true, false] {
+                let mut vd_normal = crate::variations::VariationData::default();
+                vd_normal.max_read_length = 16;
+                let mut dup = Sclip::new();
+                dup.variation.cnt = 10;
+                dup.variation.mqmean = 600.0;
+                dup.variation.qmean = 350.0;
+                dup.variation.pmean = 200.0;
+                if use_svfdup {
+                    dup.start = 560;
+                    dup.end = 600;
+                    dup.mstart = 300;
+                    dup.mend = 340;
+                    vd_normal.sv_structures.svfdup.push(dup);
+                } else {
+                    dup.start = 300;
+                    dup.end = 340;
+                    dup.mstart = 560;
+                    dup.mend = 600;
+                    vd_normal.sv_structures.svrdup.push(dup);
+                }
+
+                find_dup_disc(
+                    &mut vd_normal,
+                    std::path::Path::new(""),
+                    &mut reference,
+                    chr,
+                    &cfg_off,
+                    &chr_lengths,
+                )
+                .unwrap();
+
+                assert!(
+                    !vd_normal.insertion_variants.contains_key(&300),
+                    "Normal discordant <DUP> must shift from bp=300 to bp-1=299 (use_svfdup={use_svfdup})"
+                );
+                let tumor_ins = vd_tumor.insertion_variants.get(&299).unwrap();
+                let normal_ins = vd_normal
+                    .insertion_variants
+                    .get(&299)
+                    .expect("Normal discordant <DUP> must land at anchor=299");
+                let (t_desc, t_var) = tumor_ins.map.iter().next().unwrap();
+                let (n_desc, n_var) = normal_ins.map.iter().next().unwrap();
+                assert_eq!(
+                    t_desc, n_desc,
+                    "Tumor realignlgins and Normal sv.rs <DUP> must share exact allele description at 299 (use_svfdup={use_svfdup})"
+                );
+                assert!(t_var.pre_anchored_dup && n_var.pre_anchored_dup);
+                assert!(
+                    vd_normal
+                        .non_insertion_variants
+                        .get(&299)
+                        .and_then(|vm| vm.sv.as_ref())
+                        .is_some_and(|sv| sv.r#type == "DUP"),
+                    "Normal SV metadata must also anchor at 299 so ToVarsBuilder visits 299"
+                );
+                assert!(vd_normal.ref_coverage.get(&299).copied().unwrap_or(0) > 0);
+
+                // Verify `ToVarsBuilder` materializes BOTH Tumor and Normal `<DUP>` at key `299`!
+                let builder =
+                    crate::tovars::ToVarsBuilder::new(&reference, &region, &chr_lengths, &cfg_off);
+                let aligned_t = builder.build_aligned_variants(&vd_tumor);
+                let aligned_n = builder.build_aligned_variants(&vd_normal);
+                assert_eq!(
+                    aligned_t.get(&299).unwrap().variants[0].description,
+                    aligned_n.get(&299).unwrap().variants[0].description
+                );
+            }
+
+            // 3. Fallback guards:
+            // (a) `COMPAT_VARDICTJAVA_1_8_3`: stays at `bp = 300` with `pre_anchored_dup == false`.
+            {
+                let mut cfg_leg = cfg_off.clone();
+                cfg_leg.compat = crate::config::COMPAT_VARDICTJAVA_1_8_3;
+                let mut vd = crate::variations::VariationData::default();
+                vd.max_read_length = 16;
+                let mut dup = Sclip::new();
+                dup.start = 560;
+                dup.end = 600;
+                dup.mstart = 300;
+                dup.mend = 340;
+                dup.variation.cnt = 10;
+                dup.variation.mqmean = 600.0;
+                dup.variation.qmean = 350.0;
+                dup.variation.pmean = 200.0;
+                vd.sv_structures.svfdup.push(dup);
+                find_dup_disc(
+                    &mut vd,
+                    std::path::Path::new(""),
+                    &mut reference,
+                    chr,
+                    &cfg_leg,
+                    &chr_lengths,
+                )
+                .unwrap();
+                let (_, v) = vd
+                    .insertion_variants
+                    .get(&300)
+                    .unwrap()
+                    .map
+                    .iter()
+                    .next()
+                    .unwrap();
+                assert!(!v.pre_anchored_dup);
+                assert!(!vd.insertion_variants.contains_key(&299));
+            }
+
+            // (b) Contig start `bp == 1`: stays at `bp = 1` with `pre_anchored_dup == false`.
+            {
+                let mut vd = crate::variations::VariationData::default();
+                vd.max_read_length = 16;
+                let mut dup = Sclip::new();
+                dup.start = 260;
+                dup.end = 300;
+                dup.mstart = 1;
+                dup.mend = 40;
+                dup.variation.cnt = 10;
+                dup.variation.mqmean = 600.0;
+                dup.variation.qmean = 350.0;
+                dup.variation.pmean = 200.0;
+                vd.sv_structures.svfdup.push(dup);
+                find_dup_disc(
+                    &mut vd,
+                    std::path::Path::new(""),
+                    &mut reference,
+                    chr,
+                    &cfg_off,
+                    &chr_lengths,
+                )
+                .unwrap();
+                let (_, v) = vd
+                    .insertion_variants
+                    .get(&1)
+                    .unwrap()
+                    .map
+                    .iter()
+                    .next()
+                    .unwrap();
+                assert!(!v.pre_anchored_dup);
+                assert!(!vd.insertion_variants.contains_key(&0));
+            }
+
+            // (c) `'N'` / `'n'` or unloaded reference base at `bp - 1`: stays at `bp` with `pre_anchored_dup == false`.
+            for n_byte in [Some(b'N'), Some(b'n'), None] {
+                let (mut ref_n, mut seq_n) = build_ref(chr, ref_len);
+                if let Some(nb) = n_byte {
+                    seq_n[298] = nb; // 1-based 299 (`bp - 1`) is 'N' or 'n'
+                    ref_n.region_sequences[0].clone_from(&seq_n);
+                    ref_n.reference_sequences.insert(chr.to_string(), seq_n);
+                } else {
+                    // Unloaded at 299: restrict loaded span to 300..=1200!
+                    ref_n.loaded_regions[0].sequence_start = 300;
+                    ref_n.region_sequences[0] = seq_n[299..].to_vec();
+                    ref_n.reference_sequences.clear();
+                }
+
+                let mut vd = crate::variations::VariationData::default();
+                vd.max_read_length = 16;
+                let mut dup = Sclip::new();
+                dup.start = 560;
+                dup.end = 600;
+                dup.mstart = 300;
+                dup.mend = 340;
+                dup.variation.cnt = 10;
+                dup.variation.mqmean = 600.0;
+                dup.variation.qmean = 350.0;
+                dup.variation.pmean = 200.0;
+                vd.sv_structures.svfdup.push(dup);
+                let mut bam_piled = vec![(1, ref_len as i32)];
+                find_dup_disc_paths(
+                    &mut vd,
+                    &[],
+                    &mut ref_n,
+                    chr,
+                    &cfg_off,
+                    &chr_lengths,
+                    &mut bam_piled,
+                )
+                .unwrap();
+                let (_, v) = vd
+                    .insertion_variants
+                    .get(&300)
+                    .unwrap_or_else(|| panic!("expected fallback at bp=300 for {n_byte:?}"))
+                    .map
+                    .iter()
+                    .next()
+                    .unwrap();
+                assert!(!v.pre_anchored_dup);
+                assert!(!vd.insertion_variants.contains_key(&299));
+            }
         }
     }
 }
