@@ -7909,5 +7909,94 @@ mod vcf_all_alleles_and_compat_off {
             run_core_vcf(&mk_hc_cfg(&bam_hclip, COMPAT_OFF, Some(60))).expect("off_hclip_vcf_t60"),
             "multi-tile (--tile-size 60) .vcf on 12H90M3D15M3I20H must match untiled clean BAM byte-for-byte"
         );
+
+        // =========================================================================
+        // (c) Disjoint FASTA span loading for split-read `DEL` under `--compat=off -L 10000`
+        //     (`sv.rs` `find_del_paths` / `find_sv` -> `ToVarsBuilder` -> `vcf`):
+        //     Region `chr1:1000-1200` with a `5,000 bp` split-read + discordant-pair DEL
+        //     (`chr1:1200..=6199`) initially leaves `2401..=5899` unloaded; `ensure_explicit_del_sv_span_loaded`
+        //     must load the full span so VCF emits all `5,001 bp` of `REF` (`1` anchor + `5,000` deleted bases).
+        // =========================================================================
+        let mut del5k_ref = lcg_ref_bytes(0x5EED_DE15_0000_2026, 7_500);
+        // Ensure non-homopolymer boundaries at 1199/6199 so deletion stays pinned at 1200..=6199
+        del5k_ref[1_198] = b'G'; // 1-based 1199 anchor
+        del5k_ref[1_199] = b'A'; // 1-based 1200 first deleted base
+        del5k_ref[6_198] = b'C'; // 1-based 6199 last deleted base ('C' != 'G')
+        del5k_ref[6_199] = b'T'; // 1-based 6200 first post-deletion base
+        let del5k_fa =
+            write_multi_contig_fasta(dir.path(), "w5_del5k_disjoint", &[("chr1", &del5k_ref)]);
+        let del5k_bam = dir.path().join("w5_del5k_disjoint.bam");
+        let mut del5k_recs = Vec::new();
+        for idx in 0..8usize {
+            let wt_start = 1_140 + (idx % 4);
+            del5k_recs.push(mk_contig_rec(
+                &format!("d5k_wt_{idx}"),
+                0,
+                Flags::empty(),
+                wt_start,
+                &[(100, Kind::Match)],
+                del5k_ref[wt_start - 1..wt_start - 1 + 100].to_vec(),
+                vec![38; 100],
+                None,
+            ));
+        }
+        // Discordant pairs + 3'-soft-clipped split reads across 1200..=6199 (5,000 bp deletion):
+        // Forward read at 1140..=1199 (`60M30S` where `30S` = `del5k_ref[6199..6229]`), mate at 6230..=6309 (`80M`).
+        for idx in 0..6usize {
+            let r1_start = 1_140;
+            let r2_start = 6_230 + (idx % 3);
+            let mut r1_seq = del5k_ref[r1_start - 1..1_199].to_vec(); // 60M (1140..=1199)
+            r1_seq.extend_from_slice(&del5k_ref[6_199..6_229]); // 30S matching 6200..=6229
+            let tlen = (r2_start + 80 - r1_start) as i32;
+            let qname = format!("d5k_sv_{idx}");
+            del5k_recs.push(mk_contig_rec(
+                &qname,
+                0,
+                Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::MATE_REVERSE_COMPLEMENTED,
+                r1_start,
+                &[(60, Kind::Match), (30, Kind::SoftClip)],
+                r1_seq,
+                vec![39; 90],
+                Some((0, r2_start, tlen)),
+            ));
+            del5k_recs.push(mk_contig_rec(
+                &qname,
+                0,
+                Flags::SEGMENTED | Flags::LAST_SEGMENT | Flags::REVERSE_COMPLEMENTED,
+                r2_start,
+                &[(80, Kind::Match)],
+                del5k_ref[r2_start - 1..r2_start - 1 + 80].to_vec(),
+                vec![39; 80],
+                Some((0, r1_start, -tlen)),
+            ));
+        }
+        del5k_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&del5k_bam, &[("chr1", del5k_ref.len())], del5k_recs)
+            .expect("write w5_del5k_disjoint.bam");
+        let del5k_cfg = Config {
+            reference: del5k_fa.to_string_lossy().into_owned(),
+            bam: del5k_bam.to_string_lossy().into_owned(),
+            sample: "DEL5K_E2E".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:1000-1200".to_string()),
+            sv_min_len: 10_000,
+            freq: 0.01,
+            af_threshold: 0.01,
+            threads: 1,
+            compat: COMPAT_OFF,
+            ..Config::default()
+        };
+        let del5k_vcf = run_core_vcf(&del5k_cfg).expect("del5k_vcf");
+        let del5k_rows = extract_variants(&del5k_vcf);
+        let del5k_hit = del5k_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t1199\t"))
+            .unwrap_or_else(|| {
+                panic!("expected explicit 5000bp DEL at chr1:1199, got: {del5k_rows:?}")
+            });
+        let dcols: Vec<&str> = del5k_hit.split('\t').collect();
+        assert_eq!(dcols[3].len(), 5_001, "expected full 5,001-bp REF allele");
+        assert_eq!(dcols[3].as_bytes(), &del5k_ref[1_198..6_199]);
+        assert_eq!(dcols[4], "G");
     }
 }

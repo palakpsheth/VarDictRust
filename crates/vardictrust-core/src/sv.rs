@@ -1122,6 +1122,31 @@ fn ensure_explicit_sv_span_loaded(
         && reference.get_base(chr, hi_u32).is_some())
 }
 
+fn ensure_explicit_del_sv_span_loaded(
+    chr: &str,
+    del_pos: i32,
+    dellen: i32,
+    sv_min: i32,
+    chromosomes_lengths: &HashMap<String, usize>,
+    config: &Config,
+    reference: &mut Reference,
+) -> Result<(), VardictError> {
+    if config.compat.sv_respect_min_len
+        && 0 < dellen
+        && dellen <= sv_min.min(MAX_EXPLICIT_SV_SEQ_BP)
+    {
+        let _ = ensure_explicit_sv_span_loaded(
+            chr,
+            del_pos.max(1),
+            del_pos.saturating_add(dellen),
+            chromosomes_lengths,
+            config,
+            reference,
+        )?;
+    }
+    Ok(())
+}
+
 fn max_splice_and_del_ref_span(var_data: &crate::variations::VariationData) -> i32 {
     let mut max_splice: i32 = 0;
     for sp in &var_data.splice {
@@ -2050,6 +2075,7 @@ fn find_del_paths(
         return Ok(());
     }
     let minr = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
+    let sv_min = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
     let verbose = config.verbose;
     let (adaptor_forward, adaptor_reverse) = crate::realign::fill_adaptor_sets(&config.adaptor);
     let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
@@ -2138,6 +2164,15 @@ fn find_del_paths(
             bp = bp.saturating_sub(1);
             let mut softp = softp_cand;
             let mut dellen = bp.saturating_sub(softp).saturating_add(1);
+            ensure_explicit_del_sv_span_loaded(
+                chr,
+                softp,
+                dellen,
+                sv_min,
+                chromosomes_lengths,
+                config,
+                reference,
+            )?;
             while let (Some(b_bp), Some(b_softp_prev)) = (
                 u32::try_from(bp)
                     .ok()
@@ -2160,6 +2195,15 @@ fn find_del_paths(
                 }
             }
             dellen = bp.saturating_sub(softp).saturating_add(1);
+            ensure_explicit_del_sv_span_loaded(
+                chr,
+                softp,
+                dellen,
+                sv_min,
+                chromosomes_lengths,
+                config,
+                reference,
+            )?;
             let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
             {
@@ -2312,6 +2356,15 @@ fn find_del_paths(
 
             if let Some((softp, bp, scv_var)) = matched_j {
                 let dellen = bp.saturating_sub(softp).saturating_add(1);
+                ensure_explicit_del_sv_span_loaded(
+                    chr,
+                    softp,
+                    dellen,
+                    sv_min,
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
                 let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
                 {
                     let variation = crate::variations::get_variation(
@@ -2469,6 +2522,15 @@ fn find_del_paths(
             bp = bp.saturating_add(1);
             let mut softp = softp_cand.saturating_sub(1);
             let mut dellen = softp.saturating_sub(bp).saturating_add(1);
+            ensure_explicit_del_sv_span_loaded(
+                chr,
+                bp,
+                dellen,
+                sv_min,
+                chromosomes_lengths,
+                config,
+                reference,
+            )?;
             let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
             {
@@ -2603,6 +2665,15 @@ fn find_del_paths(
             if let Some((softp_cand, bp, scv_var)) = matched_j {
                 let mut softp = softp_cand.saturating_sub(1);
                 let dellen = softp.saturating_sub(bp).saturating_add(1);
+                ensure_explicit_del_sv_span_loaded(
+                    chr,
+                    bp,
+                    dellen,
+                    sv_min,
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
                 let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
                 {
@@ -2808,6 +2879,15 @@ pub fn find_sv(
                 let p5_adj = p5.saturating_sub(1);
                 let bp_adj = bp.saturating_add(1);
                 let dellen = p5_adj.saturating_sub(bp_adj).saturating_add(1);
+                ensure_explicit_del_sv_span_loaded(
+                    chr,
+                    bp_adj,
+                    dellen,
+                    sv_min,
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
                 let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
                 let vref = crate::variations::get_variation(
@@ -3027,6 +3107,15 @@ pub fn find_sv(
                 let dellen = bp.saturating_sub(p3);
                 let mut bp_adj = bp.saturating_sub(1);
                 let mut p3_adj = p3;
+                ensure_explicit_del_sv_span_loaded(
+                    chr,
+                    p3_adj,
+                    dellen,
+                    sv_min,
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
                 while let (Some(b_bp), Some(b_p3_prev)) = (
                     u32::try_from(bp_adj)
                         .ok()
@@ -3048,6 +3137,15 @@ pub fn find_sv(
                         break;
                     }
                 }
+                ensure_explicit_del_sv_span_loaded(
+                    chr,
+                    p3_adj,
+                    dellen,
+                    sv_min,
+                    chromosomes_lengths,
+                    config,
+                    reference,
+                )?;
                 let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
                 let vref = crate::variations::get_variation(
@@ -3570,7 +3668,6 @@ fn find_inv_disc_paths(
 ) -> Result<(), VardictError> {
     let min_reads_plus_5 = i64::from(config.min_reads) + 5;
     let sv_min = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
-    let reconcile = config.compat.reconcile_strand_and_hq_sums;
     let verbose = config.verbose;
     let max_read_length = var_data.max_read_length;
     let sv_flank = 50; // Configuration.SVFLANK
@@ -3634,7 +3731,6 @@ fn find_inv_disc_paths(
                 let bp = midpoint_i32(end, rstart).saturating_abs();
                 let pe = midpoint_i32(me, rms).saturating_abs();
                 let len = pe.saturating_sub(bp).saturating_add(1);
-                let sv_min = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
                 if config.compat.sv_respect_min_len && len < sv_min {
                     continue;
                 }
@@ -3823,7 +3919,6 @@ fn find_inv_disc_paths(
                 let pe = midpoint_i32(end, rstart).saturating_abs();
                 let bp = midpoint_i32(me, rms).saturating_abs();
                 let len = pe.saturating_sub(bp).saturating_add(1);
-                let sv_min = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
                 if config.compat.sv_respect_min_len && len < sv_min {
                     continue;
                 }
@@ -9633,6 +9728,157 @@ mod tests {
                     u_key.contains("<inv150>"),
                     "disjoint unloaded span must fall back safely to symbolic <inv150>, got {u_key}"
                 );
+
+                // Disjoint unloaded interior gap [2401..=5549] on a 5,000-bp split-read DEL
+                // ([1200..=6199], -L 10000):
+                // 1) Without FASTA path (`config.reference` empty), ToVarsBuilder must fall back
+                //    cleanly to symbolic `<DEL>` (never splicing a truncated REF!).
+                // 2) With `config.reference` pointing to FASTA, `find_sv` loads the full deletion
+                //    span and ToVarsBuilder materializes the exact 5,001-bp REF (anchor + 5,000 bp).
+                let mut del_disjoint_ref = Reference::new();
+                del_disjoint_ref
+                    .loaded_regions
+                    .push(crate::reference::LoadedRegion {
+                        chr: chr.to_string(),
+                        sequence_start: 1,
+                        sequence_end: 2_400,
+                    });
+                del_disjoint_ref
+                    .region_sequences
+                    .push(ref_seq[0..2_400].to_vec());
+                del_disjoint_ref
+                    .loaded_regions
+                    .push(crate::reference::LoadedRegion {
+                        chr: chr.to_string(),
+                        sequence_start: 5_550,
+                        sequence_end: 6_999,
+                    });
+                del_disjoint_ref
+                    .region_sequences
+                    .push(ref_seq[5_549..6_999].to_vec());
+                del_disjoint_ref
+                    .seed
+                    .insert_for_test(&ref_seq[6_199..6_216], vec![6_200]);
+
+                let mk_split_del_vd = || {
+                    let mut vd_del = crate::variations::VariationData::default();
+                    vd_del.max_read_length = 100;
+                    vd_del.ref_coverage.insert(1_200, 30);
+                    let mut sc3_d = Sclip::new();
+                    sc3_d.sequence = Some(ref_seq[6_199..6_220].to_vec());
+                    sc3_d.variation.cnt = 6;
+                    sc3_d.variation.hicnt = 6;
+                    sc3_d.variation.qmean = 210.0;
+                    sc3_d.variation.mqmean = 360.0;
+                    sc3_d.variation.pmean = 120.0;
+                    vd_del.soft_clips_3_end.insert(1_200, sc3_d);
+                    let mut fdel = Sclip::new();
+                    fdel.start = 1_110;
+                    fdel.end = 1_199;
+                    fdel.mstart = 6_200;
+                    fdel.mend = 6_290;
+                    fdel.variation.cnt = 6;
+                    fdel.variation.hicnt = 6;
+                    fdel.variation.qmean = 210.0;
+                    fdel.variation.mqmean = 360.0;
+                    fdel.variation.pmean = 120.0;
+                    vd_del.sv_structures.svfdel.push(fdel);
+                    vd_del
+                };
+
+                let cfg_unloaded_10k = Config {
+                    min_reads: 2,
+                    sv_min_len: 10_000,
+                    compat: crate::config::COMPAT_OFF,
+                    ..Config::default()
+                };
+                let mut vd_del_unloaded = mk_split_del_vd();
+                find_sv(
+                    &mut vd_del_unloaded,
+                    &mut del_disjoint_ref,
+                    chr,
+                    1_000,
+                    1_200,
+                    &cfg_unloaded_10k,
+                    &chr_lengths,
+                )
+                .unwrap();
+                let del_reg = crate::regions::Region {
+                    chr: chr.to_string(),
+                    start: Pos1(1_000),
+                    end: Pos1(1_200),
+                    gene: "DEL5K".to_string(),
+                    amplicon: None,
+                };
+                let al_del_unloaded = crate::tovars::ToVarsBuilder::new(
+                    &del_disjoint_ref,
+                    &del_reg,
+                    &chr_lengths,
+                    &cfg_unloaded_10k,
+                )
+                .build_aligned_variants(&vd_del_unloaded);
+                let v_unloaded = &al_del_unloaded
+                    .get(&1_200)
+                    .expect("expected DEL entry at 1200")
+                    .variants[0];
+                assert_eq!(
+                    v_unloaded.var_allele, "<DEL>",
+                    "unloaded interior gap must fall back to <DEL> rather than truncating REF"
+                );
+                assert_eq!(v_unloaded.ref_allele.len(), 1);
+                assert_eq!(v_unloaded.start_pos, 1_199);
+                assert_eq!(v_unloaded.end_pos, 6_199);
+
+                let tmp_fa_dir = tempfile::tempdir().unwrap();
+                let tmp_fa_path = tmp_fa_dir.path().join("del5k.fa");
+                let mut fa_bytes = b">chr1\n".to_vec();
+                fa_bytes.extend_from_slice(&ref_seq[0..8_000]);
+                fa_bytes.push(b'\n');
+                std::fs::write(&tmp_fa_path, &fa_bytes).unwrap();
+                std::fs::write(
+                    tmp_fa_dir.path().join("del5k.fa.fai"),
+                    "chr1\t8000\t6\t8000\t8001\n",
+                )
+                .unwrap();
+                let cfg_loaded_10k = Config {
+                    reference: tmp_fa_path.to_string_lossy().into_owned(),
+                    min_reads: 2,
+                    sv_min_len: 10_000,
+                    compat: crate::config::COMPAT_OFF,
+                    ..Config::default()
+                };
+                let chr_len_8k = HashMap::from([(chr.to_string(), 8_000usize)]);
+                let mut vd_del_loaded = mk_split_del_vd();
+                find_sv(
+                    &mut vd_del_loaded,
+                    &mut del_disjoint_ref,
+                    chr,
+                    1_000,
+                    1_200,
+                    &cfg_loaded_10k,
+                    &chr_len_8k,
+                )
+                .unwrap();
+                let al_del_loaded = crate::tovars::ToVarsBuilder::new(
+                    &del_disjoint_ref,
+                    &del_reg,
+                    &chr_len_8k,
+                    &cfg_loaded_10k,
+                )
+                .build_aligned_variants(&vd_del_loaded);
+                let v_loaded = &al_del_loaded
+                    .get(&1_200)
+                    .expect("expected loaded DEL entry at 1200")
+                    .variants[0];
+                assert_eq!(v_loaded.start_pos, 1_199);
+                assert_eq!(v_loaded.end_pos, 6_199);
+                assert_eq!(v_loaded.ref_allele.len(), 5_001);
+                assert_eq!(
+                    v_loaded.ref_allele.as_bytes(),
+                    &ref_seq[1_198..6_199],
+                    "loaded split-read DEL under -L 10000 must materialize all 5,001 REF bases"
+                );
+                assert_eq!(v_loaded.var_allele.as_bytes(), &ref_seq[1_198..1_199]);
             }
 
             // (c) -L 1000000 ceiling: 40,000-bp split-refined DUP ([1000..=40999], mlen=40000 >= 32768)

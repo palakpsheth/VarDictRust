@@ -1440,23 +1440,6 @@ fn trim_outer_hard_clip_pad_slice(
     ops
 }
 
-#[inline]
-fn trim_outer_hard_clip_pad_vec(
-    elements: &mut Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,
-) {
-    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
-    let is_pos_hp = |&(len, kind): &(u32, CigarKind)| {
-        len > 0 && matches!(kind, CigarKind::HardClip | CigarKind::Pad)
-    };
-    while elements.last().is_some_and(is_pos_hp) {
-        elements.pop();
-    }
-    let lead = elements.iter().take_while(|op| is_pos_hp(op)).count();
-    if lead > 0 {
-        elements.drain(..lead);
-    }
-}
-
 #[expect(
     clippy::too_many_arguments,
     reason = "pre-scan candidate replay borrows split mutable buffers and tile step state"
@@ -1541,8 +1524,6 @@ fn replay_prescan_candidate(
                     if include_eqx {
                         crate::cigar::parse::coalesce_eqx_into_match(cigar_elements);
                     }
-                } else if strip_outer_hp {
-                    trim_outer_hard_clip_pad_vec(cigar_elements);
                 }
                 *cigar_str = modified.cigar;
                 *sequence = modified.query_seq;
@@ -1553,7 +1534,7 @@ fn replay_prescan_candidate(
     }
 
     if strip_outer_hp {
-        trim_outer_hard_clip_pad_vec(cigar_elements);
+        crate::cigar::parse::strip_outer_positive_hard_clips_and_pads(cigar_elements);
     }
     if cigar_elements.len() >= 2 {
         if let (Some(&(len_first, CigarKind::SoftClip)), Some(&(len_last, CigarKind::SoftClip))) =
@@ -4352,7 +4333,9 @@ impl<W: std::io::Write> std::io::Write for InjectedWriter<W> {
 impl<W: std::io::Write> EngineWriter for InjectedWriter<W> {}
 
 const TABIX_MAX_COORD_BP: usize = 536_870_912;
-const CSI_DEPTH6_MAX_COORD_BP: usize = 1usize << 32;
+const CSI_MIN_SHIFT: u8 = 14;
+const CSI_DEPTH: u8 = 6;
+const CSI_DEPTH6_MAX_COORD_BP: u64 = 1u64 << 32;
 
 fn scan_bgzf_vcf_index_records<F>(vcf_gz_path: &Path, mut on_record: F) -> Result<(), VardictError>
 where
@@ -4476,7 +4459,7 @@ where
                     ))
                 })?,
         };
-        if end_usize > CSI_DEPTH6_MAX_COORD_BP {
+        if (end_usize as u64) > CSI_DEPTH6_MAX_COORD_BP {
             return Err(VardictError::Parse(format!(
                 "VCF END coordinate {end_usize} on '{chrom}:{pos_usize}' exceeds CSI depth-6 ceiling ({CSI_DEPTH6_MAX_COORD_BP})"
             )));
@@ -4597,8 +4580,11 @@ fn stage_vcf_csi_index_inner(
         BinningIndex as _, Indexer, ReferenceSequence as _,
     };
 
-    let mut indexer = Indexer::<LinearIndex>::new(14, 6)
-        .ok_or_else(|| VardictError::Parse("invalid CSI binning parameters (14, 6)".to_string()))?;
+    let mut indexer = Indexer::<LinearIndex>::new(CSI_MIN_SHIFT, CSI_DEPTH).ok_or_else(|| {
+        VardictError::Parse(format!(
+            "invalid CSI binning parameters ({CSI_MIN_SHIFT}, {CSI_DEPTH})"
+        ))
+    })?;
     let mut names = noodles::csi::binning_index::index::header::ReferenceSequenceNames::new();
 
     scan_bgzf_vcf_index_records(
@@ -4634,8 +4620,8 @@ fn stage_vcf_csi_index_inner(
         })
         .collect();
     let mut builder = noodles::csi::Index::builder()
-        .set_min_shift(14)
-        .set_depth(6)
+        .set_min_shift(CSI_MIN_SHIFT)
+        .set_depth(CSI_DEPTH)
         .set_reference_sequences(reference_sequences);
     if let Some(hdr) = linear.header().cloned() {
         builder = builder.set_header(hdr);

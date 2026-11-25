@@ -460,6 +460,18 @@ impl<'a> ToVarsBuilder<'a> {
             .filter(|&b| b != b'N' && b != b'n')
     }
 
+    #[inline]
+    fn is_explicit_del_span_loaded(&self, lo: i32, hi: i32) -> bool {
+        if lo < 1 || hi < lo {
+            return false;
+        }
+        let lo_u32 = lo as u32;
+        let hi_u32 = hi as u32;
+        crate::reference::is_loaded(&self.region.chr, lo_u32, hi_u32, self.reference)
+            && self.get_ref_base(lo_u32).is_some()
+            && self.get_ref_base(hi_u32).is_some()
+    }
+
     /// Convert VariationData into a map of position -> Vars container.
     pub fn build_aligned_variants(
         &self,
@@ -1955,7 +1967,10 @@ impl<'a> ToVarsBuilder<'a> {
                         }
                     }
                 } else if description_string.starts_with('-') {
-                    if i64::from(deletion_length) < i64::from(sv_min_len) {
+                    let can_materialize_del = i64::from(deletion_length) < i64::from(sv_min_len)
+                        && (!self.config.compat.sv_respect_min_len
+                            || self.is_explicit_del_span_loaded(position, end_position));
+                    if can_materialize_del {
                         // replace first -digits with empty string
                         varallele = if let Some(rest) = description_string.strip_prefix('-') {
                             let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
@@ -2065,12 +2080,18 @@ impl<'a> ToVarsBuilder<'a> {
                             let base_cur = self.get_ref_base_i32(del_seq_pos).unwrap_or(b'N');
                             refallele.clear();
                             refallele.push(base_cur as char);
-                        } else if i64::from(deletion_length) < i64::from(sv_min_len) {
+                        } else if can_materialize_del {
                             let del_end = (i64::from(del_seq_pos) + i64::from(deletion_length) - 1)
                                 .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
                                 as i32;
-                            self.join_ref_into(scratch1, del_seq_pos, del_end);
-                            refallele.push_str(scratch1);
+                            if !self.config.compat.sv_respect_min_len
+                                || self.is_explicit_del_span_loaded(del_seq_pos, del_end)
+                            {
+                                self.join_ref_into(scratch1, del_seq_pos, del_end);
+                                refallele.push_str(scratch1);
+                            } else {
+                                varallele = "<DEL>".to_string();
+                            }
                         }
                     }
                 } else {

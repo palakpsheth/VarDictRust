@@ -653,7 +653,11 @@ impl Variant {
     pub fn adj_complex_compat(&mut self, refresh_var_type: bool) {
         self.adj_complex();
         if refresh_var_type {
-            self.var_type = self.var_type();
+            let vt = self.var_type_cow();
+            if self.var_type != vt.as_ref() {
+                self.var_type.clear();
+                self.var_type.push_str(&vt);
+            }
         }
     }
 
