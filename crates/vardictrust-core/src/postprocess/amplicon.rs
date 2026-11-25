@@ -874,6 +874,360 @@ fn is_amp_bias_flag<V: Borrow<Variant>>(good_variants_on_amp: &BTreeMap<usize, V
     false
 }
 
+/// Per-sample amplicon concordance lookup table produced by [`aggregate_sample_amplicon_vars`]
+/// for paired somatic amplicon calling (`AstraZeneca-NGS/VarDictJava#378`,
+/// `AstraZeneca-NGS/VarDictJava#155`, `AstraZeneca-NGS/VarDict#109`).
+#[derive(Debug, Default, Clone)]
+pub struct SampleAmpliconConcordance {
+    /// Per-allele concordance keyed by post-`adj_complex` `(start_pos, ref_allele, var_allele)`.
+    pub allele_concordance:
+        rustc_hash::FxHashMap<(i32, String, String), crate::config::AmpliconConcordance>,
+    /// Per-position `(ncamp, ampflag)` baseline across covering amplicons for 0-alt-read / LOH fallback sites.
+    pub position_baseline: rustc_hash::FxHashMap<i32, (i32, bool)>,
+}
+
+impl SampleAmpliconConcordance {
+    /// Resolve [`crate::config::AmpliconConcordance`] for `(start_pos, end_pos, ref_allele, var_allele)`
+    /// against `segment`, falling back to `(gdamp: 0, tlamp, ncamp, ampflag)` when the allele had
+    /// zero in-insert candidate reads in this sample (e.g. normal on `StrongSomatic` or tumor on `StrongLOH`).
+    pub fn resolve(
+        &self,
+        start_pos: i32,
+        end_pos: i32,
+        ref_allele: &str,
+        var_allele: &str,
+        segment: &[Region],
+    ) -> crate::config::AmpliconConcordance {
+        if let Some(&conc) = self.allele_concordance.get(&(
+            start_pos,
+            ref_allele.to_string(),
+            var_allele.to_string(),
+        )) {
+            return conc;
+        }
+        let tlamp = segment
+            .iter()
+            .filter(|reg| {
+                let (ins_lo, ins_hi) = region_target_range_i32(reg);
+                start_pos >= ins_lo && end_pos <= ins_hi
+            })
+            .count() as i32;
+        let (ncamp, ampflag) = self
+            .position_baseline
+            .get(&start_pos)
+            .copied()
+            .unwrap_or((0, false));
+        crate::config::AmpliconConcordance {
+            gdamp: 0,
+            tlamp,
+            ncamp,
+            ampflag,
+        }
+    }
+}
+
+/// Returns `true` when `v` extends into a 5' or 3' primer outside `amp_reg`'s insert bounds.
+#[inline]
+pub(crate) fn variant_overlaps_primer(v: &Variant, amp_reg: &Region) -> bool {
+    amp_reg
+        .amplicon
+        .as_ref()
+        .is_some_and(|a| v.start_pos < a.insert_start.0 as i32 || v.end_pos > a.insert_end.0 as i32)
+}
+
+/// Aggregate per-amplicon `Vars` for a single sample (tumor or normal) across `segment`
+/// (`AstraZeneca-NGS/VarDictJava#378`, `AstraZeneca-NGS/VarDictJava#155`,
+/// `AstraZeneca-NGS/VarDict#109`, `palakpsheth/VarDictRust#95`).
+pub fn aggregate_sample_amplicon_vars(
+    config: &Config,
+    segment: &[Region],
+    vars_per_amplicon: Vec<crate::javamap::JavaHashMap<i32, Vars>>,
+    splice: &rustc_hash::FxHashSet<String>,
+) -> (
+    crate::javamap::JavaHashMap<i32, Vars>,
+    SampleAmpliconConcordance,
+) {
+    let out = if config.pileup {
+        aggregate_sample_amplicon_positions(
+            config,
+            &vars_per_amplicon,
+            amplicon_position_ref_stream(segment),
+            splice,
+        )
+    } else {
+        let mut positions: BTreeSet<i32> = BTreeSet::new();
+        for vm in &vars_per_amplicon {
+            positions.extend(vm.keys().copied());
+        }
+        let mut sweep = AmpliconCoverSweep::new(segment);
+        aggregate_sample_amplicon_positions(
+            config,
+            &vars_per_amplicon,
+            positions.into_iter().filter_map(|p| {
+                let cov = sweep.covering_arc_at(p);
+                (!cov.is_empty()).then_some((p, cov))
+            }),
+            splice,
+        )
+    };
+    drop(vars_per_amplicon);
+    out
+}
+
+fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>>(
+    config: &Config,
+    vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
+    positions: impl IntoIterator<Item = (i32, C)>,
+    splice: &rustc_hash::FxHashSet<String>,
+) -> (
+    crate::javamap::JavaHashMap<i32, Vars>,
+    SampleAmpliconConcordance,
+) {
+    let exact_tie = config.compat.exact_binary_half_even;
+    let mut aligned_vars = crate::javamap::JavaHashMap::new();
+    let mut concordance = SampleAmpliconConcordance::default();
+
+    let mut gvs: Vec<(&Variant, usize)> = Vec::new();
+    let mut vcovs: Vec<i32> = Vec::new();
+    let mut good_variants_on_amp: BTreeMap<usize, Vec<&Variant>> = BTreeMap::new();
+    let mut best_by_desc: indexmap::IndexMap<
+        &str,
+        (&Variant, f64, i32, bool),
+        crate::variations::FxBuildHasher,
+    > = indexmap::IndexMap::default();
+
+    for (position, amplicon_regions) in positions {
+        let amplicon_regions = amplicon_regions.as_ref();
+        if amplicon_regions.is_empty() {
+            continue;
+        }
+        gvs.clear();
+        vcovs.clear();
+        good_variants_on_amp.clear();
+        best_by_desc.clear();
+
+        let mut maxcov: i32 = 0;
+        let mut best_ref: Option<&Variant> = None;
+        let mut fallback_sv: Option<&str> = None;
+        let mut top_sv: Option<&str> = None;
+
+        for (amp_num_ref, amp_reg_item) in amplicon_regions {
+            let amp_num = *amp_num_ref;
+            let amp_reg: &Region = amp_reg_item.borrow();
+            let vtmp = vars_per_amplicon
+                .get(amp_num)
+                .and_then(|m| m.get(&position));
+            if let Some(vt) = vtmp {
+                if !vt.sv.is_empty() && fallback_sv.is_none() {
+                    fallback_sv = Some(vt.sv.as_str());
+                }
+            }
+            let ref_amp = vtmp
+                .and_then(|v| v.ref_variant.as_ref())
+                .filter(|rv| !variant_overlaps_primer(rv, amp_reg));
+            if let Some(rv) = ref_amp {
+                if best_ref.is_none_or(|cur| rv.total_pos_cov > cur.total_pos_cov) {
+                    best_ref = Some(rv);
+                }
+            }
+
+            let mut any_in_insert = false;
+            if let Some(vt) = vtmp {
+                let mut good_vars: Vec<&Variant> = Vec::new();
+                for tv in &vt.variants {
+                    if variant_overlaps_primer(tv, amp_reg) {
+                        continue;
+                    }
+                    any_in_insert = true;
+                    vcovs.push(tv.total_pos_cov);
+                    if tv.total_pos_cov > maxcov {
+                        maxcov = tv.total_pos_cov;
+                    }
+                    let vtype = tv.var_type_cow();
+                    let is_good = tv.is_good_var(ref_amp, &vtype, splice, config);
+                    if is_good {
+                        gvs.push((tv, amp_num));
+                        good_vars.push(tv);
+                    }
+                    let af_4dp = crate::types::round_half_even_compat(tv.frequency, 4, exact_tie);
+                    match best_by_desc.entry(tv.description.as_str()) {
+                        indexmap::map::Entry::Vacant(e) => {
+                            e.insert((tv, af_4dp, tv.total_pos_cov, is_good));
+                            if top_sv.is_none() && !vt.sv.is_empty() {
+                                top_sv = Some(vt.sv.as_str());
+                            }
+                        }
+                        indexmap::map::Entry::Occupied(mut e) => {
+                            let cur = e.get_mut();
+                            let merged_good = cur.3 || is_good;
+                            let better = is_good
+                                .cmp(&cur.3)
+                                .then_with(|| {
+                                    af_4dp
+                                        .partial_cmp(&cur.1)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                })
+                                .then_with(|| tv.total_pos_cov.cmp(&cur.2))
+                                == std::cmp::Ordering::Greater;
+                            if better {
+                                *cur = (tv, af_4dp, tv.total_pos_cov, merged_good);
+                                if !vt.sv.is_empty() {
+                                    top_sv = Some(vt.sv.as_str());
+                                }
+                            } else {
+                                cur.3 = merged_good;
+                            }
+                        }
+                    }
+                }
+                if !good_vars.is_empty() {
+                    good_variants_on_amp.insert(amp_num, good_vars);
+                }
+            }
+            if !any_in_insert {
+                if let Some(rv) = ref_amp {
+                    vcovs.push(rv.total_pos_cov);
+                } else {
+                    vcovs.push(0);
+                }
+            }
+        }
+
+        let eff_maxcov = if maxcov > 0 {
+            maxcov
+        } else {
+            vcovs.iter().copied().max().unwrap_or(0)
+        };
+        let nocov = vcovs
+            .iter()
+            .filter(|&&t| (t as f64) < (eff_maxcov as f64) / 50.0)
+            .count() as i32;
+
+        if gvs.len() > 1 {
+            gvs.sort_by(|a, b| {
+                b.0.frequency
+                    .partial_cmp(&a.0.frequency)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+
+        let mut current_flag = is_amp_bias_flag(&good_variants_on_amp);
+        if current_flag {
+            if let Some(&(top_gv, _)) = gvs.first() {
+                let gdnt = &top_gv.description;
+                let mut gcnt_len = 0usize;
+                for (amp_num_ref, amp_reg_item) in amplicon_regions {
+                    let amp_num = *amp_num_ref;
+                    let amp_reg: &Region = amp_reg_item.borrow();
+                    if let Some(vtmp) = vars_per_amplicon
+                        .get(amp_num)
+                        .and_then(|m| m.get(&position))
+                    {
+                        if let Some(variant) = vtmp.variant_by_desc(gdnt) {
+                            if !variant_overlaps_primer(variant, amp_reg) {
+                                let ref_amp = vtmp
+                                    .ref_variant
+                                    .as_ref()
+                                    .filter(|rv| !variant_overlaps_primer(rv, amp_reg));
+                                if variant.is_good_var(ref_amp, "", splice, config) {
+                                    gcnt_len = gcnt_len.saturating_add(1);
+                                }
+                            }
+                        }
+                    }
+                }
+                if gcnt_len == gvs.len() {
+                    current_flag = false;
+                }
+            }
+        }
+
+        concordance
+            .position_baseline
+            .insert(position, (nocov, current_flag));
+
+        for &(rep_var, _, _, _) in best_by_desc.values() {
+            let gdamp = count_variant_on_amplicons(rep_var, &good_variants_on_amp);
+            let mut bad_count: i32 = 0;
+            for (amp_num_ref, amp_reg_item) in amplicon_regions {
+                let amp_num = *amp_num_ref;
+                let amp_reg: &Region = amp_reg_item.borrow();
+                if config.pileup && rep_var.ref_allele == rep_var.var_allele {
+                    continue;
+                }
+                let is_in_goodmap = good_variants_on_amp.get(&amp_num).is_some_and(|vars| {
+                    vars.iter().any(|tv| {
+                        tv.ref_allele == rep_var.ref_allele && tv.var_allele == rep_var.var_allele
+                    })
+                });
+                if is_in_goodmap {
+                    continue;
+                }
+                let (ins_lo, ins_hi) = region_target_range_i32(amp_reg);
+                if rep_var.start_pos >= ins_lo && rep_var.end_pos <= ins_hi {
+                    bad_count = bad_count.saturating_add(1);
+                }
+            }
+            let tlamp = gdamp.saturating_add(bad_count);
+            let (key_start, key_ref, key_var) = if rep_var.var_type_cow() == "Complex" {
+                let mut tmp = rep_var.clone();
+                tmp.adj_complex();
+                (tmp.start_pos, tmp.ref_allele, tmp.var_allele)
+            } else {
+                (
+                    rep_var.start_pos,
+                    rep_var.ref_allele.clone(),
+                    rep_var.var_allele.clone(),
+                )
+            };
+            let cand_conc = crate::config::AmpliconConcordance {
+                gdamp,
+                tlamp,
+                ncamp: nocov,
+                ampflag: current_flag,
+            };
+            concordance
+                .allele_concordance
+                .entry((key_start, key_ref, key_var))
+                .and_modify(|existing| {
+                    if (cand_conc.gdamp, cand_conc.tlamp) > (existing.gdamp, existing.tlamp) {
+                        *existing = cand_conc;
+                    }
+                })
+                .or_insert(cand_conc);
+            concordance
+                .position_baseline
+                .entry(key_start)
+                .or_insert((nocov, current_flag));
+        }
+
+        if best_ref.is_some() || !best_by_desc.is_empty() {
+            let mut out_vars = Vars::new();
+            out_vars.ref_variant = best_ref.cloned();
+            if !best_by_desc.is_empty() {
+                let mut ordered: Vec<(&Variant, f64, i32, bool)> =
+                    best_by_desc.values().copied().collect();
+                ordered.sort_by(|a, b| {
+                    b.3.cmp(&a.3)
+                        .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+                        .then_with(|| b.2.cmp(&a.2))
+                        .then_with(|| a.0.description.cmp(&b.0.description))
+                });
+                out_vars.variants.reserve(ordered.len());
+                for (v, _, _, _) in ordered {
+                    out_vars.variants.push(v.clone());
+                }
+            }
+            if let Some(sv_str) = top_sv.or(fallback_sv) {
+                out_vars.sv.push_str(sv_str);
+            }
+            aligned_vars.insert(position, out_vars);
+        }
+    }
+
+    (aligned_vars, concordance)
+}
+
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
@@ -2282,5 +2636,348 @@ mod tests {
         );
         assert_eq!(off_sel.len(), 1);
         assert_eq!(off_sel[0].variant.var_allele, "T");
+    }
+
+    #[test]
+    fn test_aggregate_sample_amplicon_vars_primer_masking_highest_cov_ref_and_concordance() {
+        let mut config = make_test_config();
+        config.compat = crate::config::COMPAT_OFF;
+        let splice = rustc_hash::FxHashSet::default();
+
+        // Two overlapping amplicons:
+        // amp0: region 90..=210, insert 100..=200 (both ends primed)
+        // amp1: region 130..=250, insert 150..=250 (single-primer 5'-primed: insert_end == region_end == 250)
+        let amp0 = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(90),
+            end: Pos1(210),
+            gene: "G1".to_string(),
+            amplicon: Some(AmpliconInfo {
+                insert_start: Pos1(100),
+                insert_end: Pos1(200),
+            }),
+        };
+        let amp1 = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(130),
+            end: Pos1(250),
+            gene: "G1".to_string(),
+            amplicon: Some(AmpliconInfo {
+                insert_start: Pos1(150),
+                insert_end: Pos1(250),
+            }),
+        };
+        let segment = vec![amp0, amp1];
+
+        let mut vars0 = crate::javamap::JavaHashMap::new();
+        let mut vars1 = crate::javamap::JavaHashMap::new();
+
+        // 1. Pos 160 (covered by both amp0 & amp1):
+        //    - Concordant SNV A>G in both amp0 (AF=0.25, cov=80) and amp1 (AF=0.25, cov=320) -> picks cov=320 rep, gdamp=2, tlamp=2, ncamp=0, ampflag=false.
+        //    - ref_variant: amp0 cov=80, amp1 cov=320 -> picks highest-cov ref_variant (320)!
+        let mut v160_0 = Vars::new();
+        let mut r160_0 = make_good_variant(160, "A", "A", 0.75);
+        r160_0.total_pos_cov = 80;
+        v160_0.ref_variant = Some(r160_0);
+        let mut g160_0 = make_good_variant(160, "A", "G", 0.25);
+        g160_0.total_pos_cov = 80;
+        g160_0.pos_coverage = 20;
+        v160_0.variants.push(g160_0);
+        vars0.insert(160, v160_0);
+
+        let mut v160_1 = Vars::new();
+        let mut r160_1 = make_good_variant(160, "A", "A", 0.75);
+        r160_1.total_pos_cov = 320;
+        v160_1.ref_variant = Some(r160_1);
+        let mut g160_1 = make_good_variant(160, "A", "G", 0.25);
+        g160_1.total_pos_cov = 320;
+        g160_1.pos_coverage = 80;
+        v160_1.variants.push(g160_1);
+        vars1.insert(160, v160_1);
+
+        // 2. Pos 145 (inside amp0 insert 100..=200, but inside amp1's 5' primer 130..=149!):
+        //    amp1 has a primer-dimer artifact C>T at 145; amp0 has ONLY ref_variant (cov=200).
+        //    Symmetric primer masking must drop amp1's primer variant!
+        let mut v145_0 = Vars::new();
+        let mut r145_0 = make_good_variant(145, "C", "C", 1.0);
+        r145_0.total_pos_cov = 200;
+        v145_0.ref_variant = Some(r145_0);
+        vars0.insert(145, v145_0);
+
+        let mut v145_1 = Vars::new();
+        v145_1.variants.push(make_good_variant(145, "C", "T", 0.50));
+        vars1.insert(145, v145_1);
+
+        // 3. Pos 150 (exact `insert_start` of amp1, also inside amp0):
+        //    amp1 also has a deletion 148..=151 overlapping amp1's 5' primer (< 150) which MUST be masked on amp1,
+        //    while SNV G>A at exact boundary 150 (`== insert_start`) and SNV T>C at exact SPE boundary 250 (`== insert_end == region_end`) MUST be kept!
+        let mut v150_1 = Vars::new();
+        let mut del_primer = make_good_variant(148, "TTGA", "T", 0.40);
+        del_primer.end_pos = 151;
+        del_primer.description = "-3".to_string();
+        v150_1.variants.push(del_primer);
+        v150_1.variants.push(make_good_variant(150, "G", "A", 0.30));
+        vars1.insert(150, v150_1);
+
+        let mut v150_0 = Vars::new();
+        v150_0.variants.push(make_good_variant(150, "G", "A", 0.28));
+        vars0.insert(150, v150_0);
+
+        let mut v250_1 = Vars::new();
+        v250_1.variants.push(make_good_variant(250, "T", "C", 0.35));
+        vars1.insert(250, v250_1);
+
+        // 4. Pos 170: pure reference site (simulating Normal on StrongSomatic / StrongLOH fallback)
+        //    with amp0 cov=500 and amp1 cov=5 (< 500/50 = 10 -> ncamp=1)!
+        let mut v170_0 = Vars::new();
+        let mut r170_0 = make_good_variant(170, "G", "G", 1.0);
+        r170_0.total_pos_cov = 500;
+        v170_0.ref_variant = Some(r170_0);
+        vars0.insert(170, v170_0);
+
+        let mut v170_1 = Vars::new();
+        let mut r170_1 = make_good_variant(170, "G", "G", 1.0);
+        r170_1.total_pos_cov = 5;
+        v170_1.ref_variant = Some(r170_1);
+        vars1.insert(170, v170_1);
+
+        let (aligned, conc) =
+            aggregate_sample_amplicon_vars(&config, &segment, vec![vars0, vars1], &splice);
+
+        // Check pos 160: highest-cov ref (320) + highest-cov tie-broken G rep (320) + (2, 2, 0, false)
+        let agg160 = aligned.get(&160).expect("pos 160 present");
+        assert_eq!(agg160.ref_variant.as_ref().unwrap().total_pos_cov, 320);
+        assert_eq!(agg160.variants.len(), 1);
+        assert_eq!(agg160.variants[0].total_pos_cov, 320);
+        assert_eq!(
+            conc.resolve(160, 160, "A", "G", &segment),
+            crate::config::AmpliconConcordance {
+                gdamp: 2,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            }
+        );
+
+        // Check pos 145: primer artifact from amp1 masked out completely; only amp0's ref_variant remains!
+        let agg145 = aligned.get(&145).expect("pos 145 ref present");
+        assert!(agg145.variants.is_empty());
+        assert_eq!(agg145.ref_variant.as_ref().unwrap().total_pos_cov, 200);
+
+        // Check pos 150 & 250: primer-overlapping deletion 148..151 masked out, boundary SNVs at 150 and 250 kept!
+        let agg150 = aligned.get(&150).expect("pos 150 present");
+        assert_eq!(agg150.variants.len(), 1);
+        assert_eq!(agg150.variants[0].var_allele, "A");
+        assert_eq!(
+            conc.resolve(150, 150, "G", "A", &segment),
+            crate::config::AmpliconConcordance {
+                gdamp: 2,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            }
+        );
+        let agg250 = aligned.get(&250).expect("pos 250 SPE boundary present");
+        assert_eq!(agg250.variants.len(), 1);
+        assert_eq!(agg250.variants[0].var_allele, "C");
+        assert_eq!(
+            conc.resolve(250, 250, "T", "C", &segment),
+            crate::config::AmpliconConcordance {
+                gdamp: 1,
+                tlamp: 1,
+                ncamp: 0,
+                ampflag: false,
+            }
+        );
+
+        // Check pos 170 pure-ref fallback concordance: highest-cov ref (500) + gdamp=0, tlamp=2, ncamp=1
+        let agg170 = aligned.get(&170).expect("pos 170 ref present");
+        assert_eq!(agg170.ref_variant.as_ref().unwrap().total_pos_cov, 500);
+        assert_eq!(
+            conc.resolve(170, 170, "G", "T", &segment),
+            crate::config::AmpliconConcordance {
+                gdamp: 0,
+                tlamp: 2,
+                ncamp: 1,
+                ampflag: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_aggregate_sample_amplicon_vars_good_rep_beats_higher_af_bad_rep_tumor_and_normal() {
+        let mut config = make_test_config();
+        config.compat = crate::config::COMPAT_OFF;
+        let splice = rustc_hash::FxHashSet::default();
+
+        let amp0 = make_amp_region("chr1", 100, 220);
+        let amp1 = make_amp_region("chr1", 140, 260);
+        let seg_fwd = vec![amp0.clone(), amp1.clone()];
+        let seg_rev = vec![amp1, amp0];
+
+        let mk_ref = |pos: i32, base: &str, cov: i32| -> Variant {
+            let mut rv = make_good_variant(pos, base, base, 1.0);
+            rv.total_pos_cov = cov;
+            rv.pos_coverage = cov;
+            rv.ref_fwd_cov = cov / 2;
+            rv.ref_rev_cov = cov - rv.ref_fwd_cov;
+            rv
+        };
+
+        // Good passing call on deep amplicon (35/200 = 0.1750, hicnt = 35 >= min_reads=2)
+        let mk_deep_good = |pos: i32, ref_a: &str, alt_a: &str, vd: i32, dp: i32| -> Variant {
+            let mut v = make_good_variant(pos, ref_a, alt_a, vd as f64 / dp as f64);
+            v.pos_coverage = vd;
+            v.total_pos_cov = dp;
+            v.hicnt = vd;
+            v.hicov = dp;
+            v.fwd = vd / 2;
+            v.rev = vd - v.fwd;
+            v.ref_fwd_cov = (dp - vd) / 2;
+            v.ref_rev_cov = (dp - vd) - v.ref_fwd_cov;
+            v.bias = "2;2".to_string();
+            v.pstd = true;
+            v.qstd = true;
+            v
+        };
+
+        // Failing 1/1 dropout call with higher raw AF = 1.0000 (`hicnt = 1 < min_reads = 2`, `is_good = false`)
+        let mk_dropout_bad = |pos: i32, ref_a: &str, alt_a: &str| -> Variant {
+            let mut v = make_good_variant(pos, ref_a, alt_a, 1.0);
+            v.pos_coverage = 1;
+            v.total_pos_cov = 1;
+            v.hicnt = 1;
+            v.hicov = 1;
+            v.fwd = 1;
+            v.rev = 0;
+            v.bias = "0;1".to_string();
+            v
+        };
+
+        // 1. Both `[amp0, amp1]` (good first, bad second) and `[amp1, amp0]` (bad first, good second)
+        //    must select the `is_good = true` representative (total_pos_cov = 200, hicnt = 35)!
+        for (seg, flip) in [(&seg_fwd, false), (&seg_rev, true)] {
+            let mut m_good = crate::javamap::JavaHashMap::new();
+            let mut vg = Vars::new();
+            vg.ref_variant = Some(mk_ref(160, "A", 200));
+            vg.variants.push(mk_deep_good(160, "A", "G", 35, 200));
+            m_good.insert(160, vg);
+
+            let mut m_bad = crate::javamap::JavaHashMap::new();
+            let mut vb = Vars::new();
+            vb.variants.push(mk_dropout_bad(160, "A", "G"));
+            m_bad.insert(160, vb);
+
+            let list = if flip {
+                vec![m_bad, m_good]
+            } else {
+                vec![m_good, m_bad]
+            };
+            let (aligned, conc) = aggregate_sample_amplicon_vars(&config, seg, list, &splice);
+            let rep = &aligned.get(&160).expect("pos 160 present").variants[0];
+            assert_eq!(
+                (rep.total_pos_cov, rep.hicnt),
+                (200, 35),
+                "passing 35/200 representative must beat failing 1/1 AF=1.0 representative (flip={flip})"
+            );
+            assert!(rep.is_good_var(
+                aligned.get(&160).unwrap().ref_variant.as_ref(),
+                &rep.var_type_cow(),
+                &splice,
+                &config
+            ));
+            assert_eq!(
+                conc.resolve(160, 160, "A", "G", seg),
+                crate::config::AmpliconConcordance {
+                    gdamp: 1,
+                    tlamp: 2,
+                    ncamp: 1,
+                    ampflag: false,
+                }
+            );
+        }
+
+        // 2. End-to-end somatic classification across Tumor (`StrongSomatic`) and Normal (`Germline` & `StrongLOH`)
+        //    when `amp0` is deep `is_good = true` and `amp1` has a `1/1` (`AF = 1.0, hicnt = 1`) failing read:
+        let mut t0 = crate::javamap::JavaHashMap::new();
+        let mut t1 = crate::javamap::JavaHashMap::new();
+        let mut n0 = crate::javamap::JavaHashMap::new();
+        let mut n1 = crate::javamap::JavaHashMap::new();
+
+        // Pos 160: StrongSomatic in Tumor (35/200 good + 1/1 bad), pure 200x ref in Normal
+        let mut t160_0 = Vars::new();
+        t160_0.ref_variant = Some(mk_ref(160, "A", 200));
+        t160_0.variants.push(mk_deep_good(160, "A", "G", 35, 200));
+        t0.insert(160, t160_0);
+        let mut t160_1 = Vars::new();
+        t160_1.variants.push(mk_dropout_bad(160, "A", "G"));
+        t1.insert(160, t160_1);
+        let mut n160_0 = Vars::new();
+        n160_0.ref_variant = Some(mk_ref(160, "A", 200));
+        n0.insert(160, n160_0);
+
+        // Pos 170: Germline in BOTH Tumor and Normal (70/200 good + 1/1 bad in both -> must stay Germline, NOT StrongSomatic!)
+        let mut t170_0 = Vars::new();
+        t170_0.ref_variant = Some(mk_ref(170, "C", 200));
+        t170_0.variants.push(mk_deep_good(170, "C", "T", 70, 200));
+        t0.insert(170, t170_0);
+        let mut t170_1 = Vars::new();
+        t170_1.variants.push(mk_dropout_bad(170, "C", "T"));
+        t1.insert(170, t170_1);
+        let mut n170_0 = Vars::new();
+        n170_0.ref_variant = Some(mk_ref(170, "C", 200));
+        n170_0.variants.push(mk_deep_good(170, "C", "T", 70, 200));
+        n0.insert(170, n170_0);
+        let mut n170_1 = Vars::new();
+        n170_1.variants.push(mk_dropout_bad(170, "C", "T"));
+        n1.insert(170, n170_1);
+
+        // Pos 180: StrongLOH in Normal (80/200 good + 1/1 bad), pure 200x ref in Tumor
+        let mut t180_0 = Vars::new();
+        t180_0.ref_variant = Some(mk_ref(180, "G", 200));
+        t0.insert(180, t180_0);
+        let mut n180_0 = Vars::new();
+        n180_0.ref_variant = Some(mk_ref(180, "G", 200));
+        n180_0.variants.push(mk_deep_good(180, "G", "A", 80, 200));
+        n0.insert(180, n180_0);
+        let mut n180_1 = Vars::new();
+        n180_1.variants.push(mk_dropout_bad(180, "G", "A"));
+        n1.insert(180, n180_1);
+
+        let (aligned_t, _) =
+            aggregate_sample_amplicon_vars(&config, &seg_fwd, vec![t0, t1], &splice);
+        let (aligned_n, _) =
+            aggregate_sample_amplicon_vars(&config, &seg_fwd, vec![n0, n1], &splice);
+        let seg_bounds = [(100i32, 260i32)];
+        let seg_reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(260),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+        let svs = crate::postprocess::somatic::somatic_post_process_owned_with_bounds(
+            &config,
+            &seg_reg,
+            aligned_t,
+            aligned_n,
+            &splice,
+            None,
+            100,
+            Some(&seg_bounds),
+        );
+        let got_statuses: Vec<(i32, &str)> = svs
+            .iter()
+            .map(|sv| (sv.variant1.start_pos, sv.status.as_str()))
+            .collect();
+        assert_eq!(
+            got_statuses,
+            vec![
+                (160, "StrongSomatic"),
+                (170, "Germline"),
+                (180, "StrongLOH"),
+            ]
+        );
+        assert_eq!(svs[1].variant2.as_ref().unwrap().pos_coverage, 70);
     }
 }

@@ -1918,6 +1918,11 @@ pub fn realigndel(
         return;
     }
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
+    let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
+        (5, 3)
+    } else {
+        (0, 0)
+    };
     let mut extra_buf = String::new();
     let mut wupseq = String::new();
     let mut sanpseq = String::new();
@@ -2204,7 +2209,7 @@ pub fn realigndel(
                 if !tv.used {
                     let seq = crate::variations::util::find_conseq_sets(
                         tv,
-                        0,
+                        conseq_dir5,
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
@@ -2268,7 +2273,7 @@ pub fn realigndel(
                 if !tv.used {
                     let seq = crate::variations::util::find_conseq_sets(
                         tv,
-                        0,
+                        conseq_dir3,
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
@@ -2490,6 +2495,11 @@ pub fn realignins(
         return String::new();
     }
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
+    let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
+        (5, 3)
+    } else {
+        (0, 0)
+    };
     let mut new_ins = String::new();
     let mut tn_buf = String::new();
     let mut wupseq = String::new();
@@ -2770,7 +2780,7 @@ pub fn realignins(
                 if !tv.used {
                     let seq = crate::variations::util::find_conseq_sets(
                         tv,
-                        0,
+                        conseq_dir5,
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
@@ -2828,7 +2838,7 @@ pub fn realignins(
                 if !tv.used {
                     let seq = crate::variations::util::find_conseq_sets(
                         tv,
-                        0,
+                        conseq_dir3,
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
@@ -4307,6 +4317,11 @@ pub fn realignlgins(
     splice: &mut rustc_hash::FxHashSet<String>,
 ) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
+    let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
+        (5, 3)
+    } else {
+        (0, 0)
+    };
     let min_reads = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let sv_min_len = i32::try_from(config.sv_min_len).unwrap_or(i32::MAX);
     let extension = 5000;
@@ -4340,7 +4355,12 @@ pub fn realignlgins(
                 Some(sc) => sc,
                 None => continue,
             };
-            crate::variations::util::find_conseq_sets(sc5v, 0, &adaptor_forward, &adaptor_reverse)
+            crate::variations::util::find_conseq_sets(
+                sc5v,
+                conseq_dir5,
+                &adaptor_forward,
+                &adaptor_reverse,
+            )
         };
         if seq.is_empty() {
             continue;
@@ -4360,6 +4380,7 @@ pub fn realignlgins(
         let tpl = find_bi(&seq, p, reference, -1, chr, chr_len);
         let mut bi = tpl.base_insert;
         let mut ins = tpl.insertion_sequence.into_bytes();
+        let mut is_symbolic_dup = false;
 
         if bi == 0 {
             if crate::variations::util::is_low_complex_seq(&seq) {
@@ -4429,6 +4450,7 @@ pub fn realignlgins(
                 );
                 tmp_ins.extend_from_slice(&jref);
                 ins = tmp_ins;
+                is_symbolic_dup = true;
             } else {
                 ins = join_ref_for_5_lgins(reference, chr, p, bi, &seq, &extra);
             }
@@ -4478,6 +4500,11 @@ pub fn realignlgins(
         let iref = get_variation(insertion_variants, bi, &plus_ins);
         iref.pstd = true;
         iref.qstd = true;
+        if is_symbolic_dup && config.compat.canonical_sv_vcf_anchoring {
+            // `clintval/vartovcf#192`: `realignlgins` 5' symbolic `<dupN>` is already anchored
+            // at `bi = p - 1`; mark `pre_anchored_dup` so `ToVarsBuilder` does not shift twice.
+            iref.pre_anchored_dup = true;
+        }
 
         let sc5v_var = soft_clips_5_end
             .get(&p)
@@ -4640,7 +4667,12 @@ pub fn realignlgins(
                 Some(sc) => sc,
                 None => continue,
             };
-            crate::variations::util::find_conseq_sets(sc3v, 0, &adaptor_forward, &adaptor_reverse)
+            crate::variations::util::find_conseq_sets(
+                sc3v,
+                conseq_dir3,
+                &adaptor_forward,
+                &adaptor_reverse,
+            )
         };
         if seq.is_empty() {
             continue;
@@ -4663,6 +4695,7 @@ pub fn realignlgins(
 
         let orig_p = p;
         let mut p = p;
+        let mut is_symbolic_dup = false;
 
         if bi == 0 {
             if crate::variations::util::is_low_complex_seq(&seq) {
@@ -4760,6 +4793,7 @@ pub fn realignlgins(
                     p.saturating_sub(1),
                 );
                 ins.extend_from_slice(&jref);
+                is_symbolic_dup = true;
             } else {
                 ins = join_ref_for_3_lgins(
                     reference,
@@ -4820,6 +4854,11 @@ pub fn realignlgins(
         let iref = get_variation(insertion_variants, bi, &plus_ins);
         iref.pstd = true;
         iref.qstd = true;
+        if is_symbolic_dup && config.compat.canonical_sv_vcf_anchoring {
+            // `clintval/vartovcf#192`: `realignlgins` 3' symbolic `<dupN>` is already anchored
+            // at `bi = bi - 1`; mark `pre_anchored_dup` so `ToVarsBuilder` does not shift twice.
+            iref.pre_anchored_dup = true;
+        }
 
         let ref_base = reference.get_base(chr, bi as u32);
         let mut lref_mut = get_variation_maybe_mut(non_insertion_variants, bi, ref_base);
@@ -5892,8 +5931,22 @@ pub fn adjust_mnp(
     if tmp.is_empty() {
         return;
     }
-    let adaptor_forward = AdaptorSet::default();
-    let adaptor_reverse = AdaptorSet::default();
+    // `AstraZeneca-NGS/VarDictJava#240`, `AstraZeneca-NGS/VarDictJava#241`,
+    // `AstraZeneca-NGS/VarDict#119`, `PolinaBevad/VarDictJava@92c62cf6`:
+    // `adjust_mnp` runs first in `PipelineTail::Full` (`lib.rs:754`), and `find_conseq_with`
+    // permanently memoizes `Sclip.sequence = Some(...)` on the first call. Thread live
+    // `AdaptorSet`s + directional `3`/`5` orientation under `adaptor_all_consensus_dirs`
+    // so adapter consensuses are stripped rather than cached before `realign_indels` and `sv`.
+    let (adaptor_forward, adaptor_reverse) = if config.compat.adaptor_all_consensus_dirs {
+        fill_adaptor_sets(&config.adaptor)
+    } else {
+        (AdaptorSet::default(), AdaptorSet::default())
+    };
+    let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
+        (5, 3)
+    } else {
+        (0, 0)
+    };
     let mut left = String::new();
     let mut right = String::new();
     let mut raw_buf = Vec::new();
@@ -6013,7 +6066,7 @@ pub fn adjust_mnp(
                 if !sc3v.used {
                     let seq = crate::variations::util::find_conseq_sets(
                         sc3v,
-                        0,
+                        conseq_dir3,
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
@@ -6058,7 +6111,7 @@ pub fn adjust_mnp(
                 if !sc5v.used {
                     let seq = crate::variations::util::find_conseq_sets(
                         sc5v,
-                        0,
+                        conseq_dir5,
                         &adaptor_forward,
                         &adaptor_reverse,
                     );
@@ -6107,18 +6160,30 @@ pub fn adjust_mnp(
 pub fn adj_snv(
     reference: &Reference,
     chr: &str,
-    _config: &crate::config::Config,
+    config: &crate::config::Config,
     var_data: &mut crate::variations::VariationData,
 ) {
-    let adaptor_forward = AdaptorSet::default();
-    let adaptor_reverse = AdaptorSet::default();
+    let (adaptor_forward, adaptor_reverse) = if config.compat.adaptor_all_consensus_dirs {
+        fill_adaptor_sets(&config.adaptor)
+    } else {
+        (AdaptorSet::default(), AdaptorSet::default())
+    };
+    let (conseq_dir5, conseq_dir3) = if config.compat.adaptor_all_consensus_dirs {
+        (5, 3)
+    } else {
+        (0, 0)
+    };
 
     for (&position, sc5v) in &mut var_data.soft_clips_5_end {
         if sc5v.used {
             continue;
         }
-        let seq =
-            crate::variations::util::find_conseq_sets(sc5v, 0, &adaptor_forward, &adaptor_reverse);
+        let seq = crate::variations::util::find_conseq_sets(
+            sc5v,
+            conseq_dir5,
+            &adaptor_forward,
+            &adaptor_reverse,
+        );
         if seq.len() > 5 {
             continue;
         }
@@ -6169,8 +6234,12 @@ pub fn adj_snv(
         if sc3v.used {
             continue;
         }
-        let seq =
-            crate::variations::util::find_conseq_sets(sc3v, 0, &adaptor_forward, &adaptor_reverse);
+        let seq = crate::variations::util::find_conseq_sets(
+            sc3v,
+            conseq_dir3,
+            &adaptor_forward,
+            &adaptor_reverse,
+        );
         if seq.len() > 5 {
             continue;
         }
@@ -9584,5 +9653,468 @@ mod tests {
             ),
             "C&\u{FFFD}"
         );
+    }
+
+    mod wave4_task_2d_tests {
+        use super::*;
+        use std::collections::HashMap;
+
+        const TRUSEQ_ADAPTER_3P: &[u8] = b"AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC";
+        // Outward-from-5'-junction consensus (`sclip5.nt[0..]`) for a read whose 5' soft-clip
+        // ends with `reverse_complement(TRUSEQ_ADAPTER_3P)` right at the aligned boundary:
+        // `seed = final_seq[0..6] = b"TCTAGC"`, `seed.reverse() = b"CGATCT" = rc(b"AGATCG")`.
+        const TRUSEQ_ADAPTER_5P: &[u8] = b"TCTAGCCTTCTCGTGTGCAGACTTGAGGTCAGTG";
+
+        fn fresh_sclip_with_nt(seq: &[u8], cnt: i32) -> Sclip {
+            let mut sc = Sclip::new();
+            sc.variation.cnt = cnt;
+            sc.variation.hicnt = cnt;
+            sc.variation.fwd = cnt / 2;
+            sc.variation.rev = cnt - cnt / 2;
+            sc.variation.qmean = 35.0 * (cnt as f64);
+            sc.variation.mqmean = 60.0 * (cnt as f64);
+            sc.variation.pmean = 25.0 * (cnt as f64);
+            for (idx, &b) in seq.iter().enumerate() {
+                sc.nt.insert(idx as i32, BTreeMap::from([(b, cnt)]));
+            }
+            assert!(sc.sequence.is_none());
+            sc
+        }
+
+        fn build_patterned_ref(chr: &str, len: usize) -> (Reference, Vec<u8>) {
+            let motif = b"ACGTTGCAAGCTTAGCGATCGATCCGTAAGCT";
+            let seq: Vec<u8> = (0..len).map(|i| motif[i % motif.len()]).collect();
+            let mut reference = Reference::new();
+            reference
+                .loaded_regions
+                .push(crate::reference::LoadedRegion {
+                    chr: chr.to_string(),
+                    sequence_start: 1,
+                    sequence_end: len as u32,
+                });
+            reference.region_sequences.push(seq.clone());
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), seq.clone());
+            (reference, seq)
+        }
+
+        /// End-to-end `PipelineTail::Full` (`adjust_mnp` -> `realign_indels` ->
+        /// `sv::find_all_sv_paths` -> `adj_snv`) + per-site verification of all 10 flipped
+        /// `realign.rs` `find_conseq*` sites (`AstraZeneca-NGS/VarDictJava#240`,
+        /// `AstraZeneca-NGS/VarDictJava#241`, `AstraZeneca-NGS/VarDict#119`,
+        /// `PolinaBevad/VarDictJava@92c62cf6`).
+        #[test]
+        fn pipeline_tail_and_all_10_realign_sites_strip_3p_and_5p_truseq_adapters() {
+            let chr = "chr1";
+            let ref_len = 1_000usize;
+            let region = crate::regions::Region {
+                chr: chr.to_string(),
+                start: Pos1(1),
+                end: Pos1(ref_len as u32),
+                gene: String::new(),
+                amplicon: None,
+            };
+            let chr_lengths = HashMap::from([(chr.to_string(), ref_len)]);
+
+            // 1. End-to-end `PipelineTail::Full` memoization proof:
+            // `adjust_mnp` runs FIRST (`lib.rs:754`) on soft-clips at MNP boundaries (pos 100 3'
+            // and pos 102 5'). Construct `soft_clips_3_end[100]` as `[20-bp TruSeq adapter + 15-bp
+            // reference overhang at 100..=114]` (`AstraZeneca-NGS/VarDictJava#240` *BRCA2* chimera
+            // pattern): if `adjust_mnp` poisons `Sclip.sequence` with `AdaptorSet::default()`,
+            // `realign_indels` (`realignlgins` `find_bi`) calls a false `+20 bp` TruSeq insertion!
+            let run_pipeline_tail = |compat: crate::config::CompatProfile,
+                                     adaptors: Vec<String>| {
+                let (mut reference, mut ref_seq) = build_patterned_ref(chr, ref_len);
+                ref_seq[99] = b'A';
+                ref_seq[100] = b'A';
+                reference.region_sequences[0].clone_from(&ref_seq);
+                reference
+                    .reference_sequences
+                    .insert(chr.to_string(), ref_seq.clone());
+
+                let mut chimera_3p = TRUSEQ_ADAPTER_3P[..20].to_vec();
+                chimera_3p.extend_from_slice(&ref_seq[99..114]); // 1-based 100..=114
+
+                let mut vd = crate::variations::VariationData::default();
+                vd.max_read_length = 150;
+                vd.sv_structures_filtered = true;
+                vd.ref_coverage.insert(99, 30);
+                vd.ref_coverage.insert(100, 30);
+                vd.ref_coverage.insert(102, 30);
+
+                // Non-empty `vd.mnp` so `adjust_mnp` enters its loop and calls `find_conseq_sets`
+                // on `soft_clips_3_end[100]` (`:6016`) and `soft_clips_5_end[102]` (`:6061`)!
+                vd.mnp.entry(100).or_default().insert("G&T".to_string(), 8);
+                let mut mnp_var = Variation::new();
+                mnp_var.cnt = 8;
+                mnp_var.hicnt = 8;
+                mnp_var.fwd = 4;
+                mnp_var.rev = 4;
+                mnp_var.qmean = 280.0;
+                mnp_var.mqmean = 480.0;
+                mnp_var.pmean = 200.0;
+                vd.non_insertion_variants
+                    .get_or_put_with(100, crate::variations::VariationMap::new)
+                    .map
+                    .insert("G&T".to_string(), mnp_var);
+
+                vd.soft_clips_3_end
+                    .insert(100, fresh_sclip_with_nt(&chimera_3p, 6));
+                vd.soft_clips_5_end
+                    .insert(102, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 6));
+
+                // Also place unused 5' & 3' TruSeq clips at 600 & 620 untouched until `adj_snv`
+                vd.soft_clips_5_end
+                    .insert(600, fresh_sclip_with_nt(&TRUSEQ_ADAPTER_5P[..6], 4));
+                vd.soft_clips_3_end
+                    .insert(620, fresh_sclip_with_nt(&TRUSEQ_ADAPTER_3P[..6], 4));
+
+                let mut cfg = crate::config::Config::default();
+                cfg.min_reads = 2;
+                cfg.adaptor = adaptors;
+                cfg.compat = compat;
+
+                adjust_mnp(&reference, chr, ref_len as u32, &region, &cfg, &mut vd);
+                realign_indels(
+                    None,
+                    &mut reference,
+                    chr,
+                    ref_len as u32,
+                    &region,
+                    &cfg,
+                    &mut vd,
+                );
+                crate::sv::find_all_sv_paths(
+                    &mut vd,
+                    &[],
+                    &mut reference,
+                    chr,
+                    ref_len as u32,
+                    &region,
+                    &cfg,
+                    &chr_lengths,
+                )
+                .expect("find_all_sv_paths must succeed");
+                adj_snv(&reference, chr, &cfg, &mut vd);
+                (vd, chimera_3p)
+            };
+
+            let truseq_vec = vec![String::from_utf8_lossy(TRUSEQ_ADAPTER_3P).into_owned()];
+
+            // Default `COMPAT_VARDICTJAVA_1_8_3`: `adjust_mnp` memoizes unscreened TruSeq consensus,
+            // allowing `realignlgins` to assemble a false `+20 bp` TruSeq insertion!
+            let (vd_legacy, expected_chimera_3p) =
+                run_pipeline_tail(crate::config::COMPAT_VARDICTJAVA_1_8_3, truseq_vec.clone());
+            assert_eq!(
+                vd_legacy.soft_clips_3_end[&100].sequence.as_deref(),
+                Some(expected_chimera_3p.as_slice())
+            );
+            assert_eq!(
+                vd_legacy.soft_clips_5_end[&102].sequence.as_deref(),
+                Some(TRUSEQ_ADAPTER_5P)
+            );
+            assert!(
+                !vd_legacy.insertion_variants.is_empty(),
+                "legacy COMPAT_VARDICTJAVA_1_8_3 reproduces false TruSeq adapter insertion"
+            );
+
+            // `COMPAT_OFF`: `adjust_mnp` strips both 3' and 5' TruSeq adapter consensuses to `b""`
+            // on the first call, preventing memoization poisoning across `realign_indels`, `sv`, and `adj_snv`!
+            let (vd_off, _) = run_pipeline_tail(crate::config::COMPAT_OFF, truseq_vec.clone());
+            assert_eq!(
+                vd_off.soft_clips_3_end[&100].sequence.as_deref(),
+                Some(&b""[..]),
+                "adjust_mnp must pass fill_adaptor_sets and dir=3 so Sclip.sequence is stripped to empty"
+            );
+            assert_eq!(
+                vd_off.soft_clips_5_end[&102].sequence.as_deref(),
+                Some(&b""[..]),
+                "adjust_mnp must pass fill_adaptor_sets and dir=5 so Sclip.sequence is stripped to empty"
+            );
+            assert_eq!(
+                vd_off.soft_clips_5_end[&600].sequence.as_deref(),
+                Some(&b""[..]),
+                "adj_snv must pass fill_adaptor_sets and dir=5 on soft_clips_5_end"
+            );
+            assert_eq!(
+                vd_off.soft_clips_3_end[&620].sequence.as_deref(),
+                Some(&b""[..]),
+                "adj_snv must pass fill_adaptor_sets and dir=3 on soft_clips_3_end"
+            );
+            assert!(
+                vd_off.insertion_variants.is_empty(),
+                "COMPAT_OFF must suppress the false TruSeq adapter-chimera insertion"
+            );
+
+            // Negative control: empty `--adaptor` leaves non-adapter clips untouched under `COMPAT_OFF`.
+            let (vd_no_adaptor, expected_no_adapt_3p) =
+                run_pipeline_tail(crate::config::COMPAT_OFF, Vec::new());
+            assert_eq!(
+                vd_no_adaptor.soft_clips_3_end[&100].sequence.as_deref(),
+                Some(expected_no_adapt_3p.as_slice())
+            );
+            assert_eq!(
+                vd_no_adaptor.soft_clips_5_end[&102].sequence.as_deref(),
+                Some(TRUSEQ_ADAPTER_5P)
+            );
+
+            // 2. Direct per-site check on remaining 6 `realign.rs` sites:
+            //    `realigndel` (5' `:2207` & 3' `:2271`), `realignins` (5' `:2773` & 3' `:2831`),
+            //    and `realignlgins` (5' `:4343` & 3' `:4643`).
+            let mut cfg_off = crate::config::Config::default();
+            cfg_off.min_reads = 2;
+            cfg_off.adaptor = truseq_vec;
+            cfg_off.compat = crate::config::COMPAT_OFF;
+
+            // (a) `realigndel` 5' & 3' sites: deletion "-4" at p=200 where ref[200..=203] != ref[204..=207]
+            {
+                let (mut reference, mut ref_seq) = build_patterned_ref(chr, ref_len);
+                ref_seq[199..203].copy_from_slice(b"AAAA"); // 1-based 200..=203
+                ref_seq[203..207].copy_from_slice(b"CCCC"); // 1-based 204..=207 (`sanpseq` starts with 'C' != 'A'; `wupseq` ends with 'A' != 'C')
+                reference.region_sequences[0].clone_from(&ref_seq);
+                reference
+                    .reference_sequences
+                    .insert(chr.to_string(), ref_seq);
+
+                let mut del_counts = BTreeMap::new();
+                del_counts.insert(
+                    200,
+                    rustc_hash::FxHashMap::from_iter([("-4".to_string(), 5)]),
+                );
+                let mut non_ins = crate::javamap::JavaHashMap::new();
+                get_variation(&mut non_ins, 200, "-4").cnt = 5;
+                let mut ref_cov = rustc_hash::FxHashMap::default();
+                let mut sc5 = BTreeMap::from([(204, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 4))]);
+                let mut sc3 = BTreeMap::from([(200, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 4))]);
+
+                realigndel(
+                    None,
+                    &del_counts,
+                    &reference,
+                    chr,
+                    ref_len as u32,
+                    &cfg_off,
+                    &mut non_ins,
+                    &mut ref_cov,
+                    &mut sc5,
+                    &mut sc3,
+                    150,
+                );
+                assert_eq!(
+                    sc5[&204].sequence.as_deref(),
+                    Some(&b""[..]),
+                    "realigndel 5' site must pass dir=5 under adaptor_all_consensus_dirs"
+                );
+                assert_eq!(
+                    sc3[&200].sequence.as_deref(),
+                    Some(&b""[..]),
+                    "realigndel 3' site must pass dir=3 under adaptor_all_consensus_dirs"
+                );
+            }
+
+            // (b) `realignins` 5' & 3' sites: insertion "+TTTT" at p=300 where ref[300]='G', ref[301]='C'
+            {
+                let (mut reference, mut ref_seq) = build_patterned_ref(chr, ref_len);
+                ref_seq[299] = b'G'; // 1-based 300 != 'T' (end of wupseq) -> sc5p pushes 301
+                ref_seq[300] = b'C'; // 1-based 301 != 'T' (start of sanpseq) -> sc3p pushes 301
+                reference.region_sequences[0].clone_from(&ref_seq);
+                reference
+                    .reference_sequences
+                    .insert(chr.to_string(), ref_seq);
+
+                let mut ins_counts = BTreeMap::new();
+                ins_counts.insert(
+                    300,
+                    rustc_hash::FxHashMap::from_iter([("+TTTT".to_string(), 5)]),
+                );
+                let mut ins_vars = crate::javamap::JavaHashMap::new();
+                get_variation(&mut ins_vars, 300, "+TTTT").cnt = 5;
+                let mut non_ins = crate::javamap::JavaHashMap::new();
+                let mut ref_cov = rustc_hash::FxHashMap::default();
+                let mut sc5 = BTreeMap::from([(301, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 4))]);
+                let mut sc3 = BTreeMap::from([(301, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 4))]);
+
+                realignins(
+                    None,
+                    &ins_counts,
+                    &reference,
+                    chr,
+                    ref_len as u32,
+                    &cfg_off,
+                    &mut ins_vars,
+                    &mut non_ins,
+                    &mut ref_cov,
+                    &mut sc5,
+                    &mut sc3,
+                    150,
+                );
+                assert_eq!(
+                    sc5[&301].sequence.as_deref(),
+                    Some(&b""[..]),
+                    "realignins 5' site must pass dir=5 under adaptor_all_consensus_dirs"
+                );
+                assert_eq!(
+                    sc3[&301].sequence.as_deref(),
+                    Some(&b""[..]),
+                    "realignins 3' site must pass dir=3 under adaptor_all_consensus_dirs"
+                );
+            }
+
+            // (c) `realignlgins` 5' & 3' sites
+            {
+                let (mut reference, _) = build_patterned_ref(chr, ref_len);
+                let mut non_ins = crate::javamap::JavaHashMap::new();
+                let mut ins_vars = crate::javamap::JavaHashMap::new();
+                let mut ref_cov = rustc_hash::FxHashMap::default();
+                let mut sc5 = BTreeMap::from([(400, fresh_sclip_with_nt(TRUSEQ_ADAPTER_5P, 5))]);
+                let mut sc3 = BTreeMap::from([(450, fresh_sclip_with_nt(TRUSEQ_ADAPTER_3P, 5))]);
+                let mut svfdup = Vec::new();
+                let mut svrdup = Vec::new();
+                let mut splice = rustc_hash::FxHashSet::default();
+
+                realignlgins(
+                    None,
+                    &mut reference,
+                    chr,
+                    ref_len as u32,
+                    &region,
+                    &cfg_off,
+                    &mut non_ins,
+                    &mut ins_vars,
+                    &mut ref_cov,
+                    &mut sc5,
+                    &mut sc3,
+                    150,
+                    &mut svfdup,
+                    &mut svrdup,
+                    &mut splice,
+                );
+                assert_eq!(
+                    sc5[&400].sequence.as_deref(),
+                    Some(&b""[..]),
+                    "realignlgins 5' site must pass dir=5 under adaptor_all_consensus_dirs"
+                );
+                assert_eq!(
+                    sc3[&450].sequence.as_deref(),
+                    Some(&b""[..]),
+                    "realignlgins 3' site must pass dir=3 under adaptor_all_consensus_dirs"
+                );
+            }
+        }
+
+        /// Verifies `Variation::pre_anchored_dup` is stamped on symbolic `<dupN>` entries emitted
+        /// at `bi = bp - 1` by both 5' (`:4460`) and 3' (`:4784`) `realignlgins` paths under
+        /// `canonical_sv_vcf_anchoring` (`clintval/vartovcf#192`).
+        #[test]
+        fn realignlgins_marks_pre_anchored_dup_on_5p_and_3p_symbolic_dups() {
+            let chr = "chr1";
+            let ref_len = 1_200usize;
+            let region = crate::regions::Region {
+                chr: chr.to_string(),
+                start: Pos1(1),
+                end: Pos1(ref_len as u32),
+                gene: String::new(),
+                amplicon: None,
+            };
+
+            let run_lgins = |compat: crate::config::CompatProfile, five_prime: bool| {
+                let (mut reference, mut ref_seq) = build_patterned_ref(chr, ref_len);
+                // Distinct flanking bases at 299 ('G') vs 600 ('T') and 699 ('C') vs 999 ('A')
+                // so homology shift stops cleanly at exact breakpoints.
+                ref_seq[298] = b'G'; // 1-based 299
+                ref_seq[599] = b'T'; // 1-based 600
+                let anchor_581_600 = b"CGATCGTTAACCGGTTAACC"; // 20 bp at 1-based 581..=600
+                ref_seq[580..600].copy_from_slice(anchor_581_600);
+                let anchor_300_319 = b"TTAACCGGTTAACCGATCGT"; // 20 bp at 1-based 300..=319
+                ref_seq[299..319].copy_from_slice(anchor_300_319);
+
+                reference.region_sequences[0].clone_from(&ref_seq);
+                reference
+                    .reference_sequences
+                    .insert(chr.to_string(), ref_seq);
+
+                let mut sc5 = BTreeMap::new();
+                let mut sc3 = BTreeMap::new();
+                if five_prime {
+                    // 5' clip at p = 300 matching 3' end of [300..=600] (`bi = 600`, `dir = -1`):
+                    // `find_match` reverses `seq` when `dir == -1`, so `sc5` consensus is `reverse(anchor_581_600)`.
+                    let mut rev_581_600 = anchor_581_600.to_vec();
+                    rev_581_600.reverse();
+                    reference
+                        .seed
+                        .insert_for_test(&anchor_581_600[3..20], vec![584]);
+                    sc5.insert(300, fresh_sclip_with_nt(&rev_581_600, 6));
+                } else {
+                    // 3' clip at p = 601 matching 5' start of [300..=600] (`bi = 300`, `dir = 1`):
+                    reference
+                        .seed
+                        .insert_for_test(&anchor_300_319[3..20], vec![303]);
+                    sc3.insert(601, fresh_sclip_with_nt(anchor_300_319, 6));
+                }
+
+                let mut cfg = crate::config::Config::default();
+                cfg.min_reads = 2;
+                cfg.sv_min_len = 100;
+                cfg.compat = compat;
+
+                let mut non_ins = crate::javamap::JavaHashMap::new();
+                let mut ins_vars = crate::javamap::JavaHashMap::new();
+                let mut ref_cov =
+                    rustc_hash::FxHashMap::from_iter([(299, 25), (300, 25), (600, 25)]);
+                let mut svfdup = Vec::new();
+                let mut svrdup = Vec::new();
+                let mut splice = rustc_hash::FxHashSet::default();
+
+                realignlgins(
+                    None,
+                    &mut reference,
+                    chr,
+                    ref_len as u32,
+                    &region,
+                    &cfg,
+                    &mut non_ins,
+                    &mut ins_vars,
+                    &mut ref_cov,
+                    &mut sc5,
+                    &mut sc3,
+                    150,
+                    &mut svfdup,
+                    &mut svrdup,
+                    &mut splice,
+                );
+                ins_vars
+            };
+
+            for five_prime in [true, false] {
+                let ins_leg = run_lgins(crate::config::COMPAT_VARDICTJAVA_1_8_3, five_prime);
+                let (leg_desc, leg_var) = ins_leg
+                    .get(&299)
+                    .expect("realignlgins must anchor symbolic <dupN> at bi = 299")
+                    .map
+                    .iter()
+                    .next()
+                    .unwrap();
+                assert!(leg_desc.contains("<dup201>"), "unexpected desc: {leg_desc}");
+                assert!(
+                    !leg_var.pre_anchored_dup,
+                    "COMPAT_VARDICTJAVA_1_8_3 must leave pre_anchored_dup=false (five_prime={five_prime})"
+                );
+
+                let ins_off = run_lgins(crate::config::COMPAT_OFF, five_prime);
+                let (off_desc, off_var) = ins_off
+                    .get(&299)
+                    .expect("realignlgins must anchor symbolic <dupN> at bi = 299")
+                    .map
+                    .iter()
+                    .next()
+                    .unwrap();
+                assert_eq!(off_desc, leg_desc);
+                assert!(
+                    off_var.pre_anchored_dup,
+                    "COMPAT_OFF must mark pre_anchored_dup=true on realignlgins <dupN> (five_prime={five_prime})"
+                );
+            }
+        }
     }
 }

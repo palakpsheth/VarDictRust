@@ -104,8 +104,14 @@ pub fn print_header<W: std::io::Write>(
     let mut names: Vec<&str> = Vec::with_capacity(55);
     names.extend_from_slice(PREFIX_7);
     if config.region.is_none() && config.amplicon.is_some() {
-        names.extend_from_slice(SINGLE_MIDDLE_27);
-        names.extend_from_slice(&["GoodVarCount", "TotalVarCount", "Nocov", "Ampflag"]);
+        if config.bam.contains('|') && config.compat.paired_somatic_amplicon {
+            names.extend_from_slice(SOMATIC_SAMPLE_18);
+            names.extend_from_slice(SOMATIC_SAMPLE_18);
+            names.extend_from_slice(SOMATIC_TAIL_12);
+        } else {
+            names.extend_from_slice(SINGLE_MIDDLE_27);
+            names.extend_from_slice(&["GoodVarCount", "TotalVarCount", "Nocov", "Ampflag"]);
+        }
     } else if config.bam.contains('|') {
         names.extend_from_slice(SOMATIC_SAMPLE_18);
         names.extend_from_slice(SOMATIC_SAMPLE_18);
@@ -2590,5 +2596,37 @@ mod tests {
         assert_eq!(cs61_off[22], "0.0001");
         assert_eq!(cs61_off[23], "0.0001");
         assert_eq!(cs61_off[48], "0.001");
+    }
+
+    #[test]
+    fn paired_somatic_amplicon_header_emits_somatic_55_columns() {
+        let mut cfg = crate::config::Config {
+            bam: "tumor.bam|normal.bam".to_string(),
+            amplicon: Some("10:0.95".to_string()),
+            region: None,
+            ..crate::config::Config::default()
+        };
+
+        // Default COMPAT_VARDICTJAVA_1_8_3 preserves 38-col Amplicon header.
+        let mut h_vj = Vec::new();
+        print_header(&mut h_vj, &cfg).unwrap();
+        let h_vj_str = String::from_utf8(h_vj).unwrap();
+        assert_eq!(h_vj_str.split('\t').count(), 38);
+        assert!(h_vj_str.ends_with("GoodVarCount\tTotalVarCount\tNocov\tAmpflag\n"));
+
+        // COMPAT_OFF (`paired_somatic_amplicon == true`) emits the 55-col Somatic header.
+        cfg.compat = crate::config::COMPAT_OFF;
+        for fisher in [false, true] {
+            cfg.fisher = fisher;
+            let mut h_off = Vec::new();
+            print_header(&mut h_off, &cfg).unwrap();
+            let h_off_str = String::from_utf8(h_off).unwrap();
+            assert_eq!(h_off_str.split('\t').count(), 55);
+            assert!(
+                h_off_str.ends_with("VarLabel\tVarType\tDuprate1\tSV_info1\tDuprate2\tSV_info2\n"),
+                "paired somatic amplicon header must emit Somatic columns, got: {h_off_str}"
+            );
+            assert!(!h_off_str.contains("Ampflag"));
+        }
     }
 }
