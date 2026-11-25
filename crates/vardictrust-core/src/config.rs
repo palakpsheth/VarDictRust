@@ -32,6 +32,16 @@ impl<T> From<T> for VcfThreshold<T> {
     }
 }
 
+/// Per-sample amplicon concordance counts (`GDAMP`, `TLAMP`, `NCAMP`, `AMPFLAG`)
+/// for single-sample and paired somatic amplicon VCF emission (`AstraZeneca-NGS/VarDictJava#378`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AmpliconConcordance {
+    pub gdamp: i32,
+    pub tlamp: i32,
+    pub ncamp: i32,
+    pub ampflag: bool,
+}
+
 /// Compatibility profile selector modeled on `bwa-mem3`'s `--compat` target enum.
 ///
 /// Default across `v1.x` is [`Self::VardictJava183`] (100% VarDictJava v1.8.3 / `var2vcf` parity).
@@ -41,7 +51,7 @@ pub enum CompatTarget {
     /// Exact VarDictJava v1.8.3 (`0886261`) + `var2vcf_*.pl` (`009e017`) output parity (`--compat=vardictjava`).
     #[default]
     VardictJava183,
-    /// Compatibility off (`--compat=off`): enables all 17 [`CompatProfile`] accuracy, scale, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
+    /// Compatibility off (`--compat=off`): enables all 21 [`CompatProfile`] accuracy, scale, SV, amplicon, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
     Off,
 }
 
@@ -65,7 +75,7 @@ impl CompatTarget {
     }
 }
 
-/// Resolved compatibility behavior switches (17 independent correctness, scale, and `--eqx` flags) derived from [`CompatTarget`].
+/// Resolved compatibility behavior switches (21 independent correctness, scale, SV, amplicon, and `--eqx` flags) derived from [`CompatTarget`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CompatProfile {
@@ -104,9 +114,17 @@ pub struct CompatProfile {
     pub exact_35_overlap: bool,
     /// #34 PB-4 (VariationRealigner.java:2056-2065): Match exact deletion CIGAR operator length (len == dlen) in no_passing_reads instead of Java's getCigarString().contains(dlen + "D") suffix match.
     pub exact_cigar_dlen_match: bool,
+    /// `joachimwolff/VarDictJava#4`, `clintval/vartovcf#139`, `clintval/vartovcf#149` (`SomaticPostProcessModule.java:156-226`): Continue evaluating subsequent candidate alleles at a multi-allelic locus when an earlier candidate fails `is_good_var`.
+    pub somatic_continue_after_bad_var: bool,
+    /// `AstraZeneca-NGS/VarDictJava#240`, `AstraZeneca-NGS/VarDictJava#241`, `AstraZeneca-NGS/VarDict#119` (`VariationUtils.java:136-146`): Pass directional `5`/`3` soft-clip orientation across all consensus assembly sites and thread `AdaptorSet` through `adjust_mnp` and `adj_snv`.
+    pub adaptor_all_consensus_dirs: bool,
+    /// `AstraZeneca-NGS/VarDictJava#398`, `AstraZeneca-NGS/VarDictJava#225`, `AstraZeneca-NGS/VarDictJava#229`, `AstraZeneca-NGS/VarDict#111`, `clintval/vartovcf#107`, `clintval/vartovcf#192` (VCFv4.2 §1.4.5/§5.4): Emit canonical 1-bp-upstream-anchored symbolic `<DEL>`, `<DUP>`, and `<INV>` alleles with signed `SVLEN` and paired somatic `END`/`SVTYPE`/`SVLEN` `INFO` tags.
+    pub canonical_sv_vcf_anchoring: bool,
+    /// `AstraZeneca-NGS/VarDictJava#378`, `AstraZeneca-NGS/VarDictJava#155`, `AstraZeneca-NGS/VarDict#109`, `MHH-Bioinformatics-Hematology/vardictcpp#1`, `palakpsheth/VarDictRust#95`: Enable bounded-memory paired tumor/normal somatic amplicon calling (`-b "tumor|normal" -a`) in both `.var` and VCF modes.
+    pub paired_somatic_amplicon: bool,
 }
 
-/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 17 [`CompatProfile`] fixes disabled).
+/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 21 [`CompatProfile`] fixes disabled).
 pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     target: CompatTarget::VardictJava183,
     sanitize_sample_info: false,
@@ -126,9 +144,13 @@ pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     coordinate_sorted_vars: false,
     exact_35_overlap: false,
     exact_cigar_dlen_match: false,
+    somatic_continue_after_bad_var: false,
+    adaptor_all_consensus_dirs: false,
+    canonical_sv_vcf_anchoring: false,
+    paired_somatic_amplicon: false,
 };
 
-/// Compatibility-off profile (`--compat=off`) enabling all 17 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `--eqx` fixes.
+/// Compatibility-off profile (`--compat=off`) enabling all 21 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), paired somatic amplicon, and `--eqx` fixes.
 pub const COMPAT_OFF: CompatProfile = CompatProfile {
     target: CompatTarget::Off,
     sanitize_sample_info: true,
@@ -148,6 +170,10 @@ pub const COMPAT_OFF: CompatProfile = CompatProfile {
     coordinate_sorted_vars: true,
     exact_35_overlap: true,
     exact_cigar_dlen_match: true,
+    somatic_continue_after_bad_var: true,
+    adaptor_all_consensus_dirs: true,
+    canonical_sv_vcf_anchoring: true,
+    paired_somatic_amplicon: true,
 };
 
 impl Default for CompatProfile {
@@ -243,6 +269,8 @@ pub struct Config {
     pub tile_size: Option<u32>,
     /// Amplicon mode string (e.g. "10:0.95").
     pub amplicon: Option<String>,
+    /// Single-primer amplicon mode (`-sp` / `--amplicon-single-primer`, ports `AstraZeneca-NGS/VarDictJava#303`).
+    pub amplicon_single_primer: bool,
 
     // -- Additional flags added in T027-T032 --
     /// Extension for BED region (default: 0).
@@ -306,6 +334,10 @@ pub struct Config {
     /// which is truthy in Perl (`var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`)
     /// whereas `-f 0` (`"0"`) is falsy and falls back to `0.02`.
     pub af_threshold_truthy_zero: bool,
+    /// Normalized raw CLI token supplied to `-f` / `--af-threshold` for verbatim `f$Freq`
+    /// VCF header/FILTER formatting (`None` when `-f` was not explicitly passed;
+    /// `AstraZeneca-NGS/VarDict@009e017`, `MHH-Bioinformatics-Hematology/vardictcpp#4`).
+    pub af_threshold_raw: Option<String>,
     /// unique mode alignment enabled (-u)
     pub unique_mode_alignment_enabled: bool,
     /// unique mode second in pair enabled (-UN)
@@ -377,6 +409,7 @@ impl Default for Config {
             freq: 0.01,
             af_threshold: 0.01,
             af_threshold_truthy_zero: false,
+            af_threshold_raw: None,
             sample: "SAMPLE".to_string(),
             sample_explicit: false,
             region: None,
@@ -404,6 +437,7 @@ impl Default for Config {
             fisher: false,
             tile_size: None,
             amplicon: None,
+            amplicon_single_primer: false,
             extension: 0,
             extension_nuc: 2,
             three_prime: false,
@@ -568,6 +602,22 @@ impl Config {
         if self.af_threshold == 0.0 {
             self.af_threshold = 0.0;
         }
+        if let Some(ref mut raw) = self.af_threshold_raw {
+            let (f_norm, norm_raw) = validate_vcf_nonneg_float_token(raw).map_err(|reason| {
+                crate::types::VardictError::Parse(format!(
+                    "Invalid af_threshold_raw '{raw}': {reason}"
+                ))
+            })?;
+            if f_norm.to_bits() != self.af_threshold.to_bits() {
+                return Err(crate::types::VardictError::Parse(format!(
+                    "Invalid af_threshold_raw '{raw}': parsed value {f_norm} disagrees with af_threshold '{}'",
+                    self.af_threshold
+                )));
+            }
+            if raw.as_str() != norm_raw {
+                *raw = norm_raw.to_string();
+            }
+        }
         if !self.vcf_pval.is_finite() || self.vcf_pval < 0.0 {
             return Err(crate::types::VardictError::Parse(format!(
                 "Invalid vcf_pval '{}': must be a finite number >= 0.0",
@@ -661,17 +711,18 @@ pub fn java_integer_decode(s: &str) -> Result<i32, String> {
     i32::try_from(val).map_err(|_| format!("For input string: \"{s}\""))
 }
 
-/// Ports `org.apache.commons.cli.TypeHandler.createNumber(String).doubleValue()` (`CmdParser.java`).
-/// - If `s` contains `.`: parses as Java `Double.valueOf(s)` (trims whitespace, strips optional trailing
-///   `f`/`F`/`d`/`D`, rejects `NaN`/`Infinity`).
-/// - Otherwise: parses as `Long.valueOf(s)` (strict base-10 signed 64-bit integer, no whitespace or exponent)
+/// Ports `org.apache.commons.cli.TypeHandler.createNumber(String).doubleValue()` and
+/// `Double.parseDouble` (`CmdParser.java:114`):
+/// - If trimmed `s` (after stripping optional trailing `f`/`F`/`d`/`D`) contains `.`, `e`, or `E`:
+///   parses as finite `f64` (rejecting `NaN`/`Infinity`).
+/// - Otherwise: parses as `Long.valueOf(s)` (strict base-10 signed 64-bit integer, no whitespace)
 ///   and converts to `f64`.
 pub fn parse_java_number_f64(s: &str) -> Result<f64, String> {
-    if s.contains('.') {
-        let trimmed = s.trim();
-        let core = trimmed
-            .strip_suffix(['f', 'F', 'd', 'D'])
-            .unwrap_or(trimmed);
+    let trimmed = s.trim();
+    let core = trimmed
+        .strip_suffix(['f', 'F', 'd', 'D'])
+        .unwrap_or(trimmed);
+    if trimmed.contains('.') || trimmed.contains('e') || trimmed.contains('E') {
         if core.is_empty() {
             return Err(format!("Invalid numeric value '{s}'"));
         }
@@ -999,6 +1050,8 @@ mod tests {
         assert!(!c.index_csi);
         assert_eq!(c.compat, COMPAT_VARDICTJAVA_1_8_3);
         assert!(!c.vcf_all_alleles);
+        assert!(c.af_threshold_raw.is_none());
+        assert!(!c.amplicon_single_primer);
         assert_eq!(c.vcf_min_splitreads, 1);
         assert!(!c.vcf_min_splitreads_explicit);
 
@@ -1082,9 +1135,13 @@ mod tests {
             coordinate_sorted_vars,
             exact_35_overlap,
             exact_cigar_dlen_match,
+            somatic_continue_after_bad_var,
+            adaptor_all_consensus_dirs,
+            canonical_sv_vcf_anchoring,
+            paired_somatic_amplicon,
         } = vj;
         assert_eq!(vj_target, CompatTarget::VardictJava183);
-        let vj_switches: [bool; 17] = [
+        let vj_switches: [bool; 21] = [
             sanitize_sample_info,
             standard_dup_symbolic_alt,
             shift3_3prime_alleles,
@@ -1102,6 +1159,10 @@ mod tests {
             coordinate_sorted_vars,
             exact_35_overlap,
             exact_cigar_dlen_match,
+            somatic_continue_after_bad_var,
+            adaptor_all_consensus_dirs,
+            canonical_sv_vcf_anchoring,
+            paired_somatic_amplicon,
         ];
         assert!(vj_switches.iter().all(|&flag| !flag));
 
@@ -1125,9 +1186,13 @@ mod tests {
             coordinate_sorted_vars,
             exact_35_overlap,
             exact_cigar_dlen_match,
+            somatic_continue_after_bad_var,
+            adaptor_all_consensus_dirs,
+            canonical_sv_vcf_anchoring,
+            paired_somatic_amplicon,
         } = off;
         assert_eq!(off_target, CompatTarget::Off);
-        let off_switches: [bool; 17] = [
+        let off_switches: [bool; 21] = [
             sanitize_sample_info,
             standard_dup_symbolic_alt,
             shift3_3prime_alleles,
@@ -1145,6 +1210,10 @@ mod tests {
             coordinate_sorted_vars,
             exact_35_overlap,
             exact_cigar_dlen_match,
+            somatic_continue_after_bad_var,
+            adaptor_all_consensus_dirs,
+            canonical_sv_vcf_anchoring,
+            paired_somatic_amplicon,
         ];
         assert!(off_switches.iter().all(|&flag| flag));
 
@@ -1648,5 +1717,91 @@ mod tests {
                 "expected Err from parse_java_number_usize({bad:?})"
             );
         }
+    }
+
+    #[test]
+    fn wave4_schema_compat_21_java_float_and_amplicon_concordance_contract() {
+        use std::collections::HashSet;
+
+        let amp_a = AmpliconConcordance {
+            gdamp: 3,
+            tlamp: 4,
+            ncamp: 1,
+            ampflag: true,
+        };
+        let amp_b = amp_a;
+        assert_eq!(amp_a, amp_b);
+        let mut set = HashSet::new();
+        assert!(set.insert(amp_a));
+        assert!(!set.insert(amp_b));
+
+        for (raw, expected) in [
+            ("1e-5", 1e-5),
+            ("1E-5", 1e-5),
+            ("1e1", 10.0),
+            ("1.5e2", 150.0),
+            ("0.05d", 0.05),
+            ("0.05f", 0.05),
+            (" 0.05D ", 0.05),
+            (" 1e-5f ", 1e-5),
+            (".01", 0.01),
+            ("0e0", 0.0),
+        ] {
+            let got = parse_java_number_f64(raw)
+                .unwrap_or_else(|e| panic!("parse_java_number_f64({raw:?}) failed: {e}"));
+            assert!(
+                (got - expected).abs() <= 1e-15,
+                "raw={raw:?}: got {got}, expected {expected}"
+            );
+        }
+        assert!(parse_java_number_i32("1e1").is_err());
+        for bad in [
+            "1e", "e", "1e500", "-1e500", "NaN", "inf", "Infinity", " 10", "10 ", "",
+        ] {
+            assert!(
+                parse_java_number_f64(bad).is_err(),
+                "expected Err from parse_java_number_f64({bad:?})"
+            );
+        }
+
+        let var_new = crate::variations::Variation::new();
+        assert!(!var_new.pre_anchored_dup);
+        assert!(!crate::variations::Variation::default().pre_anchored_dup);
+
+        let som = crate::postprocess::somatic::SomaticVariant {
+            variant1: crate::variations::Variant::new(),
+            variant2: None,
+            status: "StrongSomatic".to_string(),
+            sv1: String::new(),
+            sv2: String::new(),
+            end_is_variant2: false,
+            tumor_amplicon: Some(amp_a),
+            normal_amplicon: None,
+        };
+        assert_eq!(som.tumor_amplicon, Some(amp_a));
+        assert!(som.normal_amplicon.is_none());
+
+        let mut cfg_af = Config {
+            af_threshold: -0.0,
+            af_threshold_raw: Some("-0.0".to_string()),
+            ..Config::default()
+        };
+        cfg_af.validate_vcf_thresholds().unwrap();
+        assert_eq!(cfg_af.af_threshold.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(cfg_af.af_threshold_raw.as_deref(), Some("0.0"));
+
+        let mut bad_af_mismatch = Config {
+            af_threshold: 0.05,
+            af_threshold_raw: Some("0.01".to_string()),
+            ..Config::default()
+        };
+        assert!(bad_af_mismatch.validate_vcf_thresholds().is_err());
+
+        let mut bad_af_inject = Config {
+            af_threshold: 0.05,
+            af_threshold_raw: Some("0.05;evil".to_string()),
+            ..Config::default()
+        };
+        assert!(bad_af_inject.validate_vcf_thresholds().is_err());
     }
 }

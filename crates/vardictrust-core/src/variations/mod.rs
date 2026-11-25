@@ -51,6 +51,9 @@ pub struct Variation {
     pub pq: f64,
     /// Adjusted count for indels due to local realignment.
     pub extracnt: i32,
+    /// True when a symbolic `<dupN>` variation key is already anchored at `bp - 1`
+    /// (`realignlgins` or shifted `sv.rs` under `CompatProfile::canonical_sv_vcf_anchoring`).
+    pub pre_anchored_dup: bool,
 }
 
 impl Variation {
@@ -71,6 +74,7 @@ impl Variation {
             pp: 0,
             pq: 0.0,
             extracnt: 0,
+            pre_anchored_dup: false,
         }
     }
 

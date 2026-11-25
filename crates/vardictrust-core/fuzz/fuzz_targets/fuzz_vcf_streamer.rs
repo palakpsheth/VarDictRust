@@ -873,6 +873,8 @@ fuzz_target!(|data: &[u8]| {
             sv1: sv_str,
             sv2: sv2_str,
             end_is_variant2,
+            tumor_amplicon: None,
+            normal_amplicon: None,
         };
         let paired_rec = format_paired_vcf_record(&som_var, &vcf_chr, &config);
         assert_vcf_data_record("paired_vcf_direct", paired_rec.as_str(), 11, &config);

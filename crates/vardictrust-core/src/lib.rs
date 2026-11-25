@@ -11,7 +11,7 @@
 //!   ([`config::CompatTarget::VardictJava183`]) reproduces VarDictJava v1.8.3 + `var2vcf_*.pl`
 //!   intermediate `.var` and `VCFv4.2` output across valid inputs.
 //! - **Opt-in corrections (`--compat=off`):** [`config::COMPAT_OFF`]
-//!   ([`config::CompatTarget::Off`]) enables all 17 [`config::CompatProfile`] accuracy,
+//!   ([`config::CompatTarget::Off`]) enables all 21 [`config::CompatProfile`] accuracy,
 //!   bounded-scale, `VD <= DP` reconciliation, coordinate-sorted `.var` order, exact realignment
 //!   overlap/`dlen` matching, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `=`/`X` (`--eqx`)
 //!   CIGAR fixes, and stamps `##VarDictRustCompat=off` in the VCF header; full 18/18 `var2vcf`
@@ -4629,6 +4629,13 @@ fn resolve_effective_config(
         }
     }
 
+    if effective.amplicon_single_primer && effective.amplicon.is_none() {
+        return Err(VardictError::Parse(
+            "--amplicon-single-primer (-sp) requires amplicon mode (-a or an 8-column amplicon BED)"
+                .to_string(),
+        ));
+    }
+
     if effective.sample_regexp.is_some()
         || (has_region && paired && (effective.emit_intermediate || effective.splice))
     {
@@ -7755,6 +7762,8 @@ mod tests {
             sv1: String::new(),
             sv2: String::new(),
             end_is_variant2: false,
+            tumor_amplicon: None,
+            normal_amplicon: None,
         }
     }
 
@@ -9513,6 +9522,8 @@ mod tests {
                 sv1: String::new(),
                 sv2: String::new(),
                 end_is_variant2: false,
+                tumor_amplicon: None,
+                normal_amplicon: None,
             };
             SomaticVcfCandidate {
                 start_pos: pos,

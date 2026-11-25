@@ -3476,6 +3476,8 @@ mod tests {
             sv1: String::new(),
             sv2: String::new(),
             end_is_variant2: false,
+            tumor_amplicon: None,
+            normal_amplicon: None,
         }
     }
 
@@ -3762,6 +3764,8 @@ mod tests {
             sv1: String::new(),
             sv2: String::new(),
             end_is_variant2: false,
+            tumor_amplicon: None,
+            normal_amplicon: None,
         };
         let pr = format_paired_vcf_record(&sv, "chr1", &config);
         assert_eq!(pr.as_str().split('\t').nth(5).unwrap(), "71");

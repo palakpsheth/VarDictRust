@@ -68,6 +68,10 @@ pub struct SomaticVariant {
     /// Whether Java's endVariant (source of left/right seq, shift3, msi, msint)
     /// is variant2 (true) or variant1 (false).
     pub end_is_variant2: bool,
+    /// Amplicon concordance for BAM1 (tumor) when paired somatic amplicon mode is active (`AstraZeneca-NGS/VarDictJava#378`).
+    pub tumor_amplicon: Option<crate::config::AmpliconConcordance>,
+    /// Amplicon concordance for BAM2 (normal) when paired somatic amplicon mode is active (`AstraZeneca-NGS/VarDictJava#378`).
+    pub normal_amplicon: Option<crate::config::AmpliconConcordance>,
 }
 
 fn collect_sorted_region_positions(
@@ -367,6 +371,8 @@ fn calling_for_one_sample(
                 sv1: String::new(),
                 sv2: String::new(),
                 end_is_variant2: true,
+                tumor_amplicon: None,
+                normal_amplicon: None,
             });
         } else {
             // Only BAM1 has coverage → SampleSpecific
@@ -377,6 +383,8 @@ fn calling_for_one_sample(
                 sv1: String::new(),
                 sv2: String::new(),
                 end_is_variant2: false,
+                tumor_amplicon: None,
+                normal_amplicon: None,
             });
         }
     }
@@ -508,6 +516,8 @@ fn print_variations_from_first_sample(
                     sv1: v1.sv.clone(),
                     sv2: String::new(),
                     end_is_variant2: true,
+                    tumor_amplicon: None,
+                    normal_amplicon: None,
                 });
             } else {
                 if v2var.ref_allele == v2var.var_allele {
@@ -539,6 +549,8 @@ fn print_variations_from_first_sample(
                     sv1: String::new(),
                     sv2: String::new(),
                     end_is_variant2: true,
+                    tumor_amplicon: None,
+                    normal_amplicon: None,
                 });
             }
         }
@@ -633,6 +645,8 @@ fn print_variations_from_first_sample(
                 sv1: String::new(),
                 sv2: String::new(),
                 end_is_variant2: true,
+                tumor_amplicon: None,
+                normal_amplicon: None,
             });
         } else {
             // sample 1 only, should be strong somatic (SomaticPostProcessModule.java:177)
@@ -698,6 +712,8 @@ fn print_variations_from_first_sample(
                     sv1: String::new(),
                     sv2: String::new(),
                     end_is_variant2: false,
+                    tumor_amplicon: None,
+                    normal_amplicon: None,
                 });
             } else {
                 // SomaticOutputVariant(vref, vref, vref, v2nt, …) (:215): header and
@@ -710,6 +726,8 @@ fn print_variations_from_first_sample(
                     sv1: String::new(),
                     sv2: String::new(),
                     end_is_variant2: false,
+                    tumor_amplicon: None,
+                    normal_amplicon: None,
                 });
             }
         }
@@ -874,6 +892,8 @@ fn print_variations_from_second_sample(
             sv1: String::new(),
             sv2: String::new(),
             end_is_variant2: true,
+            tumor_amplicon: None,
+            normal_amplicon: None,
         });
     }
 
@@ -2692,6 +2712,8 @@ mod tests {
                     sv1,
                     sv2,
                     end_is_variant2,
+                    tumor_amplicon,
+                    normal_amplicon,
                 } = got;
                 assert_variant_eq(variant1, &want.variant1);
                 assert_eq!(variant2.is_some(), want.variant2.is_some());
@@ -2702,6 +2724,8 @@ mod tests {
                 assert_eq!(sv1, &want.sv1);
                 assert_eq!(sv2, &want.sv2);
                 assert_eq!(end_is_variant2, &want.end_is_variant2);
+                assert_eq!(tumor_amplicon, &want.tumor_amplicon);
+                assert_eq!(normal_amplicon, &want.normal_amplicon);
             }
         }
 
