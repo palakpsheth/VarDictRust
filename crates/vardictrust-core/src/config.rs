@@ -344,6 +344,10 @@ pub struct Config {
     pub unique_mode_second_in_pair_enabled: bool,
     /// Omit END tag in VCF output (matches var2vcf_valid.pl -E)
     pub omit_end_tag: bool,
+    /// True only when `--no-end` (or `--noend`) was explicitly passed on the CLI
+    /// (`false` in `Config::default()`, so symbolic SVs under `canonical_sv_vcf_anchoring`
+    /// emit canonical VCF `INFO/END` unless `--no-end` / `--noend` was explicitly requested).
+    pub vcf_no_end_explicit: bool,
     /// Include Ns in depth calculation (-K)
     pub include_n: bool,
     /// Opt-in output file path (`--output <PATH>`; plain file or `.gz`/`.bgz` BGZF).
@@ -470,6 +474,7 @@ impl Default for Config {
             unique_mode_alignment_enabled: false,
             unique_mode_second_in_pair_enabled: false,
             omit_end_tag: true,
+            vcf_no_end_explicit: false,
             include_n: false,
             output_path: None,
             index_output: false,

@@ -8296,6 +8296,68 @@ fn wave4_vardictcpp_cli_aliases_and_paired_amplicon_cram_tbi_csi_stats_e2e() {
         );
     }
 
+    // 1b. CLI `-c 1 -S 2 -E 3 -z` `fixtures/micro/micro.bed` diff-confinement:
+    //     `-E 3` keeps `omit_end_tag = true` on non-symbolic SNVs/indels under `--compat=off`,
+    //     guaranteeing 0 variant diffs vs default `--compat=vardictjava`.
+    let micro_bed = "fixtures/micro/micro.bed";
+    let micro_bed_vj = base_cmd()
+        .args([
+            "-G",
+            micro_fa,
+            "-b",
+            micro_bam,
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-z",
+            "--threads=1",
+            micro_bed,
+        ])
+        .output()
+        .expect("spawn micro.bed default");
+    let micro_bed_off = base_cmd()
+        .args([
+            "-G",
+            micro_fa,
+            "-b",
+            micro_bam,
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-z",
+            "--threads=1",
+            "--compat=off",
+            micro_bed,
+        ])
+        .output()
+        .expect("spawn micro.bed --compat=off");
+    assert!(micro_bed_vj.status.success() && micro_bed_off.status.success());
+    let micro_bed_vj_str = String::from_utf8(micro_bed_vj.stdout).expect("utf8");
+    let micro_bed_off_str = String::from_utf8(micro_bed_off.stdout).expect("utf8");
+    let micro_vj_data: Vec<&str> = micro_bed_vj_str
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let micro_off_data: Vec<&str> = micro_bed_off_str
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    assert!(!micro_vj_data.is_empty());
+    assert!(
+        micro_off_data.iter().all(|l| !l.contains(";END=")),
+        "-E 3 must omit ;END= on non-symbolic variants under --compat=off: {micro_off_data:?}"
+    );
+    assert_eq!(
+        micro_vj_data, micro_off_data,
+        "-c 1 -S 2 -E 3 -z micro.bed must produce 0 variant diffs under --compat=off"
+    );
+
     // 2. Paired somatic amplicon on `.cram` (`tumor_amp.cram|normal_amp.cram`) with
     //    8-column QIAseq SPE BED (`col8 == col3`), `-a 10:0.95 -sp`, `--compat=off`,
     //    `--output .vcf.gz --tbi` & `--csi`, `--vcfall`, `--fisher`, and `--stats-json`

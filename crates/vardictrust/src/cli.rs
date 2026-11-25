@@ -1913,9 +1913,8 @@ impl Cli {
             verbose: self.verbose,
             unique_mode_alignment_enabled: self.unique_mode_alignment_enabled,
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
-            omit_end_tag: self.no_end
-                || (compat_target != vardictrust_core::config::CompatTarget::Off
-                    && !self.col_end.is_empty()),
+            omit_end_tag: self.no_end || !self.col_end.is_empty(),
+            vcf_no_end_explicit: self.no_end,
             include_n: self.include_n,
             output_path: self.output.first().cloned(),
             index_output: self.tbi,
@@ -2754,12 +2753,14 @@ mod tests {
         assert!(csi_no_end_cfg.index_csi);
         assert!(!csi_no_end_cfg.index_output);
         assert!(csi_no_end_cfg.omit_end_tag);
+        assert!(csi_no_end_cfg.vcf_no_end_explicit);
 
         let col_end_cfg = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-E", "3"]))
             .unwrap()
             .to_config()
             .unwrap();
         assert!(col_end_cfg.omit_end_tag);
+        assert!(!col_end_cfg.vcf_no_end_explicit);
 
         let col_end_compat_off_cfg = Cli::try_parse_from(args(&[
             "-b",
@@ -2774,8 +2775,8 @@ mod tests {
         .to_config()
         .unwrap();
         assert!(
-            !col_end_compat_off_cfg.omit_end_tag,
-            "-E <col_end> BED column selector must not omit INFO/END under --compat=off unless --no-end/--noend is passed"
+            col_end_compat_off_cfg.omit_end_tag && !col_end_compat_off_cfg.vcf_no_end_explicit,
+            "-E <col_end> must keep omit_end_tag=true for non-SV BED diff-confinement while leaving vcf_no_end_explicit=false so symbolic SVs retain INFO/END"
         );
 
         for explicit_no_end in ["--no-end", "--noend"] {
@@ -2793,6 +2794,7 @@ mod tests {
             .to_config()
             .unwrap();
             assert!(explicit_cfg.omit_end_tag);
+            assert!(explicit_cfg.vcf_no_end_explicit);
         }
 
         let bad_compat_cli =
@@ -4704,6 +4706,7 @@ mod tests {
         .unwrap();
         assert!(cpp_cfg.vcf_all_alleles);
         assert!(cpp_cfg.omit_end_tag);
+        assert!(cpp_cfg.vcf_no_end_explicit);
         assert!(cpp_cfg.vcf_pass_only);
 
         // 4. GNU_ONLY_LONG_FLAGS_SINGLE_DASH rejecting -vcf, -vcfall, -noend, -vcfpass, -amplicon-single-primer

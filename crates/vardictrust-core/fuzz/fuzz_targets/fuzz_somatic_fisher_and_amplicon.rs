@@ -7,8 +7,8 @@ use libfuzzer_sys::fuzz_target;
 use vardictrust_core::config::{Config, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
 use vardictrust_core::javamap::JavaHashMap;
 use vardictrust_core::postprocess::amplicon::{
-    amplicon_post_process, amplicon_post_process_streaming, amplicon_retain_strict_bounds,
-    amplicon_select_vcf_rows_compat,
+    aggregate_sample_amplicon_vars, amplicon_post_process, amplicon_post_process_streaming,
+    amplicon_retain_strict_bounds, amplicon_select_vcf_rows_compat,
 };
 use vardictrust_core::postprocess::simple::simple_post_process;
 use vardictrust_core::postprocess::somatic::{somatic_post_process_at, PositionPipelineFn};
@@ -704,5 +704,27 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(lhs.tlamp, rhs.tlamp);
         assert_eq!(lhs.ncamp, rhs.ncamp);
         assert_eq!(lhs.ampflag, rhs.ampflag);
+    }
+
+    let (agg_vars, agg_conc) =
+        aggregate_sample_amplicon_vars(&amp_cfg, &amp_regions, vars_per_amplicon, &splice);
+    for (_, entry) in agg_vars.iter() {
+        for v in &entry.variants {
+            let resolved = agg_conc.resolve(
+                v.start_pos,
+                v.end_pos,
+                &v.ref_allele,
+                &v.var_allele,
+                &amp_regions,
+            );
+            assert!(
+                0 <= resolved.gdamp
+                    && resolved.gdamp <= resolved.tlamp
+                    && 0 <= resolved.ncamp
+                    && resolved.ncamp <= amp_regions.len() as i32,
+                "invalid SampleAmpliconConcordance bounds: {resolved:?} (amps={})",
+                amp_regions.len()
+            );
+        }
     }
 });

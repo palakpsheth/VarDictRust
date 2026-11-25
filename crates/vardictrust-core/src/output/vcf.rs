@@ -1517,7 +1517,15 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     buf.push_str(var_type);
     buf.push_str(";DP=");
     crate::util::push_i32(buf, variant.total_pos_cov);
-    if !config.omit_end_tag {
+    let emit_end_tag = if config.compat.canonical_sv_vcf_anchoring
+        && !alt_is_dot
+        && symbolic_sv_type_token(&variant.var_allele).is_some()
+    {
+        !config.vcf_no_end_explicit
+    } else {
+        !config.omit_end_tag
+    };
+    if emit_end_tag {
         buf.push_str(";END=");
         crate::util::push_i32(buf, variant.end_pos);
     }
@@ -3185,7 +3193,7 @@ pub fn format_paired_vcf_record(
                         .and_then(parse_genotype_inv_len_str)
                 });
             let svlen = compute_canonical_svlen(v1.start_pos, v1.end_pos, &v1.var_allele, inv_hint);
-            if !config.omit_end_tag {
+            if !config.vcf_no_end_explicit {
                 line.push_str(";END=");
                 crate::util::push_i32(&mut line, v1.end_pos);
             }
@@ -7059,8 +7067,58 @@ mod tests {
             1
         );
 
-        // Paired `<DEL>`, `<DUP>`, and `<INV>` emit `;END=...;SVTYPE=...;SVLEN=...` under canonical_sv_vcf_anchoring,
-        // respect `--no-end` (`omit_end_tag = true`), and stay omitted under default compat or non-SVs / `<R,R>`.
+        // Paired & single `<DEL>`, `<DUP>`, and `<INV>` emit `;END=...;SVTYPE=...;SVLEN=...` under
+        // `canonical_sv_vcf_anchoring` even when `omit_end_tag == true` (`Config::default()` / `-E <COL>`),
+        // respect explicit `--no-end` (`vcf_no_end_explicit = true`), and omit `;END=` on non-SVs / `<R,R>`.
+        let default_compat_off_cfg = Config {
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        assert!(default_compat_off_cfg.omit_end_tag && !default_compat_off_cfg.vcf_no_end_explicit);
+        let single_del_default_off = format_vcf_record(
+            &del_sv,
+            &region,
+            &default_compat_off_cfg,
+            &[],
+            1.0,
+            "1.0",
+            None,
+        );
+        assert!(
+            single_del_default_off.contains(";END=1250;")
+                && single_del_default_off.contains(";SVTYPE=DEL;SVLEN=-250;"),
+            "Config::default() + COMPAT_OFF must emit ;END=1250; on single symbolic <DEL>: {single_del_default_off}"
+        );
+        let single_snv_default_off = format_vcf_record(
+            &amplicon_passing_variant(),
+            &region,
+            &default_compat_off_cfg,
+            &[],
+            1.0,
+            "1.0",
+            None,
+        );
+        assert!(
+            !single_snv_default_off.contains(";END="),
+            "Config::default() + COMPAT_OFF must keep omitting ;END= on non-SV SNVs: {single_snv_default_off}"
+        );
+        let mut single_del_explicit_no_end_cfg = default_compat_off_cfg.clone();
+        single_del_explicit_no_end_cfg.vcf_no_end_explicit = true;
+        let single_del_explicit_no_end = format_vcf_record(
+            &del_sv,
+            &region,
+            &single_del_explicit_no_end_cfg,
+            &[],
+            1.0,
+            "1.0",
+            None,
+        );
+        assert!(
+            !single_del_explicit_no_end.contains(";END=")
+                && single_del_explicit_no_end.contains(";SVTYPE=DEL;SVLEN=-250;"),
+            "vcf_no_end_explicit=true must suppress ;END= on single symbolic <DEL>: {single_del_explicit_no_end}"
+        );
+
         let mut p_del = clean_normal();
         p_del.start_pos = 1000;
         p_del.end_pos = 1250;
@@ -7079,18 +7137,19 @@ mod tests {
         let p_del_off = format_paired_vcf_record(
             &somatic_sv(p_del.clone(), None, "StrongSomatic"),
             "chr1",
-            &anchor_only_cfg,
+            &default_compat_off_cfg,
         );
         assert!(
             p_del_off
                 .as_str()
                 .contains(";END=1250;SVTYPE=DEL;SVLEN=-250\tGT:"),
-            "paired <DEL> must emit ;END=1250;SVTYPE=DEL;SVLEN=-250: {}",
+            "paired <DEL> under Config::default() + COMPAT_OFF must emit ;END=1250;SVTYPE=DEL;SVLEN=-250: {}",
             p_del_off.as_str()
         );
 
-        let mut no_end_anchor_cfg = anchor_only_cfg.clone();
+        let mut no_end_anchor_cfg = default_compat_off_cfg;
         no_end_anchor_cfg.omit_end_tag = true;
+        no_end_anchor_cfg.vcf_no_end_explicit = true;
         let p_del_no_end = format_paired_vcf_record(
             &somatic_sv(p_del, None, "StrongSomatic"),
             "chr1",

@@ -5882,9 +5882,9 @@ mod vcf_all_alleles_and_compat_off {
         assert!(
             inv3_vcf_u.contains("chr1\t200\t.\t")
                 && inv3_vcf_u.contains("\t<INV>\t")
-                && inv3_vcf_u.contains(";DP=12;VD=8;")
+                && inv3_vcf_u.contains(";DP=12;END=9899;VD=8;")
                 && inv3_vcf_u.contains(";SVTYPE=INV;SVLEN=9699;"),
-            "expected canonical 1-bp upstream Side::Three <INV> at chr1:200 (AstraZeneca-NGS/VarDictJava#398) with mate-window DP=12 under COMPAT_OFF, got:\n{inv3_vcf_u}"
+            "expected canonical 1-bp upstream Side::Three <INV> at chr1:200 (AstraZeneca-NGS/VarDictJava#398) with END=9899 and mate-window DP=12 under COMPAT_OFF, got:\n{inv3_vcf_u}"
         );
         let mut inv3_tiled_cfg = inv3_untiled_cfg.clone();
         inv3_tiled_cfg.tile_size = Some(1_000);
@@ -7027,7 +7027,7 @@ mod vcf_all_alleles_and_compat_off {
         // (a) Switch 18 (`somatic_continue_after_bad_var`, `joachimwolff/VarDictJava#4`,
         //     `clintval/vartovcf#139`, `clintval/vartovcf#149`)
         //     1. Positive: `ArgumentNA_Tumor.bam|ArgumentNA_Normal.bam` recovers secondary
-        //        multi-allelic somatic & StrongLOH alleles when isolated `#18` is enabled.
+        //        multi-allelic somatic & StrongLOH alleles when isolated Switch 18 is enabled.
         //     2. Negative control: clean biallelic somatic pair has 0-byte diff vs default.
         // =========================================================================
         let mut sw18_only = COMPAT_VARDICTJAVA_1_8_3;
@@ -7131,8 +7131,8 @@ mod vcf_all_alleles_and_compat_off {
         // (b) Switch 19 (`adaptor_all_consensus_dirs`, `AstraZeneca-NGS/VarDictJava#240`,
         //     `AstraZeneca-NGS/VarDictJava#241`, `AstraZeneca-NGS/VarDict#119`)
         //     1. Positive: 3' TruSeq adapter + 3' anchor tail soft-clip realigns into a
-        //        false chimeric insertion under default `dir = 0`, suppressed under `#19`.
-        //     2. Negative control: when `config.adaptor` is empty, `#19` has 0-byte diff.
+        //        false chimeric insertion under default `dir = 0`, suppressed under Switch 19.
+        //     2. Negative control: when `config.adaptor` is empty, Switch 19 has 0-byte diff.
         // =========================================================================
         let mut sw19_only = COMPAT_VARDICTJAVA_1_8_3;
         sw19_only.adaptor_all_consensus_dirs = true;
@@ -7253,8 +7253,9 @@ mod vcf_all_alleles_and_compat_off {
         // =========================================================================
         // (c) Switch 20 (`canonical_sv_vcf_anchoring`, `AstraZeneca-NGS/VarDictJava#398`,
         //     `clintval/vartovcf#107`, `clintval/vartovcf#192`)
-        //     1. Positive: single-sample `<DEL>` & paired `<DUP>` emit canonical 1-bp REF,
-        //        signed `SVLEN` (`END - POS == SVLEN.abs()`), and paired `END;SVTYPE;SVLEN`.
+        //     1. Positive: single-sample `<DEL>` & paired `<DEL>` emit canonical 1-bp REF,
+        //        signed `SVLEN` (`END - POS == SVLEN.abs()`), and `END;SVTYPE;SVLEN` directly
+        //        under `Config::default()` (`omit_end_tag = true`, `vcf_no_end_explicit = false`).
         //     2. Negative control: non-SV `micro.bam` variant rows have 0-byte diff.
         // =========================================================================
         let mut sw20_only = COMPAT_VARDICTJAVA_1_8_3;
@@ -7269,7 +7270,6 @@ mod vcf_all_alleles_and_compat_off {
             region: Some("chr10:89700380-89713976".to_string()),
             freq: 0.001,
             af_threshold: 0.001,
-            omit_end_tag: false,
             threads: 1,
             compat: sw20_only,
             ..Config::default()
@@ -7305,7 +7305,7 @@ mod vcf_all_alleles_and_compat_off {
         let paired_sv_norm_bam = dir.path().join("w4_colo_del_norm.bam");
         write_multi_contig_bam(&paired_sv_norm_bam, &[("chr10", 135_534_747)], Vec::new())
             .expect("write empty chr10 normal BAM");
-        let paired_dup_cfg = Config {
+        let paired_del_cfg = Config {
             reference: hg19_fa.to_string_lossy().into_owned(),
             bam: format!(
                 "{}|{}",
@@ -7318,14 +7318,13 @@ mod vcf_all_alleles_and_compat_off {
             af_threshold: 0.001,
             fisher: true,
             vcf_all_alleles: true,
-            omit_end_tag: false,
             threads: 1,
             compat: sw20_only,
             ..Config::default()
         };
-        let paired_dup_vcf =
-            run_core_vcf(&paired_dup_cfg).expect("Colo829 DELDiscReverse sw20 paired VCF");
-        let p_sv_rows: Vec<&str> = paired_dup_vcf
+        let paired_del_vcf =
+            run_core_vcf(&paired_del_cfg).expect("Colo829 DELDiscReverse sw20 paired VCF");
+        let p_sv_rows: Vec<&str> = paired_del_vcf
             .lines()
             .filter(|l| !l.starts_with('#') && l.contains("\t<DEL>\t"))
             .collect();
@@ -7346,14 +7345,22 @@ mod vcf_all_alleles_and_compat_off {
             );
         }
 
-        // Negative control for Switch 20: non-SV `micro.bam` variant lines are byte-identical
+        // Negative control for Switch 20 & full COMPAT_OFF: non-SV `micro.bam` variant lines are byte-identical
         let micro_vj = base_micro_config();
         let mut micro_s20 = micro_vj.clone();
         micro_s20.compat = sw20_only;
+        let mut micro_off = micro_vj.clone();
+        micro_off.compat = COMPAT_OFF;
+        let micro_vj_vars = extract_variants(&run_core_vcf(&micro_vj).expect("micro vj"));
         assert_eq!(
-            extract_variants(&run_core_vcf(&micro_vj).expect("micro vj")),
+            micro_vj_vars,
             extract_variants(&run_core_vcf(&micro_s20).expect("micro s20")),
             "Switch 20 negative control must have 0-byte variant diff on non-SV micro.bam"
+        );
+        assert_eq!(
+            micro_vj_vars,
+            extract_variants(&run_core_vcf(&micro_off).expect("micro COMPAT_OFF")),
+            "Full COMPAT_OFF must have 0-byte variant diff on clean non-SV micro.bam"
         );
 
         // =========================================================================

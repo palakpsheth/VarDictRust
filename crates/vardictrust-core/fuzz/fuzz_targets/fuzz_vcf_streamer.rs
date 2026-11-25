@@ -224,6 +224,17 @@ fn decode_sanitized_sample(sample_val: &str) -> String {
         .unwrap_or_else(|e| panic!("decoded INFO/SAMPLE is not valid UTF-8 ({sample_val:?}): {e}"))
 }
 
+fn is_symbolic_sv_alt(alt: &str) -> bool {
+    let Some(inner) = alt.strip_prefix('<').and_then(|s| s.strip_suffix('>')) else {
+        return false;
+    };
+    !inner.is_empty()
+        && inner != "R,R"
+        && inner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: &Config) {
     assert_tsv_cols(kind, line, expected_cols);
     if !config.compat.sanitize_sample_info || line.starts_with('#') {
@@ -278,7 +289,12 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
     );
 
     let expected_keys = if expected_cols == 10 {
-        let base_end = 26 + usize::from(!config.omit_end_tag);
+        let emit_end = if config.compat.canonical_sv_vcf_anchoring && is_symbolic_sv_alt(alt) {
+            !config.vcf_no_end_explicit
+        } else {
+            !config.omit_end_tag
+        };
+        let base_end = 26 + usize::from(emit_end);
         if entries.iter().any(|kv| kv.starts_with("GDAMP=")) {
             base_end + 4
         } else {
@@ -297,7 +313,7 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
             0
         };
         let sv_extra = if entries.iter().any(|kv| kv.starts_with("SVTYPE=")) {
-            2 + usize::from(!config.omit_end_tag)
+            2 + usize::from(!config.vcf_no_end_explicit)
         } else {
             0
         };
@@ -529,6 +545,7 @@ fuzz_target!(|data: &[u8]| {
         vcf_pass_only: (mode_bits & 4) != 0,
         vcf_paired_strict: (mode_bits & 8) != 0,
         omit_end_tag: (mode_bits & 16) != 0,
+        vcf_no_end_explicit: cur.bool(),
         vcf_pstd_filter: (mode_bits & 32) != 0,
         af_threshold_truthy_zero: cur.bool(),
         af_threshold: cur.metric_f64(0.5),
