@@ -138,6 +138,11 @@ fn simple_post_process_core<'a>(
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
+    let reset_crispr = config.crispr_cutting_site.unwrap_or(0) == 0;
+    let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
+    let skip_eq_non_pileup = !config.pileup && config.compat.sanitize_iupac_alt_alleles;
+    let preserve_shifted_ref = config.pileup && config.compat.pileup_preserve_shifted_ref;
+
     // Iterate entries in JavaHashMap table-bucket iteration order under default parity
     // (ports SimplePostProcessModule.java:35; see DIVERGENCES.md UB-3), or ascending
     // genomic coordinate order when `CompatProfile::coordinate_sorted_vars` is active.
@@ -159,6 +164,9 @@ fn simple_post_process_core<'a>(
             if let Some(vref_cow) = ref_var_cow.take() {
                 let mut vref = vref_cow.into_owned();
                 vref.var_type = String::new();
+                if reset_crispr {
+                    vref.crispr = 0;
+                }
                 vrefs.push(vref);
             } else if !config.compat.suppress_pileup_sentinels {
                 // ports SimplePostProcessModule.java:55-58: under -p an entry
@@ -168,6 +176,69 @@ fn simple_post_process_core<'a>(
                 // ""). CLAUDE.md §5: live-oracle output is replicated as-is and
                 // tracked upstream, never silently fixed.
                 vrefs.push(make_null_record(position));
+            }
+        } else if preserve_shifted_ref {
+            // AstraZeneca-NGS/VarDictJava#330: run per-variant `adj_complex_compat` + `crispr`
+            // reset inside the per-position loop BEFORE checking whether >= 1 variant survived
+            // at `position` with zero surviving variants keeping `start_pos == position`.
+            let had_null_ref = ref_var_cow.is_none();
+            let mut single_pre_adj_shifted = false;
+            for vref_cow in vvar_iter {
+                if vref_cow.ref_allele.contains('N') {
+                    continue;
+                }
+                let vtype_cow = vref_cow.var_type_cow();
+                let mut vref = vref_cow.into_owned();
+                if vvar_len == 1 && vref.start_pos != position {
+                    single_pre_adj_shifted = true;
+                }
+                if vref.var_type != vtype_cow.as_ref() {
+                    vref.var_type.clear();
+                    vref.var_type.push_str(&vtype_cow);
+                }
+                if vref.var_type == "Complex" {
+                    vref.adj_complex_compat(refresh_vt);
+                }
+                if reset_crispr {
+                    vref.crispr = 0;
+                }
+                vrefs.push(vref);
+            }
+            let has_survived = vrefs.len() > pos_start;
+            let any_at_pos = vrefs
+                .get(pos_start..)
+                .is_some_and(|s| s.iter().any(|v| v.start_pos == position));
+            if has_survived && !any_at_pos {
+                if let Some(rv_cow) = ref_var_cow.take().filter(|rv| rv.start_pos == position) {
+                    let mut ref_var = rv_cow.into_owned();
+                    ref_var.var_type = String::new();
+                    if reset_crispr {
+                        ref_var.crispr = 0;
+                    }
+                    vrefs.push(ref_var);
+                    if let Some(s) = vrefs.get_mut(pos_start..) {
+                        if config.compat.coordinate_sorted_vars {
+                            s.sort_by_key(|v| v.start_pos);
+                        } else if !s.is_empty() {
+                            s.rotate_right(1);
+                        }
+                    }
+                } else if vvar_len == 1
+                    && !config.compat.suppress_pileup_sentinels
+                    && had_null_ref
+                    && single_pre_adj_shifted
+                {
+                    let null_rec = make_null_record(position);
+                    let mut zero_ref = Variant::new();
+                    zero_ref.var_type = String::new();
+                    vrefs.push(null_rec);
+                    vrefs.push(zero_ref);
+                    if let Some(s) = vrefs.get_mut(pos_start..) {
+                        if s.len() >= 2 {
+                            s.rotate_right(2);
+                        }
+                    }
+                }
             }
         } else {
             for vref_cow in vvar_iter {
@@ -188,6 +259,9 @@ fn simple_post_process_core<'a>(
                     if let Some(rv_cow) = ref_var_cow.take() {
                         let mut ref_var = rv_cow.into_owned();
                         ref_var.var_type = String::new();
+                        if reset_crispr {
+                            ref_var.crispr = 0;
+                        }
                         vrefs.push(ref_var);
                     } else if !config.compat.suppress_pileup_sentinels {
                         // ports SimplePostProcessModule.java:75-79: Java prints a
@@ -207,6 +281,15 @@ fn simple_post_process_core<'a>(
                     vref.var_type.clear();
                     vref.var_type.push_str(&vtype_cow);
                 }
+                if vref.var_type == "Complex" {
+                    vref.adj_complex_compat(refresh_vt);
+                    if skip_eq_non_pileup && vref.ref_allele == vref.var_allele {
+                        continue;
+                    }
+                }
+                if reset_crispr {
+                    vref.crispr = 0;
+                }
                 vrefs.push(vref);
             }
         }
@@ -217,16 +300,6 @@ fn simple_post_process_core<'a>(
                 r.sv.push_str(&sv_cow);
             }
             last.sv = sv_cow.into_owned();
-        }
-    }
-
-    // Apply adjustments
-    for vref in &mut vrefs {
-        if vref.var_type == "Complex" {
-            vref.adj_complex();
-        }
-        if config.crispr_cutting_site.unwrap_or(0) == 0 {
-            vref.crispr = 0;
         }
     }
 
@@ -1179,5 +1252,202 @@ mod tests {
         assert_eq!(out_borrowed.len(), 1);
         assert_eq!(out_borrowed[0].start_pos, 99);
         assert_eq!(out_borrowed[0].var_allele, "<DEL>");
+    }
+
+    #[test]
+    fn test_wave5_pileup_preserve_shifted_ref_and_adj_complex_vartype_and_iupac_eq_skip() {
+        let splice = rustc_hash::FxHashSet::default();
+        let region_tp53 = Region {
+            chr: "17".to_string(),
+            start: Pos1(7_578_700),
+            end: Pos1(7_578_730),
+            gene: "TP53".to_string(),
+            amplicon: None,
+        };
+
+        // 1. AstraZeneca-NGS/VarDictJava#330: `-p` at `17:7578712` with 2 shifted deletions
+        //    (`7578711 CA>C` and `7578711 CAA>C`) + hydrated `ref_variant` at `7578712`:
+        let mut p_del2_map = crate::javamap::JavaHashMap::new();
+        let mut vars_712 = Vars::new();
+        vars_712.sv = "7578700-7578900-2".to_string();
+        let mut ref_712 = mk_variant(7_578_712, 7_578_712, "A", "A", 0.0);
+        ref_712.var_type = "SNV".to_string();
+        ref_712.crispr = 9;
+        vars_712.ref_variant = Some(ref_712);
+        vars_712
+            .variants
+            .push(mk_variant(7_578_711, 7_578_712, "CA", "C", 0.55));
+        vars_712
+            .variants
+            .push(mk_variant(7_578_711, 7_578_713, "CAA", "C", 0.45));
+        p_del2_map.insert(7_578_712, vars_712);
+
+        // Default `COMPAT_VARDICTJAVA_1_8_3`: `vvar_len == 2 != 1` drops `ref_variant` at 7578712.
+        let vj_p_cfg = pileup_config();
+        let vj_del2 = simple_post_process(&vj_p_cfg, &region_tp53, &p_del2_map, &splice);
+        assert_eq!(vj_del2.len(), 2);
+        assert!(vj_del2.iter().all(|v| v.start_pos == 7_578_711));
+
+        // Isolated `pileup_preserve_shifted_ref` + `coordinate_sorted_vars` (and `COMPAT_OFF`):
+        // emits `[del1@7578711, del2@7578711, ref@7578712]` in monotonic order with `sv` stamped and `crispr == 0`.
+        let mut iso_p_cfg = pileup_config();
+        iso_p_cfg.compat.pileup_preserve_shifted_ref = true;
+        iso_p_cfg.compat.coordinate_sorted_vars = true;
+        for cfg in [&iso_p_cfg, &{
+            let mut c = pileup_config();
+            c.compat = crate::config::COMPAT_OFF;
+            c
+        }] {
+            let got_b = simple_post_process(cfg, &region_tp53, &p_del2_map, &splice);
+            let got_o = simple_post_process_owned(cfg, &region_tp53, p_del2_map.clone(), &splice);
+            assert_eq!(got_b.len(), 3);
+            assert_eq!(got_o.len(), 3);
+            let starts: Vec<i32> = got_b.iter().map(|v| v.start_pos).collect();
+            assert_eq!(starts, vec![7_578_711, 7_578_711, 7_578_712]);
+            assert_eq!(got_b[0].ref_allele, "CA");
+            assert_eq!(got_b[1].ref_allele, "CAA");
+            assert_eq!(got_b[2].var_type, "");
+            assert_eq!(got_b[2].crispr, 0);
+            assert!(got_b.iter().all(|v| v.sv == "7578700-7578900-2"));
+            let starts_o: Vec<i32> = got_o.iter().map(|v| v.start_pos).collect();
+            assert_eq!(starts_o, starts);
+        }
+
+        // Mixed `[right_shifted > P, left_shifted < P]` under `coordinate_sorted_vars` orders
+        // `[left_shifted < P, ref@P, right_shifted > P]` monotonically.
+        let mut mixed_map = crate::javamap::JavaHashMap::new();
+        let mut mixed_vars = Vars::new();
+        mixed_vars.ref_variant = Some(mk_variant(7_578_712, 7_578_712, "A", "A", 0.2));
+        mixed_vars
+            .variants
+            .push(mk_variant(7_578_714, 7_578_714, "G", "GTT", 0.5));
+        mixed_vars
+            .variants
+            .push(mk_variant(7_578_711, 7_578_712, "CA", "C", 0.3));
+        mixed_map.insert(7_578_712, mixed_vars);
+        let mixed_out = simple_post_process(&iso_p_cfg, &region_tp53, &mixed_map, &splice);
+        let mixed_starts: Vec<i32> = mixed_out.iter().map(|v| v.start_pos).collect();
+        assert_eq!(mixed_starts, vec![7_578_711, 7_578_712, 7_578_714]);
+
+        // Unhydrated `ref_variant = None` or `start_pos == 0` when `vvar_len >= 2` NEVER emits pos0/null sentinels.
+        let mut unhyd_map = crate::javamap::JavaHashMap::new();
+        let mut unhyd_vars = Vars::new();
+        unhyd_vars.ref_variant = Some(Variant::new()); // unhydrated start_pos == 0
+        unhyd_vars
+            .variants
+            .push(mk_variant(7_578_711, 7_578_712, "CA", "C", 0.5));
+        unhyd_vars
+            .variants
+            .push(mk_variant(7_578_711, 7_578_713, "CAA", "C", 0.4));
+        unhyd_map.insert(7_578_712, unhyd_vars);
+        let mut iso_no_sup = pileup_config();
+        iso_no_sup.compat.pileup_preserve_shifted_ref = true;
+        iso_no_sup.compat.suppress_pileup_sentinels = false;
+        let unhyd_out = simple_post_process(&iso_no_sup, &region_tp53, &unhyd_map, &splice);
+        assert_eq!(unhyd_out.len(), 2);
+        assert!(unhyd_out.iter().all(|v| !v.null_record && v.start_pos >= 1));
+
+        // 2. `[del@P-1, snv@P]` non-duplication: surviving `snv@P` keeps `start_pos == P`, so `ref_variant` is NOT added.
+        let mut nondup_map = crate::javamap::JavaHashMap::new();
+        let mut nondup_vars = Vars::new();
+        nondup_vars.ref_variant = Some(mk_variant(7_578_712, 7_578_712, "A", "A", 0.3));
+        nondup_vars
+            .variants
+            .push(mk_variant(7_578_711, 7_578_712, "CA", "C", 0.4));
+        nondup_vars
+            .variants
+            .push(mk_variant(7_578_712, 7_578_712, "A", "G", 0.3));
+        nondup_map.insert(7_578_712, nondup_vars);
+        let mut off_p_cfg = pileup_config();
+        off_p_cfg.compat = crate::config::COMPAT_OFF;
+        let nondup_out = simple_post_process(&off_p_cfg, &region_tp53, &nondup_map, &splice);
+        assert_eq!(nondup_out.len(), 2);
+        assert_eq!(nondup_out[0].start_pos, 7_578_711);
+        assert_eq!(nondup_out[1].start_pos, 7_578_712);
+        assert_eq!(nondup_out[1].var_allele, "G");
+
+        // 3. `AA>AC` `adj_complex`-shifted `-p` retention + `recompute_vartype_after_adj_complex` (`clintval/vartovcf#109`):
+        //    Before `adj_complex`, `start_pos == 7578712 == position`; after `adj_complex_compat(true)`,
+        //    it shifts to `7578713 A>C` (`var_type == "SNV"`), so `ref_variant` at `7578712` IS emitted!
+        let mut adj_p_map = crate::javamap::JavaHashMap::new();
+        let mut adj_p_vars = Vars::new();
+        adj_p_vars.ref_variant = Some(mk_variant(7_578_712, 7_578_712, "A", "A", 0.5));
+        adj_p_vars
+            .variants
+            .push(mk_variant(7_578_712, 7_578_713, "AA", "AC", 0.5));
+        adj_p_map.insert(7_578_712, adj_p_vars);
+
+        let vj_adj_p = simple_post_process(&vj_p_cfg, &region_tp53, &adj_p_map, &splice);
+        assert_eq!(vj_adj_p.len(), 1);
+        assert_eq!(vj_adj_p[0].start_pos, 7_578_713);
+        assert_eq!(vj_adj_p[0].var_type, "Complex");
+
+        let off_adj_p = simple_post_process(&off_p_cfg, &region_tp53, &adj_p_map, &splice);
+        assert_eq!(off_adj_p.len(), 2);
+        assert_eq!(off_adj_p[0].start_pos, 7_578_712);
+        assert_eq!(off_adj_p[0].var_type, "");
+        assert_eq!(off_adj_p[1].start_pos, 7_578_713);
+        assert_eq!(off_adj_p[1].ref_allele, "A");
+        assert_eq!(off_adj_p[1].var_allele, "C");
+        assert_eq!(off_adj_p[1].var_type, "SNV");
+
+        // 4. Switch 29 (`recompute_vartype_after_adj_complex`) & Switch 26 (`sanitize_iupac_alt_alleles`)
+        //    in non-pileup `simple_post_process` (`SNV`, `Insertion`, `Deletion`, genuine `Complex`, and `REF == ALT` skip):
+        let region_s = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let mut vt_map = crate::javamap::JavaHashMap::new();
+        let mut v_snv = Vars::new();
+        v_snv.variants.push(mk_variant(110, 111, "GA", "GT", 0.4));
+        vt_map.insert(110, v_snv);
+        let mut v_ins = Vars::new();
+        v_ins
+            .variants
+            .push(mk_variant(120, 122, "CAA", "CAATG", 0.4));
+        vt_map.insert(120, v_ins);
+        let mut v_del = Vars::new();
+        v_del
+            .variants
+            .push(mk_variant(130, 134, "CAATG", "CAA", 0.4));
+        vt_map.insert(130, v_del);
+        let mut v_mnv = Vars::new();
+        v_mnv.variants.push(mk_variant(140, 141, "AC", "GT", 0.4));
+        vt_map.insert(140, v_mnv);
+        let mut v_eq = Vars::new();
+        v_eq.variants.push(mk_variant(150, 151, "AA", "AA", 0.4));
+        vt_map.insert(150, v_eq);
+
+        let mut non_p_vj = Config::default();
+        non_p_vj.emit_intermediate = true;
+        let out_vj_vt = simple_post_process(&non_p_vj, &region_s, &vt_map, &splice);
+        assert!(out_vj_vt.iter().all(|v| v.var_type == "Complex"));
+
+        let mut non_p_off = non_p_vj.clone();
+        non_p_off.compat = crate::config::COMPAT_OFF;
+        let out_off_vt = simple_post_process(&non_p_off, &region_s, &vt_map, &splice);
+        let typed: Vec<(i32, &str, &str, &str)> = out_off_vt
+            .iter()
+            .map(|v| {
+                (
+                    v.start_pos,
+                    v.ref_allele.as_str(),
+                    v.var_allele.as_str(),
+                    v.var_type.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            typed,
+            vec![
+                (111, "A", "T", "SNV"),
+                (122, "A", "ATG", "Insertion"),
+                (132, "ATG", "A", "Deletion"),
+                (140, "AC", "GT", "Complex"),
+            ]
+        );
     }
 }
