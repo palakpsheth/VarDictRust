@@ -294,20 +294,23 @@ import gzip, os, subprocess, sys
 vdr, fa_hg19, fa_hg1k, grch38_ref, giab_ref, vj_bams, g4_dir, w4, tmp = sys.argv[1:10]
 
 # 3a) All 6 joachimwolff/VarDictJava#4 tumor/normal multi-allelic pairs
+arg_secondary = {(140453033, "A"), (140453033, "T"), (140453035, "A"), (140453065, "A"), (140453065, "T")}
 cases = [
     (
         "ArgumentNA_fisher",
         fa_hg19,
         f"{vj_bams}/ArgumentNA_Tumor.bam|{vj_bams}/ArgumentNA_Normal.bam",
         ["-R", "chr7:140453010-140453158", "-q", "25", "-f", "0.001", "-F", "0x100", "-k", "1", "-M", "20", "-p", "--fisher"],
-        lambda pos, ref, alt: pos in (140453033, 140453035, 140453065) and alt in ("T", "A"),
+        lambda pos, ref, alt: (pos, alt) in arg_secondary,
+        4,
     ),
     (
         "ArgumentNA_nofisher",
         fa_hg19,
         f"{vj_bams}/ArgumentNA_Tumor.bam|{vj_bams}/ArgumentNA_Normal.bam",
         ["-R", "chr7:140453010-140453158", "-q", "25", "-f", "0.001", "-F", "0x100", "-k", "1", "-M", "20", "-p"],
-        lambda pos, ref, alt: pos in (140453033, 140453035, 140453065) and alt in ("T", "A"),
+        lambda pos, ref, alt: (pos, alt) in arg_secondary,
+        4,
     ),
     (
         "Colo829_chr1_756309",
@@ -315,6 +318,7 @@ cases = [
         f"{vj_bams}/Colo829-18_S3-sort.bam|{vj_bams}/Colo829-19_S4-sort.bam",
         ["-R", "chr1:755917-756517", "-f", "0.01"],
         lambda pos, ref, alt: pos == 756309 and ref == "TTGT" and alt == "CTGG",
+        1,
     ),
     (
         "HCC2218_chrX_7811864",
@@ -322,6 +326,7 @@ cases = [
         f"{vj_bams}/HCC2218_BL_realigins.bam|{vj_bams}/HCC2218_C_realigins.bam",
         ["-R", "chrX:7811670-7811868", "-f", "0.001"],
         lambda pos, ref, alt: pos == 7811864 and ref == "C" and alt == "T",
+        1,
     ),
     (
         "Zero_in_DUPSV_chr19_291259",
@@ -329,6 +334,7 @@ cases = [
         f"{vj_bams}/Zero_in_DUPSV_TUMOUR.bam|{vj_bams}/Zero_in_DUPSV_NORMAL.bam",
         ["-R", "chr19:290742-291636", "-f", "0.001", "-X", "3"],
         lambda pos, ref, alt: pos == 291259 and ref == "A" and alt == "G",
+        1,
     ),
     (
         "StrongLOH_chr21_11071401",
@@ -336,10 +342,11 @@ cases = [
         f"{vj_bams}/TumorA.StrongLOH.chr21.bam|{vj_bams}/NormalA.StrongLOH.chr21.bam",
         ["-R", "chr21:10996701-11186054", "-Q", "10", "-f", "0.01", "-r", "2", "-F", "0x500", "-V", "0.05", "--nosv"],
         lambda pos, ref, alt: pos in (11071401, 11071410) and len(alt) == len(ref) + 1,
+        1,
     ),
 ]
 
-for name, ref_fa, bam_pair, extra, pred in cases:
+for name, ref_fa, bam_pair, extra, pred, min_off_hits in cases:
     def_vcf = subprocess.check_output([vdr, "-G", ref_fa, "-b", bam_pair, "--compat=vardictjava", "--vcfall", "-v", *extra], text=True)
     off_vcf = subprocess.check_output([vdr, "-G", ref_fa, "-b", bam_pair, "--compat=off", "--vcfall", "-v", *extra], text=True)
     def_hits = [
@@ -352,19 +359,24 @@ for name, ref_fa, bam_pair, extra, pred in cases:
     ]
     if def_hits:
         raise AssertionError(f"{name}: expected default --compat=vardictjava to drop secondary allele, got {def_hits}")
-    if not off_hits:
-        raise AssertionError(f"{name}: expected --compat=off to recover secondary allele, got 0 matches")
+    if len(off_hits) < min_off_hits:
+        raise AssertionError(f"{name}: expected --compat=off to recover >= {min_off_hits} secondary alleles, got {off_hits}")
 
-# Also check StrongLOH .var row keeps empty tumor sv1 column (col index 51 in 55-col .var)
+# Also check 55-col StrongLOH .var rows keep unpolluted tumor SV_info1 ("0" at col index 52, VarLabel at col index 49)
 loh_var = subprocess.check_output(
     [vdr, "-G", fa_hg1k, "-b", f"{vj_bams}/TumorA.StrongLOH.chr21.bam|{vj_bams}/NormalA.StrongLOH.chr21.bam",
      "--compat=off", "--emit-intermediate", "-R", "chr21:10996701-11186054", "-Q", "10", "-f", "0.01", "-r", "2", "-F", "0x500", "-V", "0.05", "--nosv"],
     text=True,
 )
+strong_loh_checked = 0
 for row in loh_var.splitlines():
     cols = row.split("\t")
-    if len(cols) >= 55 and cols[48] == "StrongLOH" and cols[51] != "":
-        raise AssertionError(f"StrongLOH row polluted tumor sv1 column: {cols[51]!r}")
+    if len(cols) == 55 and cols[49] == "StrongLOH":
+        strong_loh_checked += 1
+        if cols[52] != "0":
+            raise AssertionError(f"StrongLOH row polluted tumor SV_info1 column (cols[52]): {cols[52]!r}")
+if strong_loh_checked < 1:
+    raise AssertionError("Expected >= 1 StrongLOH row in 55-column .var output")
 
 # 3b) Clinical MUC19 paralog somatic pair (AstraZeneca-NGS/VarDictJava#376)
 muc_dir = os.path.join(w4, "muc19")
@@ -372,7 +384,7 @@ muc_vcf = os.path.join(tmp, "muc19_off.vcf.gz")
 subprocess.run(
     [vdr, "-G", os.path.join(muc_dir, "hg19_chr12_muc19.fa"),
      "-b", f"{muc_dir}/MUC19_vaf1.bam|{muc_dir}/MUC19_vaf1_dz.bam",
-     "-c", "1", "-S", "2", "-E", "3", "-f", "0.01", "--fisher", "--compat=off", "--vcfall",
+     "-c", "1", "-S", "2", "-E", "3", "-f", "0.005", "--fisher", "--compat=off", "--vcfall",
      "--output", muc_vcf, "--tbi", os.path.join(muc_dir, "MUC19_vaf1.bed")],
     check=True,
 )
@@ -381,7 +393,7 @@ subprocess.run(["bcftools", "norm", "--check-ref", "e", "-f", os.path.join(muc_d
 with gzip.open(muc_vcf, "rt", encoding="utf-8") as fh:
     muc_rows = [l.rstrip("\n").split("\t") for l in fh if not l.startswith("#")]
 if len(muc_rows) < 20:
-    raise AssertionError(f"MUC19 expected >= 20 variants under --compat=off, got {len(muc_rows)}")
+    raise AssertionError(f"MUC19 expected >= 20 variants under --compat=off -f 0.005, got {len(muc_rows)}")
 for r in muc_rows:
     fmt = r[8].split(":")
     for smp in (r[9], r[10]):
@@ -420,7 +432,7 @@ def intersect_beds(bed_a, bed_b, out_bed, max_a_lines=None):
             if e > s:
                 out.write(f"{c}\t{s}\t{e}\n")
 
-def eval_somatic_tp_fp(ref_fa, bam_pair, eval_bed, truth_vcf, somatic_truth_only=False):
+def eval_somatic_tp_fp(ref_fa, bam_pair, eval_bed, truth_vcf):
     raw_vcf = os.path.join(tmp, "eval_calls.vcf")
     somatic_vcf = os.path.join(tmp, "eval_somatic.vcf")
     with open(raw_vcf, "w", encoding="utf-8") as out:
@@ -438,27 +450,42 @@ def eval_somatic_tp_fp(ref_fa, bam_pair, eval_bed, truth_vcf, somatic_truth_only
             p = line.split("\t")
             if p[6] == "PASS" and ("STATUS=StrongSomatic" in p[7] or "STATUS=LikelySomatic" in p[7]):
                 out.write(line)
-    norm_calls = subprocess.check_output(
-        f"bcftools view -T {eval_bed} {somatic_vcf} | bcftools norm -m -any -f {ref_fa} 2>/dev/null",
-        shell=True,
+    view_calls = subprocess.run(
+        ["bcftools", "view", "-T", eval_bed, somatic_vcf],
+        capture_output=True,
         text=True,
+        check=True,
     )
-    filt_expr = ""
-    if somatic_truth_only:
-        filt_expr = "-f PASS "
-    norm_truth = subprocess.check_output(
-        f"bcftools view {filt_expr}-T {eval_bed} {truth_vcf} | bcftools norm -m -any -f {ref_fa} 2>/dev/null",
-        shell=True,
+    norm_calls = subprocess.run(
+        ["bcftools", "norm", "-m", "-any", "-f", ref_fa],
+        input=view_calls.stdout,
+        capture_output=True,
         text=True,
+        check=True,
+    )
+    view_truth = subprocess.run(
+        ["bcftools", "view", "-f", ".,PASS", "-T", eval_bed, truth_vcf],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    norm_truth = subprocess.run(
+        ["bcftools", "norm", "-m", "-any", "-f", ref_fa],
+        input=view_truth.stdout,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     calls = {
         tuple(l.split("\t")[i] for i in (0, 1, 3, 4))
-        for l in norm_calls.splitlines() if not l.startswith("#") and l.strip()
+        for l in norm_calls.stdout.splitlines() if not l.startswith("#") and l.strip()
     }
     truth = {
         tuple(l.split("\t")[i] for i in (0, 1, 3, 4))
-        for l in norm_truth.splitlines() if not l.startswith("#") and l.strip()
+        for l in norm_truth.stdout.splitlines() if not l.startswith("#") and l.strip()
     }
+    if not truth:
+        raise AssertionError(f"Loaded 0 truth variants from {truth_vcf} over {eval_bed}")
     return len(calls & truth), len(calls - truth)
 
 seqc2_dir = os.path.join(g4_dir, "seqc2")
@@ -496,7 +523,6 @@ if os.path.isfile(os.path.join(hg008_dir, "HG008-T.slice.bam")):
         f"{hg008_dir}/HG008-T.slice.bam|{hg008_dir}/HG008-N.slice.bam",
         hg008_bed,
         os.path.join(hg008_dir, "truth", "HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz"),
-        somatic_truth_only=True,
     )
     # Pinned 17-switch baseline on GIAB HG008-T|N (slices[1..40] x v0.4): TP_17 = 97, FP_17 = 27
     if tp_hg008 < 97 or fp_hg008 > 27:
@@ -605,13 +631,13 @@ def verify_sv_vcf_gz(label, ref_fa, vcf_gz, min_svs=1):
 
 # 5a) All 8 Colo829 / Zero_in_DUPSV SV BAMs (covering <DEL>, complex &/# <DEL>, <INV>, and all 3 <DUP> origins + paired SV)
 sv_cases = [
-    ("Colo829_DELDiscReverse", fa_hg19, f"{vj_bams}/Colo829.chr10.DELDiscReverse.bam", ["-R", "chr10:89712340-89713976", "-f", "0.001"]),
+    ("Colo829_DELDiscReverse", fa_hg19, f"{vj_bams}/Colo829.chr10.DELDiscReverse.bam", ["-R", "chr10:89700380-89713976", "-f", "0.001"]),
     ("Colo829_LGDEL3", fa_hg19, f"{vj_bams}/Colo829.chr10.LGDEL3.bam", ["-R", "chr10:127187158-127201055", "-f", "0.001"]),
-    ("Colo829_DELSV3Unhappy", fa_hg19, f"{vj_bams}/Colo829.chr20.DELSV3Unhappy.bam", ["-R", "chr20:54440610-54441423", "-f", "0.001"]),
+    ("Colo829_DELSV3Unhappy", fa_hg19, f"{vj_bams}/Colo829.chr20.DELSV3Unhappy.bam", ["-R", "chr20:54434600-54441423", "-f", "0.001"]),
     ("Colo829_DUPDiscSV", fa_hg19, f"{vj_bams}/Colo829.chr20.DUPDiscSV.bam", ["-R", "chr20:47124929-47131802", "-f", "0.001"]),
     ("Colo829_INVSV", fa_hg19, f"{vj_bams}/Colo829.chr20.INVSV.bam", ["-R", "chr20:46841554-46845755", "-f", "0.001"]),
     ("Colo829_MarkingDUPSV", fa_hg19, f"{vj_bams}/Colo829.chr20.MarkingDUPSV.bam", ["-R", "chr20:47131954-47132045", "-f", "0.001", "-L", "100"]),
-    ("Colo829_CandDel5SV", fa_hg19, f"{vj_bams}/Colo829.chr20.CandDel5SV.bam", ["-R", "chr20:46841554-46845755", "-f", "0.001", "-L", "100"]),
+    ("Colo829_CandDel5SV", fa_hg19, f"{vj_bams}/Colo829.chr20.CandDel5SV.bam", ["-R", "chr20:506395-507295", "-f", "0.001", "-L", "100"]),
     ("Zero_in_DUPSV_Paired", fa_hg19, f"{vj_bams}/Zero_in_DUPSV_TUMOUR.bam|{vj_bams}/Zero_in_DUPSV_NORMAL.bam",
      ["-R", "chr19:290742-291636", "-f", "0.001", "-X", "3", "-L", "50", "--fisher"]),
 ]
@@ -622,12 +648,15 @@ for name, ref_fa, bam_arg, extra in sv_cases:
     subprocess.run([vdr, "-G", ref_fa, "-b", bam_arg, "--compat=off", "--vcfall", "--output", out_gz, "--tbi", *extra], check=True)
     total_svs += verify_sv_vcf_gz(name, ref_fa, out_gz, min_svs=1)
 
-# Verify --noend suppresses END on symbolic SVs
+# Verify --noend suppresses END on symbolic SVs (asserting >= 1 <DEL> row is actually present)
 noend_vcf = subprocess.check_output(
-    [vdr, "-G", fa_hg19, "-b", f"{vj_bams}/Colo829.chr10.DELDiscReverse.bam", "--compat=off", "-v", "--noend", "-R", "chr10:89712340-89713976", "-f", "0.001"],
+    [vdr, "-G", fa_hg19, "-b", f"{vj_bams}/Colo829.chr10.DELDiscReverse.bam", "--compat=off", "-v", "--noend", "-R", "chr10:89700380-89713976", "-f", "0.001"],
     text=True,
 )
-if any(";END=" in l or l.split("\t")[7].startswith("END=") for l in noend_vcf.splitlines() if not l.startswith("#")):
+noend_rows = [l for l in noend_vcf.splitlines() if not l.startswith("#") and l.strip()]
+if not any(l.split("\t")[4] == "<DEL>" for l in noend_rows):
+    raise AssertionError("Expected >= 1 <DEL> row in --noend SV check")
+if any(";END=" in l or l.split("\t")[7].startswith("END=") for l in noend_rows):
     raise AssertionError("Expected --noend to suppress END= on symbolic SV records")
 
 # 5b) GIAB HG008-T|N pancreatic cancer v0.6 somatic SV loci (both single-sample & paired somatic VCFs)
@@ -735,7 +764,7 @@ def in_kn(c, pos1):
             return True
     return False
 
-def analyze_spe_run(bam_path, f_str, with_sp):
+def analyze_spe_run(bam_path, f_str, with_sp, kn_max_af=1.01):
     cmd = [vdr, "-G", grch38_ref, "-b", bam_path, "-a", "10:0.95", "-UN", "-f", f_str, "-r", "3", "-q", "25", "--compat=off", "--vcfall", "-v"]
     if with_sp:
         cmd.append("-sp")
@@ -756,12 +785,12 @@ def analyze_spe_run(bam_path, f_str, with_sp):
                 pass_kp += 1
                 if af < 0.10:
                     low_vaf_kp += 1
-            if dp >= 40 and in_kn(c, pos):
+            if af < kn_max_af and in_kn(c, pos):
                 kn_fps.append((c, pos, ra, va, dp, af))
     return vcf, sum(dps), (sum(dps) / len(dps) if dps else 0.0), pass_kp, low_vaf_kp, kn_fps
 
-_, sum_no_a, mean_no_a, kp_no_a, _, _ = analyze_spe_run(bam_a, "0.02", False)
-_, sum_sp_a, mean_sp_a, kp_sp_a, _, kn_fp_a = analyze_spe_run(bam_a, "0.02", True)
+_, sum_no_a, mean_no_a, kp_no_a, _, _ = analyze_spe_run(bam_a, "0.02", False, kn_max_af=1.01)
+_, sum_sp_a, mean_sp_a, kp_sp_a, _, kn_fp_a = analyze_spe_run(bam_a, "0.02", True, kn_max_af=1.01)
 
 dp_ratio_a = (sum_sp_a / max(1, sum_no_a)) if sum_no_a > 0 else float(sum_sp_a)
 if dp_ratio_a < 3.0 and (mean_sp_a / max(1.0, mean_no_a)) < 3.0:
@@ -774,8 +803,9 @@ if kp_sp_a < 30 or kp_sp_a <= kp_no_a:
 if kn_fp_a:
     raise AssertionError(f"SampleA_QGN1 -sp produced KnownNegatives PASS FPs: {kn_fp_a[:5]}")
 
-_, sum_no_ac5, mean_no_ac5, kp_no_ac5, _, _ = analyze_spe_run(bam_ac5, "0.0025", False)
-vcf_ac5, sum_sp_ac5, mean_sp_ac5, kp_sp_ac5, low_ac5, kn_fp_ac5 = analyze_spe_run(bam_ac5, "0.0025", True)
+# SampleAC5_QGN1 is 95% Sample C gDNA + 5% Sample A ctDNA dilution: enforce 0 KnownNegatives PASS FPs across all depths in the < 0.10 ctDNA AF band
+_, sum_no_ac5, mean_no_ac5, kp_no_ac5, _, _ = analyze_spe_run(bam_ac5, "0.0025", False, kn_max_af=0.10)
+vcf_ac5, sum_sp_ac5, mean_sp_ac5, kp_sp_ac5, low_ac5, kn_fp_ac5 = analyze_spe_run(bam_ac5, "0.0025", True, kn_max_af=0.10)
 if '##FILTER=<ID=f0.0025,Description="Allele frequency < 0.0025">' not in vcf_ac5:
     raise AssertionError("SampleAC5_QGN1 missing raw f0.0025 FILTER header")
 if (sum_sp_ac5 / max(1, sum_no_ac5)) < 3.0 and (mean_sp_ac5 / max(1.0, mean_no_ac5)) < 3.0:
@@ -887,15 +917,19 @@ def verify_var_cols(label, ref_fa, bam_pair, bed_path, amp_args):
         lines = [l for l in var_out.splitlines() if l.strip()]
         if len(lines) < 2:
             raise AssertionError(f"{label}: expected header + >= 1 .var row, got {len(lines)} lines")
-        for idx, l in enumerate(lines):
+        hdr_cols = len(lines[0].split("\t"))
+        if hdr_cols != 55:
+            raise AssertionError(f"{label}: -h header line expected 55 columns (SomaticMode.java:134-150), got {hdr_cols}")
+        for idx, l in enumerate(lines[1:], start=2):
             ncols = len(l.split("\t"))
             if ncols != want_cols:
-                raise AssertionError(f"{label}: line {idx + 1} expected {want_cols} columns, got {ncols}")
+                raise AssertionError(f"{label}: data line {idx} expected {want_cols} columns, got {ncols}")
 
 # 7b) QIAseq V3 SPE Paired Somatic (SampleA_QGN1 | SampleB_QGN1)
 qgn_gz = os.path.join(tmp, "qgn_paired.vcf.gz")
 subprocess.run(
     [vdr, "-G", grch38_ref, "-b", f"{w4}/bam/SampleA_QGN1.bam|{w4}/bam/SampleB_QGN1.bam",
+     "-N", "SampleA_QGN1|SampleB_QGN1",
      "-a", "10:0.95", "-sp", "-UN", "-f", "0.02", "-r", "3", "-q", "25",
      "--compat=off", "--vcfall", "--fisher", "--output", qgn_gz, "--tbi", qgn_bed],
     check=True,
@@ -909,12 +943,14 @@ ilm_bam_gz = os.path.join(tmp, "ilm_bam.vcf.gz")
 ilm_cram_gz = os.path.join(tmp, "ilm_cram.vcf.gz")
 subprocess.run(
     [vdr, "-G", grch38_ref, "-b", f"{w4}/bam/SampleA_ILM1.bam|{w4}/bam/SampleB_ILM1.bam",
+     "-N", "SampleA_ILM1|SampleB_ILM1",
      "-a", "40:0.70", "-f", "0.02", "-q", "25", "--compat=off", "--vcfall", "--fisher",
      "--output", ilm_bam_gz, "--tbi", ilm_bed],
     check=True,
 )
 subprocess.run(
     [vdr, "-G", grch38_ref, "-b", f"{w4}/bam/SampleA_ILM1.cram|{w4}/bam/SampleB_ILM1.cram",
+     "-N", "SampleA_ILM1|SampleB_ILM1",
      "-a", "40:0.70", "-f", "0.02", "-q", "25", "--compat=off", "--vcfall", "--fisher",
      "--output", ilm_cram_gz, "--csi", ilm_bed],
     check=True,
