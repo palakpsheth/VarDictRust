@@ -1124,6 +1124,7 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
     let canonical_sv_anchoring = config.compat.canonical_sv_vcf_anchoring;
     let skip_eq_non_pileup = !config.pileup && config.compat.sanitize_iupac_alt_alleles;
     let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
+    let min_reads_bias = i32::try_from(config.min_reads_bias).unwrap_or(i32::MAX);
     let mut aligned_vars = crate::javamap::JavaHashMap::new();
     let mut concordance = SampleAmpliconConcordance {
         canonical_sv_anchoring,
@@ -1389,11 +1390,31 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
                     rv.description.clone_from(&eq.var_allele);
                     rv.ref_allele.clone_from(&eq.ref_allele);
                     rv.var_allele.clone_from(&eq.var_allele);
+                    let rf = eq.ref_fwd_cov.saturating_add(eq.fwd);
+                    let rr = eq.ref_rev_cov.saturating_add(eq.rev);
                     rv.total_pos_cov = eq.total_pos_cov;
-                    rv.fwd = eq.fwd;
-                    rv.rev = eq.rev;
-                    rv.ref_fwd_cov = eq.fwd;
-                    rv.ref_rev_cov = eq.rev;
+                    rv.ref_fwd_cov = rf;
+                    rv.ref_rev_cov = rr;
+                    rv.genotype = eq
+                        .genotype
+                        .clone()
+                        .or_else(|| Some(format!("{}/{}", eq.ref_allele, eq.ref_allele)));
+                    let ref_bias =
+                        crate::variations::util::strand_bias(rf, rr, 0.05, min_reads_bias);
+                    rv.bias.clear();
+                    if best_by_desc.is_empty() {
+                        rv.fwd = 0;
+                        rv.rev = 0;
+                        let _ =
+                            std::fmt::Write::write_fmt(&mut rv.bias, format_args!("{ref_bias};0"));
+                    } else {
+                        rv.fwd = rf;
+                        rv.rev = rr;
+                        rv.hicnt = eq.hicnt;
+                        rv.mean_mapping_quality = eq.mean_mapping_quality;
+                        let _ =
+                            std::fmt::Write::write_fmt(&mut rv.bias, format_args!("{ref_bias}"));
+                    }
                     rv
                 }),
             };
@@ -3518,6 +3539,83 @@ mod tests {
                     ampflag: false,
                 }
             );
+
+            // End-to-end paired somatic amplicon pure-`eq` reference hydration invariants:
+            // (a) `StrongSomatic` at 170 when Normal has ONLY sanitized `"C" -> "C"` (`fwd = 85, rev = 95, ref_fwd = 10, ref_rev = 10, DP = 200`):
+            let mut n_pure0 = crate::javamap::JavaHashMap::new();
+            let mut vn170 = Vars::new();
+            let mut eq_n170 = make_good_variant(170, "C", "C", 0.90);
+            eq_n170.total_pos_cov = 200;
+            eq_n170.pos_coverage = 180;
+            eq_n170.fwd = 85;
+            eq_n170.rev = 95;
+            eq_n170.ref_fwd_cov = 10;
+            eq_n170.ref_rev_cov = 10;
+            vn170.variants.push(eq_n170);
+            n_pure0.insert(170, vn170);
+            let (agg_n_pure, _) = aggregate_sample_amplicon_vars(
+                cfg,
+                &segment,
+                vec![n_pure0, crate::javamap::JavaHashMap::new()],
+                &splice,
+            );
+            let som_ss = crate::postprocess::somatic::somatic_post_process_owned(
+                cfg,
+                &amp0,
+                agg_on.clone(),
+                agg_n_pure,
+                &splice,
+                None,
+                100,
+            );
+            let ss_170 = som_ss
+                .iter()
+                .find(|s| s.variant1.start_pos == 170)
+                .expect("StrongSomatic at 170");
+            assert_eq!(ss_170.status, "StrongSomatic");
+            let n_var = ss_170.variant2.as_ref().expect("normal ref placeholder");
+            assert_eq!(n_var.pos_coverage, 0);
+            assert_eq!(n_var.fwd, 0);
+            assert_eq!(n_var.rev, 0);
+            assert_eq!(n_var.ref_fwd_cov + n_var.ref_rev_cov, 200);
+            assert_eq!(n_var.total_pos_cov, 200);
+            assert_eq!(n_var.genotype.as_deref(), Some("C/C"));
+            assert_eq!(n_var.bias, "2;0");
+
+            // (b) `StrongLOH` at 170 when Tumor has ONLY sanitized `"C" -> "C"` (`fwd = 90, rev = 110, DP = 200`) and Normal has `"C" -> "T"`:
+            let mut t_pure0 = crate::javamap::JavaHashMap::new();
+            let mut vt170 = Vars::new();
+            let mut eq_t170 = make_good_variant(170, "C", "C", 1.0);
+            eq_t170.total_pos_cov = 200;
+            eq_t170.pos_coverage = 200;
+            eq_t170.fwd = 90;
+            eq_t170.rev = 110;
+            vt170.variants.push(eq_t170);
+            t_pure0.insert(170, vt170);
+            let (agg_t_pure, _) = aggregate_sample_amplicon_vars(
+                cfg,
+                &segment,
+                vec![t_pure0, crate::javamap::JavaHashMap::new()],
+                &splice,
+            );
+            let som_loh = crate::postprocess::somatic::somatic_post_process_owned(
+                cfg, &amp0, agg_t_pure, agg_on, &splice, None, 100,
+            );
+            let loh_170 = som_loh
+                .iter()
+                .find(|s| s.variant1.start_pos == 170)
+                .expect("StrongLOH at 170");
+            assert_eq!(loh_170.status, "StrongLOH");
+            assert_eq!(loh_170.variant1.pos_coverage, 0);
+            assert_eq!(loh_170.variant1.fwd, 0);
+            assert_eq!(loh_170.variant1.rev, 0);
+            assert_eq!(
+                loh_170.variant1.ref_fwd_cov + loh_170.variant1.ref_rev_cov,
+                200
+            );
+            assert_eq!(loh_170.variant1.total_pos_cov, 200);
+            assert_eq!(loh_170.variant1.genotype.as_deref(), Some("C/C"));
+            assert_eq!(loh_170.variant1.bias, "2;0");
         }
     }
 }
