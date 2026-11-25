@@ -478,6 +478,9 @@ impl<'a> CigarParser<'a> {
         if self.config.compat.eqx_cigar_read_length {
             coalesce_eqx_into_match(&mut cigar_elements);
         }
+        if self.config.compat.cigar_strip_outer_hard_clips {
+            strip_outer_positive_hard_clips_and_pads(&mut cigar_elements);
+        }
         let mut modified_bufs: Option<(Vec<u8>, Vec<u8>)> = None;
 
         // T046: run CigarModifier if realignment is enabled
@@ -596,6 +599,9 @@ impl<'a> CigarParser<'a> {
                             cigar_elements.extend_from_slice(&record.cigar);
                             if self.config.compat.eqx_cigar_read_length {
                                 coalesce_eqx_into_match(&mut cigar_elements);
+                            }
+                            if self.config.compat.cigar_strip_outer_hard_clips {
+                                strip_outer_positive_hard_clips_and_pads(&mut cigar_elements);
                             }
                         }
                         modified_bufs = Some((modified.query_seq, modified.query_qual));
@@ -823,6 +829,11 @@ impl<'a> CigarParser<'a> {
                 CigarKind::HardClip => {
                     ci += 1;
                     offset = 0;
+                }
+                CigarKind::Pad if self.config.compat.cigar_strip_outer_hard_clips => {
+                    ci += 1;
+                    offset = 0;
+                    continue;
                 }
                 CigarKind::Insertion => {
                     offset = 0;
@@ -3124,7 +3135,9 @@ impl<'a> CigarParser<'a> {
                             || start_64 - i64::from(self.sv_structures.svdelfend) > limit
                         {
                             let mut sclip = Sclip::new();
-                            sclip.variation.cnt = 0;
+                            sclip.variation.reset_counts_compat(
+                                self.config.compat.reconcile_strand_and_hq_sums,
+                            );
                             self.sv_structures.svfdel.push(sclip);
                         }
                         if let Some(sdref) = self.sv_structures.svfdel.last_mut() {
@@ -3151,7 +3164,9 @@ impl<'a> CigarParser<'a> {
                             || start_64 - i64::from(self.sv_structures.svdelrend) > limit
                         {
                             let mut sclip = Sclip::new();
-                            sclip.variation.cnt = 0;
+                            sclip.variation.reset_counts_compat(
+                                self.config.compat.reconcile_strand_and_hq_sums,
+                            );
                             self.sv_structures.svrdel.push(sclip);
                         }
                         if let Some(sdref) = self.sv_structures.svrdel.last_mut() {
@@ -3250,7 +3265,9 @@ impl<'a> CigarParser<'a> {
                         || start_64 - i64::from(self.sv_structures.svdupfend) > limit
                     {
                         let mut sclip = Sclip::new();
-                        sclip.variation.cnt = 0;
+                        sclip
+                            .variation
+                            .reset_counts_compat(self.config.compat.reconcile_strand_and_hq_sums);
                         self.sv_structures.svfdup.push(sclip);
                     }
                     if let Some(sdref) = self.sv_structures.svfdup.last_mut() {
@@ -3277,7 +3294,9 @@ impl<'a> CigarParser<'a> {
                         || start_64 - i64::from(self.sv_structures.svduprend) > limit
                     {
                         let mut sclip = Sclip::new();
-                        sclip.variation.cnt = 0;
+                        sclip
+                            .variation
+                            .reset_counts_compat(self.config.compat.reconcile_strand_and_hq_sums);
                         self.sv_structures.svrdup.push(sclip);
                     }
                     if let Some(sdref) = self.sv_structures.svrdup.last_mut() {
@@ -3374,7 +3393,9 @@ impl<'a> CigarParser<'a> {
                                 || start_64 - i64::from(self.sv_structures.svinvfend3) > limit
                             {
                                 let mut sclip = Sclip::new();
-                                sclip.variation.cnt = 0;
+                                sclip.variation.reset_counts_compat(
+                                    self.config.compat.reconcile_strand_and_hq_sums,
+                                );
                                 self.sv_structures.svfinv3.push(sclip);
                             }
                             if let Some(sdref) = self.sv_structures.svfinv3.last_mut() {
@@ -3402,7 +3423,9 @@ impl<'a> CigarParser<'a> {
                                 || start_64 - i64::from(self.sv_structures.svinvfend5) > limit
                             {
                                 let mut sclip = Sclip::new();
-                                sclip.variation.cnt = 0;
+                                sclip.variation.reset_counts_compat(
+                                    self.config.compat.reconcile_strand_and_hq_sums,
+                                );
                                 self.sv_structures.svfinv5.push(sclip);
                             }
                             if let Some(sdref) = self.sv_structures.svfinv5.last_mut() {
@@ -3431,7 +3454,9 @@ impl<'a> CigarParser<'a> {
                             || start_64 - i64::from(self.sv_structures.svinvrend3) > limit
                         {
                             let mut sclip = Sclip::new();
-                            sclip.variation.cnt = 0;
+                            sclip.variation.reset_counts_compat(
+                                self.config.compat.reconcile_strand_and_hq_sums,
+                            );
                             self.sv_structures.svrinv3.push(sclip);
                         }
                         if let Some(sdref) = self.sv_structures.svrinv3.last_mut() {
@@ -3459,7 +3484,9 @@ impl<'a> CigarParser<'a> {
                             || start_64 - i64::from(self.sv_structures.svinvrend5) > limit
                         {
                             let mut sclip = Sclip::new();
-                            sclip.variation.cnt = 0;
+                            sclip.variation.reset_counts_compat(
+                                self.config.compat.reconcile_strand_and_hq_sums,
+                            );
                             self.sv_structures.svrinv5.push(sclip);
                         }
                         if let Some(sdref) = self.sv_structures.svrinv5.last_mut() {
@@ -3548,7 +3575,9 @@ impl<'a> CigarParser<'a> {
                         || start_64 - i64::from(last_fus_end) > limit
                     {
                         let mut sclip = Sclip::new();
-                        sclip.variation.cnt = 0;
+                        sclip
+                            .variation
+                            .reset_counts_compat(self.config.compat.reconcile_strand_and_hq_sums);
                         if let Some(sclips) = self.sv_structures.svffus.get_mut(mchr) {
                             sclips.push(sclip);
                         } else {
@@ -3589,7 +3618,9 @@ impl<'a> CigarParser<'a> {
                         || start_64 - i64::from(last_fus_end) > limit
                     {
                         let mut sclip = Sclip::new();
-                        sclip.variation.cnt = 0;
+                        sclip
+                            .variation
+                            .reset_counts_compat(self.config.compat.reconcile_strand_and_hq_sums);
                         if let Some(sclips) = self.sv_structures.svrfus.get_mut(mchr) {
                             sclips.push(sclip);
                         } else {
@@ -3923,6 +3954,28 @@ pub fn coalesce_eqx_into_match(elements: &mut Vec<(u32, CigarKind)>) {
         }
     }
     elements.truncate(write_idx);
+}
+
+/// Permanently strips consecutive strictly-positive (`len > 0`) outer
+/// `CigarKind::HardClip` and `CigarKind::Pad` elements in place
+/// (`AstraZeneca-NGS/VarDictJava#341`, `AstraZeneca-NGS/VarDictJava#103`,
+/// `Kennedy-Lab-UW/VarDictJava@9a0beb0d`), leaving `len == 0` elements untouched
+/// so `CigarModifier` rejects malformed inputs with `Err(VardictError::JavaThrows)`.
+pub fn strip_outer_positive_hard_clips_and_pads(elements: &mut Vec<(u32, CigarKind)>) {
+    while let Some(&(len, kind)) = elements.last() {
+        if len > 0 && matches!(kind, CigarKind::HardClip | CigarKind::Pad) {
+            elements.pop();
+        } else {
+            break;
+        }
+    }
+    let lead = elements
+        .iter()
+        .take_while(|&&(len, kind)| len > 0 && matches!(kind, CigarKind::HardClip | CigarKind::Pad))
+        .count();
+    if lead > 0 {
+        elements.drain(..lead);
+    }
 }
 
 /// Helper to calculate the read length including matched, soft-clipped, and insertion segments,
@@ -9031,5 +9084,461 @@ mod tests {
                 .is_some_and(|v| v.cnt == 1),
             "pileup with amplicon_single_primer=true must retain mate-anchored soft-clipped R2 SNV"
         );
+    }
+
+    #[test]
+    fn compat_off_outer_hp_strip_3prime_sclip_interior_pad_and_sv_sclip_reset() {
+        use crate::types::Pos1;
+
+        let mut ref_seq = Vec::with_capacity(400);
+        let cycle = b"ACGTTGCA";
+        for i in 0..400 {
+            ref_seq.push(cycle[i % cycle.len()]);
+        }
+        let non_matching_base = |ref_b: u8| -> u8 {
+            if ref_b == b'A' {
+                b'C'
+            } else {
+                b'A'
+            }
+        };
+
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 400,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+        reference.seed.index_sequence(&ref_seq, 1, 400, 400);
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(300),
+            gene: "TP53".to_string(),
+            amplicon: None,
+        };
+
+        let cfg_default = Config::default();
+        let cfg_off = Config {
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+
+        // 1. AstraZeneca-NGS/VarDictJava#341: 3' soft-clip assembly on `90M3D15M3I20H`
+        //    under both `realign = 1` and `-k 0` (`realign = 0`).
+        let mut q_108 = Vec::with_capacity(108);
+        q_108.extend_from_slice(&ref_seq[9..99]); // 90M at 10..=99
+        q_108.extend_from_slice(&ref_seq[102..117]); // 15M at 103..=117 (after 3D at 100..=102)
+        for i in 0..3 {
+            q_108.push(non_matching_base(ref_seq[117 + i])); // 3I -> 3S at 118
+        }
+        let rec_341 = SamRecord {
+            name: b"r_341_3p_sclip".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(10)),
+            alignment_end: Some(Pos1(117)),
+            mapping_quality: Some(60),
+            cigar: crate::cigar::parse_cigar("90M3D15M3I20H").unwrap(),
+            sequence: q_108,
+            quality_scores: vec![b'I'; 108],
+            nm: Some(6),
+            ..SamRecord::default()
+        };
+
+        let vd_def_341 = pileup(
+            std::slice::from_ref(&rec_341),
+            &reference,
+            &region,
+            &cfg_default,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        assert!(
+            vd_def_341.soft_clips_3_end.is_empty(),
+            "default mode leaves 20H at tail, masking 3' soft-clip assembly"
+        );
+        assert!(
+            vd_def_341
+                .position_to_deletion_count
+                .get(&100)
+                .is_none_or(|m| !m.contains_key("-3")),
+            "default mode merges 3D15M3I into 18D18I instead of preserving -3"
+        );
+
+        let vd_off_341 = pileup(
+            std::slice::from_ref(&rec_341),
+            &reference,
+            &region,
+            &cfg_off,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        assert_eq!(
+            vd_off_341
+                .position_to_deletion_count
+                .get(&100)
+                .and_then(|m| m.get("-3")),
+            Some(&1),
+            "COMPAT_OFF must preserve -3 deletion at 100 on 90M3D15M3I20H"
+        );
+        assert_eq!(
+            vd_off_341
+                .soft_clips_3_end
+                .get(&118)
+                .map(|sc| sc.variation.cnt),
+            Some(1),
+            "COMPAT_OFF must assemble 3' soft-clip at 118 on 90M3D15M3I20H"
+        );
+
+        let mut cfg_off_k0 = cfg_off.clone();
+        cfg_off_k0.realign = 0;
+        let vd_off_k0 = pileup(
+            &[rec_341],
+            &reference,
+            &region,
+            &cfg_off_k0,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        assert_eq!(
+            vd_off_k0
+                .soft_clips_3_end
+                .get(&118)
+                .map(|sc| sc.variation.cnt),
+            Some(1),
+            "COMPAT_OFF with -k 0 must trim outer 20H on cigar_elements so 3I becomes 3' SoftClip"
+        );
+
+        // Also check `modify_single_match_in_place` (`10H150=20H`) and `modify_pure_sm_in_place`
+        // (`10H15S135M20H`) plus pure `H`/`P` (`5H3P20H`) under `COMPAT_OFF`.
+        let mut q_sm = Vec::with_capacity(150);
+        for i in 0..15 {
+            q_sm.push(non_matching_base(ref_seq[35 + i]));
+        }
+        q_sm.extend_from_slice(&ref_seq[50..185]);
+        let rec_sm_hp = SamRecord {
+            name: b"r_pure_sm_hp".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(51)),
+            alignment_end: Some(Pos1(185)),
+            mapping_quality: Some(60),
+            cigar: crate::cigar::parse_cigar("10H15S135M20H").unwrap(),
+            sequence: q_sm,
+            quality_scores: vec![b'I'; 150],
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+        let vd_def_sm = pileup(
+            std::slice::from_ref(&rec_sm_hp),
+            &reference,
+            &region,
+            &cfg_default,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        assert!(vd_def_sm.soft_clips_5_end.is_empty());
+        let vd_off_sm = pileup(
+            &[rec_sm_hp],
+            &reference,
+            &region,
+            &cfg_off,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        assert_eq!(
+            vd_off_sm
+                .soft_clips_5_end
+                .get(&51)
+                .map(|sc| sc.variation.cnt),
+            Some(1),
+            "COMPAT_OFF must trim 10H/20H before modify_pure_sm_in_place and assemble 5' soft-clip"
+        );
+
+        let mut q_eqx_snv = ref_seq[9..159].to_vec();
+        let snv_alt = non_matching_base(q_eqx_snv[40]);
+        q_eqx_snv[40] = snv_alt;
+        let rec_eqx_hp = SamRecord {
+            name: b"r_eqx_hp".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(10)),
+            alignment_end: Some(Pos1(159)),
+            mapping_quality: Some(60),
+            cigar: crate::cigar::parse_cigar("10H40=1X109=20H").unwrap(),
+            sequence: q_eqx_snv,
+            quality_scores: vec![b'I'; 150],
+            nm: Some(1),
+            ..SamRecord::default()
+        };
+        let vd_eqx_hp = pileup(
+            &[rec_eqx_hp],
+            &reference,
+            &region,
+            &cfg_off,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        let snv_key = std::str::from_utf8(std::slice::from_ref(&snv_alt)).unwrap();
+        assert_eq!(
+            vd_eqx_hp
+                .non_insertion_variants
+                .get(&50)
+                .and_then(|m| m.map.get(snv_key))
+                .map(|v| v.cnt),
+            Some(1)
+        );
+
+        let rec_pure_hp = SamRecord {
+            name: b"r_pure_hp".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(50)),
+            alignment_end: Some(Pos1(50)),
+            mapping_quality: Some(60),
+            cigar: crate::cigar::parse_cigar("5H3P20H").unwrap(),
+            sequence: Vec::new(),
+            quality_scores: Vec::new(),
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+        let vd_pure_hp = pileup(
+            &[rec_pure_hp],
+            &reference,
+            &region,
+            &cfg_off,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        assert!(vd_pure_hp.ref_coverage.is_empty());
+
+        let mut zero_hp_elems = vec![
+            (5, CigarKind::HardClip),
+            (0, CigarKind::HardClip),
+            (90, CigarKind::Match),
+            (0, CigarKind::Pad),
+            (10, CigarKind::HardClip),
+        ];
+        strip_outer_positive_hard_clips_and_pads(&mut zero_hp_elems);
+        assert_eq!(
+            zero_hp_elems,
+            vec![
+                (0, CigarKind::HardClip),
+                (90, CigarKind::Match),
+                (0, CigarKind::Pad),
+            ],
+            "non-positive H/P elements must remain untouched so CigarModifier rejects them"
+        );
+        let cfg_zero_hp = Config {
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let rec_zero_hp = SamRecord {
+            name: b"r_zero_hp".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(10)),
+            alignment_end: Some(Pos1(99)),
+            mapping_quality: Some(60),
+            cigar: vec![(0, CigarKind::HardClip), (90, CigarKind::Match)],
+            sequence: ref_seq[9..99].to_vec(),
+            quality_scores: vec![b'I'; 90],
+            nm: Some(0),
+            ..SamRecord::default()
+        };
+        let vd_zero_hp = pileup(
+            &[rec_zero_hp],
+            &reference,
+            &region,
+            &cfg_zero_hp,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        assert!(vd_zero_hp.ref_coverage.is_empty());
+        assert_eq!(
+            cfg_zero_hp
+                .exception_counter
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        // 2. Interior `CigarKind::Pad` (`50M5P2I48M` at Pos1(100)):
+        //    SAMv1 §1.4.6 Table 1 specifies `P` consumes neither query nor reference.
+        let mut q_pad = Vec::with_capacity(100);
+        q_pad.extend_from_slice(&ref_seq[99..149]); // 50M at 100..=149
+        let ins_b = non_matching_base(ref_seq[149]);
+        q_pad.extend_from_slice(&[ins_b, ins_b]); // 2I anchored at 149
+        q_pad.extend_from_slice(&ref_seq[149..197]); // 48M at 150..=197
+        let rec_int_pad = SamRecord {
+            name: b"r_interior_pad".to_vec(),
+            flags: 0,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(100)),
+            alignment_end: Some(Pos1(197)),
+            mapping_quality: Some(60),
+            cigar: crate::cigar::parse_cigar("50M5P2I48M").unwrap(),
+            sequence: q_pad,
+            quality_scores: vec![b'I'; 100],
+            nm: Some(2),
+            ..SamRecord::default()
+        };
+
+        let vd_def_pad = pileup(
+            std::slice::from_ref(&rec_int_pad),
+            &reference,
+            &region,
+            &cfg_default,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        let ins_key = format!("+{}{}", ins_b as char, ins_b as char);
+        assert!(
+            vd_def_pad
+                .insertion_variants
+                .get(&149)
+                .is_none_or(|m| !m.map.contains_key(&ins_key)),
+            "default mode treats 5P as Match, consuming query/reference and shifting 2I away from 149"
+        );
+
+        let vd_off_pad = pileup(
+            &[rec_int_pad],
+            &reference,
+            &region,
+            &cfg_off,
+            false,
+            1,
+            0,
+            150,
+        )
+        .unwrap();
+        assert_eq!(
+            vd_off_pad
+                .insertion_variants
+                .get(&149)
+                .and_then(|m| m.map.get(&ins_key))
+                .map(|v| v.cnt),
+            Some(1),
+            "COMPAT_OFF must treat interior 5P as non-consuming and anchor +2I at 149"
+        );
+        assert_eq!(vd_off_pad.ref_coverage.get(&197), Some(&1));
+        assert!(!vd_off_pad.ref_coverage.contains_key(&198));
+
+        // 3. AstraZeneca-NGS/VarDictJava#316: `sclip` `reset_counts_compat` across SV cluster sites
+        //    (`svfdel`, `svrdel`, `svfdup`, `svrdup`, `svfinv3`, `svfinv5`, `svrinv3`, `svrinv5`,
+        //    `svffus`, `svrfus`) and dirty `Sclip` accumulator clearing.
+        let mut dirty_sclip = Sclip::new();
+        dirty_sclip
+            .variation
+            .add_cnt(false, 25, 37.0, 60, 1.0, 22.5);
+        dirty_sclip.variation.extracnt = 2;
+        dirty_sclip
+            .variation
+            .reset_counts_compat(cfg_default.compat.reconcile_strand_and_hq_sums);
+        assert_eq!(dirty_sclip.variation.cnt, 0);
+        assert_eq!(dirty_sclip.variation.fwd, 1);
+        dirty_sclip
+            .variation
+            .reset_counts_compat(cfg_off.compat.reconcile_strand_and_hq_sums);
+        assert_eq!(dirty_sclip.variation.cnt, 0);
+        assert_eq!(dirty_sclip.variation.fwd, 0);
+        assert_eq!(dirty_sclip.variation.rev, 0);
+        assert_eq!(dirty_sclip.variation.hicnt, 0);
+        assert_eq!(dirty_sclip.variation.locnt, 0);
+        assert_eq!(dirty_sclip.variation.extracnt, 0);
+        assert_eq!(dirty_sclip.variation.pmean, 0.0);
+        assert_eq!(dirty_sclip.variation.qmean, 0.0);
+        assert_eq!(dirty_sclip.variation.mqmean, 0.0);
+        assert_eq!(dirty_sclip.variation.nm, 0.0);
+
+        let mk_sv_rec = |start_p: u32, flags: u16, mchr: &str, mpos: u32, tlen: i32| -> SamRecord {
+            SamRecord {
+                name: b"r_sv_cluster".to_vec(),
+                flags,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(start_p)),
+                alignment_end: Some(Pos1(start_p + 49)),
+                mapping_quality: Some(60),
+                cigar: vec![(50, CigarKind::Match)],
+                sequence: ref_seq[(start_p as usize - 1)..(start_p as usize + 49)].to_vec(),
+                quality_scores: vec![b'I'; 50],
+                mate_reference_name: Some(mchr.to_string()),
+                mate_alignment_start: Some(Pos1(mpos)),
+                template_length: tlen,
+                nm: Some(0),
+                ..SamRecord::default()
+            }
+        };
+        let sv_recs = [
+            mk_sv_rec(20, 0x1 | 0x20, "chr1", 250, 280), // svfdel (F1R2, mlen > 0)
+            mk_sv_rec(250, 0x1 | 0x10, "chr1", 20, -280), // svrdel (R1F2, mlen < 0)
+            mk_sv_rec(180, 0x1 | 0x20, "chr1", 20, -210), // svfdup (F1R2, mlen < 0)
+            mk_sv_rec(20, 0x1 | 0x10, "chr1", 180, 210), // svrdup (R1F2, mlen > 0)
+            mk_sv_rec(220, 0x1, "chr1", 20, -250),       // svfinv3 (F1F2, mlen < -3*max_rl)
+            mk_sv_rec(20, 0x1, "chr1", 220, 250),        // svfinv5 (F1F2, mlen > 3*max_rl)
+            mk_sv_rec(220, 0x1 | 0x10 | 0x20, "chr1", 20, -250), // svrinv3 (R1R2, mlen < -3*max_rl)
+            mk_sv_rec(20, 0x1 | 0x10 | 0x20, "chr1", 220, 250), // svrinv5 (R1R2, mlen > 3*max_rl)
+            mk_sv_rec(30, 0x1, "chr2", 500, 0),          // svffus
+            mk_sv_rec(35, 0x1 | 0x10, "chr2", 500, 0),   // svrfus
+        ];
+        let mut cfg_sv = cfg_off.clone();
+        cfg_sv.sv_read_len = 100;
+        cfg_sv.sv_flanking = 0;
+        let mut sv_p = CigarParser::new(&reference, &region, &cfg_sv, true, 0, 0, 50);
+        for rec in &sv_recs {
+            sv_p.parse_cigar(rec).unwrap();
+        }
+        for (name, clusters) in [
+            ("svfdel", sv_p.sv_structures.svfdel.as_slice()),
+            ("svrdel", sv_p.sv_structures.svrdel.as_slice()),
+            ("svfdup", sv_p.sv_structures.svfdup.as_slice()),
+            ("svrdup", sv_p.sv_structures.svrdup.as_slice()),
+            ("svfinv3", sv_p.sv_structures.svfinv3.as_slice()),
+            ("svfinv5", sv_p.sv_structures.svfinv5.as_slice()),
+            ("svrinv3", sv_p.sv_structures.svrinv3.as_slice()),
+            ("svrinv5", sv_p.sv_structures.svrinv5.as_slice()),
+            ("svffus", sv_p.sv_structures.svffus["chr2"].as_slice()),
+            ("svrfus", sv_p.sv_structures.svrfus["chr2"].as_slice()),
+        ] {
+            assert_eq!(clusters.len(), 1, "expected 1 cluster in {name}");
+            let v = &clusters[0].variation;
+            assert_eq!(v.cnt, 1, "{name}: cnt");
+            assert_eq!(v.fwd + v.rev, 1, "{name}: fwd + rev");
+            assert_eq!(v.hicnt + v.locnt, 1, "{name}: hicnt + locnt");
+        }
     }
 }
