@@ -8008,7 +8008,16 @@ fn vcf_all_alleles_and_compat_off_bgzf_tbi_and_csi_e2e() {
             .arg(&sv_fa)
             .arg("-b")
             .arg(&sv_bam)
-            .args(["-R", "chr1:150-550", "-N", "UB5_CLI", "-f", "0.01"])
+            .args([
+                "-R",
+                "chr1:150-550",
+                "-N",
+                "UB5_CLI",
+                "-f",
+                "0.01",
+                "-L",
+                "100",
+            ])
             .args(extra_args)
             .output()
             .expect("spawn ub5 cli");
@@ -8644,5 +8653,524 @@ fn wave4_vardictcpp_cli_aliases_and_paired_amplicon_cram_tbi_csi_stats_e2e() {
             && stats_text.contains("\"tiles_count\": 1")
             && stats_text.contains("\"exceptions_caught\": 0"),
         "expected regions_count=2, tiles_count=1, exceptions_caught=0 in stats.json, got:\n{stats_text}"
+    );
+}
+
+fn tabix_cmd() -> Command {
+    let prefix = "/mnt/media_backups/VarDictRust/scratch/g4-tools/bin:/home/palak/miniconda3/envs/vardict-oracle/bin:/home/palak/miniconda3/bin";
+    let path_val = match std::env::var("PATH") {
+        Ok(existing) if !existing.is_empty() => format!("{prefix}:{existing}"),
+        _ => prefix.to_string(),
+    };
+    let mut cmd = Command::new("tabix");
+    cmd.env("PATH", path_val);
+    cmd
+}
+
+#[test]
+fn csi_spanning_sv_returned_across_leaf_bins() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+    use noodles::sam::alignment::record::Flags;
+    use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+
+    // Regression for `clintval/vartovcf#161` / CSIv1 linear `loffset` propagation:
+    // A 5,000 bp <DEL> spanning chr1:130001..135000 crosses the 131,072 bp level-5 CSI
+    // boundary (landing in level-4 bin 585), while an SNV at chr1:133020 lands in leaf
+    // bin 37457 (whose direct level-5 parent 4682 is empty). Live `tabix` queries inside
+    // leaf bin 37457 MUST return BOTH the spanning <DEL> and the SNV.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ref_len = 150_000usize;
+    let bases = [b'A', b'C', b'G', b'T'];
+    let mut seed = 0x0161_2026_1125_3a01u64;
+    let ref_seq: Vec<u8> = (0..ref_len)
+        .map(|i| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            bases[(((seed >> 33) as usize) ^ (i / 11)) & 3]
+        })
+        .collect();
+    let fa_path = dir.path().join("csi_span.fa");
+    let fai_path = dir.path().join("csi_span.fa.fai");
+    {
+        let mut fa_bytes = b">chr1\n".to_vec();
+        fa_bytes.extend_from_slice(&ref_seq);
+        fa_bytes.push(b'\n');
+        std::fs::write(&fa_path, &fa_bytes).expect("write csi_span.fa");
+        std::fs::write(
+            &fai_path,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .expect("write csi_span.fa.fai");
+    }
+
+    let mut recs = Vec::new();
+    let del_cigar: Cigar = [
+        Op::new(Kind::Match, 50),
+        Op::new(Kind::Deletion, 5000),
+        Op::new(Kind::Match, 50),
+    ]
+    .into_iter()
+    .collect();
+    for i in 0..8usize {
+        let mut del_seq = Vec::with_capacity(100);
+        del_seq.extend_from_slice(&ref_seq[129_950..130_000]);
+        del_seq.extend_from_slice(&ref_seq[135_000..135_050]);
+        let flags = if i % 2 == 1 {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        recs.push(
+            RecordBuf::builder()
+                .set_name(format!("del_{i}"))
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(129_951usize).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(del_cigar.clone())
+                .set_sequence(del_seq.into())
+                .set_quality_scores(vec![40u8; 100].into())
+                .build(),
+        );
+    }
+    let m100_cigar: Cigar = [Op::new(Kind::Match, 100)].into_iter().collect();
+    for i in 0..8usize {
+        let flags = if i % 2 == 1 {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        recs.push(
+            RecordBuf::builder()
+                .set_name(format!("wt_del_{i}"))
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(129_960usize).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(m100_cigar.clone())
+                .set_sequence(ref_seq[129_959..130_059].to_vec().into())
+                .set_quality_scores(vec![40u8; 100].into())
+                .build(),
+        );
+    }
+    let m50_cigar: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+    let snv_alt = match ref_seq[133_019] {
+        b'A' => b'C',
+        b'C' => b'G',
+        b'G' => b'T',
+        _ => b'A',
+    };
+    for i in 0..8usize {
+        let mut seq = ref_seq[132_999..133_049].to_vec();
+        if i < 5 {
+            seq[20] = snv_alt; // pos = 133_000 + 20 = 133_020
+        }
+        let flags = if i % 2 == 1 {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        recs.push(
+            RecordBuf::builder()
+                .set_name(format!("snv_{i}"))
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(133_000usize).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(m50_cigar.clone())
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![40u8; 50].into())
+                .build(),
+        );
+    }
+    recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+    let bam_path = dir.path().join("csi_span.bam");
+    write_indexed_bam(&bam_path, "chr1", ref_len, &recs).expect("write csi_span.bam");
+
+    let out_vcf_gz = dir.path().join("csi_span.vcf.gz");
+    let run = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&bam_path)
+        .args([
+            "-R",
+            "chr1:129940-135070",
+            "--min-splitreads",
+            "0",
+            "--compat=off",
+            "--threads=1",
+            "--csi",
+        ])
+        .arg("--output")
+        .arg(&out_vcf_gz)
+        .output()
+        .expect("spawn vardictrust --csi spanning SV");
+    assert!(
+        run.status.success(),
+        "vardictrust --csi spanning SV failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let tabix_leaf = tabix_cmd()
+        .arg(&out_vcf_gz)
+        .arg("chr1:133000-133100")
+        .output()
+        .expect("spawn live tabix on chr1:133000-133100");
+    assert!(
+        tabix_leaf.status.success(),
+        "tabix failed: {}",
+        String::from_utf8_lossy(&tabix_leaf.stderr)
+    );
+    let leaf_stdout = String::from_utf8(tabix_leaf.stdout).expect("utf8 tabix stdout");
+    let leaf_lines: Vec<&str> = leaf_stdout.lines().collect();
+    assert!(
+        leaf_lines
+            .iter()
+            .any(|l| l.contains("\t<DEL>\t") && l.contains("END=135000")),
+        "live tabix query in leaf bin 37457 MUST return spanning <DEL>, got:\n{leaf_stdout}"
+    );
+    assert!(
+        leaf_lines.iter().any(|l| l.starts_with("chr1\t133020\t")),
+        "live tabix query in leaf bin 37457 MUST return SNV at 133020, got:\n{leaf_stdout}"
+    );
+}
+
+#[test]
+fn csi_empty_header_only_vcf_gz() {
+    use noodles::csi::BinningIndex as _;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let empty_vcf = dir.path().join("empty_only.vcf.gz");
+    let empty_csi = dir.path().join("empty_only.vcf.gz.csi");
+    let run = base_cmd()
+        .args([
+            "-G",
+            "fixtures/micro/micro.ref.fa",
+            "-b",
+            "fixtures/micro/micro.bam",
+            "-R",
+            "chr1:1-10",
+            "-f",
+            "0.99",
+            "--threads=1",
+            "--csi",
+        ])
+        .arg("--output")
+        .arg(&empty_vcf)
+        .output()
+        .expect("spawn header-only --csi");
+    assert!(
+        run.status.success(),
+        "header-only --csi failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let parsed = noodles::csi::io::Reader::new(std::fs::File::open(&empty_csi).expect("open .csi"))
+        .read_index()
+        .expect("read .csi");
+    assert_eq!(parsed.min_shift(), 14);
+    assert_eq!(parsed.depth(), 6);
+
+    let list_out = tabix_cmd()
+        .arg("-l")
+        .arg(&empty_vcf)
+        .output()
+        .expect("spawn tabix -l on empty .vcf.gz");
+    assert!(
+        list_out.status.success(),
+        "tabix -l failed: {}",
+        String::from_utf8_lossy(&list_out.stderr)
+    );
+    assert!(list_out.stdout.is_empty());
+
+    let query_out = tabix_cmd()
+        .arg(&empty_vcf)
+        .arg("chr1:1-100")
+        .output()
+        .expect("spawn tabix query on empty .vcf.gz");
+    assert!(
+        query_out.status.success(),
+        "tabix query on empty .vcf.gz failed: {}",
+        String::from_utf8_lossy(&query_out.stderr)
+    );
+    assert!(query_out.stdout.is_empty());
+}
+
+#[test]
+fn csi_above_512mbp_spanning_sv() {
+    use noodles::core::Position;
+    use noodles::csi::binning_index::index::reference_sequence::{bin::Chunk, index::LinearIndex};
+    use noodles::csi::binning_index::Indexer;
+    use noodles::csi::BinningIndex as _;
+    use noodles::sam::{
+        alignment::{
+            io::Write as _,
+            record::{
+                cigar::{op::Kind, Op},
+                Flags,
+            },
+            record_buf::{Cigar, RecordBuf},
+        },
+        header::record::value::{map::ReferenceSequence as RefSeqMap, Map as HeaderMap},
+        Header,
+    };
+
+    // Spanning <DEL> above 512 Mbp (536,870,912 bp) crossing 600,047,616 (4578 * 131,072):
+    // <DEL> spans 600,046,000..600,051,000 (level-4 bin 1157) and SNV sits at 600,049,020
+    // (leaf bin 74073 under empty level-5 bin 9259) (`clintval/vartovcf#161`).
+    let dir = tempfile::tempdir().expect("tempdir");
+    let large_fa = dir.path().join("csi_600m_sv.fa");
+    let large_fai = dir.path().join("csi_600m_sv.fa.fai");
+    let win_start_1b: usize = 600_040_001;
+    let bases = [b'A', b'C', b'G', b'T'];
+    let mut seed = 0x0600_0512_2026_3a02u64;
+    let win_seq: Vec<u8> = (0..20_000usize)
+        .map(|i| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            bases[(((seed >> 33) as usize) ^ (i / 13)) & 3]
+        })
+        .collect();
+    {
+        use std::io::{Seek as _, SeekFrom, Write as _};
+        let mut f = std::fs::File::create(&large_fa).expect("create sparse csi_600m_sv.fa");
+        f.write_all(b">chr_large\n").expect("write fasta header");
+        f.seek(SeekFrom::Start(11 + (win_start_1b as u64 - 1)))
+            .expect("seek to 600M window");
+        f.write_all(&win_seq).expect("write 600M window bases");
+        f.seek(SeekFrom::Start(11 + 700_000_000))
+            .expect("seek to 700M contig end");
+        f.write_all(b"\n").expect("write trailing newline");
+    }
+    std::fs::write(
+        &large_fai,
+        "chr_large\t700000000\t11\t700000000\t700000001\n",
+    )
+    .expect("write csi_600m_sv.fa.fai");
+
+    let large_bam = dir.path().join("csi_600m_sv.bam");
+    {
+        let rs = HeaderMap::<RefSeqMap>::builder()
+            .set_length(std::num::NonZeroUsize::new(700_000_000).unwrap())
+            .build()
+            .expect("700M contig header");
+        let hd = Header::builder()
+            .add_reference_sequence("chr_large", rs)
+            .build();
+        let bgzf = noodles::bgzf::io::Writer::new(
+            std::fs::File::create(&large_bam).expect("create csi_600m_sv.bam"),
+        );
+        let mut w = noodles::bam::io::Writer::from(bgzf);
+        w.write_alignment_header(&hd).expect("write bam header");
+        let mut bam_lin = Indexer::<LinearIndex>::new(14, 6).expect("valid BAM CSI params");
+
+        let mut recs: Vec<RecordBuf> = Vec::new();
+        let del_cigar: Cigar = [
+            Op::new(Kind::Match, 50),
+            Op::new(Kind::Deletion, 5000),
+            Op::new(Kind::Match, 50),
+        ]
+        .into_iter()
+        .collect();
+        let del_s_off = 600_045_951 - win_start_1b;
+        let del_e_off = 600_051_001 - win_start_1b;
+        for i in 0..8usize {
+            let mut del_seq = Vec::with_capacity(100);
+            del_seq.extend_from_slice(&win_seq[del_s_off..del_s_off + 50]);
+            del_seq.extend_from_slice(&win_seq[del_e_off..del_e_off + 50]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("ldel_{i}"))
+                    .set_flags(flags)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::new(600_045_951).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                    )
+                    .set_cigar(del_cigar.clone())
+                    .set_sequence(del_seq.into())
+                    .set_quality_scores(vec![40u8; 100].into())
+                    .build(),
+            );
+        }
+        let m100_cigar: Cigar = [Op::new(Kind::Match, 100)].into_iter().collect();
+        let wt_off = 600_045_960 - win_start_1b;
+        for i in 0..8usize {
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("lwt_{i}"))
+                    .set_flags(flags)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::new(600_045_960).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                    )
+                    .set_cigar(m100_cigar.clone())
+                    .set_sequence(win_seq[wt_off..wt_off + 100].to_vec().into())
+                    .set_quality_scores(vec![40u8; 100].into())
+                    .build(),
+            );
+        }
+        let m50_cigar: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+        let snv_off = 600_049_000 - win_start_1b;
+        let snv_alt = match win_seq[snv_off + 20] {
+            b'A' => b'C',
+            b'C' => b'G',
+            b'G' => b'T',
+            _ => b'A',
+        };
+        for i in 0..8usize {
+            let mut seq = win_seq[snv_off..snv_off + 50].to_vec();
+            if i < 5 {
+                seq[20] = snv_alt; // pos = 600_049_020
+            }
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs.push(
+                RecordBuf::builder()
+                    .set_name(format!("lsnv_{i}"))
+                    .set_flags(flags)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::new(600_049_000).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                    )
+                    .set_cigar(m50_cigar.clone())
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![40u8; 50].into())
+                    .build(),
+            );
+        }
+        recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+        for rec in &recs {
+            let start_vp = w.get_ref().virtual_position();
+            w.write_alignment_record(&hd, rec)
+                .expect("write 600M sv bam record");
+            let end_vp = w.get_ref().virtual_position();
+            let s = rec.alignment_start().unwrap();
+            let e =
+                Position::new(s.get() + rec.cigar().alignment_span().saturating_sub(1)).unwrap();
+            bam_lin
+                .add_record(Some((0, s, e, true)), Chunk::new(start_vp, end_vp))
+                .expect("index 600M sv bam record");
+        }
+        w.try_finish().expect("finish csi_600m_sv.bam");
+
+        let built_lin = bam_lin.build(1);
+        let first_leaf = ((1usize << 18) - 1) / 7;
+        let csi_rs = built_lin
+            .reference_sequences()
+            .iter()
+            .map(|rs| {
+                let windows = rs.index();
+                let binned =
+                    noodles::csi::binning_index::index::reference_sequence::index::BinnedIndex::from_iter(
+                        rs.bins().keys().map(|&bin_id| {
+                            let mut b = bin_id;
+                            while b < first_leaf {
+                                b = b * 8 + 1;
+                            }
+                            let loff = windows.get(b - first_leaf).copied().unwrap_or_default();
+                            (bin_id, loff)
+                        }),
+                    );
+                noodles::csi::binning_index::index::ReferenceSequence::new(
+                    rs.bins().clone(),
+                    binned,
+                    noodles::csi::binning_index::ReferenceSequence::metadata(rs).cloned(),
+                )
+            })
+            .collect();
+        let bam_csi_idx = noodles::csi::Index::builder()
+            .set_min_shift(14)
+            .set_depth(6)
+            .set_reference_sequences(csi_rs)
+            .set_unplaced_unmapped_record_count(0)
+            .build();
+        let bam_csi_path = dir.path().join("csi_600m_sv.bam.csi");
+        let mut csi_w = noodles::csi::io::Writer::new(
+            std::fs::File::create(&bam_csi_path).expect("create csi_600m_sv.bam.csi"),
+        );
+        csi_w
+            .write_index(&bam_csi_idx)
+            .expect("write csi_600m_sv.bam.csi");
+        csi_w.into_inner().finish().expect("finish bam.csi");
+    }
+
+    let out_vcf_gz = dir.path().join("csi_600m_sv.vcf.gz");
+    let out_csi = dir.path().join("csi_600m_sv.vcf.gz.csi");
+    let run = base_cmd()
+        .arg("-G")
+        .arg(&large_fa)
+        .arg("-b")
+        .arg(&large_bam)
+        .args([
+            "-R",
+            "chr_large:600045940-600051070",
+            "--min-splitreads",
+            "0",
+            "--compat=off",
+            "--threads=1",
+            "--csi",
+        ])
+        .arg("--output")
+        .arg(&out_vcf_gz)
+        .output()
+        .expect("spawn vardictrust --csi >512M spanning SV");
+    assert!(
+        run.status.success(),
+        "vardictrust --csi >512M spanning SV failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let parsed_csi =
+        noodles::csi::io::Reader::new(std::fs::File::open(&out_csi).expect("open .csi"))
+            .read_index()
+            .expect("read >512M .csi");
+    assert_eq!(parsed_csi.min_shift(), 14);
+    assert_eq!(parsed_csi.depth(), 6);
+
+    let tabix_out = tabix_cmd()
+        .arg(&out_vcf_gz)
+        .arg("chr_large:600049000-600049100")
+        .output()
+        .expect("spawn live tabix on >512M leaf bin");
+    assert!(
+        tabix_out.status.success(),
+        "tabix >512M failed: {}",
+        String::from_utf8_lossy(&tabix_out.stderr)
+    );
+    let stdout_str = String::from_utf8(tabix_out.stdout).expect("utf8 tabix stdout");
+    let lines: Vec<&str> = stdout_str.lines().collect();
+    assert!(
+        lines.iter().any(|l| l.contains("\t<DEL>\t") && l.contains("END=600051000")),
+        "live tabix >512M query MUST return spanning <DEL> (600046000..600051000), got:\n{stdout_str}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("chr_large\t600049020\t")),
+        "live tabix >512M query MUST return SNV at 600049020, got:\n{stdout_str}"
     );
 }
