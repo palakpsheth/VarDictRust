@@ -754,6 +754,74 @@ fn cigar_flags(s: &str) -> (bool, bool, bool) {
     (has_d, has_i, has_s)
 }
 
+/// Permanently strips consecutive strictly-positive (`1..=i32::MAX`) outer ASCII `<N>[HP]`
+/// CIGAR prefixes and suffixes in place (`AstraZeneca-NGS/VarDictJava#341`,
+/// `AstraZeneca-NGS/VarDictJava#103`, `Kennedy-Lab-UW/VarDictJava@9a0beb0d`).
+/// Non-positive (`0`, negative), overflowing, or Unicode-digit tokens are left untouched
+/// so `validate_cigar_element_lengths` rejects malformed inputs with `Err(JavaThrows)`.
+#[inline]
+fn strip_outer_positive_hp_in_place(s: &mut String) {
+    let bytes = s.as_bytes();
+    let mut start = 0usize;
+    while bytes.get(start).is_some_and(u8::is_ascii_digit) {
+        let mut d_end = start + 1;
+        while bytes.get(d_end).is_some_and(u8::is_ascii_digit) {
+            d_end += 1;
+        }
+        let Some(&op) = bytes.get(d_end) else {
+            break;
+        };
+        if !matches!(op, b'H' | b'P') {
+            break;
+        }
+        let is_pos = s
+            .get(start..d_end)
+            .and_then(|num| num.parse::<i32>().ok())
+            .is_some_and(|v| v > 0);
+        if !is_pos {
+            break;
+        }
+        start = d_end + 1;
+    }
+
+    let mut end = bytes.len();
+    while end > start {
+        let op_pos = end - 1;
+        if !matches!(bytes.get(op_pos), Some(b'H' | b'P')) {
+            break;
+        }
+        let mut d_start = op_pos;
+        while d_start > start && bytes.get(d_start - 1).is_some_and(u8::is_ascii_digit) {
+            d_start -= 1;
+        }
+        if d_start == op_pos {
+            break;
+        }
+        let valid_prev = d_start == start
+            || s.get(..d_start)
+                .and_then(|head| head.chars().next_back())
+                .is_some_and(|ch| ch != '-' && !is_regex_decimal_digit(ch));
+        if !valid_prev {
+            break;
+        }
+        let is_pos = s
+            .get(d_start..op_pos)
+            .and_then(|num| num.parse::<i32>().ok())
+            .is_some_and(|v| v > 0);
+        if !is_pos {
+            break;
+        }
+        end = d_start;
+    }
+
+    if end < s.len() && s.is_char_boundary(end) {
+        s.truncate(end);
+    }
+    if start > 0 && start <= s.len() && s.is_char_boundary(start) {
+        s.drain(..start);
+    }
+}
+
 /// Coalesces contiguous strictly positive (`len > 0`) ASCII `M | = | X` CIGAR elements
 /// within each `\n`-separated segment of `s` into `<i32::saturating_add>M`, leaving any
 /// non-positive (`0=`, `-1X`, `0M`), overflowing, Unicode-digit, or non-CIGAR tokens
@@ -1677,6 +1745,9 @@ impl<'a> CigarModifier<'a> {
         //flag is set to true if CIGAR string is modified and should be looked at again
         let flag = true;
         let this = self;
+        if this.config.compat.cigar_strip_outer_hard_clips {
+            strip_outer_positive_hp_in_place(&mut this.cigar_str);
+        }
         if this.config.compat.eqx_cigar_read_length
             && this
                 .cigar_str
@@ -5706,6 +5777,357 @@ mod tests {
                 matches!(bad_res, Err(crate::types::VardictError::JavaThrows(_))),
                 "Expected JavaThrows for invalid --eqx CIGAR {bad_eqx}, got {bad_res:?}"
             );
+        }
+    }
+
+    #[test]
+    fn compat_off_cigar_strip_outer_hard_clips_and_pads() {
+        let cfg_default = Config::default();
+        let cfg_off = Config {
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let seed = SeedMap::new();
+
+        // Non-repetitive reference starting at 1 so matched segments align cleanly and
+        // clipped bases can be chosen to mismatch adjacent reference positions.
+        let mut ref_seq = Vec::with_capacity(300);
+        let cycle = b"ACGTTGCA";
+        for i in 0..300 {
+            ref_seq.push(cycle[i % cycle.len()]);
+        }
+        let non_matching_base = |ref_b: u8| -> u8 {
+            if ref_b == b'A' {
+                b'C'
+            } else {
+                b'A'
+            }
+        };
+
+        // 1. AstraZeneca-NGS/VarDictJava#341: `90M3D8M3I20H -> 90M11S` with `position` unchanged (10)
+        //    Query length = 90 + 8 + 3 = 101 bp (20H not present in SEQ).
+        let mut q_341_short = Vec::with_capacity(101);
+        q_341_short.extend_from_slice(&ref_seq[9..99]); // 90M at pos 10..=99
+                                                        // Force mismatch at ref_seq[99] (1-based 100) so 11S is not absorbed back into 90M.
+        q_341_short.push(non_matching_base(ref_seq[99]));
+        q_341_short.push(non_matching_base(ref_seq[100]));
+        for i in 2..11 {
+            q_341_short.push(non_matching_base(ref_seq[99 + i]));
+        }
+        let qual_101 = vec![b'I'; q_341_short.len()];
+
+        let def_341_short = CigarModifier::new(
+            10,
+            "90M3D8M3I20H",
+            q_341_short.clone(),
+            qual_101.clone(),
+            &ref_seq,
+            1,
+            &seed,
+            6,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(def_341_short.position, 10);
+        assert_eq!(def_341_short.cigar, "90M11D11I20H");
+
+        let off_341_short = CigarModifier::new(
+            10,
+            "90M3D8M3I20H",
+            q_341_short,
+            qual_101,
+            &ref_seq,
+            1,
+            &seed,
+            6,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(off_341_short.position, 10);
+        assert_eq!(off_341_short.cigar, "90M11S");
+
+        // 2. `90M3D15M3I20H -> 90M3D15M3S` with `position` unchanged (10)
+        //    Query length = 90 + 15 + 3 = 108 bp (`15M > 10` keeps `3D` intact while `3I -> 3S`).
+        let mut q_341_long = Vec::with_capacity(108);
+        q_341_long.extend_from_slice(&ref_seq[9..99]); // 90M at pos 10..=99
+        q_341_long.extend_from_slice(&ref_seq[102..117]); // 15M after 3D (pos 103..=117)
+        for i in 0..3 {
+            q_341_long.push(non_matching_base(ref_seq[117 + i])); // 3I mismatches pos 118..=120
+        }
+        let qual_108 = vec![b'I'; q_341_long.len()];
+
+        let def_341_long = CigarModifier::new(
+            10,
+            "90M3D15M3I20H",
+            q_341_long.clone(),
+            qual_108.clone(),
+            &ref_seq,
+            1,
+            &seed,
+            6,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(def_341_long.position, 10);
+        assert_eq!(def_341_long.cigar, "90M18D18I20H");
+
+        let off_341_long = CigarModifier::new(
+            10,
+            "90M3D15M3I20H",
+            q_341_long,
+            qual_108,
+            &ref_seq,
+            1,
+            &seed,
+            6,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(off_341_long.position, 10);
+        assert_eq!(off_341_long.cigar, "90M3D15M3S");
+
+        // 3. AstraZeneca-NGS/VarDictJava#103 & Kennedy-Lab-UW/VarDictJava@9a0beb0d:
+        //    `10H2I98M -> 2S98M` with `position` unchanged (10), plus multi-op `5H3P10H2I98M4P20H -> 2S98M`.
+        let mut q_lead_i = Vec::with_capacity(100);
+        q_lead_i.push(non_matching_base(ref_seq[7])); // mismatch at pos 8
+        q_lead_i.push(non_matching_base(ref_seq[8])); // mismatch at pos 9
+        q_lead_i.extend_from_slice(&ref_seq[9..107]); // 98M at pos 10..=107
+        let qual_100 = vec![b'I'; q_lead_i.len()];
+
+        let def_lead_i = CigarModifier::new(
+            10,
+            "10H2I98M",
+            q_lead_i.clone(),
+            qual_100.clone(),
+            &ref_seq,
+            1,
+            &seed,
+            2,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(def_lead_i.position, 10);
+        assert_eq!(def_lead_i.cigar, "10H2I98M");
+
+        for cig in ["10H2I98M", "5H3P10H2I98M4P20H"] {
+            let off_lead_i = CigarModifier::new(
+                10,
+                cig,
+                q_lead_i.clone(),
+                qual_100.clone(),
+                &ref_seq,
+                1,
+                &seed,
+                2,
+                150,
+                &cfg_off,
+            )
+            .modify_cigar()
+            .unwrap();
+            assert_eq!(
+                off_lead_i.position, 10,
+                "outer H/P must never advance position on {cig}"
+            );
+            assert_eq!(off_lead_i.cigar, "2S98M", "unexpected CIGAR on {cig}");
+        }
+
+        // 4. `10H2D98M -> 98M` with `position + 2` (10 -> 12).
+        let q_lead_d = ref_seq[11..109].to_vec(); // 98M aligned at pos 12..=109 after 2D
+        let qual_98 = vec![b'I'; q_lead_d.len()];
+
+        let def_lead_d = CigarModifier::new(
+            10,
+            "10H2D98M",
+            q_lead_d.clone(),
+            qual_98.clone(),
+            &ref_seq,
+            1,
+            &seed,
+            2,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(def_lead_d.position, 10);
+        assert_eq!(def_lead_d.cigar, "10H2D98M");
+
+        let off_lead_d = CigarModifier::new(
+            10, "10H2D98M", q_lead_d, qual_98, &ref_seq, 1, &seed, 2, 150, &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(off_lead_d.position, 12);
+        assert_eq!(off_lead_d.cigar, "98M");
+
+        // 5. Pure `H`/`P` (`5H3P20H -> ""` at pos 10) and all-deleted (`10H3D20H -> ""` at pos 13).
+        let off_pure_hp = CigarModifier::new(
+            10, "5H3P20H", b"", b"", &ref_seq, 1, &seed, 0, 150, &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(off_pure_hp.position, 10);
+        assert_eq!(off_pure_hp.cigar, "");
+
+        let off_hdh = CigarModifier::new(
+            10, "10H3D20H", b"", b"", &ref_seq, 1, &seed, 3, 150, &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(off_hdh.position, 13);
+        assert_eq!(off_hdh.cigar, "");
+
+        // 6. Non-positive (`<= 0`) or overflowing `H`/`P` lengths must NOT be stripped and must
+        //    fail `validate_cigar_element_lengths` with `Err(VardictError::JavaThrows)`, while
+        //    retaining `cigar_str` scratch capacity on `Err` via `into_buffers`.
+        let q_90 = ref_seq[9..99].to_vec();
+        let qual_90 = vec![b'I'; 90];
+        for bad_hp in [
+            "0H90M",
+            "0P90M",
+            "90M0H",
+            "90M0P",
+            "-5H90M",
+            "90M-5H",
+            "90M-5P",
+            "5H0H90M",
+            "90M0P20H",
+            "10H0M20H",
+            "2147483648H90M",
+            "90M2147483648P",
+        ] {
+            let mut cm = CigarModifier::new(
+                10,
+                String::from(bad_hp),
+                q_90.clone(),
+                qual_90.clone(),
+                &ref_seq,
+                1,
+                &seed,
+                0,
+                150,
+                &cfg_off,
+            );
+            let err = cm.modify_cigar_preserving_buffers();
+            assert!(
+                matches!(err, Err(crate::types::VardictError::JavaThrows(_))),
+                "expected JavaThrows for {bad_hp}, got {err:?}"
+            );
+            let (cigar_buf, seq_buf, qual_buf) = cm.into_buffers();
+            assert!(
+                cigar_buf.capacity() > 0 && seq_buf.capacity() >= 90 && qual_buf.capacity() >= 90,
+                "scratch buffers must remain populated on Err for {bad_hp}"
+            );
+        }
+
+        // 7. `10H150=20H` with `eqx_cigar_read_length` (`COMPAT_OFF` -> `150M` with `position` unchanged).
+        let q_150 = ref_seq[9..159].to_vec();
+        let qual_150 = vec![b'I'; 150];
+        let def_eqx_hp = CigarModifier::new(
+            10,
+            "10H150=20H",
+            q_150.clone(),
+            qual_150.clone(),
+            &ref_seq,
+            1,
+            &seed,
+            0,
+            150,
+            &cfg_default,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(def_eqx_hp.position, 10);
+        assert_eq!(def_eqx_hp.cigar, "10H150=20H");
+
+        let off_eqx_hp = CigarModifier::new(
+            10,
+            "10H150=20H",
+            q_150,
+            qual_150,
+            &ref_seq,
+            1,
+            &seed,
+            0,
+            150,
+            &cfg_off,
+        )
+        .modify_cigar()
+        .unwrap();
+        assert_eq!(off_eqx_hp.position, 10);
+        assert_eq!(off_eqx_hp.cigar, "150M");
+    }
+
+    #[test]
+    fn hedera_dx_duplex_104m1i2m2d1m1d5m1d2m9d27m() {
+        // Real duplex sequencing read at chr7:140434471 from `hedera-dx/VarDictJava@17d1cb51`
+        // (`AstraZeneca-NGS/VarDictJava#402`), tested both unclipped and with duplex outer `H` clips.
+        let cfg_default = Config::default();
+        let cfg_off = Config {
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let seed = SeedMap::new();
+
+        let query_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAAAAAAAAAAGAAAAAAGAAAAAAAAAG";
+        let query_qual = b"BBFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=74??44444444FFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let ref_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAGAAAAAAAAAAGAAAAAAAAAGAAAAAAGAAAAAAAAAGAAAGAAAGAAAAAGAAAAAACAGAAAGAAGAATGAAAATCTGGGTG";
+
+        for cigar in [
+            "104M1I2M2D1M1D5M1D2M9D27M",
+            "12H104M1I2M2D1M1D5M1D2M9D27M18H",
+        ] {
+            let res_def = CigarModifier::new(
+                1,
+                cigar,
+                query_seq.as_slice(),
+                query_qual.as_slice(),
+                ref_seq,
+                1,
+                &seed,
+                18,
+                150,
+                &cfg_default,
+            )
+            .modify_cigar();
+            assert!(
+                matches!(res_def, Err(crate::types::VardictError::JavaThrows(_))),
+                "default mode must replicate JavaThrows on {cigar}, got {res_def:?}"
+            );
+
+            let modified = CigarModifier::new(
+                1,
+                cigar,
+                query_seq.as_slice(),
+                query_qual.as_slice(),
+                ref_seq,
+                1,
+                &seed,
+                18,
+                150,
+                &cfg_off,
+            )
+            .modify_cigar()
+            .unwrap_or_else(|e| panic!("COMPAT_OFF must succeed on {cigar}: {e:?}"));
+            assert_eq!(modified.position, 1, "position changed on {cigar}");
+            assert_eq!(
+                modified.cigar, "104M14D11I9D27M",
+                "cigar mismatch on {cigar}"
+            );
+            let parsed = crate::cigar::parse_cigar(&modified.cigar).unwrap();
+            assert!(parsed.iter().all(|&(len, _)| len > 0));
+            assert_eq!(crate::cigar::parse::query_consumed_len(&parsed), 142);
+            assert_eq!(modified.query_seq.len(), 142);
         }
     }
 }
