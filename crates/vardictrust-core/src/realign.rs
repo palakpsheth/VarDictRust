@@ -2397,7 +2397,9 @@ pub fn realigndel(
                                     p,
                                     Some(ref_base),
                                 ) {
-                                    h_mut.cnt = 0;
+                                    h_mut.reset_counts_compat(
+                                        config.compat.reconcile_strand_and_hq_sums,
+                                    );
                                     h_mut.hicnt = 0;
                                     h_mut.locnt = 0;
                                     h_mut.pmean = 0.0;
@@ -10115,6 +10117,101 @@ mod tests {
                     "COMPAT_OFF must mark pre_anchored_dup=true on realignlgins <dupN> (five_prime={five_prime})"
                 );
             }
+        }
+
+        #[test]
+        fn wave5_3c_switch24_realigndel_reset_clears_extracnt_under_reconcile_strand_and_hq_sums() {
+            // AstraZeneca-NGS/VarDictJava#316: realigndel's no_passing_reads ref absorption
+            // at realign.rs:2400 must clear extracnt via reset_counts_compat(true) when
+            // reconcile_strand_and_hq_sums is active, while keeping legacy extracnt untouched.
+            use noodles::bam::{self, bai};
+            use noodles::csi::binning_index::{
+                index::reference_sequence::index::LinearIndex, Indexer,
+            };
+            use noodles::sam;
+            use noodles::sam::alignment::io::Write as _;
+            use std::num::NonZeroUsize;
+
+            let tmp = tempfile::tempdir().unwrap();
+            let bam_path = tmp.path().join("empty.bam");
+            let hd = sam::Header::builder()
+                .add_reference_sequence(
+                    "chr1",
+                    sam::header::record::value::Map::<
+                        sam::header::record::value::map::ReferenceSequence,
+                    >::new(NonZeroUsize::new(500).unwrap()),
+                )
+                .build();
+            let mut w = bam::io::Writer::new(std::fs::File::create(&bam_path).unwrap());
+            w.write_alignment_header(&hd).unwrap();
+            w.try_finish().unwrap();
+            let indexer = Indexer::<LinearIndex>::new(14, 5).unwrap();
+            let mut bai_path = bam_path.clone();
+            bai_path.set_extension("bam.bai");
+            bai::io::Writer::new(std::fs::File::create(&bai_path).unwrap())
+                .write_index(&indexer.build(1))
+                .unwrap();
+            let bams = vec![bam_path.to_string_lossy().into_owned()];
+
+            let run_case = |reconcile: bool| -> Variation {
+                let (reference, _) = build_patterned_ref("chr1", 500);
+                let ref_ch = (reference.get_base("chr1", 100).unwrap() as char).to_string();
+                let mut pos_del = BTreeMap::new();
+                pos_del.insert(
+                    100,
+                    rustc_hash::FxHashMap::from_iter([("-10".to_string(), 10)]),
+                );
+
+                let mut non_ins = crate::javamap::JavaHashMap::new();
+                let mut vm = VariationMap::new();
+                let mut h = Variation::new();
+                h.cnt = 2;
+                h.hicnt = 2;
+                h.fwd = 1;
+                h.rev = 1;
+                h.extracnt = 7;
+                vm.map.insert(ref_ch.clone(), h);
+                let mut del_v = Variation::new();
+                del_v.cnt = 10;
+                del_v.hicnt = 10;
+                del_v.fwd = 5;
+                del_v.rev = 5;
+                vm.map.insert("-10".to_string(), del_v);
+                non_ins.insert(100, vm);
+
+                let mut ref_cov = rustc_hash::FxHashMap::from_iter([(100, 12)]);
+                let mut sc5 = BTreeMap::new();
+                let mut sc3 = BTreeMap::new();
+                let cfg = crate::config::Config {
+                    compat: crate::config::CompatProfile {
+                        reconcile_strand_and_hq_sums: reconcile,
+                        ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+                    },
+                    ..crate::config::Config::default()
+                };
+                realigndel(
+                    Some(&bams),
+                    &pos_del,
+                    &reference,
+                    "chr1",
+                    500,
+                    &cfg,
+                    &mut non_ins,
+                    &mut ref_cov,
+                    &mut sc5,
+                    &mut sc3,
+                    150,
+                );
+                non_ins.get(&100).unwrap().map.get(&ref_ch).unwrap().clone()
+            };
+
+            let leg_h = run_case(false);
+            assert_eq!(leg_h.cnt, 0);
+            assert_eq!(leg_h.extracnt, 7);
+
+            let sw24_h = run_case(true);
+            assert_eq!(sw24_h.cnt, 0);
+            assert_eq!(sw24_h.extracnt, 0);
         }
     }
 }
