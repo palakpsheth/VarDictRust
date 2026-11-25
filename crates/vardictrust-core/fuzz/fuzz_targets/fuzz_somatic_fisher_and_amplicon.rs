@@ -404,18 +404,11 @@ fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, compat: &CompatPr
         };
     }
     if compat.nonnegative_subtracted_means {
-        if !(v.mean_position > 0.0) {
-            v.mean_position = 0.0;
-        }
-        if !(v.mean_quality > 0.0) {
-            v.mean_quality = 0.0;
-        }
-        if !(v.mean_mapping_quality > 0.0) {
-            v.mean_mapping_quality = 0.0;
-        }
-        if !(v.nm > 0.0) {
-            v.nm = 0.0;
-        }
+        let clamp_nonneg = |x: f64| if x.is_finite() && x > 0.0 { x } else { 0.0 };
+        v.mean_position = clamp_nonneg(v.mean_position);
+        v.mean_quality = clamp_nonneg(v.mean_quality);
+        v.mean_mapping_quality = clamp_nonneg(v.mean_mapping_quality);
+        v.nm = clamp_nonneg(v.nm);
     }
     v
 }
@@ -428,7 +421,9 @@ fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32, compat: &CompatProfile) -> 
         rv.var_allele = "A".to_string();
         rv.description = "A".to_string();
         rv.var_type.clear();
-        if compat.reconcile_strand_and_hq_sums || compat.reconcile_rd_vd_dp || compat.reconcile_vd_dp
+        if compat.reconcile_strand_and_hq_sums
+            || compat.reconcile_rd_vd_dp
+            || compat.reconcile_vd_dp
         {
             rv.pos_coverage = 0;
             rv.fwd = 0;
@@ -623,10 +618,75 @@ fn check_multiallelic_ncamp_regression_once() {
         assert_eq!(complex_hit.gdamp, 1);
         assert_eq!(complex_hit.tlamp, 1);
         assert_eq!(complex_hit.ncamp, 2);
+
+        // Regression guard: `combine_analysis` `CombineVerdict::Germline` rescues construct
+        // `sv.variant2` via `Variant::new()` with empty `ref_allele`/`var_allele`/`var_type`
+        // (`TYPE` lives exclusively on `sv.variant1`) and `pos_coverage > 0`.
+        let mut som_cfg = Config::default();
+        som_cfg.compat = COMPAT_OFF;
+        let som_reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(150),
+            gene: "SOM".to_string(),
+            amplicon: None,
+        };
+        let mut bam1 = JavaHashMap::new();
+        let mut vars1 = Vars::new();
+        vars1
+            .variants
+            .push(mk_var("ACGTACGTACG", "A", "-10", 130, 40, 3));
+        bam1.insert(120, vars1);
+        let mut bam2 = JavaHashMap::new();
+        let mut vars2 = Vars::new();
+        vars2.variants.push(mk_var("A", "C", "C", 120, 40, 8));
+        bam2.insert(120, vars2);
+        let rescue_pipe = |_reg: &Region,
+                           _sp: &mut HashSet<String, _>,
+                           _rl: &mut i32,
+                           _pos: i32|
+         -> Result<Option<Vars>, VardictError> {
+            let mut comb = Vars::new();
+            comb.variants
+                .push(mk_var("ACGTACGTACG", "A", "-10", 130, 80, 12));
+            Ok(Some(comb))
+        };
+        let rescue_ref: &PositionPipelineFn<'_> = &rescue_pipe;
+        let som_rows = somatic_post_process_at(
+            &som_cfg,
+            &som_reg,
+            &bam1,
+            &bam2,
+            &splice,
+            Some(rescue_ref),
+            100,
+        );
+        let rescued = som_rows
+            .iter()
+            .find(|sv| sv.variant1.description == "-10")
+            .expect("CombineVerdict::Germline rescue row must be emitted");
+        assert_eq!(rescued.status, "Germline");
+        let rescued_v2 = rescued
+            .variant2
+            .as_ref()
+            .expect("CombineVerdict::Germline must populate variant2 subtraction placeholder");
+        assert!(rescued_v2.ref_allele.is_empty() && rescued_v2.var_allele.is_empty());
+        assert_eq!(rescued_v2.pos_coverage, 9);
+        assert_wave5_variant_invariants(&rescued.variant1, &som_cfg.compat, false, true);
+        let rescued_v2_ref_only =
+            rescued_v2.ref_allele == rescued_v2.var_allele && rescued_v2.pos_coverage == 0;
+        assert_wave5_variant_invariants(rescued_v2, &som_cfg.compat, rescued_v2_ref_only, false);
+        let paired_rec = format_paired_vcf_record(rescued, &som_reg.chr, &som_cfg);
+        assert_wave5_vcf_line_invariants(paired_rec.as_str(), &som_cfg, true);
     });
 }
 
-fn assert_wave5_variant_invariants(v: &Variant, compat: &CompatProfile, is_ref_only: bool) {
+fn assert_wave5_variant_invariants(
+    v: &Variant,
+    compat: &CompatProfile,
+    is_ref_only: bool,
+    check_var_type: bool,
+) {
     if compat.reconcile_rd_vd_dp {
         let rd = i64::from(v.ref_fwd_cov.max(0)) + i64::from(v.ref_rev_cov.max(0));
         let vd = i64::from(v.pos_coverage.max(0));
@@ -638,7 +698,9 @@ fn assert_wave5_variant_invariants(v: &Variant, compat: &CompatProfile, is_ref_o
     }
     if compat.reconcile_strand_and_hq_sums {
         assert!(
-            v.fwd >= 0 && v.rev >= 0 && i64::from(v.fwd) + i64::from(v.rev) == i64::from(v.pos_coverage),
+            v.fwd >= 0
+                && v.rev >= 0
+                && i64::from(v.fwd) + i64::from(v.rev) == i64::from(v.pos_coverage),
             "reconcile_strand_and_hq_sums violated fwd ({}) + rev ({}) == VD ({})",
             v.fwd,
             v.rev,
@@ -673,7 +735,11 @@ fn assert_wave5_variant_invariants(v: &Variant, compat: &CompatProfile, is_ref_o
             v.nm
         );
     }
-    if compat.recompute_vartype_after_adj_complex && !is_ref_only {
+    if check_var_type
+        && compat.recompute_vartype_after_adj_complex
+        && !is_ref_only
+        && !(v.ref_allele.is_empty() && v.var_allele.is_empty())
+    {
         assert_eq!(
             v.var_type.as_str(),
             v.var_type_cow().as_ref(),
@@ -891,7 +957,7 @@ fuzz_target!(|data: &[u8]| {
     let mut vcf_scratch = String::with_capacity(256);
     for row in &simple_rows {
         let is_ref_only = row.ref_allele == row.var_allele && row.pos_coverage == 0;
-        assert_wave5_variant_invariants(row, &base_cfg.compat, is_ref_only);
+        assert_wave5_variant_invariants(row, &base_cfg.compat, is_ref_only, true);
         if let SingleVcfEvent::Record(rec) =
             build_single_vcf_event(&mut vcf_scratch, row, &region, &base_cfg, None)
         {
@@ -948,10 +1014,13 @@ fuzz_target!(|data: &[u8]| {
     );
     for sv in &somatic_rows {
         assert!(!sv.status.is_empty());
-        assert_wave5_variant_invariants(&sv.variant1, &base_cfg.compat, false);
+        assert_wave5_variant_invariants(&sv.variant1, &base_cfg.compat, false, true);
         if let Some(ref v2) = sv.variant2 {
+            // `SomaticVariant::variant2` carries normal-sample counts/means only (`TYPE` lives on
+            // `sv.variant1`, and `CombineVerdict::Germline` leaves `v2.ref_allele`/`var_allele`
+            // empty), so keep count/mean invariants active while skipping `var_type` on `v2`.
             let v2_ref_only = v2.ref_allele == v2.var_allele && v2.pos_coverage == 0;
-            assert_wave5_variant_invariants(v2, &base_cfg.compat, v2_ref_only);
+            assert_wave5_variant_invariants(v2, &base_cfg.compat, v2_ref_only, false);
         }
         let paired_rec = format_paired_vcf_record(sv, &region.chr, &base_cfg);
         assert_wave5_vcf_line_invariants(paired_rec.as_str(), &base_cfg, true);
@@ -1122,7 +1191,7 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(lhs.ampflag, rhs.ampflag);
         let is_ref_only =
             lhs.variant.ref_allele == lhs.variant.var_allele && lhs.variant.pos_coverage == 0;
-        assert_wave5_variant_invariants(&lhs.variant, &amp_cfg.compat, is_ref_only);
+        assert_wave5_variant_invariants(&lhs.variant, &amp_cfg.compat, is_ref_only, true);
         if let SingleVcfEvent::Record(rec) = build_single_vcf_event(
             &mut vcf_scratch,
             &lhs.variant,
