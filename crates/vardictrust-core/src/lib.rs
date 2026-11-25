@@ -11,7 +11,7 @@
 //!   ([`config::CompatTarget::VardictJava183`]) reproduces VarDictJava v1.8.3 + `var2vcf_*.pl`
 //!   intermediate `.var` and `VCFv4.2` output across valid inputs.
 //! - **Opt-in corrections (`--compat=off`):** [`config::COMPAT_OFF`]
-//!   ([`config::CompatTarget::Off`]) enables all 21 [`config::CompatProfile`] accuracy,
+//!   ([`config::CompatTarget::Off`]) enables all 32 [`config::CompatProfile`] accuracy,
 //!   bounded-scale, `VD <= DP` reconciliation, coordinate-sorted `.var` order, exact realignment
 //!   overlap/`dlen` matching, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `=`/`X` (`--eqx`)
 //!   CIGAR fixes, and stamps `##VarDictRustCompat=off` in the VCF header; full 18/18 `var2vcf`
@@ -1418,6 +1418,45 @@ impl BoundedParentRefScanner {
     }
 }
 
+#[inline]
+fn trim_outer_hard_clip_pad_slice(
+    mut ops: &[(u32, noodles::sam::alignment::record::cigar::op::Kind)],
+) -> &[(u32, noodles::sam::alignment::record::cigar::op::Kind)] {
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+    while let Some((&(len, kind), rest)) = ops.split_first() {
+        if len > 0 && matches!(kind, CigarKind::HardClip | CigarKind::Pad) {
+            ops = rest;
+        } else {
+            break;
+        }
+    }
+    while let Some((&(len, kind), rest)) = ops.split_last() {
+        if len > 0 && matches!(kind, CigarKind::HardClip | CigarKind::Pad) {
+            ops = rest;
+        } else {
+            break;
+        }
+    }
+    ops
+}
+
+#[inline]
+fn trim_outer_hard_clip_pad_vec(
+    elements: &mut Vec<(u32, noodles::sam::alignment::record::cigar::op::Kind)>,
+) {
+    use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+    let is_pos_hp = |&(len, kind): &(u32, CigarKind)| {
+        len > 0 && matches!(kind, CigarKind::HardClip | CigarKind::Pad)
+    };
+    while elements.last().is_some_and(is_pos_hp) {
+        elements.pop();
+    }
+    let lead = elements.iter().take_while(|op| is_pos_hp(op)).count();
+    if lead > 0 {
+        elements.drain(..lead);
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "pre-scan candidate replay borrows split mutable buffers and tile step state"
@@ -1443,9 +1482,15 @@ fn replay_prescan_candidate(
     use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
 
     let include_eqx = config.compat.eqx_cigar_read_length;
+    let strip_outer_hp = config.compat.cigar_strip_outer_hard_clips;
+    let effective_orig = if strip_outer_hp {
+        trim_outer_hard_clip_pad_slice(orig_cigar)
+    } else {
+        orig_cigar
+    };
     let read_start = r_start_u32 as i32;
     cigar_elements.clear();
-    cigar_elements.extend_from_slice(orig_cigar);
+    cigar_elements.extend_from_slice(effective_orig);
     if include_eqx {
         crate::cigar::parse::coalesce_eqx_into_match(cigar_elements);
     }
@@ -1492,10 +1537,12 @@ fn replay_prescan_candidate(
             Ok(modified) => {
                 if crate::cigar::parse_cigar_into(&modified.cigar, cigar_elements).is_none() {
                     cigar_elements.clear();
-                    cigar_elements.extend_from_slice(orig_cigar);
+                    cigar_elements.extend_from_slice(effective_orig);
                     if include_eqx {
                         crate::cigar::parse::coalesce_eqx_into_match(cigar_elements);
                     }
+                } else if strip_outer_hp {
+                    trim_outer_hard_clip_pad_vec(cigar_elements);
                 }
                 *cigar_str = modified.cigar;
                 *sequence = modified.query_seq;
@@ -1505,6 +1552,9 @@ fn replay_prescan_candidate(
         }
     }
 
+    if strip_outer_hp {
+        trim_outer_hard_clip_pad_vec(cigar_elements);
+    }
     if cigar_elements.len() >= 2 {
         if let (Some(&(len_first, CigarKind::SoftClip)), Some(&(len_last, CigarKind::SoftClip))) =
             (cigar_elements.first(), cigar_elements.last())
@@ -4302,6 +4352,7 @@ impl<W: std::io::Write> std::io::Write for InjectedWriter<W> {
 impl<W: std::io::Write> EngineWriter for InjectedWriter<W> {}
 
 const TABIX_MAX_COORD_BP: usize = 536_870_912;
+const CSI_DEPTH6_MAX_COORD_BP: usize = 1usize << 32;
 
 fn scan_bgzf_vcf_index_records<F>(vcf_gz_path: &Path, mut on_record: F) -> Result<(), VardictError>
 where
@@ -4316,6 +4367,8 @@ where
 {
     let mut reader =
         noodles::bgzf::io::Reader::new(std::fs::File::open(vcf_gz_path).map_err(VardictError::Io)?);
+    let mut seen_chroms: rustc_hash::FxHashSet<String> = rustc_hash::FxHashSet::default();
+    let mut cur_chrom: Option<(String, usize)> = None;
     let mut line = String::new();
     loop {
         let start_vp = reader.virtual_position();
@@ -4334,6 +4387,11 @@ where
         let chrom = fields.next().ok_or_else(|| {
             VardictError::Parse("missing VCF CHROM column while indexing".to_string())
         })?;
+        if chrom.is_empty() {
+            return Err(VardictError::Parse(
+                "empty VCF CHROM column while indexing".to_string(),
+            ));
+        }
         let pos_str = fields.next().ok_or_else(|| {
             VardictError::Parse("missing VCF POS column while indexing".to_string())
         })?;
@@ -4346,10 +4404,7 @@ where
         let _alt = fields.next();
         let _qual = fields.next();
         let _filter = fields.next();
-        let info_end = fields.next().and_then(|info| {
-            info.split(';')
-                .find_map(|kv| kv.strip_prefix("END=")?.parse::<usize>().ok())
-        });
+        let info_opt = fields.next();
         let pos_usize = pos_str.parse::<usize>().map_err(|e| {
             VardictError::Parse(format!("invalid VCF POS '{pos_str}' while indexing: {e}"))
         })?;
@@ -4358,9 +4413,74 @@ where
                 "VCF POS must be >= 1 while indexing, got {pos_usize}"
             ))
         })?;
-        let end_usize = info_end
-            .unwrap_or_else(|| pos_usize.saturating_add(ref_allele.len().saturating_sub(1)))
-            .max(pos_usize);
+        match cur_chrom.as_mut() {
+            Some((prev_chr, prev_pos)) if prev_chr == chrom => {
+                if pos_usize < *prev_pos {
+                    return Err(VardictError::Parse(format!(
+                        "unsorted VCF POS while indexing on '{chrom}': {pos_usize} < previous POS {prev_pos}"
+                    )));
+                }
+                *prev_pos = pos_usize;
+            }
+            _ => {
+                if seen_chroms.contains(chrom) {
+                    return Err(VardictError::Parse(format!(
+                        "non-contiguous VCF CHROM block while indexing: contig '{chrom}' revisited out of order"
+                    )));
+                }
+                if let Some((prev_chr, _)) = cur_chrom.replace((chrom.to_string(), pos_usize)) {
+                    seen_chroms.insert(prev_chr);
+                }
+            }
+        }
+        let mut info_end: Option<usize> = None;
+        if let Some(info) = info_opt.filter(|s| !s.is_empty() && *s != ".") {
+            for kv in info.split(';') {
+                if let Some(raw_end) = kv.strip_prefix("END=") {
+                    if raw_end.is_empty() || !raw_end.bytes().all(|b| b.is_ascii_digit()) {
+                        return Err(VardictError::Parse(format!(
+                            "invalid VCF INFO/END='{raw_end}' on '{chrom}:{pos_usize}' while indexing"
+                        )));
+                    }
+                    let parsed_end = raw_end.parse::<usize>().map_err(|e| {
+                        VardictError::Parse(format!(
+                            "overflowing VCF INFO/END='{raw_end}' on '{chrom}:{pos_usize}' while indexing: {e}"
+                        ))
+                    })?;
+                    if parsed_end == 0 {
+                        return Err(VardictError::Parse(format!(
+                            "VCF INFO/END must be >= 1 on '{chrom}:{pos_usize}' while indexing, got 0"
+                        )));
+                    }
+                    if parsed_end < pos_usize {
+                        return Err(VardictError::Parse(format!(
+                            "VCF INFO/END ({parsed_end}) < POS ({pos_usize}) on '{chrom}' while indexing"
+                        )));
+                    }
+                    if info_end.is_some() {
+                        return Err(VardictError::Parse(format!(
+                            "duplicate VCF INFO/END tag on '{chrom}:{pos_usize}' while indexing"
+                        )));
+                    }
+                    info_end = Some(parsed_end);
+                }
+            }
+        }
+        let end_usize = match info_end {
+            Some(end_val) => end_val,
+            None => pos_usize
+                .checked_add(ref_allele.len().saturating_sub(1))
+                .ok_or_else(|| {
+                    VardictError::Parse(format!(
+                        "VCF REF span overflows coordinate on '{chrom}:{pos_usize}' while indexing"
+                    ))
+                })?,
+        };
+        if end_usize > CSI_DEPTH6_MAX_COORD_BP {
+            return Err(VardictError::Parse(format!(
+                "VCF END coordinate {end_usize} on '{chrom}:{pos_usize}' exceeds CSI depth-6 ceiling ({CSI_DEPTH6_MAX_COORD_BP})"
+            )));
+        }
         let end_pos = noodles::core::Position::new(end_usize)
             .ok_or_else(|| VardictError::Parse(format!("invalid VCF END {end_usize}")))?;
         let chunk = noodles::csi::binning_index::index::reference_sequence::bin::Chunk::new(
@@ -4448,15 +4568,37 @@ fn stage_vcf_tabix_index(
     stage_vcf_tabix_index_with_preflight(readable_vcf, final_vcf, None)
 }
 
+#[inline]
+fn csi_first_window(bin_id: usize, depth: u8) -> usize {
+    let first_leaf_bin = 1usize
+        .checked_shl(3 * u32::from(depth))
+        .map_or(usize::MAX, |n| (n - 1) / 7);
+    let mut b = bin_id;
+    while b < first_leaf_bin {
+        b = b.saturating_mul(8).saturating_add(1);
+    }
+    b.saturating_sub(first_leaf_bin)
+}
+
+/// Stages a CSIv1 depth-6 (`.csi`, `min_shift = 14, depth = 6`) index by first building a
+/// `LinearIndex` and mapping each populated bin's `loffset` to its leftmost `16,384 bp` leaf
+/// window (`clintval/vartovcf#161`), preventing `noodles`'s `BinnedIndex::update` from omitting
+/// root bin `0` or advancing leaf-bin `loffset` past earlier multi-bin spanning SVs.
 fn stage_vcf_csi_index_inner(
     readable_vcf: &Path,
     csi_path: &Path,
     preflight_dst: Option<std::fs::File>,
 ) -> Result<StagedFileTarget, VardictError> {
-    let mut indexer = noodles::csi::binning_index::Indexer::<
-        noodles::csi::binning_index::index::reference_sequence::index::BinnedIndex,
-    >::new(14, 6)
-    .ok_or_else(|| VardictError::Parse("invalid CSI binning parameters (14, 6)".to_string()))?;
+    use noodles::csi::binning_index::{
+        index::reference_sequence::{
+            index::{BinnedIndex, LinearIndex},
+            ReferenceSequence,
+        },
+        BinningIndex as _, Indexer, ReferenceSequence as _,
+    };
+
+    let mut indexer = Indexer::<LinearIndex>::new(14, 6)
+        .ok_or_else(|| VardictError::Parse("invalid CSI binning parameters (14, 6)".to_string()))?;
     let mut names = noodles::csi::binning_index::index::header::ReferenceSequenceNames::new();
 
     scan_bgzf_vcf_index_records(
@@ -4475,7 +4617,33 @@ fn stage_vcf_csi_index_inner(
     let header = noodles::csi::binning_index::index::header::Builder::vcf()
         .set_reference_sequence_names(names)
         .build();
-    let index = indexer.set_header(header).build(contig_count);
+    let linear = indexer.set_header(header).build(contig_count);
+    let reference_sequences = linear
+        .reference_sequences()
+        .iter()
+        .map(|rs| {
+            let windows = rs.index();
+            let binned = BinnedIndex::from_iter(rs.bins().keys().map(|&bin_id| {
+                let loffset = windows
+                    .get(csi_first_window(bin_id, linear.depth()))
+                    .copied()
+                    .unwrap_or_default();
+                (bin_id, loffset)
+            }));
+            ReferenceSequence::new(rs.bins().clone(), binned, rs.metadata().cloned())
+        })
+        .collect();
+    let mut builder = noodles::csi::Index::builder()
+        .set_min_shift(14)
+        .set_depth(6)
+        .set_reference_sequences(reference_sequences);
+    if let Some(hdr) = linear.header().cloned() {
+        builder = builder.set_header(hdr);
+    }
+    if let Some(unmapped) = linear.unplaced_unmapped_record_count() {
+        builder = builder.set_unplaced_unmapped_record_count(unmapped);
+    }
+    let index = builder.build();
     stage_index_file(csi_path, preflight_dst, |file| {
         let mut csi_writer = noodles::csi::io::Writer::new(file);
         csi_writer.write_index(&index)?;
@@ -11428,7 +11596,7 @@ mod tests {
                 .write_all(
                     b"##fileformat=VCFv4.3\n\
                       #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n\
-                      chr1\t1000\t.\tA\t<DEL>\t100\tPASS\tSVTYPE=DEL;END=50_000_invalid;END=50000\tGT\t0/1\n",
+                      chr1\t1000\t.\tA\t<DEL>\t100\tPASS\tSVTYPE=DEL;END=50000\tGT\t0/1\n",
                 )
                 .unwrap();
             writer.finish().unwrap();
@@ -14153,6 +14321,449 @@ mod tests {
             comb_lines[0].contains("STATUS=StrongSomatic"),
             "off-amplicon normal reads must NOT contaminate combineAnalysis into Germline, got:\n{}",
             comb_lines[0]
+        );
+    }
+
+    fn write_raw_bgzf_vcf(path: &Path, body: &[u8]) {
+        use std::io::Write as _;
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = noodles::bgzf::io::Writer::new(file);
+        writer.write_all(body).unwrap();
+        writer.finish().unwrap();
+    }
+
+    #[test]
+    fn csi_spanning_sv_returned_across_leaf_bins() {
+        use noodles::csi::BinningIndex as _;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        // 1. Spanning <DEL> at chr1:130000-135000 crosses 131,072 (level-4 bin 585), while
+        //    chr1:133020 SNV sits in leaf bin 37457 whose direct level-5 parent 4682 is empty
+        //    (clintval/vartovcf#161).
+        let vcf_gz = dir.path().join("spanning_sv.vcf.gz");
+        let csi_path = dir.path().join("spanning_sv.vcf.gz.csi");
+        write_raw_bgzf_vcf(
+            &vcf_gz,
+            b"##fileformat=VCFv4.2\n\
+              ##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position\">\n\
+              ##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"SV type\">\n\
+              ##ALT=<ID=DEL,Description=\"Deletion\">\n\
+              #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n\
+              chr1\t130000\t.\tA\t<DEL>\t100\tPASS\tSVTYPE=DEL;END=135000\tGT\t0/1\n\
+              chr1\t133020\t.\tC\tG\t100\tPASS\t.\tGT\t0/1\n",
+        );
+        stage_vcf_csi_index(&vcf_gz, &vcf_gz)
+            .unwrap()
+            .commit()
+            .unwrap();
+        let index = noodles::csi::io::Reader::new(std::fs::File::open(&csi_path).unwrap())
+            .read_index()
+            .unwrap();
+        assert_eq!(index.min_shift(), 14);
+        assert_eq!(index.depth(), 6);
+
+        let s1 = noodles::core::Position::new(133_000).unwrap();
+        let e1 = noodles::core::Position::new(133_100).unwrap();
+        let chunks = index.query(0, (s1..=e1).into()).unwrap();
+        assert!(!chunks.is_empty());
+        let mut bgzf_r = noodles::bgzf::io::Reader::new(std::fs::File::open(&vcf_gz).unwrap());
+        let mut hits: Vec<usize> = Vec::new();
+        for ch in chunks {
+            bgzf_r.seek(ch.start()).unwrap();
+            while bgzf_r.virtual_position() < ch.end() {
+                let mut ln = String::new();
+                if std::io::BufRead::read_line(&mut bgzf_r, &mut ln).unwrap() == 0 {
+                    break;
+                }
+                if !ln.starts_with('#') {
+                    let pos: usize = ln.split('\t').nth(1).unwrap().parse().unwrap();
+                    hits.push(pos);
+                }
+            }
+        }
+        assert_eq!(
+            hits,
+            vec![130_000, 133_020],
+            "CSI query in leaf bin 37457 must return both spanning <DEL> (130000..135000) and SNV (133020)"
+        );
+
+        // 2. Root-bin (bin 0) 20 Mbp spanning SV + downstream SNV at 15 Mbp
+        let root_vcf_gz = dir.path().join("root_sv.vcf.gz");
+        let root_csi_path = dir.path().join("root_sv.vcf.gz.csi");
+        write_raw_bgzf_vcf(
+            &root_vcf_gz,
+            b"##fileformat=VCFv4.2\n\
+              ##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position\">\n\
+              ##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"SV type\">\n\
+              ##ALT=<ID=DEL,Description=\"Deletion\">\n\
+              #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n\
+              chr1\t1000\t.\tA\t<DEL>\t100\tPASS\tSVTYPE=DEL;END=20000000\tGT\t0/1\n\
+              chr1\t15000000\t.\tG\tT\t100\tPASS\t.\tGT\t0/1\n",
+        );
+        stage_vcf_csi_index(&root_vcf_gz, &root_vcf_gz)
+            .unwrap()
+            .commit()
+            .unwrap();
+        let root_index =
+            noodles::csi::io::Reader::new(std::fs::File::open(&root_csi_path).unwrap())
+                .read_index()
+                .unwrap();
+        let s2 = noodles::core::Position::new(14_999_990).unwrap();
+        let e2 = noodles::core::Position::new(15_000_010).unwrap();
+        let root_chunks = root_index.query(0, (s2..=e2).into()).unwrap();
+        let mut root_bgzf =
+            noodles::bgzf::io::Reader::new(std::fs::File::open(&root_vcf_gz).unwrap());
+        let mut root_hits: Vec<usize> = Vec::new();
+        for ch in root_chunks {
+            root_bgzf.seek(ch.start()).unwrap();
+            while root_bgzf.virtual_position() < ch.end() {
+                let mut ln = String::new();
+                if std::io::BufRead::read_line(&mut root_bgzf, &mut ln).unwrap() == 0 {
+                    break;
+                }
+                if !ln.starts_with('#') {
+                    let pos: usize = ln.split('\t').nth(1).unwrap().parse().unwrap();
+                    root_hits.push(pos);
+                }
+            }
+        }
+        assert_eq!(
+            root_hits,
+            vec![1_000, 15_000_000],
+            "root-bin 0 spanning <DEL> must be returned when querying leaf bin at 15 Mbp"
+        );
+    }
+
+    #[test]
+    fn csi_empty_header_only_vcf_gz() {
+        use noodles::csi::BinningIndex as _;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vcf_gz = dir.path().join("empty_hdr.vcf.gz");
+        let csi_path = dir.path().join("empty_hdr.vcf.gz.csi");
+        write_raw_bgzf_vcf(
+            &vcf_gz,
+            b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+        );
+        stage_vcf_csi_index(&vcf_gz, &vcf_gz)
+            .unwrap()
+            .commit()
+            .unwrap();
+        let index = noodles::csi::io::Reader::new(std::fs::File::open(&csi_path).unwrap())
+            .read_index()
+            .unwrap();
+        assert_eq!(index.min_shift(), 14);
+        assert_eq!(
+            index.depth(),
+            6,
+            "header-only .csi must override noodles builder default depth=5 to depth=6"
+        );
+        let hdr = index.header().unwrap();
+        assert_eq!(
+            hdr.format(),
+            noodles::csi::binning_index::index::header::Format::Vcf
+        );
+        assert!(hdr.reference_sequence_names().is_empty());
+        assert!(index.reference_sequences().is_empty());
+    }
+
+    #[test]
+    fn csi_above_512mbp_spanning_sv() {
+        use noodles::csi::BinningIndex as _;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vcf_gz = dir.path().join("above_512m_sv.vcf.gz");
+        let csi_path = dir.path().join("above_512m_sv.vcf.gz.csi");
+        write_raw_bgzf_vcf(
+            &vcf_gz,
+            b"##fileformat=VCFv4.2\n\
+              ##contig=<ID=chr_large,length=4294967296>\n\
+              ##INFO=<ID=END,Number=1,Type=Integer,Description=\"End position\">\n\
+              ##INFO=<ID=SVTYPE,Number=1,Type=String,Description=\"SV type\">\n\
+              ##ALT=<ID=DEL,Description=\"Deletion\">\n\
+              #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSAMPLE\n\
+              chr_large\t600046000\t.\tA\t<DEL>\t100\tPASS\tSVTYPE=DEL;END=600051000\tGT\t0/1\n\
+              chr_large\t600049020\t.\tC\tT\t100\tPASS\t.\tGT\t0/1\n\
+              chr_large\t4294967200\t.\tG\t<DEL>\t100\tPASS\tSVTYPE=DEL;END=4294967296\tGT\t0/1\n",
+        );
+        stage_vcf_csi_index(&vcf_gz, &vcf_gz)
+            .unwrap()
+            .commit()
+            .unwrap();
+        let index = noodles::csi::io::Reader::new(std::fs::File::open(&csi_path).unwrap())
+            .read_index()
+            .unwrap();
+        assert_eq!(index.min_shift(), 14);
+        assert_eq!(index.depth(), 6);
+
+        let s = noodles::core::Position::new(600_049_000).unwrap();
+        let e = noodles::core::Position::new(600_049_100).unwrap();
+        let chunks = index.query(0, (s..=e).into()).unwrap();
+        assert!(!chunks.is_empty());
+        let mut bgzf_r = noodles::bgzf::io::Reader::new(std::fs::File::open(&vcf_gz).unwrap());
+        bgzf_r.seek(chunks[0].start()).unwrap();
+        let mut first_line = String::new();
+        std::io::BufRead::read_line(&mut bgzf_r, &mut first_line).unwrap();
+        assert!(
+            first_line.starts_with("chr_large\t600046000\t"),
+            "CSI >512 Mbp query at 600049000..600049100 must seek back to spanning <DEL> at 600046000, got: {first_line}"
+        );
+    }
+
+    #[test]
+    fn index_rejects_unsorted_pos_split_contigs_and_bad_end() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bad_cases: &[(&str, &[u8])] = &[
+            (
+                "unsorted_pos",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t200\t.\tA\tG\t30\tPASS\t.\n\
+                  chr1\t199\t.\tC\tT\t30\tPASS\t.\n",
+            ),
+            (
+                "revisited_contig",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t100\t.\tA\tG\t30\tPASS\t.\n\
+                  chr2\t50\t.\tC\tT\t30\tPASS\t.\n\
+                  chr1\t300\t.\tG\tA\t30\tPASS\t.\n",
+            ),
+            (
+                "end_non_numeric",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=50_000_invalid;END=50000\n",
+            ),
+            (
+                "end_empty",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=\n",
+            ),
+            (
+                "end_plus_sign",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=+5000\n",
+            ),
+            (
+                "end_zero",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=0\n",
+            ),
+            (
+                "end_negative",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=-10\n",
+            ),
+            (
+                "end_overflow",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=99999999999999999999999999999\n",
+            ),
+            (
+                "end_lt_start",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=999\n",
+            ),
+            (
+                "end_duplicate",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=2000;END=5000\n",
+            ),
+            (
+                "end_above_csi_depth6_ceiling",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=4294967297\n",
+            ),
+            (
+                "pos_above_csi_depth6_ceiling",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t4294967297\t.\tA\tG\t30\tPASS\t.\n",
+            ),
+        ];
+
+        for &(label, payload) in bad_cases {
+            let vcf_gz = dir.path().join(format!("{label}.vcf.gz"));
+            write_raw_bgzf_vcf(&vcf_gz, payload);
+
+            let csi_err = stage_vcf_csi_index(&vcf_gz, &vcf_gz).err();
+            assert!(
+                matches!(csi_err, Some(VardictError::Parse(_))),
+                "CSI indexer case '{label}' must fail with VardictError::Parse, got: {csi_err:?}"
+            );
+            let tbi_err = stage_vcf_tabix_index(&vcf_gz, &vcf_gz).err();
+            assert!(
+                matches!(tbi_err, Some(VardictError::Parse(_))),
+                "Tabix indexer case '{label}' must fail with VardictError::Parse, got: {tbi_err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn csi_and_prescan_outer_hard_clip_pad_trim() {
+        use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_fa = dir.path().join("prescan_hp.fa");
+        let ref_fai = dir.path().join("prescan_hp.fa.fai");
+        let bases = [b'A', b'C', b'G', b'T'];
+        let mut seed = 0x3410_0103_2026_1125u64;
+        let ref_seq: Vec<u8> = (0..500usize)
+            .map(|i| {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                bases[(((seed >> 33) as usize) ^ (i / 7)) & 3]
+            })
+            .collect();
+        let mut fa_bytes = b">chr1\n".to_vec();
+        fa_bytes.extend_from_slice(&ref_seq);
+        fa_bytes.push(b'\n');
+        std::fs::write(&ref_fa, &fa_bytes).unwrap();
+        std::fs::write(&ref_fai, "chr1\t500\t6\t500\t501\n").unwrap();
+
+        let reg = crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(500),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+        let tiles = vec![crate::regions::Tile {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(250),
+            halo_start: crate::types::Pos1(1),
+            halo_end: crate::types::Pos1(350),
+            gene: "G".to_string(),
+            original_start: crate::types::Pos1(1),
+            original_end: crate::types::Pos1(500),
+            amplicon: None,
+        }];
+        let mut chr_lens = HashMap::new();
+        chr_lens.insert("chr1".to_string(), 500usize);
+
+        // 1. `25H15S150M12S30P` under `-k 0`:
+        //    - default (`cigar_strip_outer_hard_clips = false`): outer `25H`/`30P` hide `15S...12S`
+        //      from the double-soft-clip drop check (`lib.rs:1508`), advancing `cur_max` to `177`.
+        //    - `--compat=off` (`cigar_strip_outer_hard_clips = true`): outer `25H`/`30P` (`len > 0`)
+        //      are trimmed (`AstraZeneca-NGS/VarDictJava#341`, `AstraZeneca-NGS/VarDictJava#103`),
+        //      exposing `15S150M12S` to the double-soft-clip filter so `cur_max` stays `100`.
+        let hp_soft_cigar = [
+            (25, CigarKind::HardClip),
+            (15, CigarKind::SoftClip),
+            (150, CigarKind::Match),
+            (12, CigarKind::SoftClip),
+            (30, CigarKind::Pad),
+        ];
+        for (compat, expected_max) in [
+            (crate::config::COMPAT_VARDICTJAVA_1_8_3, 177),
+            (crate::config::COMPAT_OFF, 100),
+        ] {
+            let cfg = crate::config::Config {
+                reference: ref_fa.to_string_lossy().into_owned(),
+                realign: 0,
+                compat,
+                ..Default::default()
+            };
+            let mut scanner = BoundedParentRefScanner::new(&reg, &chr_lens, &cfg);
+            let mut steps = vec![Vec::new()];
+            let mut cur_max = 100i32;
+            let mut seq = Vec::new();
+            let mut qual = Vec::new();
+            let mut elems = Vec::new();
+            let mut cstr = String::new();
+            replay_prescan_candidate(
+                0,
+                1,
+                50,
+                200,
+                0,
+                &hp_soft_cigar,
+                &mut seq,
+                &mut qual,
+                &[],
+                &tiles,
+                &mut steps,
+                &mut cur_max,
+                &mut scanner,
+                &mut elems,
+                &mut cstr,
+                &cfg,
+            )
+            .unwrap();
+            assert_eq!(cur_max, expected_max, "compat={:?}", compat.target);
+        }
+
+        // 2. Zero-length `0H` (`len == 0`) must NOT be stripped under `COMPAT_OFF` (`realign = 1`),
+        //    so `CigarModifier` rejects `0H140M` as `JavaThrows` and `cur_max` stays `100`, while
+        //    positive-length `25H140M10P` trims to `140M` before `CigarModifier` (`lib.rs:1449`)
+        //    and advances `cur_max` to `140`.
+        let cfg_off_k1 = crate::config::Config {
+            reference: ref_fa.to_string_lossy().into_owned(),
+            realign: 1,
+            compat: crate::config::COMPAT_OFF,
+            ..Default::default()
+        };
+        let mut scanner = BoundedParentRefScanner::new(&reg, &chr_lens, &cfg_off_k1);
+        let mut steps = vec![Vec::new()];
+        let mut cur_max = 100i32;
+        let mut elems = Vec::new();
+        let mut cstr = String::new();
+
+        let zero_h_cigar = [(0, CigarKind::HardClip), (140, CigarKind::Match)];
+        let mut z_seq = ref_seq[49..189].to_vec();
+        let mut z_qual = vec![40u8; 140];
+        replay_prescan_candidate(
+            0,
+            1,
+            50,
+            190,
+            0,
+            &zero_h_cigar,
+            &mut z_seq,
+            &mut z_qual,
+            &[],
+            &tiles,
+            &mut steps,
+            &mut cur_max,
+            &mut scanner,
+            &mut elems,
+            &mut cstr,
+            &cfg_off_k1,
+        )
+        .unwrap();
+        assert_eq!(
+            cur_max, 100,
+            "0-length 0H must not be trimmed so CigarModifier skips malformed read"
+        );
+
+        let pos_hp_cigar = [
+            (25, CigarKind::HardClip),
+            (140, CigarKind::Match),
+            (10, CigarKind::Pad),
+        ];
+        let mut p_seq = ref_seq[49..189].to_vec();
+        let mut p_qual = vec![40u8; 140];
+        replay_prescan_candidate(
+            0,
+            1,
+            50,
+            190,
+            0,
+            &pos_hp_cigar,
+            &mut p_seq,
+            &mut p_qual,
+            &[],
+            &tiles,
+            &mut steps,
+            &mut cur_max,
+            &mut scanner,
+            &mut elems,
+            &mut cstr,
+            &cfg_off_k1,
+        )
+        .unwrap();
+        assert_eq!(
+            cur_max, 140,
+            "outer 25H/10P must be trimmed before CigarModifier under COMPAT_OFF"
         );
     }
 }
