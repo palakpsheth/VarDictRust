@@ -1716,24 +1716,33 @@ impl Cli {
                             "Invalid -f value '{freq_str}': {e}"
                         ))
                     })?;
+                if !parsed.is_finite() {
+                    return Err(vardictrust_core::types::VardictError::Parse(format!(
+                        "Invalid -f value '{freq_str}': must be a finite number"
+                    )));
+                }
                 let trimmed = freq_str.trim();
-                let cleaned = trimmed
-                    .strip_suffix(['f', 'F', 'd', 'D'])
-                    .unwrap_or(trimmed);
-                let (_, norm_raw) = vardictrust_core::config::validate_vcf_nonneg_float_token(
-                    cleaned,
-                )
-                .map_err(|reason| {
-                    vardictrust_core::types::VardictError::Parse(format!(
-                        "Invalid -f value '{freq_str}': {reason}"
-                    ))
-                })?;
+                let af_raw = if parsed >= 0.0 {
+                    let cleaned = trimmed
+                        .strip_suffix(['f', 'F', 'd', 'D'])
+                        .unwrap_or(trimmed);
+                    let (_, norm_raw) =
+                        vardictrust_core::config::validate_vcf_nonneg_float_token(cleaned)
+                            .map_err(|reason| {
+                                vardictrust_core::types::VardictError::Parse(format!(
+                                    "Invalid -f value '{freq_str}': {reason}"
+                                ))
+                            })?;
+                    Some(norm_raw.to_string())
+                } else {
+                    None
+                };
                 // In Perl (`var2vcf_valid.pl:21`: `my $Freq = $opt_f ? $opt_f : 0.02;`),
                 // only `"0"` (or `""`) is falsy; non-`"0"` zero spellings such as `"0.0"`
                 // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
                 let truthy_zero = parsed == 0.0 && trimmed != "0";
                 let af_thr = if parsed == 0.0 { 0.0 } else { parsed };
-                (parsed, af_thr, truthy_zero, Some(norm_raw.to_string()))
+                (parsed, af_thr, truthy_zero, af_raw)
             } else {
                 (0.01, 0.01, false, None)
             };
@@ -4579,8 +4588,8 @@ mod tests {
         assert!((pileup_f.af_threshold - 0.001).abs() <= 1e-15);
         assert_eq!(pileup_f.af_threshold_raw.as_deref(), Some("0.001"));
 
-        // Invalid / negative -f values fail cleanly
-        for bad_f in ["-0.01", "0.05;bad", "0.05 0.1", "NaN", "inf"] {
+        // Invalid -f values fail cleanly
+        for bad_f in ["0.05;bad", "0.05 0.1", "NaN", "inf"] {
             assert!(
                 parse_res(&["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10", "-f", bad_f]).is_err(),
                 "expected Err on -f {bad_f:?}"
@@ -4827,5 +4836,67 @@ mod tests {
         assert!(
             fish_txt.contains(" -sp ") && fish_txt.contains("complete -c vardictrust -o sp -d")
         );
+    }
+
+    #[test]
+    fn test_negative_f_freq_parity_and_non_finite_rejection() {
+        use vardictrust_core::types::VardictError;
+
+        let parse_res =
+            |raw_flags: &[&str]| -> Result<vardictrust_core::config::Config, VardictError> {
+                let norm = normalize_args(&args(raw_flags));
+                check_unsupported(&norm)?;
+                let cli =
+                    Cli::try_parse_from(&norm).map_err(|e| VardictError::Parse(e.to_string()))?;
+                cli.to_config()
+            };
+
+        for (flag_args, exp) in [
+            (&["-f", "-1"][..], -1.0),
+            (&["-f", "-0.01"][..], -0.01),
+            (&["-f=-1e-2"][..], -0.01),
+            (&["--af-threshold", "-1"][..], -1.0),
+        ] {
+            let mut argv = vec!["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10"];
+            argv.extend_from_slice(flag_args);
+            let mut cfg = parse_res(&argv).unwrap_or_else(|e| panic!("{flag_args:?} failed: {e}"));
+            assert!(
+                (cfg.freq - exp).abs() <= 1e-15,
+                "{flag_args:?}: freq={}",
+                cfg.freq
+            );
+            assert!(
+                (cfg.af_threshold - exp).abs() <= 1e-15,
+                "{flag_args:?}: af_threshold={}",
+                cfg.af_threshold
+            );
+            assert!(!cfg.af_threshold_truthy_zero);
+            assert_eq!(cfg.af_threshold_raw, None, "{flag_args:?}");
+            cfg.validate_vcf_thresholds().unwrap();
+        }
+
+        let neg_zero = parse_res(&["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10", "-f", "-0.0"])
+            .expect("-f -0.0 must normalize to 0.0");
+        assert_eq!(neg_zero.af_threshold.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(neg_zero.af_threshold_raw.as_deref(), Some("0.0"));
+
+        for non_finite in ["NaN", "Infinity"] {
+            let err = parse_res(&[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "-f",
+                non_finite,
+            ])
+            .expect_err(&format!("expected Err on -f {non_finite}"));
+            assert!(matches!(err, VardictError::Parse(_)));
+            assert!(
+                err.to_string().contains("Invalid -f value"),
+                "unexpected error for -f {non_finite}: {err}"
+            );
+        }
     }
 }

@@ -187,13 +187,11 @@ fn somatic_variant_within_strict_bounds(
     bounds: &[(i32, i32)],
     sv: &SomaticVariant,
 ) -> bool {
-    let start_pos = sv.variant1.start_pos;
-    crate::interval_set_contains(bounds, start_pos)
-        || (config.compat.canonical_sv_vcf_anchoring
-            && start_pos >= 1
-            && sv.variant1.var_allele.starts_with('<')
-            && sv.variant1.end_pos > start_pos
-            && crate::interval_set_contains(bounds, start_pos.saturating_add(1)))
+    crate::variant_within_strict_bounds(
+        bounds,
+        &sv.variant1,
+        config.compat.canonical_sv_vcf_anchoring,
+    )
 }
 
 /// Performs somatic analysis of variants from both samples (BAM1 and BAM2)

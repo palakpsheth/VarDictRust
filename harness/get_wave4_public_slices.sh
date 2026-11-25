@@ -84,10 +84,6 @@ BEDZIP_DIR="$OUT_DIR/bed_zip"
 HG002_DIR="$OUT_DIR/hg002_cmrg_mosaic"
 
 GRCH38_REF="$G4_DIR/ref/d1vd1/GRCh38.d1.vd1.fa"
-GIAB_REF="$G4_DIR/ref/giabv3/GRCh38_GIABv3.fa"
-if [ ! -f "$GIAB_REF" ] && [ -f "$G4_DIR/ref/giabv3/GRCh38_GIABv3.fasta" ]; then
-    GIAB_REF="$G4_DIR/ref/giabv3/GRCh38_GIABv3.fasta"
-fi
 
 WAVE4_SCHEMA_VERSION="v1.1-wave4-6cohorts-r1"
 DONE_STAMP="$OUT_DIR/.done"
@@ -316,7 +312,9 @@ samtools faidx "$VARTOVCF_DIR/reference.fa"
 # Build deterministic BAM reproducing clintval/vartovcf@3b7bd742 SV breakpoints
 # (chr12:446 C <DUP> END=1446 SVLEN=1000, chr13:1141 G <DEL> END=4141 SVLEN=-3000,
 # and chr1:1 contig-start pileup locus) directly on vartovcf/reference.fa.
-if [ ! -s "$VARTOVCF_DIR/vartovcf_sv_contig1.bam" ] || [ ! -s "$VARTOVCF_DIR/vartovcf_sv_contig1.bam.bai" ]; then
+if [ "${FORCE_RESTAGE:-0}" != "1" ] && [ -s "$VARTOVCF_DIR/vartovcf_sv_contig1.bam" ] && [ -s "$VARTOVCF_DIR/vartovcf_sv_contig1.bam.bai" ]; then
+    echo "  [cached] vartovcf_sv_contig1.bam"
+else
     python3 - "$VARTOVCF_DIR/reference.fa" "$VARTOVCF_DIR/vartovcf_sv_contig1.sam" "$VARTOVCF_DIR/vartovcf_sv_contig1.bed" <<'PY'
 import sys
 
@@ -478,24 +476,36 @@ fetch_ena_range_one() {
     mv -f "$part" "$dest"
 }
 
-ENA_PIDS=()
-for _spec in "${ENA_SPECS[@]}"; do
-    IFS='|' read -r _url _end _sha _fname <<< "$_spec"
-    if [ -f "$ENA_DIR/$_fname" ] && [ "$(portable_sha256 "$ENA_DIR/$_fname")" = "$_sha" ]; then
-        echo "  [verified] $_fname"
-    else
-        fetch_ena_range_one "$_url" "$_end" "$_sha" "$ENA_DIR/$_fname" &
-        ENA_PIDS+=("$!")
-    fi
-done
-unset _spec _url _end _sha _fname
-
-if [ "${#ENA_PIDS[@]}" -gt 0 ]; then
-    for _pid in "${ENA_PIDS[@]}"; do
-        wait "$_pid"
+(
+    ENA_PIDS=()
+    cleanup_ena_pids() {
+        if [ "${#ENA_PIDS[@]}" -gt 0 ]; then
+            kill "${ENA_PIDS[@]}" 2>/dev/null || true
+        fi
+    }
+    trap 'cleanup_ena_pids; exit 130' INT TERM
+    for _spec in "${ENA_SPECS[@]}"; do
+        IFS='|' read -r _url _end _sha _fname <<< "$_spec"
+        if [ -f "$ENA_DIR/$_fname" ] && [ "$(portable_sha256 "$ENA_DIR/$_fname")" = "$_sha" ]; then
+            echo "  [verified] $_fname"
+        else
+            fetch_ena_range_one "$_url" "$_end" "$_sha" "$ENA_DIR/$_fname" &
+            ENA_PIDS+=("$!")
+        fi
     done
-fi
-unset ENA_PIDS _pid
+
+    _ena_rc=0
+    if [ "${#ENA_PIDS[@]}" -gt 0 ]; then
+        for _pid in "${ENA_PIDS[@]}"; do
+            wait "$_pid" || _ena_rc=1
+        done
+    fi
+    if [ "$_ena_rc" -ne 0 ]; then
+        cleanup_ena_pids
+        echo "ERROR: one or more ENA range downloads failed" >&2
+        exit 1
+    fi
+)
 
 # Decompress bounded gzip streams via Python zlib.decompressobj(16 + zlib.MAX_WBITS),
 # verify read-ID sync, trim QIAseq V3 5' 23 bp UMI+ATTGGAGTCCT & 3' read-through
@@ -509,7 +519,7 @@ align_clinical_sample() {
     local fq1="$FASTQ_DIR/${sample}_R1.fastq"
     local fq2="$FASTQ_DIR/${sample}_R2.fastq"
 
-    if [ -s "$out_bam" ] && [ -s "${out_bam}.bai" ] && samtools quickcheck "$out_bam" 2>/dev/null; then
+    if [ "${FORCE_RESTAGE:-0}" != "1" ] && [ -s "$out_bam" ] && [ -s "${out_bam}.bai" ] && samtools quickcheck "$out_bam" 2>/dev/null; then
         echo "  [cached] ${sample}.bam"
     else
         echo "  [aligning] ${sample} (${mode}) -> ${sample}.bam..."
@@ -612,7 +622,7 @@ PY
 
     if [ "$mode" = "illumina_pe" ]; then
         local out_cram="$BAM_DIR/${sample}.cram"
-        if [ -s "$out_cram" ] && [ -s "${out_cram}.crai" ] && samtools quickcheck "$out_cram" 2>/dev/null; then
+        if [ "${FORCE_RESTAGE:-0}" != "1" ] && [ -s "$out_cram" ] && [ -s "${out_cram}.crai" ] && samtools quickcheck "$out_cram" 2>/dev/null; then
             echo "  [cached] ${sample}.cram"
         else
             echo "  [encoding] ${sample}.cram..."
@@ -940,7 +950,7 @@ PY
 
 HG002_SLICE_BAM="$HG002_DIR/HG002.cmrg_mosaic.slice.bam"
 LOCAL_HG002_FULL="$G4_DIR/hg002/HG002.GRCh38.2x250.bam"
-if [ -s "$HG002_SLICE_BAM" ] && [ -s "${HG002_SLICE_BAM}.bai" ] && samtools quickcheck "$HG002_SLICE_BAM" 2>/dev/null; then
+if [ "${FORCE_RESTAGE:-0}" != "1" ] && [ -s "$HG002_SLICE_BAM" ] && [ -s "${HG002_SLICE_BAM}.bai" ] && samtools quickcheck "$HG002_SLICE_BAM" 2>/dev/null; then
     echo "  [cached] HG002.cmrg_mosaic.slice.bam"
 elif [ -s "$LOCAL_HG002_FULL" ] && [ -s "${LOCAL_HG002_FULL}.bai" ]; then
     echo "  [slicing] HG002.cmrg_mosaic.slice.bam from local $LOCAL_HG002_FULL..."

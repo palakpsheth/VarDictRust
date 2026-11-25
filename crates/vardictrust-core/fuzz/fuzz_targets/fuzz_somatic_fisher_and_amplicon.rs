@@ -398,11 +398,14 @@ fn assert_aggregate_sample_amplicon_invariants(
                 lookup.adj_complex();
             }
             assert!(
-                agg_conc.allele_concordance.contains_key(&(
-                    lookup.start_pos,
-                    lookup.ref_allele.clone(),
-                    lookup.var_allele.clone(),
-                )),
+                agg_conc
+                    .allele_concordance
+                    .get(&lookup.start_pos)
+                    .is_some_and(|entries| {
+                        entries.iter().any(|(r, a, _)| {
+                            r.as_ref() == lookup.ref_allele && a.as_ref() == lookup.var_allele
+                        })
+                    }),
                 "post-adj_complex aggregated variant missing from allele_concordance: start={}, ref={}, alt={}",
                 lookup.start_pos,
                 lookup.ref_allele,
@@ -489,14 +492,8 @@ fn check_multiallelic_ncamp_regression_once() {
         // eff_maxcov / 50.0 = 4.0 -> two low-DP candidates yield ncamp = 2 (> num_amps = 1),
         // plus a Complex MNP exercising adj_complex() key normalization (120 -> 122).
         let mut vars = Vars::new();
-        vars.variants.push(mk_var(
-            "ACAAAGT",
-            "ACTTTGT",
-            "-7&ACTTTGT",
-            126,
-            200,
-            50,
-        ));
+        vars.variants
+            .push(mk_var("ACAAAGT", "ACTTTGT", "-7&ACTTTGT", 126, 200, 50));
         vars.variants.push(mk_var("A", "C", "C", 120, 1, 1));
         vars.variants.push(mk_var("A", "G", "G", 120, 1, 1));
         let mut amp0 = JavaHashMap::new();
@@ -836,7 +833,12 @@ fuzz_target!(|data: &[u8]| {
     .expect("infallible collector in amplicon_post_process_streaming");
 
     if amp_cfg.compat.strict_region_bounds {
-        amplicon_retain_strict_bounds(&mut streamed_amp, &region, &amplicons_on_positions);
+        amplicon_retain_strict_bounds(
+            &mut streamed_amp,
+            &region,
+            &amplicons_on_positions,
+            amp_cfg.compat.canonical_sv_vcf_anchoring,
+        );
     }
     let finalized_streamed = if !amp_cfg.emit_intermediate && !amp_cfg.vcf_all_alleles {
         amplicon_select_vcf_rows_compat(streamed_amp, amp_cfg.compat.exact_binary_half_even)

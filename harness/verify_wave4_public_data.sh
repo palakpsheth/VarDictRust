@@ -102,6 +102,11 @@ PERL_VALID="$DATA_ROOT/VarDictJava/VarDict/var2vcf_valid.pl"
 PERL_PAIRED="$DATA_ROOT/VarDictJava/VarDict/var2vcf_paired.pl"
 VJ_BAMS="$DATA_ROOT/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests"
 
+if ! { [ -s "$GIAB_REF" ] && [ -s "${GIAB_REF}.fai" ] && [ -f "$PERL_VALID" ] && [ -f "$PERL_PAIRED" ]; }; then
+    echo "ERROR: missing Wave-4 verification prerequisite(s): require non-empty GIAB_REF ('$GIAB_REF' + .fai) and Perl scripts ('$PERL_VALID', '$PERL_PAIRED')" >&2
+    exit 1
+fi
+
 WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/vdr_wave4_verify.XXXXXX")"
 trap 'rm -rf "$WORK_TMP"' EXIT
 

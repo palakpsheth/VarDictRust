@@ -234,14 +234,7 @@ fn simple_post_process_core<'a>(
         // AstraZeneca-NGS/VarDictJava#369 + AstraZeneca-NGS/VarDictJava#398:
         // retain 1-bp-upstream-padded symbolic SVs anchored at `region.start - 1`.
         let allow_padded_sv = config.compat.canonical_sv_vcf_anchoring;
-        vrefs.retain(|v| {
-            crate::interval_set_contains(merged_bounds, v.start_pos)
-                || (allow_padded_sv
-                    && v.var_allele.starts_with('<')
-                    && v.end_pos > v.start_pos
-                    && v.start_pos >= 1
-                    && crate::interval_set_contains(merged_bounds, v.start_pos.saturating_add(1)))
-        });
+        vrefs.retain(|v| crate::variant_within_strict_bounds(merged_bounds, v, allow_padded_sv));
     } else if config.compat.strict_region_bounds {
         vrefs.retain(|v| v.start_pos >= 1);
     }

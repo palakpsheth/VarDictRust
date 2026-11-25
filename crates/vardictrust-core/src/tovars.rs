@@ -1696,15 +1696,10 @@ impl<'a> ToVarsBuilder<'a> {
                         varallele.push_str(stripped_desc);
                     }
 
-                    if standard_dup_symbolic_alt || canonical_sv_vcf_anchoring {
-                        if let Some(dup_val) =
-                            get_dup_num_compat(&varallele, standard_dup_symbolic_alt)
-                        {
-                            let dup_span = if standard_dup_symbolic_alt {
-                                ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1)
-                            } else {
-                                (2 * SV_FLANK_BP) + i64::from(dup_val)
-                            };
+                    let parse_neg_dup = standard_dup_symbolic_alt || canonical_sv_vcf_anchoring;
+                    if parse_neg_dup {
+                        if let Some(dup_val) = get_dup_num_compat(&varallele, parse_neg_dup) {
+                            let dup_span = ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1);
                             if canonical_sv_vcf_anchoring {
                                 // clintval/vartovcf#192 & clintval/vartovcf#107:
                                 // - Origin A (pre_anchored_dup == true, already at bp - 1):
@@ -2540,7 +2535,8 @@ fn format_plus_genotype1<'b>(
     canonical_sv_vcf_anchoring: bool,
     sv_min_len: u32,
 ) -> std::borrow::Cow<'b, str> {
-    if standard_dup_symbolic_alt {
+    let parse_neg_dup = standard_dup_symbolic_alt || canonical_sv_vcf_anchoring;
+    if parse_neg_dup {
         if let Some(dup_val) = get_dup_num_compat(desc, true) {
             let dup_span = ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1);
             return format_plus_genotype(buf, dup_span);
@@ -7007,9 +7003,7 @@ mod tests {
                 ),
                 (99, 279, "C", "<DUP>")
             );
-            if compat.standard_dup_symbolic_alt {
-                assert_eq!(v99.genotype.as_deref(), Some("+180/+180"));
-            }
+            assert_eq!(v99.genotype.as_deref(), Some("+180/+180"));
 
             // Origin B (pre_anchored_dup = false at 120): shifts to 119, END = 299 (END - POS == 180)
             let v120 = &aligned.get(&120).unwrap().variants[0];
@@ -7166,13 +7160,11 @@ mod tests {
                     (inv_p.end_pos, inv_p.var_allele.as_str()),
                     (p + 199, "<INV>")
                 );
-                if compat.standard_dup_symbolic_alt {
-                    let dup_p = vars_p.iter().find(|v| v.description == desc_dup80).unwrap();
-                    assert_eq!(
-                        (dup_p.end_pos, dup_p.var_allele.as_str()),
-                        (p + 179, "<DUP>")
-                    );
-                }
+                let dup_p = vars_p.iter().find(|v| v.description == desc_dup80).unwrap();
+                assert_eq!(
+                    (dup_p.end_pos, dup_p.var_allele.as_str()),
+                    (p + 179, "<DUP>")
+                );
             }
 
             // Single-position build_vars_at_position agrees 100% with build_aligned_variants
@@ -7279,5 +7271,135 @@ mod tests {
                 v.description
             );
         }
+    }
+
+    #[test]
+    fn test_isolated_canonical_sv_anchoring_normalizes_negative_dup_span_and_genotype1() {
+        let mut seq = b"GTCG".repeat(100);
+        assert_eq!(seq.len(), 400);
+        seq[0] = b'G'; // pos 1
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 400,
+            });
+        ref_genome.region_sequences.push(seq);
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 400);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(400),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32, pre_anchored_dup: bool| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - (cnt / 2);
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 25.0 * f64::from(cnt);
+            v.pstd = true;
+            v.qstd = true;
+            v.pre_anchored_dup = pre_anchored_dup;
+            v
+        };
+        let sv_box = |ty: &str| {
+            Some(Box::new(Sv {
+                r#type: ty.to_string(),
+                pairs: 4,
+                splits: 6,
+                clusters: 1,
+            }))
+        };
+
+        let flank50 = "ACGT".repeat(12) + "AC";
+        let desc_neg30 = format!("+{flank50}<dup-30>{flank50}");
+        let desc_pos20 = format!("+{flank50}<dup20>{flank50}");
+
+        let mut vd = VariationData::new();
+        // Pos 99: homozygous `pre_anchored_dup = true` `<dup-30>` (already shifted to bp - 1 = 99; ref[98] = 'C')
+        vd.ref_coverage.insert(99, 12);
+        let mut vm99 = VariationMap::new();
+        vm99.sv = sv_box("DUP");
+        vd.non_insertion_variants.insert(99, vm99);
+        let mut ins99 = VariationMap::new();
+        ins99.map.insert(desc_neg30.clone(), mk_var(12, true));
+        vd.insertion_variants.insert(99, ins99);
+
+        // Pos 120: heterozygous `pre_anchored_dup = false` `<dup-30>` (shifts 120 -> 119; ref[118] = 'C', ref[119] = 'G')
+        vd.ref_coverage.insert(120, 40);
+        let mut vm120 = VariationMap::new();
+        vm120.sv = sv_box("DUP");
+        vm120.map.insert("G".to_string(), mk_var(30, false));
+        vd.non_insertion_variants.insert(120, vm120);
+        let mut ins120 = VariationMap::new();
+        ins120.map.insert(desc_neg30, mk_var(10, false));
+        vd.insertion_variants.insert(120, ins120);
+
+        // Pos 160: homozygous `pre_anchored_dup = false` `<dup20>` (`dup_span = 2 * 50 + 20 = 120`)
+        vd.ref_coverage.insert(160, 12);
+        let mut vm160 = VariationMap::new();
+        vm160.sv = sv_box("DUP");
+        vd.non_insertion_variants.insert(160, vm160);
+        let mut ins160 = VariationMap::new();
+        ins160.map.insert(desc_pos20, mk_var(12, false));
+        vd.insertion_variants.insert(160, ins160);
+
+        let isolated_anchor = crate::config::CompatProfile {
+            canonical_sv_vcf_anchoring: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        assert!(!isolated_anchor.standard_dup_symbolic_alt);
+        let cfg = Config {
+            sv_min_len: 1000,
+            compat: isolated_anchor,
+            ..Config::default()
+        };
+        let aligned = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg)
+            .build_aligned_variants(&vd);
+
+        let v99 = &aligned.get(&99).unwrap().variants[0];
+        assert_eq!(
+            (
+                v99.start_pos,
+                v99.end_pos,
+                v99.ref_allele.as_str(),
+                v99.var_allele.as_str(),
+                v99.genotype.as_deref()
+            ),
+            (99, 169, "C", "<DUP>", Some("+70/+70"))
+        );
+
+        let v120 = &aligned.get(&120).unwrap().variants[0];
+        assert_eq!(
+            (
+                v120.start_pos,
+                v120.end_pos,
+                v120.ref_allele.as_str(),
+                v120.var_allele.as_str(),
+                v120.genotype.as_deref()
+            ),
+            (119, 189, "C", "<DUP>", Some("G/+70"))
+        );
+
+        let v160 = &aligned.get(&160).unwrap().variants[0];
+        assert_eq!(
+            (
+                v160.start_pos,
+                v160.end_pos,
+                v160.ref_allele.as_str(),
+                v160.var_allele.as_str(),
+                v160.genotype.as_deref()
+            ),
+            (159, 279, "C", "<DUP>", Some("+120/+120"))
+        );
     }
 }

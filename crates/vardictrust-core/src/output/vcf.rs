@@ -1682,6 +1682,23 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         crate::util::push_i32(buf, splitreads);
         buf.push_str(";SPANPAIR=");
         crate::util::push_i32(buf, spanpairs);
+    } else if config.compat.canonical_sv_vcf_anchoring && !alt_is_dot {
+        if let Some(svtype) = symbolic_sv_type_token(&variant.var_allele) {
+            let inv_hint = variant
+                .genotype
+                .as_deref()
+                .and_then(parse_genotype_inv_len_str);
+            let svlen = compute_canonical_svlen(
+                variant.start_pos,
+                variant.end_pos,
+                &variant.var_allele,
+                inv_hint,
+            );
+            buf.push_str(";SVTYPE=");
+            buf.push_str(svtype);
+            buf.push_str(";SVLEN=");
+            crate::util::push_i64(buf, svlen);
+        }
     }
 
     // FORMAT + sample columns (ports var2vcf_valid.pl:240-241).
@@ -2874,7 +2891,7 @@ pub fn format_paired_vcf_record(
     };
 
     let active_amp = if config.compat.paired_somatic_amplicon {
-        if sv.end_is_variant2 && sv.variant1.pos_coverage == 0 {
+        if sv.end_is_variant2 && sv.tumor_amplicon.is_none_or(|t| t.gdamp == 0) {
             sv.normal_amplicon.or(sv.tumor_amplicon)
         } else {
             sv.tumor_amplicon.or(sv.normal_amplicon)
@@ -7419,5 +7436,160 @@ mod tests {
         assert!(rec_del_biased
             .as_str()
             .contains(";GDAMP=1;TLAMP=3;NCAMP=0;AMPFLAG=1\tGT:"));
+    }
+
+    #[test]
+    fn test_paired_amplicon_normal_concordance_on_impure_likely_loh_and_rescued_germline() {
+        use crate::config::AmpliconConcordance;
+
+        let mut amp_cfg = Config::default();
+        amp_cfg.compat.paired_somatic_amplicon = true;
+        amp_cfg.amplicon = Some("10:0.95".to_string());
+        amp_cfg.region = None;
+
+        // 1. Impure-tumor `LikelyLOH` (`end_is_variant2 == true`, `variant1.pos_coverage == 2 > 0`,
+        //    `tumor_amplicon.gdamp == 0`, `normal_amplicon.gdamp == 2`) uses `normal_amplicon` (`PASS`)
+        let mut sub_t = clean_normal();
+        sub_t.var_type = "SNV".to_string();
+        sub_t.total_pos_cov = 100;
+        sub_t.pos_coverage = 2;
+        sub_t.fwd = 1;
+        sub_t.rev = 1;
+        sub_t.ref_fwd_cov = 49;
+        sub_t.ref_rev_cov = 49;
+        sub_t.frequency = 0.02;
+        let mut likely_loh_sv = somatic_sv(sub_t.clone(), Some(clean_normal()), "LikelyLOH");
+        likely_loh_sv.end_is_variant2 = true;
+        likely_loh_sv.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 0,
+            tlamp: 2,
+            ncamp: 0,
+            ampflag: false,
+        });
+        likely_loh_sv.normal_amplicon = Some(AmpliconConcordance {
+            gdamp: 2,
+            tlamp: 2,
+            ncamp: 0,
+            ampflag: false,
+        });
+        let rec_likely_loh = format_paired_vcf_record(&likely_loh_sv, "chr1", &amp_cfg);
+        assert_eq!(rec_likely_loh.filter_str(), "PASS");
+        assert!(rec_likely_loh
+            .as_str()
+            .contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=0\tGT:"));
+
+        // 2. Normal-rescued `Germline` (`end_is_variant2 == true`, `tumor.gdamp == 0`, `normal.gdamp == 2`)
+        let mut rescued_germ_sv = somatic_sv(sub_t.clone(), Some(clean_normal()), "Germline");
+        rescued_germ_sv.end_is_variant2 = true;
+        rescued_germ_sv.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 0,
+            tlamp: 2,
+            ncamp: 0,
+            ampflag: false,
+        });
+        rescued_germ_sv.normal_amplicon = Some(AmpliconConcordance {
+            gdamp: 2,
+            tlamp: 2,
+            ncamp: 0,
+            ampflag: false,
+        });
+        let rec_rescued_germ = format_paired_vcf_record(&rescued_germ_sv, "chr1", &amp_cfg);
+        assert_eq!(rec_rescued_germ.filter_str(), "PASS");
+        assert!(rec_rescued_germ
+            .as_str()
+            .contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=0\tGT:"));
+
+        // 3. When `tumor_amplicon` has `gdamp > 0`, `tumor_amplicon` is still selected
+        let mut tumor_backed_sv = rescued_germ_sv;
+        tumor_backed_sv.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 1,
+            tlamp: 2,
+            ncamp: 0,
+            ampflag: false,
+        });
+        let rec_tumor_backed = format_paired_vcf_record(&tumor_backed_sv, "chr1", &amp_cfg);
+        assert_eq!(rec_tumor_backed.filter_str(), "AMPBIAS");
+        assert!(rec_tumor_backed
+            .as_str()
+            .contains(";GDAMP=1;TLAMP=2;NCAMP=0;AMPFLAG=0\tGT:"));
+    }
+
+    #[test]
+    fn test_single_sample_amplicon_symbolic_sv_emits_svtype_and_signed_svlen_under_compat_off() {
+        use crate::regions::Region;
+        use crate::types::Pos1;
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(500),
+            gene: "GENE1".to_string(),
+            amplicon: None,
+        };
+        let off_cfg = Config {
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let vj_cfg = Config::default();
+
+        let mut dup_var = clean_normal();
+        dup_var.start_pos = 149;
+        dup_var.end_pos = 249;
+        dup_var.ref_allele = "C".to_string();
+        dup_var.var_allele = "<DUP>".to_string();
+        dup_var.var_type = "DUP".to_string();
+        dup_var.genotype = Some("C/+100".to_string());
+
+        let dup_amp_off = format_vcf_record(
+            &dup_var,
+            &region,
+            &off_cfg,
+            &[],
+            1.0,
+            "1.0",
+            Some((2, 2, 0, false)),
+        );
+        assert!(
+            dup_amp_off.contains(";END=249;")
+                && dup_amp_off.contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=0;SVTYPE=DUP;SVLEN=100\tGT:"),
+            "single-sample amplicon <DUP> under COMPAT_OFF must emit END, GDAMP..AMPFLAG, SVTYPE=DUP, SVLEN=100: {dup_amp_off}"
+        );
+        assert!(!dup_amp_off.contains(";SPLITREAD=") && !dup_amp_off.contains(";SPANPAIR="));
+
+        let mut del_var = dup_var.clone();
+        del_var.end_pos = 349;
+        del_var.ref_allele = "G".to_string();
+        del_var.var_allele = "<DEL>".to_string();
+        del_var.var_type = "DEL".to_string();
+        del_var.genotype = Some("G/-200".to_string());
+
+        let del_amp_off = format_vcf_record(
+            &del_var,
+            &region,
+            &off_cfg,
+            &[],
+            1.0,
+            "1.0",
+            Some((2, 2, 0, false)),
+        );
+        assert!(
+            del_amp_off.contains(";END=349;")
+                && del_amp_off.contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=0;SVTYPE=DEL;SVLEN=-200\tGT:"),
+            "single-sample amplicon <DEL> under COMPAT_OFF must emit negative SVLEN=-200: {del_amp_off}"
+        );
+
+        let dup_amp_vj = format_vcf_record(
+            &dup_var,
+            &region,
+            &vj_cfg,
+            &[],
+            1.0,
+            "1.0",
+            Some((2, 2, 0, false)),
+        );
+        assert!(
+            !dup_amp_vj.contains(";SVTYPE=") && !dup_amp_vj.contains(";SVLEN="),
+            "default COMPAT_VARDICTJAVA_1_8_3 amplicon VCF must omit SVTYPE/SVLEN: {dup_amp_vj}"
+        );
     }
 }

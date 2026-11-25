@@ -296,7 +296,10 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
         };
         let base_end = 26 + usize::from(emit_end);
         if entries.iter().any(|kv| kv.starts_with("GDAMP=")) {
-            base_end + 4
+            let amp_sv_extra =
+                usize::from(config.compat.canonical_sv_vcf_anchoring && is_symbolic_sv_alt(alt))
+                    * 2;
+            base_end + 4 + amp_sv_extra
         } else {
             let has_crispr = usize::from(matches!(config.crispr_cutting_site, Some(n) if n != 0));
             let sv_extra = if alt != "." && alt.contains('<') {
@@ -1095,8 +1098,12 @@ fuzz_target!(|data: &[u8]| {
         if w3_cfg.compat.coordinate_sorted_vars {
             w3_cfg.compat.suppress_pileup_sentinels = true;
         }
-        let builder =
-            vardictrust_core::tovars::ToVarsBuilder::new(&reference, &w3_region, &w3_chr_lengths, &w3_cfg);
+        let builder = vardictrust_core::tovars::ToVarsBuilder::new(
+            &reference,
+            &w3_region,
+            &w3_chr_lengths,
+            &w3_cfg,
+        );
         let aligned: vardictrust_core::javamap::JavaHashMap<i32, Vars> =
             builder.build_aligned_variants(&vd);
 

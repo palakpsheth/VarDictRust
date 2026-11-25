@@ -134,6 +134,25 @@ pub(crate) fn interval_set_contains(merged: &[(i32, i32)], pos: i32) -> bool {
         .is_some_and(|&(lo, hi)| lo <= pos && pos <= hi)
 }
 
+/// Check whether `v` falls inside `merged` 1-based closed target intervals under
+/// `CompatProfile::strict_region_bounds` (`AstraZeneca-NGS/VarDictJava#369`), also
+/// retaining 1-bp-upstream-anchored symbolic SVs (`<DUP>`, `<INV>`, `<DEL>`) starting at
+/// `bp == ins_lo` (`start_pos == bp - 1`) when `canonical_sv_anchoring` is active
+/// (`AstraZeneca-NGS/VarDictJava#398`, `clintval/vartovcf#192`).
+#[inline]
+pub(crate) fn variant_within_strict_bounds(
+    merged: &[(i32, i32)],
+    v: &crate::variations::Variant,
+    canonical_sv_anchoring: bool,
+) -> bool {
+    interval_set_contains(merged, v.start_pos)
+        || (canonical_sv_anchoring
+            && v.var_allele.starts_with('<')
+            && v.end_pos > v.start_pos
+            && v.start_pos >= 1
+            && interval_set_contains(merged, v.start_pos.saturating_add(1)))
+}
+
 type StrictChrIntervals = Option<std::sync::Arc<HashMap<String, Vec<(i32, i32)>>>>;
 
 fn build_strict_chr_target_intervals(
@@ -6753,7 +6772,11 @@ fn run_amplicon<W: EngineWriter>(
                 &splice,
                 &mut |av| {
                     if let Some(b) = strict_chr_bounds {
-                        if !interval_set_contains(b, av.variant.start_pos) {
+                        if !variant_within_strict_bounds(
+                            b,
+                            &av.variant,
+                            config_clone.compat.canonical_sv_vcf_anchoring,
+                        ) {
                             return Ok(());
                         }
                     }
@@ -6869,7 +6892,11 @@ fn run_amplicon<W: EngineWriter>(
                             &splice,
                             &mut |av| {
                                 if let Some(b) = strict_chr_bounds {
-                                    if !interval_set_contains(b, av.variant.start_pos) {
+                                    if !variant_within_strict_bounds(
+                                        b,
+                                        &av.variant,
+                                        config.compat.canonical_sv_vcf_anchoring,
+                                    ) {
                                         return Ok(());
                                     }
                                 }
@@ -6895,7 +6922,11 @@ fn run_amplicon<W: EngineWriter>(
                             &splice,
                             &mut |av| {
                                 if let Some(b) = strict_chr_bounds {
-                                    if !interval_set_contains(b, av.variant.start_pos) {
+                                    if !variant_within_strict_bounds(
+                                        b,
+                                        &av.variant,
+                                        config.compat.canonical_sv_vcf_anchoring,
+                                    ) {
                                         return Ok(());
                                     }
                                 }
