@@ -51,7 +51,7 @@ pub enum CompatTarget {
     /// Exact VarDictJava v1.8.3 (`0886261`) + `var2vcf_*.pl` (`009e017`) output parity (`--compat=vardictjava`).
     #[default]
     VardictJava183,
-    /// Compatibility off (`--compat=off`): enables all 21 [`CompatProfile`] accuracy, scale, SV, amplicon, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
+    /// Compatibility off (`--compat=off`): enables all 32 [`CompatProfile`] accuracy, scale, SV, amplicon, VCF schema, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
     Off,
 }
 
@@ -75,7 +75,7 @@ impl CompatTarget {
     }
 }
 
-/// Resolved compatibility behavior switches (21 independent correctness, scale, SV, amplicon, and `--eqx` flags) derived from [`CompatTarget`].
+/// Resolved compatibility behavior switches (32 independent correctness, scale, SV, amplicon, VCF schema, and `--eqx` flags) derived from [`CompatTarget`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CompatProfile {
@@ -122,9 +122,31 @@ pub struct CompatProfile {
     pub canonical_sv_vcf_anchoring: bool,
     /// `AstraZeneca-NGS/VarDictJava#378`, `AstraZeneca-NGS/VarDictJava#155`, `AstraZeneca-NGS/VarDict#109`, `MHH-Bioinformatics-Hematology/vardictcpp#1`, `palakpsheth/VarDictRust#95`: Enable bounded-memory paired tumor/normal somatic amplicon calling (`-b "tumor|normal" -a`) in both `.var` and VCF modes.
     pub paired_somatic_amplicon: bool,
+    /// `AstraZeneca-NGS/VarDictJava#341`, `AstraZeneca-NGS/VarDictJava#103`: Permanently strip outer positive-length hard-clip/pad (`H`/`P`) CIGAR operators without advancing alignment start coordinates, and treat interior `P` as non-consuming.
+    pub cigar_strip_outer_hard_clips: bool,
+    /// `bcbio/bcbio-nextgen#1704`: Floor subtracted mean read position, base quality, mapping quality, mismatch count (`NM`), and VCF `QUAL` at `0` (`>= 0.0`).
+    pub nonnegative_subtracted_means: bool,
+    /// `AstraZeneca-NGS/VarDictJava#316`, `clintval/vartovcf#120`, `clintval/vartovcf#142`: Reset all auxiliary `Variation` count/sum accumulators alongside `cnt = 0` and reconcile `fwd + rev == VD` and `0 <= hicnt <= VD` (`locnt = VD - hicnt`).
+    pub reconcile_strand_and_hq_sums: bool,
+    /// `AstraZeneca-NGS/VarDict#168`, `AstraZeneca-NGS/VarDictJava#323`: Enforce `DP >= RD + VD` (`total_pos_cov >= ref_fwd + ref_rev + pos_coverage`) across all variant and somatic placeholder builders.
+    pub reconcile_rd_vd_dp: bool,
+    /// `AstraZeneca-NGS/VarDictJava#267`, `AstraZeneca-NGS/VarDictJava#287`, `AstraZeneca-NGS/VarDict#137`, `bcbio/bcbio-nextgen#3321`: Reduce IUPAC ambiguity codes in `ALT` alleles outside symbolic `<...>` tags and skip non-pileup `REF == ALT` records.
+    pub sanitize_iupac_alt_alleles: bool,
+    /// `AstraZeneca-NGS/VarDictJava#328`, `AstraZeneca-NGS/VarDict#157`: Respect `-L` (`--min-sv-len`) by materializing bounded explicit sequence alleles for split-refined SVs shorter than `-L` and filtering discordant-only clusters shorter than `-L`.
+    pub sv_respect_min_len: bool,
+    /// `AstraZeneca-NGS/VarDictJava#330`: Hydrate and emit the reference pileup row at `-p` positions when all surviving variants shift away via deletions or `adj_complex`.
+    pub pileup_preserve_shifted_ref: bool,
+    /// `clintval/vartovcf#109`, `clintval/vartovcf#147`: Recompute `Variant::var_type` after `adj_complex` trims a complex allele into an `SNV`, `Insertion`, or `Deletion`.
+    pub recompute_vartype_after_adj_complex: bool,
+    /// `clintval/vartovcf#101`, `AstraZeneca-NGS/VarDict#75`, `AstraZeneca-NGS/VarDict#76`, `EBIvariation/vcf-validator#99`: Emit single-sample `FORMAT/AD` with `Number=R` cardinality (`RD` when `ALT == "."`, `RD,VD` including `RD,0` when `ALT != "."`).
+    pub strict_vcf_ad_number_r: bool,
+    /// `clintval/vartovcf#105`: Omit `INFO/END` on non-symbolic VCF records by default (retaining `INFO/END` strictly on symbolic `<...>` SV alleles unless `--no-end` is set).
+    pub omit_nonsv_vcf_end: bool,
+    /// `clintval/vartovcf#99`, `clintval/vartovcf#54`, `AstraZeneca-NGS/VarDictJava#344`, `AstraZeneca-NGS/VarDict#186`: Canonicalize unphased `1/0` to `0/1` and promote concrete non-dot `0/0` carrier genotypes with `VD > 0` to `0/1`.
+    pub canonical_vcf_gt: bool,
 }
 
-/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 21 [`CompatProfile`] fixes disabled).
+/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 32 [`CompatProfile`] fixes disabled).
 pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     target: CompatTarget::VardictJava183,
     sanitize_sample_info: false,
@@ -148,9 +170,20 @@ pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     adaptor_all_consensus_dirs: false,
     canonical_sv_vcf_anchoring: false,
     paired_somatic_amplicon: false,
+    cigar_strip_outer_hard_clips: false,
+    nonnegative_subtracted_means: false,
+    reconcile_strand_and_hq_sums: false,
+    reconcile_rd_vd_dp: false,
+    sanitize_iupac_alt_alleles: false,
+    sv_respect_min_len: false,
+    pileup_preserve_shifted_ref: false,
+    recompute_vartype_after_adj_complex: false,
+    strict_vcf_ad_number_r: false,
+    omit_nonsv_vcf_end: false,
+    canonical_vcf_gt: false,
 };
 
-/// Compatibility-off profile (`--compat=off`) enabling all 21 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), paired somatic amplicon, and `--eqx` fixes.
+/// Compatibility-off profile (`--compat=off`) enabling all 32 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), paired somatic amplicon, VCF schema, and `--eqx` fixes.
 pub const COMPAT_OFF: CompatProfile = CompatProfile {
     target: CompatTarget::Off,
     sanitize_sample_info: true,
@@ -174,6 +207,17 @@ pub const COMPAT_OFF: CompatProfile = CompatProfile {
     adaptor_all_consensus_dirs: true,
     canonical_sv_vcf_anchoring: true,
     paired_somatic_amplicon: true,
+    cigar_strip_outer_hard_clips: true,
+    nonnegative_subtracted_means: true,
+    reconcile_strand_and_hq_sums: true,
+    reconcile_rd_vd_dp: true,
+    sanitize_iupac_alt_alleles: true,
+    sv_respect_min_len: true,
+    pileup_preserve_shifted_ref: true,
+    recompute_vartype_after_adj_complex: true,
+    strict_vcf_ad_number_r: true,
+    omit_nonsv_vcf_end: true,
+    canonical_vcf_gt: true,
 };
 
 impl Default for CompatProfile {
@@ -1144,9 +1188,20 @@ mod tests {
             adaptor_all_consensus_dirs,
             canonical_sv_vcf_anchoring,
             paired_somatic_amplicon,
+            cigar_strip_outer_hard_clips,
+            nonnegative_subtracted_means,
+            reconcile_strand_and_hq_sums,
+            reconcile_rd_vd_dp,
+            sanitize_iupac_alt_alleles,
+            sv_respect_min_len,
+            pileup_preserve_shifted_ref,
+            recompute_vartype_after_adj_complex,
+            strict_vcf_ad_number_r,
+            omit_nonsv_vcf_end,
+            canonical_vcf_gt,
         } = vj;
         assert_eq!(vj_target, CompatTarget::VardictJava183);
-        let vj_switches: [bool; 21] = [
+        let vj_switches: [bool; 32] = [
             sanitize_sample_info,
             standard_dup_symbolic_alt,
             shift3_3prime_alleles,
@@ -1168,6 +1223,17 @@ mod tests {
             adaptor_all_consensus_dirs,
             canonical_sv_vcf_anchoring,
             paired_somatic_amplicon,
+            cigar_strip_outer_hard_clips,
+            nonnegative_subtracted_means,
+            reconcile_strand_and_hq_sums,
+            reconcile_rd_vd_dp,
+            sanitize_iupac_alt_alleles,
+            sv_respect_min_len,
+            pileup_preserve_shifted_ref,
+            recompute_vartype_after_adj_complex,
+            strict_vcf_ad_number_r,
+            omit_nonsv_vcf_end,
+            canonical_vcf_gt,
         ];
         assert!(vj_switches.iter().all(|&flag| !flag));
 
@@ -1195,9 +1261,20 @@ mod tests {
             adaptor_all_consensus_dirs,
             canonical_sv_vcf_anchoring,
             paired_somatic_amplicon,
+            cigar_strip_outer_hard_clips,
+            nonnegative_subtracted_means,
+            reconcile_strand_and_hq_sums,
+            reconcile_rd_vd_dp,
+            sanitize_iupac_alt_alleles,
+            sv_respect_min_len,
+            pileup_preserve_shifted_ref,
+            recompute_vartype_after_adj_complex,
+            strict_vcf_ad_number_r,
+            omit_nonsv_vcf_end,
+            canonical_vcf_gt,
         } = off;
         assert_eq!(off_target, CompatTarget::Off);
-        let off_switches: [bool; 21] = [
+        let off_switches: [bool; 32] = [
             sanitize_sample_info,
             standard_dup_symbolic_alt,
             shift3_3prime_alleles,
@@ -1219,6 +1296,17 @@ mod tests {
             adaptor_all_consensus_dirs,
             canonical_sv_vcf_anchoring,
             paired_somatic_amplicon,
+            cigar_strip_outer_hard_clips,
+            nonnegative_subtracted_means,
+            reconcile_strand_and_hq_sums,
+            reconcile_rd_vd_dp,
+            sanitize_iupac_alt_alleles,
+            sv_respect_min_len,
+            pileup_preserve_shifted_ref,
+            recompute_vartype_after_adj_complex,
+            strict_vcf_ad_number_r,
+            omit_nonsv_vcf_end,
+            canonical_vcf_gt,
         ];
         assert!(off_switches.iter().all(|&flag| flag));
 
