@@ -85,6 +85,7 @@ impl<'a> ByteCursor<'a> {
             6 => f64::INFINITY,
             7 => f64::NEG_INFINITY,
             8 => f64::from_bits(self.u64()),
+            9 => -((f64::from(self.u16()) / 65535.0) * max_norm.max(1.0)),
             _ => (f64::from(self.u16()) / 65535.0) * max_norm,
         }
     }
@@ -140,7 +141,14 @@ impl<'a> ByteCursor<'a> {
                 }
                 s
             }
-            _ => self.utf8_no_semi(MAX_ALLELE_BYTES),
+            _ => {
+                let s = self.utf8_no_semi(MAX_ALLELE_BYTES).replace(',', "_");
+                if s == "." {
+                    "N".to_string()
+                } else {
+                    s
+                }
+            }
         }
     }
 
@@ -235,14 +243,158 @@ fn is_symbolic_sv_alt(alt: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+fn render_expected_info_sample(raw_sample: &str, sanitize: bool) -> String {
+    if !sanitize {
+        return raw_sample
+            .chars()
+            .map(|c| if c.is_whitespace() { '_' } else { c })
+            .collect();
+    }
+    if raw_sample.is_empty() {
+        return "-".to_string();
+    }
+    if raw_sample == "-" {
+        return "%2D".to_string();
+    }
+    if raw_sample == "." {
+        return "%2E".to_string();
+    }
+    let mut buf = String::with_capacity(raw_sample.len());
+    for c in raw_sample.chars() {
+        match c {
+            '%' => buf.push_str("%25"),
+            ';' => buf.push_str("%3B"),
+            '=' => buf.push_str("%3D"),
+            ',' => buf.push_str("%2C"),
+            c if c.is_whitespace() || c.is_control() => {
+                let mut u8_buf = [0u8; 4];
+                for &b in c.encode_utf8(&mut u8_buf).as_bytes() {
+                    use std::fmt::Write as _;
+                    let _ = write!(buf, "%{b:02X}");
+                }
+            }
+            other => buf.push(other),
+        }
+    }
+    buf
+}
+
 fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: &Config) {
     assert_tsv_cols(kind, line, expected_cols);
-    if !config.compat.sanitize_sample_info || line.starts_with('#') {
+    if line.starts_with('#') {
         return;
     }
     let cols: Vec<&str> = line.split('\t').collect();
     let alt = cols.get(4).copied().unwrap_or("");
+    let qual_str = cols.get(5).copied().unwrap_or("");
     let info = cols.get(7).copied().unwrap_or("");
+
+    let expected_raw_sample = if expected_cols == 10 {
+        config.sample.as_str()
+    } else {
+        config.sample.split('|').next().unwrap_or(&config.sample)
+    };
+    let rendered_sample =
+        render_expected_info_sample(expected_raw_sample, config.compat.sanitize_sample_info);
+    let sample_prefix = format!("SAMPLE={rendered_sample};");
+    let info_after_sample = if expected_cols == 10 {
+        info.strip_prefix(&sample_prefix)
+            .unwrap_or_else(|| panic!("{kind} missing {sample_prefix:?} prefix in {info:?}"))
+    } else {
+        let (_, after_status) = info
+            .split_once(';')
+            .unwrap_or_else(|| panic!("{kind} missing STATUS; prefix in {info:?}"));
+        after_status
+            .strip_prefix(&sample_prefix)
+            .unwrap_or_else(|| panic!("{kind} missing {sample_prefix:?} after STATUS in {info:?}"))
+    };
+
+    if config.compat.nonnegative_subtracted_means {
+        let qual: i32 = qual_str
+            .parse()
+            .unwrap_or_else(|e| panic!("{kind} invalid integer QUAL {qual_str:?}: {e}"));
+        assert!(
+            qual >= 0,
+            "{kind} negative QUAL={qual} under nonnegative_subtracted_means: {line:?}"
+        );
+    }
+
+    if config.compat.strict_vcf_ad_number_r {
+        let expected_ad_len = if expected_cols == 10 && alt == "." {
+            1usize
+        } else {
+            2usize
+        };
+        let ad_idx = if expected_cols == 10 { 3usize } else { 5usize };
+        let sample_indices: &[usize] = if expected_cols == 10 { &[9] } else { &[9, 10] };
+        for &s_col in sample_indices {
+            let sample_str = cols.get(s_col).copied().unwrap_or("");
+            let ad_str = sample_str.split(':').nth(ad_idx).unwrap_or("");
+            let ad_tokens: Vec<&str> = ad_str.split(',').collect();
+            assert_eq!(
+                ad_tokens.len(),
+                expected_ad_len,
+                "{kind} FORMAT/AD token count mismatch at col {s_col} (alt={alt:?}): got {ad_str:?}, expected {expected_ad_len}"
+            );
+            for tok in ad_tokens {
+                assert!(
+                    tok.parse::<i64>().is_ok(),
+                    "{kind} non-integer AD token {tok:?} in {ad_str:?}"
+                );
+            }
+        }
+    }
+
+    if config.compat.omit_nonsv_vcf_end && (!is_symbolic_sv_alt(alt) || config.vcf_no_end_explicit)
+    {
+        assert!(
+            !info_after_sample.split(';').any(|kv| kv.starts_with("END=")),
+            "{kind} emitted non-SV or --no-end INFO/END under omit_nonsv_vcf_end (alt={alt:?}): {info:?}"
+        );
+    }
+
+    if config.compat.canonical_vcf_gt {
+        let sample_indices: &[usize] = if expected_cols == 10 { &[9] } else { &[9, 10] };
+        let mut any_vd_pos = false;
+        let mut any_gt_one = false;
+        for &s_col in sample_indices {
+            let sample_str = cols.get(s_col).copied().unwrap_or("");
+            let mut s_parts = sample_str.split(':');
+            let gt = s_parts.next().unwrap_or("");
+            let _dp = s_parts.next();
+            let vd: i32 = s_parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            assert_ne!(
+                gt, "1/0",
+                "{kind} emitted unphased 1/0 under canonical_vcf_gt: {sample_str:?}"
+            );
+            assert!(
+                matches!(gt, "0/0" | "0/1" | "1/1"),
+                "{kind} unexpected GT {gt:?}: {sample_str:?}"
+            );
+            if alt == "." {
+                assert_eq!(
+                    gt, "0/0",
+                    "{kind} dot-ALT must have GT=0/0 under canonical_vcf_gt: {sample_str:?}"
+                );
+            }
+            if vd > 0 {
+                any_vd_pos = true;
+            }
+            if gt.contains('1') {
+                any_gt_one = true;
+            }
+        }
+        if alt != "." && any_vd_pos {
+            assert!(
+                any_gt_one,
+                "{kind} concrete ALT={alt:?} with VD>0 has all 0/0 GTs under canonical_vcf_gt: {line:?}"
+            );
+        }
+    }
+
+    if !config.compat.sanitize_sample_info {
+        return;
+    }
     let entries: Vec<&str> = info.split(';').collect();
 
     let sample_idx = if expected_cols == 10 { 0usize } else { 1usize };
@@ -263,11 +415,6 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
                 .any(|c| c.is_whitespace() || c.is_control()),
         "{kind} has unescaped VCF delimiter, whitespace, or control char in INFO/SAMPLE: {sample_val:?}"
     );
-    let expected_raw_sample = if expected_cols == 10 {
-        config.sample.as_str()
-    } else {
-        config.sample.split('|').next().unwrap_or(&config.sample)
-    };
     assert_eq!(
         decode_sanitized_sample(sample_val),
         expected_raw_sample,
@@ -289,7 +436,9 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
     );
 
     let expected_keys = if expected_cols == 10 {
-        let emit_end = if config.compat.canonical_sv_vcf_anchoring && is_symbolic_sv_alt(alt) {
+        let emit_end = if config.compat.omit_nonsv_vcf_end {
+            is_symbolic_sv_alt(alt) && !config.vcf_no_end_explicit
+        } else if config.compat.canonical_sv_vcf_anchoring && is_symbolic_sv_alt(alt) {
             !config.vcf_no_end_explicit
         } else {
             !config.omit_end_tag
@@ -621,6 +770,13 @@ fuzz_target!(|data: &[u8]| {
                 compat.adaptor_all_consensus_dirs = (w4_bits & 4) != 0;
                 compat.canonical_sv_vcf_anchoring = (w4_bits & 8) != 0;
                 compat.paired_somatic_amplicon = (w4_bits & 16) != 0;
+            }
+            let w5_bits = cur.u8();
+            if (w5_bits & 1) != 0 {
+                compat.nonnegative_subtracted_means = (w5_bits & 2) != 0;
+                compat.strict_vcf_ad_number_r = (w5_bits & 4) != 0;
+                compat.omit_nonsv_vcf_end = (w5_bits & 8) != 0;
+                compat.canonical_vcf_gt = (w5_bits & 16) != 0;
             }
             compat
         },
