@@ -14563,6 +14563,11 @@ mod tests {
                   chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=999\n",
             ),
             (
+                "end_duplicate",
+                b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+                  chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=2000;END=5000\n",
+            ),
+            (
                 "end_above_csi_depth6_ceiling",
                 b"##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
                   chr1\t1000\t.\tA\t<DEL>\t30\tPASS\tSVTYPE=DEL;END=4294967297\n",
