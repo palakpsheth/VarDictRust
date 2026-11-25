@@ -444,7 +444,7 @@ impl<'a> CigarParser<'a> {
             let (distance_to_amplicon, overlap_fraction) = parse_amp_param(amp_param);
             let is_mate_ref_name_equal =
                 record.reference_name.as_deref() == record.mate_reference_name.as_deref();
-            if parse_cigar_with_amp_case(
+            if parse_cigar_with_amp_case_ext(
                 &record.cigar,
                 record,
                 is_mate_ref_name_equal,
@@ -452,6 +452,7 @@ impl<'a> CigarParser<'a> {
                 distance_to_amplicon,
                 overlap_fraction,
                 self.config.compat.eqx_cigar_read_length,
+                self.config.amplicon_single_primer,
             ) {
                 return Ok(());
             }
@@ -3978,6 +3979,7 @@ fn get_aligned_length_md_eqx(elements: &[(u32, CigarKind)]) -> u32 {
 
 /// Ports `CigarParser.parseCigarWithAmpCase`. Returns true if the read should be
 /// filtered out (does not belong to the amplicon).
+#[cfg(test)]
 fn parse_cigar_with_amp_case(
     cigar_elements: &[(u32, CigarKind)],
     record: &crate::bam::SamRecord,
@@ -3987,6 +3989,37 @@ fn parse_cigar_with_amp_case(
     overlap_fraction: f64,
     include_eqx: bool,
 ) -> bool {
+    parse_cigar_with_amp_case_ext(
+        cigar_elements,
+        record,
+        is_mate_ref_name_equal,
+        region,
+        distance_to_amplicon,
+        overlap_fraction,
+        include_eqx,
+        false,
+    )
+}
+
+/// Ports `CigarParser.parseCigarWithAmpCase` (`CigarParser.java:1320-1367`), extended
+/// with single-primer extension (`-sp` / `--amplicon-single-primer`) support
+/// (`AstraZeneca-NGS/VarDictJava#301`, `AstraZeneca-NGS/VarDictJava#303`,
+/// `AstraZeneca-NGS/VarDictJava#326`, `AstraZeneca-NGS/VarDict#191`).
+/// Returns `true` if the read should be filtered out (does not belong to the amplicon).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "ports CigarParser.parseCigarWithAmpCase parameters plus eqx and single_primer flags"
+)]
+fn parse_cigar_with_amp_case_ext(
+    cigar_elements: &[(u32, CigarKind)],
+    record: &crate::bam::SamRecord,
+    is_mate_ref_name_equal: bool,
+    region: &crate::regions::Region,
+    distance_to_amplicon: i32,
+    overlap_fraction: f64,
+    include_eqx: bool,
+    single_primer: bool,
+) -> bool {
     if cigar_elements.is_empty() {
         return false;
     }
@@ -3994,12 +4027,41 @@ fn parse_cigar_with_amp_case(
         cigar_elements,
         include_eqx,
     ));
-    let mut segstart = record.alignment_start.map_or(0i64, |p| i64::from(p.0));
-    let mut segend = segstart + read_length - 1;
+    let read_start = record.alignment_start.map_or(0i64, |p| i64::from(p.0));
+    let read_end = read_start + read_length - 1;
+    let mut segstart = read_start;
+    let mut segend = read_end;
     let region_start = i64::from(region.start.0);
     let region_end = i64::from(region.end.0);
     let distance_to_amplicon = i64::from(distance_to_amplicon);
     let tlen = i64::from(record.template_length);
+
+    if single_primer {
+        if read_length <= 0 || read_end < region_start || read_start > region_end {
+            return true;
+        }
+        if is_mate_ref_name_equal && tlen != 0 {
+            if tlen > 0 {
+                segend = segstart + tlen - 1;
+            } else {
+                segstart = record.mate_alignment_start.map_or(0i64, |p| i64::from(p.0));
+                segend = segstart - tlen - 1;
+            }
+        }
+        let amp = region.amplicon.as_ref();
+        let primed_5p_only = amp
+            .is_some_and(|a| a.insert_start.0 > region.start.0 && a.insert_end.0 >= region.end.0);
+        let primed_3p_only = amp
+            .is_some_and(|a| a.insert_end.0 < region.end.0 && a.insert_start.0 <= region.start.0);
+        if primed_5p_only {
+            return (segstart - region_start).abs() > distance_to_amplicon;
+        }
+        if primed_3p_only {
+            return (segend - region_end).abs() > distance_to_amplicon;
+        }
+        return (segstart - region_start).abs() > distance_to_amplicon
+            && (segend - region_end).abs() > distance_to_amplicon;
+    }
 
     let first_op = cigar_elements.first().map(|&(_, op)| op);
     let last_op = cigar_elements.last().map(|&(_, op)| op);
@@ -8661,5 +8723,313 @@ mod tests {
         let mut p_dup_off = CigarParser::new(&reference, &region, &cfg_dup_off, false, 0, 0, 100);
         p_dup_off.set_live_read_counts(2_000, 1);
         assert_eq!(p_dup_off.into_variation_data().duprate, 0.001);
+    }
+
+    #[test]
+    fn test_single_primer_amplicon_filtering_5p_3p_both_softclip_and_mate_tlen() {
+        use crate::regions::AmpliconInfo;
+
+        let mk_rec = |pos: u32,
+                      cigar: Vec<(u32, CigarKind)>,
+                      mate_chr: Option<&str>,
+                      mate_pos: Option<u32>,
+                      tlen: i32|
+         -> SamRecord {
+            let qlen: usize = cigar
+                .iter()
+                .filter(|(_, k)| {
+                    matches!(
+                        k,
+                        CigarKind::Match
+                            | CigarKind::Insertion
+                            | CigarKind::SoftClip
+                            | CigarKind::SequenceMatch
+                            | CigarKind::SequenceMismatch
+                    )
+                })
+                .map(|&(n, _)| n as usize)
+                .sum();
+            let rlen = crate::bam::get_aligned_length_md_compat(&cigar, true);
+            SamRecord {
+                name: b"r_spe".to_vec(),
+                flags: 0x2,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(pos)),
+                alignment_end: Some(Pos1(pos.saturating_add((rlen.max(1) - 1) as u32))),
+                mapping_quality: Some(60),
+                cigar,
+                mate_reference_name: mate_chr.map(str::to_string),
+                mate_alignment_start: mate_pos.map(Pos1),
+                template_length: tlen,
+                sequence: vec![b'A'; qlen.max(1)],
+                quality_scores: vec![b'I'; qlen.max(1)],
+                nm: Some(0),
+                ..SamRecord::default()
+            }
+        };
+
+        // 1. 5'-primed SPE amplicon: primer at 100..119, insert 120..200 (`insert_end == region_end`)
+        let reg_5p = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "SPE_5P".to_string(),
+            amplicon: Some(AmpliconInfo {
+                insert_start: Pos1(120),
+                insert_end: Pos1(200),
+            }),
+        };
+
+        // 1a. Forward GSP R1 at 100 with paired sheared R2 extending to 279 (`tlen = 180`, >5% and >10bp past 200):
+        //     rejected by standard `-a 10:0.95`, retained by `-sp`.
+        let r1_long_pair = mk_rec(
+            100,
+            vec![(100, CigarKind::Match)],
+            Some("chr1"),
+            Some(180),
+            180,
+        );
+        assert!(parse_cigar_with_amp_case(
+            &r1_long_pair.cigar,
+            &r1_long_pair,
+            true,
+            &reg_5p,
+            10,
+            0.95,
+            false,
+        ));
+        assert!(!parse_cigar_with_amp_case_ext(
+            &r1_long_pair.cigar,
+            &r1_long_pair,
+            true,
+            &reg_5p,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+
+        // 1b. Single-end SPE short sheared fragment (100..=159, 60M < 95% of 101bp): retained under `-sp`.
+        let se_short = mk_rec(100, vec![(60, CigarKind::Match)], None, None, 0);
+        assert!(!parse_cigar_with_amp_case_ext(
+            &se_short.cigar,
+            &se_short,
+            false,
+            &reg_5p,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+
+        // 1c. Mate-anchored R2 (160..=229) carrying a 3' universal-linker soft-clip (`70M15S`)
+        //     with mate R1 anchored at 5' primer (`mate_pos = 100, tlen = -130`):
+        //     rejected by standard `-a 10:0.95` (overlap 40/69 = 0.58 <= 0.95), retained by `-sp`!
+        let r2_linker_sc = mk_rec(
+            160,
+            vec![(70, CigarKind::Match), (15, CigarKind::SoftClip)],
+            Some("chr1"),
+            Some(100),
+            -130,
+        );
+        assert!(parse_cigar_with_amp_case(
+            &r2_linker_sc.cigar,
+            &r2_linker_sc,
+            true,
+            &reg_5p,
+            10,
+            0.95,
+            false,
+        ));
+        assert!(!parse_cigar_with_amp_case_ext(
+            &r2_linker_sc.cigar,
+            &r2_linker_sc,
+            true,
+            &reg_5p,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+
+        // 1d. Un-anchored mate R1 (`mate_pos = 135`, |135 - 100| = 35 > 10) is rejected under `-sp`.
+        let r2_unanchored_mate = mk_rec(
+            160,
+            vec![(41, CigarKind::Match), (10, CigarKind::SoftClip)],
+            Some("chr1"),
+            Some(135),
+            -66,
+        );
+        assert!(parse_cigar_with_amp_case_ext(
+            &r2_unanchored_mate.cigar,
+            &r2_unanchored_mate,
+            true,
+            &reg_5p,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+
+        // 1e. R2 completely outside `[region.start, region.end]` (`210..=279`) is skipped even if mate R1 is at 100.
+        let r2_non_overlapping = mk_rec(
+            210,
+            vec![(70, CigarKind::Match)],
+            Some("chr1"),
+            Some(100),
+            -180,
+        );
+        assert!(parse_cigar_with_amp_case_ext(
+            &r2_non_overlapping.cigar,
+            &r2_non_overlapping,
+            true,
+            &reg_5p,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+
+        // 2. 3'-primed SPE amplicon: insert 100..180, primer 181..200 (`insert_start == region_start`)
+        let reg_3p = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "SPE_3P".to_string(),
+            amplicon: Some(AmpliconInfo {
+                insert_start: Pos1(100),
+                insert_end: Pos1(180),
+            }),
+        };
+        // Sheared 5' forward R1 with 5' soft-clip (`12S80M`) starting at 60 (`< 100`), mate R2 ending at 200 (`tlen = 141`):
+        let r1_sheared_5p = mk_rec(
+            60,
+            vec![(12, CigarKind::SoftClip), (80, CigarKind::Match)],
+            Some("chr1"),
+            Some(121),
+            141,
+        );
+        assert!(parse_cigar_with_amp_case(
+            &r1_sheared_5p.cigar,
+            &r1_sheared_5p,
+            true,
+            &reg_3p,
+            10,
+            0.95,
+            false,
+        ));
+        assert!(!parse_cigar_with_amp_case_ext(
+            &r1_sheared_5p.cigar,
+            &r1_sheared_5p,
+            true,
+            &reg_3p,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+        // Un-anchored 3' end (`segend = 170`, |170 - 200| = 30 > 10) is rejected on 3'-primed SPE:
+        let unanchored_3p = mk_rec(100, vec![(71, CigarKind::Match)], None, None, 0);
+        assert!(parse_cigar_with_amp_case_ext(
+            &unanchored_3p.cigar,
+            &unanchored_3p,
+            false,
+            &reg_3p,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+
+        // 3. Both-ends-primed / `insert == region`: accepts reads anchored at EITHER end (`&&` rejection), rejects internal-only.
+        let reg_both = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "BOTH".to_string(),
+            amplicon: Some(AmpliconInfo {
+                insert_start: Pos1(115),
+                insert_end: Pos1(185),
+            }),
+        };
+        let only_5p = mk_rec(102, vec![(50, CigarKind::Match)], None, None, 0);
+        let only_3p = mk_rec(150, vec![(50, CigarKind::Match)], None, None, 0);
+        let neither = mk_rec(125, vec![(40, CigarKind::Match)], None, None, 0);
+        assert!(!parse_cigar_with_amp_case_ext(
+            &only_5p.cigar,
+            &only_5p,
+            false,
+            &reg_both,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+        assert!(!parse_cigar_with_amp_case_ext(
+            &only_3p.cigar,
+            &only_3p,
+            false,
+            &reg_both,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+        assert!(parse_cigar_with_amp_case_ext(
+            &neither.cigar,
+            &neither,
+            false,
+            &reg_both,
+            10,
+            0.95,
+            false,
+            true,
+        ));
+
+        // 4. End-to-end `pileup` retains SNV on mate-anchored soft-clipped SPE R2 iff `amplicon_single_primer` is true.
+        let mut reference = Reference::new();
+        let ref_seq = vec![b'A'; 320];
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+        reference.seed.index_sequence(&ref_seq, 1, 320, 320);
+        let mut snv_seq = vec![b'A'; 85];
+        snv_seq[15] = b'G'; // pos 160 + 15 = 175 inside insert [120, 200]
+        let mut r2_snv = r2_linker_sc;
+        r2_snv.sequence = snv_seq;
+        r2_snv.nm = Some(1);
+
+        let cfg_off = Config {
+            amplicon: Some("10:0.95".to_string()),
+            amplicon_single_primer: false,
+            ..Config::default()
+        };
+        let vd_off = pileup(
+            &[r2_snv.clone()],
+            &reference,
+            &reg_5p,
+            &cfg_off,
+            false,
+            1,
+            0,
+            0,
+        )
+        .unwrap();
+        assert!(vd_off.non_insertion_variants.get(&175).is_none());
+
+        let cfg_sp = Config {
+            amplicon: Some("10:0.95".to_string()),
+            amplicon_single_primer: true,
+            ..Config::default()
+        };
+        let vd_sp = pileup(&[r2_snv], &reference, &reg_5p, &cfg_sp, false, 1, 0, 0).unwrap();
+        assert!(
+            vd_sp
+                .non_insertion_variants
+                .get(&175)
+                .and_then(|m| m.map.get("G"))
+                .is_some_and(|v| v.cnt == 1),
+            "pileup with amplicon_single_primer=true must retain mate-anchored soft-clipped R2 SNV"
+        );
     }
 }

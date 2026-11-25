@@ -231,7 +231,17 @@ fn simple_post_process_core<'a>(
     }
 
     if let Some(merged_bounds) = strict_bounds {
-        vrefs.retain(|v| crate::interval_set_contains(merged_bounds, v.start_pos));
+        // AstraZeneca-NGS/VarDictJava#369 + AstraZeneca-NGS/VarDictJava#398:
+        // retain 1-bp-upstream-padded symbolic SVs anchored at `region.start - 1`.
+        let allow_padded_sv = config.compat.canonical_sv_vcf_anchoring;
+        vrefs.retain(|v| {
+            crate::interval_set_contains(merged_bounds, v.start_pos)
+                || (allow_padded_sv
+                    && v.var_allele.starts_with('<')
+                    && v.end_pos > v.start_pos
+                    && v.start_pos >= 1
+                    && crate::interval_set_contains(merged_bounds, v.start_pos.saturating_add(1)))
+        });
     } else if config.compat.strict_region_bounds {
         vrefs.retain(|v| v.start_pos >= 1);
     }
@@ -1089,5 +1099,92 @@ mod tests {
             assert_eq!(summarize(&got_vcf_borrowed), expected_sorted_vcf);
             assert_eq!(summarize(&got_vcf_owned), expected_sorted_vcf);
         }
+    }
+
+    #[test]
+    fn test_strict_bounds_retains_1bp_upstream_padded_symbolic_sv_at_region_start() {
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "SV_BOUND".to_string(),
+            amplicon: None,
+        };
+        let strict_bounds = [(100i32, 200i32)];
+        let splice = rustc_hash::FxHashSet::default();
+
+        let mut map = crate::javamap::JavaHashMap::new();
+        // 1. 1-bp-upstream-padded symbolic <DEL> at start_pos = 99 (99 + 1 == 100 in bounds)
+        let mut g_del99 = Vars::new();
+        g_del99.sv = "5-2-1".to_string();
+        g_del99
+            .variants
+            .push(mk_variant(99, 180, "A", "<DEL>", 0.45));
+        map.insert(99, g_del99);
+        // 2. Symbolic <DUP> at start_pos = 98 (98 + 1 == 99 still outside [100, 200] -> dropped)
+        let mut g_dup98 = Vars::new();
+        g_dup98.sv = "5-2-1".to_string();
+        g_dup98
+            .variants
+            .push(mk_variant(98, 180, "A", "<DUP>", 0.40));
+        map.insert(98, g_dup98);
+        // 3. Non-symbolic deletion at start_pos = 99 -> dropped even when canonical_sv_vcf_anchoring is true
+        let mut g_indel99 = Vars::new();
+        g_indel99.sv = "1-0-1".to_string();
+        g_indel99
+            .variants
+            .push(mk_variant(99, 101, "CAT", "C", 0.35));
+        map.insert(100, g_indel99);
+        // 4. Degenerate symbolic SV at start_pos = 0 (start_pos < 1 -> dropped) and end_pos == start_pos (dropped)
+        let mut g_zero = Vars::new();
+        g_zero.sv = "3-1-1".to_string();
+        g_zero.variants.push(mk_variant(0, 50, "A", "<INV>", 0.30));
+        map.insert(1, g_zero);
+        let mut g_eq = Vars::new();
+        g_eq.sv = "3-1-1".to_string();
+        g_eq.variants.push(mk_variant(299, 299, "A", "<DEL>", 0.30));
+        map.insert(299, g_eq);
+
+        let multi_bounds = [(100i32, 200i32), (300i32, 400i32)];
+
+        // Without `canonical_sv_vcf_anchoring`, start_pos = 99 is dropped under `strict_region_bounds`.
+        let mut cfg_strict_only = Config {
+            emit_intermediate: true,
+            ..Config::default()
+        };
+        cfg_strict_only.compat.strict_region_bounds = true;
+        cfg_strict_only.compat.canonical_sv_vcf_anchoring = false;
+        let out_strict_only = simple_post_process_owned_with_bounds(
+            &cfg_strict_only,
+            &region,
+            map.clone(),
+            &splice,
+            Some(&multi_bounds),
+        );
+        assert!(out_strict_only.is_empty());
+
+        // Under COMPAT_OFF (`strict_region_bounds && canonical_sv_vcf_anchoring`), ONLY the valid
+        // 1-bp-upstream-padded `<DEL>` at start_pos = 99 (99 + 1 == 100) is retained!
+        let cfg_off = Config {
+            emit_intermediate: true,
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let out_owned = simple_post_process_owned_with_bounds(
+            &cfg_off,
+            &region,
+            map.clone(),
+            &splice,
+            Some(&multi_bounds),
+        );
+        assert_eq!(out_owned.len(), 1);
+        assert_eq!(out_owned[0].start_pos, 99);
+        assert_eq!(out_owned[0].var_allele, "<DEL>");
+
+        let out_borrowed = simple_post_process(&cfg_off, &region, &map, &splice);
+        let _ = strict_bounds;
+        assert_eq!(out_borrowed.len(), 1);
+        assert_eq!(out_borrowed[0].start_pos, 99);
+        assert_eq!(out_borrowed[0].var_allele, "<DEL>");
     }
 }

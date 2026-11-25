@@ -4636,20 +4636,6 @@ fn resolve_effective_config(
         ));
     }
 
-    if effective.sample_regexp.is_some()
-        || (has_region && paired && (effective.emit_intermediate || effective.splice))
-    {
-        effective.sample = crate::config::resolve_sample_names(
-            &effective.bam,
-            effective
-                .sample_explicit
-                .then_some(effective.sample.as_str()),
-            effective.sample_regexp.as_deref(),
-            has_region,
-            effective.emit_intermediate || effective.splice,
-        );
-    }
-
     let mode = resolve_mode(
         effective.splice,
         has_region,
@@ -4657,14 +4643,41 @@ fn resolve_effective_config(
         paired,
     );
 
-    if mode == CallingMode::Amplicon && paired && !effective.emit_intermediate {
+    let paired_somatic_amp =
+        paired && mode == CallingMode::Amplicon && effective.compat.paired_somatic_amplicon;
+
+    if effective.sample_regexp.is_some()
+        || (has_region && paired && (effective.emit_intermediate || effective.splice))
+        || paired_somatic_amp
+    {
+        let keep_sample = effective.sample_explicit
+            || (paired_somatic_amp
+                && effective.sample_regexp.is_none()
+                && effective.sample != "SAMPLE");
+        effective.sample = crate::config::resolve_sample_names(
+            &effective.bam,
+            keep_sample.then_some(effective.sample.as_str()),
+            effective.sample_regexp.as_deref(),
+            has_region,
+            effective.emit_intermediate || effective.splice,
+        );
+    }
+
+    if mode == CallingMode::Amplicon
+        && paired
+        && !effective.compat.paired_somatic_amplicon
+        && !effective.emit_intermediate
+    {
         return Err(VardictError::Unsupported(
-            "Paired BAM (-b tumor|normal) with amplicon mode (-a) is not supported in VCF mode (#378); use .var intermediate output or single-sample BAM"
+            "Paired BAM (-b tumor|normal) with amplicon mode (-a) is not supported in VCF mode (#378); use .var intermediate output or single-sample BAM; pass --compat=off to enable paired somatic amplicon calling"
                 .to_string(),
         ));
     }
 
-    if paired && matches!(mode, CallingMode::Splicing | CallingMode::Amplicon) {
+    if paired
+        && (mode == CallingMode::Splicing
+            || (mode == CallingMode::Amplicon && !effective.compat.paired_somatic_amplicon))
+    {
         if let Some(first_bam_spec) = effective.bam.split('|').next() {
             effective.bam = first_bam_spec.to_string();
         }
@@ -5873,6 +5886,12 @@ fn run_with_writer_inner<W: EngineWriter>(
     if mode == CallingMode::Somatic {
         return run_somatic(config, preloaded_bed_lines, writer, telemetry);
     }
+    if mode == CallingMode::Amplicon
+        && config.bam.contains('|')
+        && config.compat.paired_somatic_amplicon
+    {
+        return run_somatic_amplicon(config, preloaded_bed_lines, writer, telemetry);
+    }
 
     let first_bam_spec = config
         .bam
@@ -6415,8 +6434,15 @@ fn run_with_writer_inner<W: EngineWriter>(
     Ok(())
 }
 
+type AmpliconRegionResult = (
+    crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
+    rustc_hash::FxHashSet<String>,
+    i32,
+);
+
 /// Process a single amplicon region through the full pipeline, returning the
-/// aligned variants map and accumulated splice set (`AmpliconMode.java:79, 98`).
+/// aligned variants map, accumulated splice set, and observed `maxReadLength`
+/// (`AmpliconMode.java:79, 98`, `MHH-Bioinformatics-Hematology/vardictcpp#1`).
 /// The pileup runs over the amplicon region (start..end);
 /// the ToVarsBuilder calls variants over the insert region.
 fn process_amplicon_region(
@@ -6424,20 +6450,33 @@ fn process_amplicon_region(
     region: &crate::regions::Region,
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
+    seed_max_read_length: i32,
     seed_splice: rustc_hash::FxHashSet<String>,
-) -> Result<
-    (
-        crate::javamap::JavaHashMap<i32, crate::variations::Vars>,
-        rustc_hash::FxHashSet<String>,
-    ),
-    VardictError,
-> {
+) -> Result<AmpliconRegionResult, VardictError> {
+    let bam_list = parse_colon_bams(bam, "No BAM files specified")?;
+    process_amplicon_region_bams(
+        &bam_list,
+        region,
+        config,
+        chromosomes_lengths,
+        seed_max_read_length,
+        seed_splice,
+    )
+}
+
+fn process_amplicon_region_bams(
+    bam_list: &[String],
+    region: &crate::regions::Region,
+    config: &config::Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    seed_max_read_length: i32,
+    seed_splice: rustc_hash::FxHashSet<String>,
+) -> Result<AmpliconRegionResult, VardictError> {
     // Ports AmpliconMode.java:61, 98 + SamView.java:20-21: query exact [region.start, region.end]
     // without a 500 bp halo so multi-BAM reader cutoffs and `-t` dedup match VarDictJava.
     let mut reference = crate::reference::Reference::new();
-    let bam_list = parse_colon_bams(bam, "No BAM files specified")?;
     let var_data = run_pipeline_on_records(
-        &bam_list,
+        bam_list,
         &region.chr,
         region.start.to_zero_based(),
         crate::types::Pos0(region.end.0),
@@ -6447,7 +6486,7 @@ fn process_amplicon_region(
         PipelineTail::Full,
         config,
         chromosomes_lengths,
-        0,
+        seed_max_read_length,
         Some(seed_splice),
     )?;
 
@@ -6467,7 +6506,7 @@ fn process_amplicon_region(
     let builder =
         crate::tovars::ToVarsBuilder::new(&reference, &builder_region, chromosomes_lengths, config);
     let aligned = builder.build_aligned_variants(&var_data);
-    Ok((aligned, var_data.splice))
+    Ok((aligned, var_data.splice, var_data.max_read_length))
 }
 
 /// Covering amplicons at one position: `(amplicon_number, region)` for every
@@ -6496,6 +6535,15 @@ pub(crate) fn amplicons_covering_position(
         .map(|(amplicon_number, region)| (amplicon_number, region.clone()))
         .collect()
 }
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_BAM1_LIVE_AT_BAM2_START: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+static TEST_CRAM_TH1_ON_64MB_STACK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Amplicon mode: process each amplicon region separately, then combine via
 /// amplicon post-processing. Ports AmpliconMode.java.
@@ -6641,11 +6689,12 @@ fn run_amplicon<W: EngineWriter>(
                         region.start.0,
                         region.end.0,
                     );
-                    let (aligned, next_splice) = process_amplicon_region(
+                    let (aligned, next_splice, _max_rl) = process_amplicon_region(
                         &first_bam_owned,
                         region,
                         &config_clone,
                         &chromosomes_lengths_clone,
+                        0,
                         std::mem::take(&mut splice),
                     )?;
                     vars_per_amplicon.push(aligned);
@@ -7324,29 +7373,11 @@ fn run_somatic<W: EngineWriter>(
             let exact_tie = config_clone.compat.exact_binary_half_even;
             if config_clone.emit_intermediate {
                 if !is_split_tile {
-                    let mut block =
-                        String::with_capacity(somatic_variants.len().saturating_mul(384));
-                    for sv in somatic_variants {
-                        crate::output::table::somatic_row_append_compat(
-                            &mut block,
-                            &sv.variant1,
-                            sv.variant2.as_ref(),
-                            &builder_region,
-                            &config_clone.sample,
-                            &sv.status,
-                            &sv.sv1,
-                            &sv.sv2,
-                            sv.end_is_variant2,
-                            config_clone.fisher,
-                            exact_tie,
-                        );
-                        // ports SomaticOutputVariant.java:80, 193-194 (DEBUG = beginVariant.DEBUG)
-                        if config_clone.debug {
-                            block.push('\t');
-                            block.push_str(&sv.variant1.debug);
-                        }
-                        block.push('\n');
-                    }
+                    let block = format_unsplit_somatic_var_block(
+                        &somatic_variants,
+                        &builder_region,
+                        &config_clone,
+                    );
                     Ok(SomaticTileOutput::UnSplitVarBlock(block))
                 } else {
                     let mut rows = Vec::with_capacity(somatic_variants.len());
@@ -7446,94 +7477,12 @@ fn run_somatic<W: EngineWriter>(
                     original_start: tile.original_start,
                     original_end: tile.original_end,
                 })
-            } else if config_clone.vcf_all_alleles {
-                let mut candidates = Vec::with_capacity(somatic_variants.len());
-                for sv in somatic_variants {
-                    if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
-                        continue;
-                    }
-                    let start_pos = sv.variant1.start_pos;
-                    let af_4dp = canonical_af_4dp(sv.variant1.frequency, exact_tie);
-                    let record = Some(crate::output::vcf::format_paired_vcf_record(
-                        &sv,
-                        &builder_region.chr,
-                        &config_clone,
-                    ));
-                    let all_alleles = Some(AllAllelesMeta::from_owned_boxed(
-                        sv.variant1.end_pos,
-                        sv.variant1.ref_allele,
-                        sv.variant1.var_allele,
-                        0,
-                    ));
-                    candidates.push(SomaticVcfCandidate {
-                        start_pos,
-                        af_4dp,
-                        record,
-                        all_alleles,
-                    });
-                }
-                Ok(SomaticTileOutput::Vcf {
-                    chr: builder_region.chr,
-                    candidates,
-                })
             } else {
-                // Paired VCF mode: ports var2vcf_paired.pl:41,128-129,136 —
-                // bucket rows by the raw .var start column ($hash{$chr}->{$a[3]}),
-                // AF-contest per bucket (:128-129, top row only without -A), then
-                // the `next unless ($ref)` guard on each SELECTED row.
-                let mut buckets: std::collections::BTreeMap<
-                    i32,
-                    crate::postprocess::somatic::SomaticVariant,
-                > = std::collections::BTreeMap::new();
-                for sv in somatic_variants {
-                    match buckets.entry(sv.variant1.start_pos) {
-                        std::collections::btree_map::Entry::Vacant(e) => {
-                            e.insert(sv);
-                        }
-                        std::collections::btree_map::Entry::Occupied(mut e) => {
-                            let sv_af = crate::types::round_half_even_compat(
-                                sv.variant1.frequency,
-                                4,
-                                exact_tie,
-                            );
-                            let cur_af = crate::types::round_half_even_compat(
-                                e.get().variant1.frequency,
-                                4,
-                                exact_tie,
-                            );
-                            if sv_af > cur_af {
-                                e.insert(sv);
-                            }
-                        }
-                    }
-                }
-                let candidates = buckets
-                    .into_values()
-                    .map(|sv| {
-                        let start_pos = sv.variant1.start_pos;
-                        let af_4dp = crate::types::round_half_even_compat(
-                            sv.variant1.frequency,
-                            4,
-                            exact_tie,
-                        );
-                        let record =
-                            if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
-                                None
-                            } else {
-                                Some(crate::output::vcf::format_paired_vcf_record(
-                                    &sv,
-                                    &builder_region.chr,
-                                    &config_clone,
-                                ))
-                            };
-                        SomaticVcfCandidate {
-                            start_pos,
-                            af_4dp,
-                            record,
-                            all_alleles: None,
-                        }
-                    })
-                    .collect();
+                let candidates = build_unsplit_somatic_vcf_candidates(
+                    somatic_variants,
+                    &builder_region.chr,
+                    &config_clone,
+                );
                 Ok(SomaticTileOutput::Vcf {
                     chr: builder_region.chr,
                     candidates,
@@ -7631,7 +7580,130 @@ fn run_somatic<W: EngineWriter>(
         })?;
     }
 
-    if let Some(ref contigs) = vcf_contigs {
+    emit_paired_vcf_accumulator(vcf_acc, vcf_contigs.as_deref(), config, writer)
+}
+
+fn format_unsplit_somatic_var_block(
+    somatic_variants: &[crate::postprocess::somatic::SomaticVariant],
+    region: &crate::regions::Region,
+    config: &config::Config,
+) -> String {
+    let exact_tie = config.compat.exact_binary_half_even;
+    let mut block = String::with_capacity(somatic_variants.len().saturating_mul(384));
+    for sv in somatic_variants {
+        crate::output::table::somatic_row_append_compat(
+            &mut block,
+            &sv.variant1,
+            sv.variant2.as_ref(),
+            region,
+            &config.sample,
+            &sv.status,
+            &sv.sv1,
+            &sv.sv2,
+            sv.end_is_variant2,
+            config.fisher,
+            exact_tie,
+        );
+        // ports SomaticOutputVariant.java:80, 193-194 (DEBUG = beginVariant.DEBUG)
+        if config.debug {
+            block.push('\t');
+            block.push_str(&sv.variant1.debug);
+        }
+        block.push('\n');
+    }
+    block
+}
+
+fn build_unsplit_somatic_vcf_candidates(
+    somatic_variants: Vec<crate::postprocess::somatic::SomaticVariant>,
+    chr: &str,
+    config: &config::Config,
+) -> Vec<SomaticVcfCandidate> {
+    let exact_tie = config.compat.exact_binary_half_even;
+    if config.vcf_all_alleles {
+        let mut candidates = Vec::with_capacity(somatic_variants.len());
+        for sv in somatic_variants {
+            if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
+                continue;
+            }
+            let start_pos = sv.variant1.start_pos;
+            let af_4dp = canonical_af_4dp(sv.variant1.frequency, exact_tie);
+            let record = Some(crate::output::vcf::format_paired_vcf_record(
+                &sv, chr, config,
+            ));
+            let all_alleles = Some(AllAllelesMeta::from_owned_boxed(
+                sv.variant1.end_pos,
+                sv.variant1.ref_allele,
+                sv.variant1.var_allele,
+                0,
+            ));
+            candidates.push(SomaticVcfCandidate {
+                start_pos,
+                af_4dp,
+                record,
+                all_alleles,
+            });
+        }
+        candidates
+    } else {
+        // Paired VCF mode: ports var2vcf_paired.pl:41,128-129,136 —
+        // bucket rows by the raw .var start column ($hash{$chr}->{$a[3]}),
+        // AF-contest per bucket (:128-129, top row only without -A), then
+        // the `next unless ($ref)` guard on each SELECTED row.
+        let mut buckets: std::collections::BTreeMap<
+            i32,
+            crate::postprocess::somatic::SomaticVariant,
+        > = std::collections::BTreeMap::new();
+        for sv in somatic_variants {
+            match buckets.entry(sv.variant1.start_pos) {
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(sv);
+                }
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    let sv_af =
+                        crate::types::round_half_even_compat(sv.variant1.frequency, 4, exact_tie);
+                    let cur_af = crate::types::round_half_even_compat(
+                        e.get().variant1.frequency,
+                        4,
+                        exact_tie,
+                    );
+                    if sv_af > cur_af {
+                        e.insert(sv);
+                    }
+                }
+            }
+        }
+        buckets
+            .into_values()
+            .map(|sv| {
+                let start_pos = sv.variant1.start_pos;
+                let af_4dp =
+                    crate::types::round_half_even_compat(sv.variant1.frequency, 4, exact_tie);
+                let record = if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
+                    None
+                } else {
+                    Some(crate::output::vcf::format_paired_vcf_record(
+                        &sv, chr, config,
+                    ))
+                };
+                SomaticVcfCandidate {
+                    start_pos,
+                    af_4dp,
+                    record,
+                    all_alleles: None,
+                }
+            })
+            .collect()
+    }
+}
+
+fn emit_paired_vcf_accumulator<W: EngineWriter>(
+    vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate>,
+    vcf_contigs: Option<&[(String, Option<u64>)]>,
+    config: &config::Config,
+    writer: &mut W,
+) -> Result<(), VardictError> {
+    if let Some(contigs) = vcf_contigs {
         if config.column_header {
             writer.emit_column_header(config)?;
         }
@@ -7662,8 +7734,459 @@ fn run_somatic<W: EngineWriter>(
     }
 
     writer.flush().map_err(VardictError::Io)?;
-
     Ok(())
+}
+
+/// Compute paired somatic amplicon calls for one overlapping amplicon `segment`
+/// (`AstraZeneca-NGS/VarDictJava#378`, `AstraZeneca-NGS/VarDictJava#155`,
+/// `AstraZeneca-NGS/VarDict#109`, `MHH-Bioinformatics-Hematology/vardictcpp#1`,
+/// `palakpsheth/VarDictRust#95`).
+///
+/// Aggregates and drops `BAM1`'s per-amplicon maps before starting `BAM2`, seeds
+/// `BAM2` per amplicon with `BAM1`'s `maxReadLength`, runs an amplicon-aware
+/// `PositionPipelineFn` for `combineAnalysis`, and attaches `tumor_amplicon` and
+/// `normal_amplicon` [`crate::config::AmpliconConcordance`].
+fn compute_somatic_amplicon_segment_variants(
+    segment: &[crate::regions::Region],
+    bam1_bams: &[String],
+    bam2_bams: &[String],
+    config: &config::Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    strict_chr_bounds: Option<&[(i32, i32)]>,
+) -> Result<
+    (
+        crate::regions::Region,
+        Vec<crate::postprocess::somatic::SomaticVariant>,
+    ),
+    VardictError,
+> {
+    let Some(last_region) = segment.last() else {
+        return Ok((
+            crate::regions::Region {
+                chr: String::new(),
+                start: crate::types::Pos1(1),
+                end: crate::types::Pos1(1),
+                gene: String::new(),
+                amplicon: None,
+            },
+            Vec::new(),
+        ));
+    };
+
+    let _cram_contig_pin =
+        crate::bam::pin_cram_contig_for_spec(&config.bam, &last_region.chr, config);
+
+    #[cfg(test)]
+    static LIVE_BAM1_VARS_LISTS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+    #[cfg(test)]
+    struct Bam1VarsGuard;
+    #[cfg(test)]
+    impl Drop for Bam1VarsGuard {
+        fn drop(&mut self) {
+            LIVE_BAM1_VARS_LISTS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    // 1. Run BAM1 (tumor) per amplicon (seed_max_read_length = 0), aggregate, and
+    //    drop `vars_per_amplicon_bam1` immediately before starting BAM2!
+    let mut max_rl_per_amplicon: Vec<i32> = Vec::with_capacity(segment.len());
+    let mut combined_max_rl: i32 = 0;
+    let (aligned1, tumor_concordance, splice1) = {
+        #[cfg(test)]
+        let _bam1_guard = {
+            LIVE_BAM1_VARS_LISTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Bam1VarsGuard
+        };
+        let mut vars_per_amplicon_bam1 = Vec::with_capacity(segment.len());
+        let mut splice = rustc_hash::FxHashSet::default();
+        for region in segment {
+            let _region_guard =
+                crate::runner::enter_worker_region(&region.chr, region.start.0, region.end.0);
+            let (aligned, next_splice, max_rl) = process_amplicon_region_bams(
+                bam1_bams,
+                region,
+                config,
+                chromosomes_lengths,
+                0,
+                std::mem::take(&mut splice),
+            )?;
+            max_rl_per_amplicon.push(max_rl);
+            combined_max_rl = combined_max_rl.max(max_rl);
+            vars_per_amplicon_bam1.push(aligned);
+            splice = next_splice;
+        }
+        let (agg1, conc1) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars(
+            config,
+            segment,
+            vars_per_amplicon_bam1,
+            &splice,
+        );
+        (agg1, conc1, splice)
+    };
+
+    #[cfg(test)]
+    if config.threads <= 1 {
+        TEST_BAM1_LIVE_AT_BAM2_START.with(|c| {
+            c.set(Some(
+                LIVE_BAM1_VARS_LISTS.load(std::sync::atomic::Ordering::SeqCst),
+            ))
+        });
+    }
+
+    // 2. Run BAM2 (normal) per amplicon seeded with BAM1's `max_rl_per_amplicon[i]`
+    //    (`AGENTS.md §8`, `MHH-Bioinformatics-Hematology/vardictcpp#1`), aggregate,
+    //    and drop `vars_per_amplicon_bam2` immediately!
+    let (aligned2, normal_concordance, splice) = {
+        let mut vars_per_amplicon_bam2 = Vec::with_capacity(segment.len());
+        let mut splice = splice1;
+        for (idx, region) in segment.iter().enumerate() {
+            let _region_guard =
+                crate::runner::enter_worker_region(&region.chr, region.start.0, region.end.0);
+            let seed_rl = max_rl_per_amplicon.get(idx).copied().unwrap_or(0);
+            let (aligned, next_splice, max_rl) = process_amplicon_region_bams(
+                bam2_bams,
+                region,
+                config,
+                chromosomes_lengths,
+                seed_rl,
+                std::mem::take(&mut splice),
+            )?;
+            combined_max_rl = combined_max_rl.max(max_rl);
+            vars_per_amplicon_bam2.push(aligned);
+            splice = next_splice;
+        }
+        let (agg2, conc2) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars(
+            config,
+            segment,
+            vars_per_amplicon_bam2,
+            &splice,
+        );
+        (agg2, conc2, splice)
+    };
+
+    // 3. Build segment-bounding `Region` (`min(insert_start)..=max(insert_end)`) and
+    //    amplicon-aware `PositionPipelineFn` for `combineAnalysis`.
+    let mut min_ins = i32::MAX;
+    let mut max_ins = 1i32;
+    for reg in segment {
+        let (lo, hi) = crate::postprocess::amplicon::region_target_range_i32(reg);
+        if lo < min_ins {
+            min_ins = lo;
+        }
+        if hi > max_ins {
+            max_ins = hi;
+        }
+    }
+    if min_ins > max_ins {
+        min_ins = i32::try_from(last_region.start.0.max(1)).unwrap_or(1);
+        max_ins = i32::try_from(last_region.end.0.max(1)).unwrap_or(min_ins);
+    }
+    let segment_region = crate::regions::Region {
+        chr: last_region.chr.clone(),
+        start: crate::types::Pos1(u32::try_from(min_ins.max(1)).unwrap_or(1)),
+        end: crate::types::Pos1(u32::try_from(max_ins.max(1)).unwrap_or(1)),
+        gene: last_region.gene.clone(),
+        amplicon: None,
+    };
+
+    let _post_guard = crate::runner::enter_worker_region(
+        &segment_region.chr,
+        segment_region.start.0,
+        segment_region.end.0,
+    );
+
+    let mut bams_for_combine = Vec::with_capacity(bam1_bams.len() + bam2_bams.len());
+    bams_for_combine.extend(bam1_bams.iter().cloned());
+    bams_for_combine.extend(bam2_bams.iter().cloned());
+
+    let pipeline_fn = |_combine_region: &crate::regions::Region,
+                       splice_set: &mut rustc_hash::FxHashSet<String>,
+                       max_rl: &mut i32,
+                       target_pos: i32|
+     -> Result<Option<crate::variations::Vars>, VardictError> {
+        let mut covering_regs: Vec<crate::regions::Region> = Vec::new();
+        let mut vars_per_cov: Vec<crate::javamap::JavaHashMap<i32, crate::variations::Vars>> =
+            Vec::new();
+        for amp_reg in segment {
+            let (ins_lo, ins_hi) = crate::postprocess::amplicon::region_target_range_i32(amp_reg);
+            if target_pos < ins_lo || target_pos > ins_hi {
+                continue;
+            }
+            let mut pipeline_ref = crate::reference::Reference::new();
+            let mut var_data = run_pipeline_on_records(
+                &bams_for_combine,
+                &amp_reg.chr,
+                amp_reg.start.to_zero_based(),
+                crate::types::Pos0(amp_reg.end.0),
+                Some(amp_reg),
+                &mut pipeline_ref,
+                amp_reg,
+                PipelineTail::Full,
+                config,
+                chromosomes_lengths,
+                *max_rl,
+                Some(splice_set.clone()),
+            )?;
+            *splice_set = std::mem::take(&mut var_data.splice);
+            *max_rl = (*max_rl).max(var_data.max_read_length);
+
+            let builder_reg = if let Some(ref amp) = amp_reg.amplicon {
+                crate::regions::Region {
+                    chr: amp_reg.chr.clone(),
+                    start: amp.insert_start,
+                    end: amp.insert_end,
+                    gene: amp_reg.gene.clone(),
+                    amplicon: amp_reg.amplicon.clone(),
+                }
+            } else {
+                amp_reg.clone()
+            };
+            let builder = crate::tovars::ToVarsBuilder::new(
+                &pipeline_ref,
+                &builder_reg,
+                chromosomes_lengths,
+                config,
+            );
+            let mut m = crate::javamap::JavaHashMap::new();
+            if let Some(vars_at_pos) = builder.build_vars_at_position(&var_data, target_pos) {
+                m.insert(target_pos, vars_at_pos);
+            }
+            covering_regs.push(amp_reg.clone());
+            vars_per_cov.push(m);
+        }
+        if covering_regs.is_empty() {
+            return Ok(None);
+        }
+        let (mut agg_map, _) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars(
+            config,
+            &covering_regs,
+            vars_per_cov,
+            splice_set,
+        );
+        Ok(agg_map.remove(&target_pos))
+    };
+
+    // 4. Run somatic post-processing with merged `insert_start..=insert_end` bounds.
+    let mut somatic_variants = crate::postprocess::somatic::somatic_post_process_owned_with_bounds(
+        config,
+        &segment_region,
+        aligned1,
+        aligned2,
+        &splice,
+        Some(&pipeline_fn),
+        combined_max_rl,
+        strict_chr_bounds,
+    );
+    if config.compat.suppress_pileup_sentinels {
+        somatic_variants.retain(|sv| !sv.variant1.null_record);
+    }
+
+    // 5. Attach per-sample `AmpliconConcordance` (`tumor_amplicon` & `normal_amplicon`).
+    for sv in &mut somatic_variants {
+        sv.tumor_amplicon = Some(tumor_concordance.resolve(
+            sv.variant1.start_pos,
+            sv.variant1.end_pos,
+            &sv.variant1.ref_allele,
+            &sv.variant1.var_allele,
+            segment,
+        ));
+        sv.normal_amplicon = Some(normal_concordance.resolve(
+            sv.variant1.start_pos,
+            sv.variant1.end_pos,
+            &sv.variant1.ref_allele,
+            &sv.variant1.var_allele,
+            segment,
+        ));
+    }
+
+    Ok((segment_region, somatic_variants))
+}
+
+/// Bounded-RSS paired tumor/normal somatic amplicon mode (`-b "tumor|normal" -a`
+/// under `--compat=off` / `CompatProfile::paired_somatic_amplicon`,
+/// `AstraZeneca-NGS/VarDictJava#378`, `AstraZeneca-NGS/VarDictJava#155`,
+/// `AstraZeneca-NGS/VarDict#109`, `MHH-Bioinformatics-Hematology/vardictcpp#1`,
+/// `palakpsheth/VarDictRust#95`).
+fn run_somatic_amplicon<W: EngineWriter>(
+    config: &config::Config,
+    preloaded_bed_lines: Option<Vec<String>>,
+    writer: &mut W,
+    telemetry: Option<&RunTelemetryCounters>,
+) -> Result<(), VardictError> {
+    let mut parts = config.bam.split('|');
+    let (Some(bam1_spec), Some(bam2_spec), None) = (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(VardictError::Parse(
+            "Somatic mode requires exactly two BAM files separated by '|'".to_string(),
+        ));
+    };
+    let bam1_bams = parse_colon_bams(bam1_spec, "No tumor BAM file specified")?;
+    let bam2_bams = parse_colon_bams(bam2_spec, "No normal BAM file specified")?;
+    let first_bam1 = bam1_bams
+        .first()
+        .ok_or_else(|| VardictError::Parse("No tumor BAM file specified".to_string()))?;
+
+    // Fail-fast header & index validation across all tumor and normal BAMs/CRAMs
+    // (`AstraZeneca-NGS/VarDictJava#187`), wrapped on the worker stack when `-th 1`.
+    let validate_all_bams = || -> Result<HashMap<String, usize>, VardictError> {
+        let chr_lens = crate::bam::read_reference_lengths(Path::new(first_bam1), config)?;
+        for extra_t in bam1_bams.iter().skip(1) {
+            let _ = crate::bam::read_reference_lengths(Path::new(extra_t), config)?;
+        }
+        for norm_b in &bam2_bams {
+            let _ = crate::bam::read_reference_lengths(Path::new(norm_b), config)?;
+        }
+        Ok(chr_lens)
+    };
+    let chromosomes_lengths = if config.threads <= 1 {
+        crate::runner::run_with_worker_stack_for_bam(&config.bam, validate_all_bams)?
+    } else {
+        validate_all_bams()?
+    };
+
+    let segments = parse_target_regions(config, preloaded_bed_lines, &chromosomes_lengths)?;
+    let segments: Vec<Vec<crate::regions::Region>> =
+        segments.into_iter().filter(|s| !s.is_empty()).collect();
+
+    let strict_chr_intervals: StrictChrIntervals = config
+        .compat
+        .strict_region_bounds
+        .then(|| std::sync::Arc::new(build_strict_chr_target_intervals(&segments)));
+    if let Some(tel) = telemetry {
+        let total_regions: usize = segments.iter().map(Vec::len).sum();
+        tel.regions_count
+            .store(total_regions, std::sync::atomic::Ordering::Relaxed);
+        tel.tiles_count
+            .store(segments.len(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    let vcf_contigs = if !config.emit_intermediate {
+        Some(
+            crate::output::vcf::prevalidate_vcf_header_contigs(config, &chromosomes_lengths)
+                .map_err(VardictError::Io)?,
+        )
+    } else {
+        if config.column_header {
+            writer.emit_column_header(config)?;
+        }
+        None
+    };
+
+    enum SomaticAmpliconSegmentOutput {
+        VarBlock(String),
+        Vcf {
+            chr: String,
+            candidates: Vec<SomaticVcfCandidate>,
+        },
+    }
+
+    impl SomaticAmpliconSegmentOutput {
+        fn approx_heap_bytes(&self) -> usize {
+            match self {
+                Self::VarBlock(block) => block.capacity(),
+                Self::Vcf { chr, candidates } => chr
+                    .capacity()
+                    .saturating_add(
+                        candidates
+                            .capacity()
+                            .saturating_sub(candidates.len())
+                            .saturating_mul(std::mem::size_of::<SomaticVcfCandidate>()),
+                    )
+                    .saturating_add(
+                        candidates
+                            .iter()
+                            .map(SpillableCandidate::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    ),
+            }
+        }
+    }
+
+    let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> =
+        SpillableVcfAccumulator::from_config(config);
+    let config_clone = config.clone();
+    let chromosomes_lengths_clone = chromosomes_lengths.clone();
+    let strict_chr_worker = strict_chr_intervals;
+
+    crate::runner::run_parallel_for_bam_weighted(
+        &config.bam,
+        segments,
+        config.threads,
+        move |segment| -> Result<SomaticAmpliconSegmentOutput, VardictError> {
+            if segment.is_empty() {
+                return Ok(SomaticAmpliconSegmentOutput::VarBlock(String::new()));
+            }
+            let run_seg = || -> Result<SomaticAmpliconSegmentOutput, VardictError> {
+                #[cfg(test)]
+                if config_clone.threads <= 1 && crate::runner::bam_spec_has_cram(&config_clone.bam)
+                {
+                    let outer_tid = std::thread::current().id();
+                    let inner_tid =
+                        crate::runner::run_with_worker_stack_for_bam("probe.cram", || {
+                            Ok(std::thread::current().id())
+                        })?;
+                    TEST_CRAM_TH1_ON_64MB_STACK
+                        .store(outer_tid == inner_tid, std::sync::atomic::Ordering::SeqCst);
+                }
+
+                let chr_name = segment.last().map_or("", |r| r.chr.as_str());
+                let chr_strict_slice = strict_chr_worker
+                    .as_ref()
+                    .map(|m| m.get(chr_name).map_or(&[][..], Vec::as_slice));
+                let (segment_region, somatic_variants) = compute_somatic_amplicon_segment_variants(
+                    &segment,
+                    &bam1_bams,
+                    &bam2_bams,
+                    &config_clone,
+                    &chromosomes_lengths_clone,
+                    chr_strict_slice,
+                )?;
+                if config_clone.emit_intermediate {
+                    let block = format_unsplit_somatic_var_block(
+                        &somatic_variants,
+                        &segment_region,
+                        &config_clone,
+                    );
+                    Ok(SomaticAmpliconSegmentOutput::VarBlock(block))
+                } else {
+                    let candidates = build_unsplit_somatic_vcf_candidates(
+                        somatic_variants,
+                        &segment_region.chr,
+                        &config_clone,
+                    );
+                    Ok(SomaticAmpliconSegmentOutput::Vcf {
+                        chr: segment_region.chr,
+                        candidates,
+                    })
+                }
+            };
+            if config_clone.threads <= 1 {
+                crate::runner::run_with_worker_stack_for_bam(&config_clone.bam, run_seg)
+            } else {
+                run_seg()
+            }
+        },
+        |output| {
+            match output {
+                SomaticAmpliconSegmentOutput::VarBlock(block) => {
+                    if !block.is_empty() {
+                        std::io::Write::write_all(writer, block.as_bytes())
+                            .map_err(VardictError::Io)?;
+                    }
+                }
+                SomaticAmpliconSegmentOutput::Vcf { chr, candidates } => {
+                    for cand in candidates {
+                        vcf_acc.insert(&chr, cand)?;
+                    }
+                }
+            }
+            Ok(())
+        },
+        SomaticAmpliconSegmentOutput::approx_heap_bytes,
+    )?;
+
+    emit_paired_vcf_accumulator(vcf_acc, vcf_contigs.as_deref(), config, writer)
 }
 
 /// Paired-VCF row selection: bucket by tumor-variant start (var2vcf_paired.pl
@@ -10382,18 +10905,19 @@ mod tests {
             }),
         };
 
-        let (_, splice1) = process_amplicon_region(
+        let (_, splice1, _) = process_amplicon_region(
             &cfg.bam,
             &reg1,
             &cfg,
             &chr_lengths,
+            0,
             rustc_hash::FxHashSet::default(),
         )
         .unwrap();
         assert!(splice1.contains("19-39"));
 
-        let (_, splice2) =
-            process_amplicon_region(&cfg.bam, &reg2, &cfg, &chr_lengths, splice1).unwrap();
+        let (_, splice2, _) =
+            process_amplicon_region(&cfg.bam, &reg2, &cfg, &chr_lengths, 0, splice1).unwrap();
         assert!(
             splice2.contains("19-39"),
             "second amplicon segment in cluster must preserve splice junctions from first segment"
@@ -13117,5 +13641,486 @@ mod tests {
         let paired_off =
             select_paired_rows_compat(vec![sv(100, 0.0, "A"), sv(100, tie_4dp, "C")], true);
         assert_eq!(paired_off[0].variant1.ref_allele, "C");
+    }
+
+    #[test]
+    fn test_paired_somatic_amplicon_end_to_end_rss_drop_primer_masking_and_cram_stack() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::data::field::Tag;
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::data::field::Value as BufValue;
+        use noodles::sam::alignment::record_buf::{Cigar, Data};
+        use noodles::sam::alignment::RecordBuf;
+        use noodles::sam::header::record::value::{
+            map::ReferenceSequence as RefSeqMap, Map as HeaderMap,
+        };
+        use noodles::sam::Header;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let fasta_path = dir.path().join("ref.fa");
+        let fai_path = dir.path().join("ref.fa.fai");
+        // Non-homopolymer reference so MSI=1 everywhere
+        let ref_bases = "ACGTTGCA".repeat(60); // 480 bp
+        std::fs::write(&fasta_path, format!(">chr1\n{ref_bases}\n")).unwrap();
+        std::fs::write(&fai_path, "chr1\t480\t6\t480\t481\n").unwrap();
+        let ref_bytes = ref_bases.as_bytes();
+
+        let mk_read = |name: &str, start_1b: usize, len: usize, muts: &[(usize, u8)], rev: bool| {
+            let mut seq = ref_bytes[(start_1b - 1)..(start_1b - 1 + len)].to_vec();
+            let mut nm = 0i32;
+            for &(pos_1b, alt_b) in muts {
+                if pos_1b >= start_1b && pos_1b < start_1b + len {
+                    let idx = pos_1b - start_1b;
+                    if seq[idx] != alt_b {
+                        seq[idx] = alt_b;
+                        nm += 1;
+                    }
+                }
+            }
+            let cigar: Cigar = [Op::new(Kind::Match, len)].into_iter().collect();
+            let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(nm))]
+                .into_iter()
+                .collect();
+            let flags = if rev {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1b).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![38u8; len].into())
+                .set_data(data)
+                .build()
+        };
+
+        // Two overlapping amplicons in an 8-column 0-based amplicon BED:
+        // Amp0: 1-based region 101..=200 (0-based 100..200), insert 111..=190 (0-based 110..190)
+        // Amp1: 1-based region 131..=230 (0-based 130..230), insert 141..=220 (0-based 140..220)
+        // Overlap insert: 141..=190!
+        // Variants planted (avoiding reads ending at identical pos via varied read lengths 98..100 within dist=10):
+        // - Pos 155 (ref 'T'): StrongSomatic T>C in Tumor (Amp0 + Amp1), wildtype in Normal (Amp0 low-cov 4x vs Amp1 high-cov 40x -> Normal DP must be 40, NOT 4!)
+        // - Pos 165 (ref 'A'): Germline A>G in BOTH Tumor and Normal (Amp0 + Amp1)
+        // - Pos 175 (ref 'G'): StrongLOH G>T in Normal ONLY (Amp0 + Amp1), wildtype in Tumor
+        // - Pos 105 (in Amp0 5' primer 101..110): Tumor primer artifact -> MUST BE SUPPRESSED!
+        // - Pos 225 (in Amp1 3' primer 221..230): Normal primer artifact -> MUST BE SUPPRESSED!
+        let amp_bed = dir.path().join("panel.bed");
+        std::fs::write(
+            &amp_bed,
+            "chr1\t100\t200\tEGFR\t0\t+\t110\t190\nchr1\t130\t230\tEGFR\t0\t+\t140\t220\n",
+        )
+        .unwrap();
+
+        let mut tumor_reads = Vec::new();
+        let mut normal_reads = Vec::new();
+
+        // Tumor Amp0 (101..=200, 20 reads: 8 alt at 155 + 105 primer mut, 8 alt at 165, 4 wt)
+        for i in 0..20usize {
+            let start = 101 + (i % 3);
+            let len = 100 - (i % 3); // ends at 200
+            let rev = i % 2 == 1;
+            let mut muts = Vec::new();
+            if i < 8 {
+                muts.push((105, b'A'));
+                muts.push((155, b'C'));
+            } else if i < 16 {
+                muts.push((165, b'G'));
+            }
+            tumor_reads.push(mk_read(&format!("t_a0_{i}"), start, len, &muts, rev));
+        }
+        // Tumor Amp1 (131..=230, 20 reads: 8 alt at 155, 8 alt at 165, 4 wt)
+        for i in 0..20usize {
+            let start = 131 + (i % 3);
+            let len = 100 - (i % 3);
+            let rev = i % 2 == 1;
+            let mut muts = Vec::new();
+            if i < 8 {
+                muts.push((155, b'C'));
+            } else if i < 16 {
+                muts.push((165, b'G'));
+            }
+            tumor_reads.push(mk_read(&format!("t_a1_{i}"), start, len, &muts, rev));
+        }
+
+        // Normal Amp0 (101..=200, LOW depth = 6 reads: 3 alt at 165, 3 alt at 175, 0 alt at 155 -> cov=6 at 155!)
+        for i in 0..6usize {
+            let start = 101 + (i % 3);
+            let len = 100 - (i % 3);
+            let rev = i % 2 == 1;
+            let mut muts = Vec::new();
+            if i < 3 {
+                muts.push((165, b'G'));
+            } else {
+                muts.push((175, b'T'));
+            }
+            normal_reads.push(mk_read(&format!("n_a0_{i}"), start, len, &muts, rev));
+        }
+        // Normal Amp1 (131..=230, HIGH depth = 40 reads: 16 alt at 165, 16 alt at 175 + 225 primer mut, 8 wt -> cov=40 at 155!)
+        for i in 0..40usize {
+            let start = 131 + (i % 3);
+            let len = 100 - (i % 3);
+            let rev = i % 2 == 1;
+            let mut muts = Vec::new();
+            if i < 16 {
+                muts.push((165, b'G'));
+            } else if i < 32 {
+                muts.push((175, b'T'));
+                muts.push((225, b'A'));
+            }
+            normal_reads.push(mk_read(&format!("n_a1_{i}"), start, len, &muts, rev));
+        }
+
+        tumor_reads.sort_by_key(|r| r.alignment_start().unwrap());
+        normal_reads.sort_by_key(|r| r.alignment_start().unwrap());
+
+        let tumor_bam = dir.path().join("tumor_amp.bam");
+        let normal_bam = dir.path().join("normal_amp.bam");
+        write_test_bam(&tumor_bam, "chr1", 480, &tumor_reads);
+        write_test_bam(&normal_bam, "chr1", 480, &normal_reads);
+
+        // 1. Default COMPAT_VARDICTJAVA_1_8_3 rejects VCF with updated hint while preserving AstraZeneca-NGS/VarDictJava#378 substring!
+        let base_paired_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", tumor_bam.display(), normal_bam.display()),
+            bed: Some(amp_bed.to_string_lossy().into_owned()),
+            threads: 1,
+            ..Default::default()
+        };
+        let mut vj_vcf = Vec::new();
+        let vj_err = run_with_writer(&base_paired_cfg, &mut vj_vcf)
+            .expect_err("default compat must reject paired amplicon VCF");
+        match vj_err {
+            VardictError::Unsupported(msg) => {
+                assert!(
+                    msg.contains("Paired BAM (-b tumor|normal) with amplicon mode (-a) is not supported in VCF mode (#378)"),
+                    "must preserve #378 substring: {msg}"
+                );
+                assert!(
+                    msg.contains("; pass --compat=off to enable paired somatic amplicon calling"),
+                    "must append --compat=off hint: {msg}"
+                );
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+
+        // 2. COMPAT_OFF VCF mode: runs bounded-RSS paired somatic amplicon calling!
+        let mut off_vcf_cfg = base_paired_cfg.clone();
+        off_vcf_cfg.compat = crate::config::COMPAT_OFF;
+        let mut vcf_buf = Vec::new();
+        run_with_writer(&off_vcf_cfg, &mut vcf_buf).expect("paired somatic amplicon VCF");
+        let vcf_str = String::from_utf8(vcf_buf).unwrap();
+        assert!(vcf_str.contains("##VarDictRustCompat=off\n"));
+        assert!(
+            vcf_str.contains(
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ttumor_amp\tnormal_amp\n"
+            ),
+            "paired sample names must be resolved in VCF header, got:\n{vcf_str}"
+        );
+        let data_lines: Vec<&str> = vcf_str.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            data_lines.len(),
+            3,
+            "expected exactly 3 somatic amplicon calls (155 StrongSomatic, 165 Germline, 175 StrongLOH; primer 105 & 225 masked), got:\n{vcf_str}"
+        );
+        assert!(data_lines[0].starts_with("chr1\t155\t.\t"));
+        assert!(data_lines[0].contains("STATUS=StrongSomatic"));
+        // Normal column (last col) must reflect highest-cov normal ref_variant (DP=40, NOT 6!)
+        let cols_155: Vec<&str> = data_lines[0].split('\t').collect();
+        assert!(
+            cols_155[10].starts_with("0/0:40:0:"),
+            "normal FORMAT column at 155 must use highest-cov in-insert ref_variant (DP=40), got: {}",
+            cols_155[10]
+        );
+        assert!(data_lines[1].starts_with("chr1\t165\t.\t"));
+        assert!(data_lines[1].contains("STATUS=Germline"));
+        assert!(data_lines[2].starts_with("chr1\t175\t.\t"));
+        assert!(data_lines[2].contains("STATUS=StrongLOH"));
+
+        // 3. COMPAT_OFF `.var` intermediate mode (`-h` + 55/61 columns):
+        for (fisher, expected_cols) in [(false, 55usize), (true, 61usize)] {
+            let mut var_cfg = off_vcf_cfg.clone();
+            var_cfg.emit_intermediate = true;
+            var_cfg.column_header = true;
+            var_cfg.fisher = fisher;
+            let mut var_buf = Vec::new();
+            run_with_writer(&var_cfg, &mut var_buf).expect("paired somatic amplicon .var");
+            let var_str = String::from_utf8(var_buf).unwrap();
+            let mut lines = var_str.lines();
+            let hdr = lines.next().expect("header line");
+            assert_eq!(hdr.split('\t').count(), 55);
+            assert!(hdr.ends_with("VarLabel\tVarType\tDuprate1\tSV_info1\tDuprate2\tSV_info2"));
+            let rows: Vec<&str> = lines.collect();
+            assert_eq!(rows.len(), 3);
+            for r in rows {
+                assert_eq!(r.split('\t').count(), expected_cols);
+            }
+        }
+
+        // 4. Verify `BAM1` per-amplicon maps are dropped (`0` live lists) BEFORE `BAM2` begins,
+        //    and check exact `sv.tumor_amplicon` / `sv.normal_amplicon` concordance across
+        //    `StrongSomatic` (155), `Germline` (165), and `StrongLOH` (175)!
+        let (eff_off_cfg, _, pre_bed) = resolve_effective_config(&off_vcf_cfg).unwrap();
+        let chr_lens = crate::bam::read_reference_lengths(&tumor_bam, &eff_off_cfg).unwrap();
+        let parsed_segs = parse_target_regions(&eff_off_cfg, pre_bed, &chr_lens).unwrap();
+        let strict_map = build_strict_chr_target_intervals(&parsed_segs);
+        let (_, seg_svs) = compute_somatic_amplicon_segment_variants(
+            &parsed_segs[0],
+            &[tumor_bam.to_string_lossy().into_owned()],
+            &[normal_bam.to_string_lossy().into_owned()],
+            &eff_off_cfg,
+            &chr_lens,
+            strict_map.get("chr1").map(Vec::as_slice),
+        )
+        .unwrap();
+        let live_at_bam2 = TEST_BAM1_LIVE_AT_BAM2_START.with(|c| c.get());
+        assert_eq!(
+            live_at_bam2,
+            Some(0),
+            "vars_per_amplicon for BAM1 must be dropped before BAM2 execution starts"
+        );
+        assert_eq!(seg_svs.len(), 3);
+        // 155 StrongSomatic: tumor 2/2, normal 0/2
+        assert_eq!(seg_svs[0].status, "StrongSomatic");
+        assert_eq!(
+            seg_svs[0].tumor_amplicon,
+            Some(crate::config::AmpliconConcordance {
+                gdamp: 2,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            })
+        );
+        assert_eq!(
+            seg_svs[0].normal_amplicon,
+            Some(crate::config::AmpliconConcordance {
+                gdamp: 0,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            })
+        );
+        // 165 Germline: tumor 2/2, normal 2/2
+        assert_eq!(seg_svs[1].status, "Germline");
+        assert_eq!(
+            seg_svs[1].tumor_amplicon,
+            Some(crate::config::AmpliconConcordance {
+                gdamp: 2,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            })
+        );
+        assert_eq!(
+            seg_svs[1].normal_amplicon,
+            Some(crate::config::AmpliconConcordance {
+                gdamp: 2,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            })
+        );
+        // 175 StrongLOH: tumor 0/2, normal 2/2
+        assert_eq!(seg_svs[2].status, "StrongLOH");
+        assert_eq!(
+            seg_svs[2].tumor_amplicon,
+            Some(crate::config::AmpliconConcordance {
+                gdamp: 0,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            })
+        );
+        assert_eq!(
+            seg_svs[2].normal_amplicon,
+            Some(crate::config::AmpliconConcordance {
+                gdamp: 2,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            })
+        );
+
+        // 5. Verify 64 MiB CRAM worker stack on `-th 1` when invoked from a 2 MiB caller thread!
+        let write_cram_with_reads = |cram_path: &Path, reads: &[RecordBuf]| {
+            let rs = HeaderMap::<RefSeqMap>::builder()
+                .set_length(480usize.try_into().unwrap())
+                .build()
+                .unwrap();
+            let header = Header::builder().add_reference_sequence("chr1", rs).build();
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(std::fs::File::open(&fasta_path).unwrap()),
+                noodles::fasta::fai::fs::read(&fai_path).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let mut writer = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(cram_path)
+                .unwrap();
+            noodles::sam::alignment::io::Write::write_alignment_header(&mut writer, &header)
+                .unwrap();
+            for rec in reads {
+                noodles::sam::alignment::io::Write::write_alignment_record(
+                    &mut writer,
+                    &header,
+                    rec,
+                )
+                .unwrap();
+            }
+            writer.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(cram_path).unwrap();
+            noodles::cram::crai::fs::write(cram_path.with_extension("cram.crai"), &crai).unwrap();
+        };
+        let tumor_cram = dir.path().join("tumor_amp.cram");
+        let normal_cram = dir.path().join("normal_amp.cram");
+        write_cram_with_reads(&tumor_cram, &tumor_reads);
+        write_cram_with_reads(&normal_cram, &normal_reads);
+
+        let cram_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", tumor_cram.display(), normal_cram.display()),
+            sample: "T_CRAM|N_CRAM".to_string(),
+            sample_explicit: true,
+            bed: Some(amp_bed.to_string_lossy().into_owned()),
+            threads: 1,
+            compat: crate::config::COMPAT_OFF,
+            ..Default::default()
+        };
+        TEST_CRAM_TH1_ON_64MB_STACK.store(false, std::sync::atomic::Ordering::SeqCst);
+        let cram_vcf = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                let mut out = Vec::new();
+                run_with_writer(&cram_cfg, &mut out).expect("cram -th 1 paired somatic amplicon");
+                let on_64mb = TEST_CRAM_TH1_ON_64MB_STACK.load(std::sync::atomic::Ordering::SeqCst);
+                (String::from_utf8(out).unwrap(), on_64mb)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(
+            cram_vcf.1,
+            "-th 1 paired somatic amplicon on .cram must execute inside a 64 MiB worker stack"
+        );
+        assert_eq!(
+            cram_vcf.0.lines().filter(|l| !l.starts_with('#')).count(),
+            3
+        );
+
+        // 6. Verify amplicon-aware `PositionPipelineFn` (`combineAnalysis`):
+        //    A 3-read 12-bp deletion (`44M12D44M`, `-12`, `pos_coverage = 3 < min_reads + 3`)
+        //    in Tumor triggers `combineAnalysis`. Off-amplicon Normal reads carrying the same
+        //    12-bp deletion (`start = 61`, `|61 - 101| = 40 > dist = 10`) MUST be filtered out
+        //    during `combineAnalysis` so the deletion stays `StrongSomatic` (not `Germline`)!
+        let mk_del12_read =
+            |name: &str, start_1b: usize, pre_m: usize, post_m: usize, rev: bool| {
+                let mut seq = Vec::with_capacity(pre_m + post_m);
+                seq.extend_from_slice(&ref_bytes[(start_1b - 1)..(start_1b - 1 + pre_m)]);
+                seq.extend_from_slice(
+                    &ref_bytes[(start_1b - 1 + pre_m + 12)..(start_1b - 1 + pre_m + 12 + post_m)],
+                );
+                let cigar: Cigar = [
+                    Op::new(Kind::Match, pre_m),
+                    Op::new(Kind::Deletion, 12),
+                    Op::new(Kind::Match, post_m),
+                ]
+                .into_iter()
+                .collect();
+                let data: Data = [(Tag::EDIT_DISTANCE, BufValue::from(12i32))]
+                    .into_iter()
+                    .collect();
+                let flags = if rev {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let qlen = seq.len();
+                RecordBuf::builder()
+                    .set_name(name)
+                    .set_flags(flags)
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1b).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::new(60).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![38u8; qlen].into())
+                    .set_data(data)
+                    .build()
+            };
+        let mut t_comb_reads = Vec::new();
+        // 3 in-amplicon deletion reads spanning 101..=200 (44M + 12D at 145..=156 + 44M = 100 bp ref span)
+        t_comb_reads.push(mk_del12_read("td0", 101, 44, 44, false));
+        t_comb_reads.push(mk_del12_read("td1", 102, 43, 44, true));
+        t_comb_reads.push(mk_del12_read("td2", 103, 42, 44, false));
+        for i in 0..17usize {
+            t_comb_reads.push(mk_read(
+                &format!("tw_{i}"),
+                101 + (i % 3),
+                100 - (i % 3),
+                &[],
+                i % 2 == 1,
+            ));
+        }
+        t_comb_reads.sort_by_key(|r| r.alignment_start().unwrap());
+
+        let mut n_comb_reads = Vec::new();
+        // 3 OFF-amplicon deletion reads starting at 61..63 (`|61 - 101| = 40 > 10`) spanning 145..=156!
+        n_comb_reads.push(mk_del12_read("nd_off0", 61, 84, 30, false));
+        n_comb_reads.push(mk_del12_read("nd_off1", 62, 83, 30, true));
+        n_comb_reads.push(mk_del12_read("nd_off2", 63, 82, 30, false));
+        for i in 0..20usize {
+            n_comb_reads.push(mk_read(
+                &format!("nw_{i}"),
+                101 + (i % 3),
+                100 - (i % 3),
+                &[],
+                i % 2 == 1,
+            ));
+        }
+        n_comb_reads.sort_by_key(|r| r.alignment_start().unwrap());
+
+        let single_amp_bed = dir.path().join("single_amp.bed");
+        std::fs::write(&single_amp_bed, "chr1\t100\t200\tEGFR\t0\t+\t110\t190\n").unwrap();
+        let t_comb_bam = dir.path().join("t_comb.bam");
+        let n_comb_bam = dir.path().join("n_comb.bam");
+        write_test_bam(&t_comb_bam, "chr1", 480, &t_comb_reads);
+        write_test_bam(&n_comb_bam, "chr1", 480, &n_comb_reads);
+
+        let comb_cfg = crate::config::Config {
+            reference: fasta_path.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", t_comb_bam.display(), n_comb_bam.display()),
+            bed: Some(single_amp_bed.to_string_lossy().into_owned()),
+            threads: 1,
+            compat: crate::config::COMPAT_OFF,
+            ..Default::default()
+        };
+        let mut comb_vcf = Vec::new();
+        run_with_writer(&comb_cfg, &mut comb_vcf).expect("combineAnalysis paired amplicon");
+        let comb_vcf_str = String::from_utf8(comb_vcf).unwrap();
+        let comb_lines: Vec<&str> = comb_vcf_str
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .collect();
+        assert_eq!(
+            comb_lines.len(),
+            1,
+            "expected 1 deletion call, got:\n{comb_vcf_str}"
+        );
+        assert!(
+            comb_lines[0].contains("STATUS=StrongSomatic"),
+            "off-amplicon normal reads must NOT contaminate combineAnalysis into Germline, got:\n{}",
+            comb_lines[0]
+        );
     }
 }
