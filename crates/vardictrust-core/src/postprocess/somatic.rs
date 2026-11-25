@@ -74,16 +74,41 @@ pub struct SomaticVariant {
     pub normal_amplicon: Option<crate::config::AmpliconConcordance>,
 }
 
+#[inline]
+fn has_1bp_upstream_symbolic_sv(vars: Option<&Vars>, upstream_pos: i32) -> bool {
+    upstream_pos >= 1
+        && vars.is_some_and(|vs| {
+            vs.variants.iter().any(|v| {
+                v.start_pos == upstream_pos
+                    && v.var_allele.starts_with('<')
+                    && v.end_pos > v.start_pos
+            })
+        })
+}
+
 fn collect_sorted_region_positions(
+    config: &Config,
     region: &Region,
     aligned_variants_bam1: &JavaHashMap<i32, Vars>,
     aligned_variants_bam2: &JavaHashMap<i32, Vars>,
 ) -> Vec<i32> {
+    let upstream_sv_pos = if config.compat.canonical_sv_vcf_anchoring && region.start.0 > 1 {
+        i32::try_from(region.start.0 - 1).ok()
+    } else {
+        None
+    };
+    let include_upstream = upstream_sv_pos.is_some_and(|up| {
+        has_1bp_upstream_symbolic_sv(aligned_variants_bam1.get(&up), up)
+            || has_1bp_upstream_symbolic_sv(aligned_variants_bam2.get(&up), up)
+    });
     let mut all_positions: Vec<i32> = aligned_variants_bam1
         .keys()
         .chain(aligned_variants_bam2.keys())
         .copied()
-        .filter(|&p| u32::try_from(p).is_ok_and(|pu| pu >= region.start.0 && pu <= region.end.0))
+        .filter(|&p| {
+            (include_upstream && Some(p) == upstream_sv_pos)
+                || u32::try_from(p).is_ok_and(|pu| pu >= region.start.0 && pu <= region.end.0)
+        })
         .collect();
     all_positions.sort_unstable();
     all_positions.dedup();
@@ -95,12 +120,13 @@ fn dispatch_somatic_position(
     position: i32,
     v1: Option<std::borrow::Cow<'_, Vars>>,
     v2: Option<std::borrow::Cow<'_, Vars>>,
-    chr: &str,
+    region: &Region,
     splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PositionPipelineFn<'_>>,
     max_read_length: &mut i32,
 ) {
+    let pre_len = results.len();
     match (v1, v2) {
         (None, None) => {}
         (None, Some(v2)) => {
@@ -118,12 +144,27 @@ fn dispatch_somatic_position(
                 position,
                 v1,
                 v2,
-                chr,
+                &region.chr,
                 splice,
                 results,
                 pipeline,
                 max_read_length,
             );
+        }
+    }
+    if u32::try_from(position).is_ok_and(|pu| pu < region.start.0) {
+        let mut idx = pre_len;
+        while idx < results.len() {
+            let keep = results.get(idx).is_some_and(|sv| {
+                sv.variant1.start_pos >= 1
+                    && sv.variant1.var_allele.starts_with('<')
+                    && sv.variant1.end_pos > sv.variant1.start_pos
+            });
+            if keep {
+                idx += 1;
+            } else {
+                results.remove(idx);
+            }
         }
     }
 }
@@ -176,8 +217,12 @@ pub fn somatic_post_process_at(
         std::borrow::Cow::Borrowed(splice);
     let mut max_read_length = max_read_length;
 
-    let all_positions =
-        collect_sorted_region_positions(region, aligned_variants_bam1, aligned_variants_bam2);
+    let all_positions = collect_sorted_region_positions(
+        config,
+        region,
+        aligned_variants_bam1,
+        aligned_variants_bam2,
+    );
 
     for position in all_positions {
         let v1 = aligned_variants_bam1
@@ -191,7 +236,7 @@ pub fn somatic_post_process_at(
             position,
             v1,
             v2,
-            &region.chr,
+            region,
             &mut splice,
             &mut results,
             pipeline,
@@ -253,8 +298,12 @@ pub(crate) fn somatic_post_process_owned_with_bounds(
         std::borrow::Cow::Borrowed(splice);
     let mut max_read_length = max_read_length;
 
-    let all_positions =
-        collect_sorted_region_positions(region, &aligned_variants_bam1, &aligned_variants_bam2);
+    let all_positions = collect_sorted_region_positions(
+        config,
+        region,
+        &aligned_variants_bam1,
+        &aligned_variants_bam2,
+    );
 
     for position in all_positions {
         let v1 = aligned_variants_bam1
@@ -268,7 +317,7 @@ pub(crate) fn somatic_post_process_owned_with_bounds(
             position,
             v1,
             v2,
-            &region.chr,
+            region,
             &mut splice,
             &mut results,
             pipeline,
@@ -3908,5 +3957,110 @@ mod tests {
             100,
         );
         assert!(strict_only_owned.is_empty());
+    }
+
+    #[test]
+    fn test_somatic_unextended_region_retains_pre_anchored_dup_at_region_start_minus_1() {
+        // Under `clintval/vartovcf#192` (`canonical_sv_vcf_anchoring`), `realign.rs` and `sv.rs`
+        // key `<dupN>` entries starting at `bp == region.start` (100) into `aligned_variants` at
+        // map key `bi = bp - 1` (99) so split-read and discordant `<DUP>` merge at `99`.
+        // Even on an unextended somatic region `[100, 200]`, `collect_sorted_region_positions`
+        // must visit key `99` for symbolic SVs while suppressing any non-SV halo allele at `99`
+        // (even when `strict_region_bounds` is false) and keeping default parity unchanged.
+        let reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let empty_splice = rustc_hash::FxHashSet::default();
+
+        let make_key99_inputs = || {
+            let mut bam1 = JavaHashMap::new();
+            let mut bam2 = JavaHashMap::new();
+
+            let mut vars_99_t = Vars::new();
+            let mut dup_sv = make_good_variant("<DUP>", "C", "<DUP>", 0.40);
+            dup_sv.start_pos = 99;
+            dup_sv.end_pos = 250;
+            vars_99_t.variants.push(dup_sv);
+
+            let mut halo_snv = make_good_variant("G", "C", "G", 0.35);
+            halo_snv.start_pos = 99;
+            halo_snv.end_pos = 99;
+            vars_99_t.variants.push(halo_snv);
+            vars_99_t.sv = "5-2-1".to_string();
+            bam1.insert(99, vars_99_t);
+
+            let mut vars_99_n = Vars::new();
+            let mut rv99 = Variant::new();
+            rv99.start_pos = 99;
+            rv99.end_pos = 99;
+            rv99.total_pos_cov = 60;
+            rv99.ref_fwd_cov = 30;
+            rv99.ref_rev_cov = 30;
+            vars_99_n.ref_variant = Some(rv99);
+            bam2.insert(99, vars_99_n);
+            (bam1, bam2)
+        };
+
+        // 1. Default `COMPAT_VARDICTJAVA_1_8_3`: key 99 < region.start (100) is ignored.
+        let vj_cfg = test_config();
+        let (b1_vj, b2_vj) = make_key99_inputs();
+        assert!(
+            somatic_post_process_at(&vj_cfg, &reg, &b1_vj, &b2_vj, &empty_splice, None, 100)
+                .is_empty()
+        );
+        assert!(
+            somatic_post_process_owned(&vj_cfg, &reg, b1_vj, b2_vj, &empty_splice, None, 100)
+                .is_empty()
+        );
+
+        // 2. Full `COMPAT_OFF`: `<DUP>` at key 99 is retained as `StrongSomatic`, while `halo_snv` is excluded.
+        let mut off_cfg = test_config();
+        off_cfg.compat = crate::config::COMPAT_OFF;
+        let (b1_off, b2_off) = make_key99_inputs();
+        let out_at =
+            somatic_post_process_at(&off_cfg, &reg, &b1_off, &b2_off, &empty_splice, None, 100);
+        assert_eq!(out_at.len(), 1);
+        assert_eq!(out_at[0].variant1.start_pos, 99);
+        assert_eq!(out_at[0].variant1.var_allele, "<DUP>");
+        assert_eq!(out_at[0].status, STRONG_SOMATIC);
+        let out_owned =
+            somatic_post_process_owned(&off_cfg, &reg, b1_off, b2_off, &empty_splice, None, 100);
+        assert_eq!(out_owned.len(), 1);
+        assert_eq!(out_owned[0].variant1.var_allele, "<DUP>");
+
+        // 3. Single-switch `canonical_sv_vcf_anchoring: true` (`strict_region_bounds: false`):
+        //    `<DUP>` at key 99 is retained and `halo_snv` at key 99 still does NOT leak.
+        let mut anchor_only_cfg = test_config();
+        anchor_only_cfg.compat = crate::config::CompatProfile {
+            canonical_sv_vcf_anchoring: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        let (b1_anc, b2_anc) = make_key99_inputs();
+        let anc_at = somatic_post_process_at(
+            &anchor_only_cfg,
+            &reg,
+            &b1_anc,
+            &b2_anc,
+            &empty_splice,
+            None,
+            100,
+        );
+        assert_eq!(anc_at.len(), 1);
+        assert_eq!(anc_at[0].variant1.var_allele, "<DUP>");
+        let anc_owned = somatic_post_process_owned(
+            &anchor_only_cfg,
+            &reg,
+            b1_anc,
+            b2_anc,
+            &empty_splice,
+            None,
+            100,
+        );
+        assert_eq!(anc_owned.len(), 1);
+        assert_eq!(anc_owned[0].variant1.var_allele, "<DUP>");
     }
 }

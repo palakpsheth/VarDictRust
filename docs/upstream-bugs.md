@@ -254,7 +254,7 @@ foreach my $p (@pos) {
 ```
 Only the single candidate allele with the highest allele frequency (`$tmp[0]`) is considered at each genomic locus. If that winner candidate is skipped (for example, if `$ref` is empty from a `-p` null-record, or if an SV candidate has `splitreads < 1` per [UB-5](#ub-5)), the loop executes `next` and terminates immediately. As a result, legitimate alternative variants at the same locus with lower allele frequencies are completely excluded from the VCF.
 
-**Our replication stance:** **Replicated** byte-for-byte by default (`--compat=vardictjava` / `--parity` when `--vcf-all-alleles` is omitted) in [`crates/vardictrust-core/src/postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs) (`simple_post_process` within-tile raw-start collapsing) and [`crates/vardictrust-core/src/lib.rs`](../crates/vardictrust-core/src/lib.rs) (`SpillableVcfAccumulator` retaining only the top-`af_4dp` candidate per locus in single-sample VCF mode). Passing `--vcf-all-alleles` (alias `--all-alleles`, completing 18/18 `var2vcf_*.pl -A` parity) emits all distinct `(chr, start, end, ref, alt)` alleles per locus sorted by 4dp `AF` descending.
+**Our replication stance:** **Replicated** byte-for-byte by default (`--compat=vardictjava` / `--parity` when `--vcf-all-alleles` is omitted) in [`crates/vardictrust-core/src/postprocess/simple.rs`](../crates/vardictrust-core/src/postprocess/simple.rs) (`simple_post_process` within-tile raw-start collapsing) and [`crates/vardictrust-core/src/lib.rs`](../crates/vardictrust-core/src/lib.rs) (`SpillableVcfAccumulator` retaining only the top-`af_4dp` candidate per locus in single-sample VCF mode). Passing `--vcf-all-alleles` (aliases `--all-alleles` and hidden `vardictcpp` `--vcfall`, completing 18/18 `var2vcf_*.pl -A` parity) emits all distinct `(chr, start, end, ref, alt)` alleles per locus sorted by 4dp `AF` descending, and combining `--compat=off` (`CompatProfile::somatic_continue_after_bad_var`, [`joachimwolff/VarDictJava#4`](https://github.com/joachimwolff/VarDictJava/pull/4), [`clintval/vartovcf#139`](https://github.com/clintval/vartovcf/pull/139)) continues evaluating secondary tumor alleles in `SomaticPostProcessModule` when the highest-AF candidate fails `is_good_var`.
 
 **Draft issue text:**
 
@@ -367,7 +367,9 @@ and `s6`). A VCF-vs-TSV comparison would MISMATCH meaninglessly, so `compare.sh`
 (the Tier-2 VCF comparator) honestly records
 `CPP: SKIP: cpp emitted non-VCF surface` naming the cause (locked by CPP11).
 TSV-level amplicon parity belongs to a Tier-1 `compare_var.py` cell, not the
-VCF gate.
+VCF gate (while paired somatic amplicon `-b "tumor|normal" -a` `.var` and VCF
+calling is supported in `VarDictRust` under `--compat=off` via
+`CompatProfile::paired_somatic_amplicon`, [`AstraZeneca-NGS/VarDictJava#378`](https://github.com/AstraZeneca-NGS/VarDictJava/issues/378)).
 
 <a id="cpp-4"></a>
 ### CPP-4 — Concatenated single-dash flags rejected

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use libfuzzer_sys::fuzz_target;
-use vardictrust_core::config::{Config, VcfThreshold};
+use vardictrust_core::config::{AmpliconConcordance, Config, VcfThreshold};
 use vardictrust_core::output::table::{
     amplicon_row_into_compat, simple_row_into_compat, somatic_row_into_compat,
 };
@@ -291,11 +291,21 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
             base_end + 3 + has_crispr + sv_extra
         }
     } else {
+        let amp_extra = if entries.iter().any(|kv| kv.starts_with("GDAMP=")) {
+            4
+        } else {
+            0
+        };
+        let sv_extra = if entries.iter().any(|kv| kv.starts_with("SVTYPE=")) {
+            2 + usize::from(!config.omit_end_tag)
+        } else {
+            0
+        };
         let flag_extra = usize::from(
             config.vcf_paired_strict
                 && matches!(entries.last().copied(), Some("P0.01Likely" | "InDelLikely")),
         );
-        13 + flag_extra
+        13 + amp_extra + sv_extra + flag_extra
     };
     assert_eq!(
         entries.len(),
@@ -522,6 +532,14 @@ fuzz_target!(|data: &[u8]| {
         vcf_pstd_filter: (mode_bits & 32) != 0,
         af_threshold_truthy_zero: cur.bool(),
         af_threshold: cur.metric_f64(0.5),
+        af_threshold_raw: match cur.u8() % 6 {
+            0 => None,
+            1 => Some("0".to_string()),
+            2 => Some("0.0".to_string()),
+            3 => Some("0.050".to_string()),
+            4 => Some("1e-5".to_string()),
+            _ => Some(cur.utf8_capped(48, true)),
+        },
         vcf_min_splitreads: i32::from(cur.u8() % 8) - 1,
         vcf_min_splitreads_explicit: cur.bool(),
         crispr_cutting_site: match cur.u8() % 3 {
@@ -576,6 +594,13 @@ fuzz_target!(|data: &[u8]| {
                 compat.coordinate_sorted_vars = (w3_bits & 4) != 0;
                 compat.exact_35_overlap = (w3_bits & 8) != 0;
                 compat.exact_cigar_dlen_match = (w3_bits & 16) != 0;
+            }
+            let w4_bits = cur.u8();
+            if (w4_bits & 1) != 0 {
+                compat.somatic_continue_after_bad_var = (w4_bits & 2) != 0;
+                compat.adaptor_all_consensus_dirs = (w4_bits & 4) != 0;
+                compat.canonical_sv_vcf_anchoring = (w4_bits & 8) != 0;
+                compat.paired_somatic_amplicon = (w4_bits & 16) != 0;
             }
             compat
         },
@@ -866,6 +891,23 @@ fuzz_target!(|data: &[u8]| {
         );
         assert_tsv_cols("somatic_61", &table_buf, 61);
 
+        let synth_amp_conc = |c: &mut ByteCursor<'_>| -> Option<AmpliconConcordance> {
+            if c.bool() {
+                let gd = i32::from(c.u8() % 6);
+                let tl = gd.saturating_add(i32::from(c.u8() % 6));
+                let nc = i32::from(c.u8() % 4);
+                Some(AmpliconConcordance {
+                    gdamp: gd,
+                    tlamp: tl,
+                    ncamp: nc,
+                    ampflag: c.bool(),
+                })
+            } else {
+                None
+            }
+        };
+        let tumor_amplicon = synth_amp_conc(&mut cur);
+        let normal_amplicon = synth_amp_conc(&mut cur);
         let som_var = SomaticVariant {
             variant1: v1,
             variant2: v2_opt,
@@ -873,8 +915,8 @@ fuzz_target!(|data: &[u8]| {
             sv1: sv_str,
             sv2: sv2_str,
             end_is_variant2,
-            tumor_amplicon: None,
-            normal_amplicon: None,
+            tumor_amplicon,
+            normal_amplicon,
         };
         let paired_rec = format_paired_vcf_record(&som_var, &vcf_chr, &config);
         assert_vcf_data_record("paired_vcf_direct", paired_rec.as_str(), 11, &config);

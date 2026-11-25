@@ -424,10 +424,23 @@ fuzz_target!(|data: &[u8]| {
     base_cfg.min_reads = u32::from(cur.u8() % 5);
     base_cfg.lofreq = cur.f64_bounded(0.2).max(0.001);
     base_cfg.vcf_all_alleles = cur.bool();
-    base_cfg.compat = if cur.bool() {
-        COMPAT_OFF
-    } else {
-        COMPAT_VARDICTJAVA_1_8_3
+    base_cfg.amplicon_single_primer = cur.bool();
+    base_cfg.compat = {
+        let mut compat = if cur.bool() {
+            COMPAT_OFF
+        } else {
+            COMPAT_VARDICTJAVA_1_8_3
+        };
+        let w4_bits = cur.u8();
+        if (w4_bits & 1) != 0 {
+            compat.strict_region_bounds = (w4_bits & 2) != 0;
+            compat.reconcile_vd_dp = (w4_bits & 4) != 0;
+            compat.somatic_continue_after_bad_var = (w4_bits & 8) != 0;
+            compat.adaptor_all_consensus_dirs = (w4_bits & 16) != 0;
+            compat.canonical_sv_vcf_anchoring = (w4_bits & 32) != 0;
+            compat.paired_somatic_amplicon = (w4_bits & 64) != 0;
+        }
+        compat
     };
 
     let reconcile_vd_dp = base_cfg.compat.reconcile_vd_dp;
@@ -463,7 +476,22 @@ fuzz_target!(|data: &[u8]| {
     }
     if base_cfg.compat.strict_region_bounds {
         for row in &simple_rows {
-            assert!(row.start_pos >= region.start.0 as i32 && row.start_pos <= region.end.0 as i32);
+            let in_bounds =
+                row.start_pos >= region.start.0 as i32 && row.start_pos <= region.end.0 as i32;
+            let is_padded_sv = base_cfg.compat.canonical_sv_vcf_anchoring
+                && row.start_pos >= 1
+                && row.var_allele.starts_with('<')
+                && row.end_pos > row.start_pos
+                && row.start_pos.saturating_add(1) == region.start.0 as i32;
+            assert!(
+                in_bounds || is_padded_sv,
+                "strict_region_bounds simple row out of bounds: start_pos={}, end_pos={}, alt={}, region={}..={}",
+                row.start_pos,
+                row.end_pos,
+                row.var_allele,
+                region.start.0,
+                region.end.0
+            );
         }
     }
 
@@ -516,6 +544,23 @@ fuzz_target!(|data: &[u8]| {
     );
     for sv in &somatic_rows {
         assert!(!sv.status.is_empty());
+        if base_cfg.compat.strict_region_bounds {
+            let sp = sv.variant1.start_pos;
+            let in_bounds = sp >= region.start.0 as i32 && sp <= region.end.0 as i32;
+            let is_padded_sv = base_cfg.compat.canonical_sv_vcf_anchoring
+                && sp >= 1
+                && sv.variant1.var_allele.starts_with('<')
+                && sv.variant1.end_pos > sp
+                && sp.saturating_add(1) == region.start.0 as i32;
+            assert!(
+                in_bounds || is_padded_sv,
+                "strict_region_bounds somatic row out of bounds: start_pos={sp}, end_pos={}, alt={}, region={}..={}",
+                sv.variant1.end_pos,
+                sv.variant1.var_allele,
+                region.start.0,
+                region.end.0
+            );
+        }
         if reconcile_vd_dp {
             for v in std::iter::once(&sv.variant1).chain(sv.variant2.as_ref()) {
                 assert!(

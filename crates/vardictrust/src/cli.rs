@@ -1913,7 +1913,9 @@ impl Cli {
             verbose: self.verbose,
             unique_mode_alignment_enabled: self.unique_mode_alignment_enabled,
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
-            omit_end_tag: self.no_end || !self.col_end.is_empty(),
+            omit_end_tag: self.no_end
+                || (compat_target != vardictrust_core::config::CompatTarget::Off
+                    && !self.col_end.is_empty()),
             include_n: self.include_n,
             output_path: self.output.first().cloned(),
             index_output: self.tbi,
@@ -2758,6 +2760,40 @@ mod tests {
             .to_config()
             .unwrap();
         assert!(col_end_cfg.omit_end_tag);
+
+        let col_end_compat_off_cfg = Cli::try_parse_from(args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "-E",
+            "3",
+            "--compat=off",
+        ]))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert!(
+            !col_end_compat_off_cfg.omit_end_tag,
+            "-E <col_end> BED column selector must not omit INFO/END under --compat=off unless --no-end/--noend is passed"
+        );
+
+        for explicit_no_end in ["--no-end", "--noend"] {
+            let explicit_cfg = Cli::try_parse_from(args(&[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-E",
+                "3",
+                "--compat=off",
+                explicit_no_end,
+            ]))
+            .unwrap()
+            .to_config()
+            .unwrap();
+            assert!(explicit_cfg.omit_end_tag);
+        }
 
         let bad_compat_cli =
             Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "--compat", "modern"]))

@@ -1692,7 +1692,7 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
                 headers1 = [th.inner_text().strip() for th in table1.query_selector_all("th")]
                 self.assertEqual(len(headers1), 4)
                 rows1 = table1.query_selector_all("tbody tr")
-                self.assertGreaterEqual(len(rows1), 17)
+                self.assertGreaterEqual(len(rows1), 21)
 
                 table2 = tables[1]
                 headers2 = [th.inner_text().strip() for th in table2.query_selector_all("th")]
@@ -1712,15 +1712,29 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
                 rows4 = table4.query_selector_all("tbody tr")
                 self.assertGreaterEqual(len(rows4), 4)
 
+                allowed_roadmap_href_prefixes = (
+                    "https://github.com/AstraZeneca-NGS/VarDictJava/",
+                    "https://github.com/AstraZeneca-NGS/VarDict/",
+                    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/",
+                    "https://github.com/joachimwolff/VarDictJava/",
+                    "https://github.com/clintval/vartovcf/",
+                    "https://github.com/PolinaBevad/VarDictJava/",
+                    "https://github.com/bioconda/bioconda-recipes/",
+                    "https://github.com/nf-core/modules/",
+                    "https://github.com/palakpsheth/VarDictRust/",
+                    "https://github.com/samtools/hts-specs",
+                    "https://doi.org/10.",
+                    "docs/",
+                    "#",
+                )
                 links = [a for a in page.query_selector_all("a") if a.get_attribute("href")]
                 self.assertGreater(len(links), 15, "Should have links for issues, PRs, and docs.")
                 for link in links:
                     href = link.get_attribute("href")
                     self.assertIsNotNone(href)
+                    assert href is not None
                     self.assertTrue(
-                        href.startswith("https://github.com/AstraZeneca-NGS/VarDictJava/")
-                        or href.startswith("docs/")
-                        or href.startswith("#"),
+                        href.startswith(allowed_roadmap_href_prefixes),
                         f"Unexpected link URL: {href}",
                     )
 

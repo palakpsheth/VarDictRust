@@ -1,4 +1,8 @@
-# Upstream oracle provenance manifest for VarDictRust default parity mode (--compat=vardictjava / --parity; AGENTS.md §5)
+# Upstream provenance manifest for VarDictRust (AGENTS.md §5):
+# - `[vardictjava]`, `[vardict_scripts]`, and `[advisory_comparators.vardictcpp]` pin the
+#   immutable default `--compat=vardictjava` (`--parity`) differential oracle and third-arm comparator.
+# - `[compat_off_and_cli_lineage]` records external community PRs, issues, forks, and peer-reviewed
+#   datasets informing opt-in `--compat=off` (`CompatProfile`) switches and CLI ergonomics.
 
 [vardictjava]
 repository = "https://github.com/AstraZeneca-NGS/VarDictJava"
@@ -38,3 +42,78 @@ package = "vardictcpp"
 version = "3"
 bioconda_build = "hc52dbad_0"
 role = "advisory-throughput-comparator-only"
+
+[compat_off_and_cli_lineage]
+repositories = [
+    "https://github.com/AstraZeneca-NGS/VarDictJava",
+    "https://github.com/AstraZeneca-NGS/VarDict",
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp",
+    "https://github.com/joachimwolff/VarDictJava",
+    "https://github.com/clintval/vartovcf",
+    "https://github.com/PolinaBevad/VarDictJava",
+    "https://github.com/bioconda/bioconda-recipes",
+    "https://github.com/nf-core/modules",
+]
+raw_af_filter_token = [
+    "https://github.com/AstraZeneca-NGS/VarDict/commit/009e017",
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/pull/4",
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/commit/2f6d811c23",
+]
+vardictcpp_cli_aliases = [
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/pull/4",
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/commit/a689e43877",
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/pull/1",
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/commit/4f7e242e0a",
+    "https://github.com/bioconda/bioconda-recipes/pull/68008",
+    "https://github.com/bioconda/bioconda-recipes/pull/71981",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/65",
+    "https://github.com/AstraZeneca-NGS/VarDict/issues/155",
+]
+packaging_lineage = [
+    "https://github.com/bioconda/bioconda-recipes/pull/71636",
+    "https://github.com/nf-core/modules/pull/13830",
+]
+somatic_continue_after_bad_var = [
+    "https://github.com/joachimwolff/VarDictJava/pull/4",
+    "https://github.com/clintval/vartovcf/pull/139",
+    "https://github.com/clintval/vartovcf/pull/149",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/376",
+]
+adaptor_all_consensus_dirs = [
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/240",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/pull/241",
+    "https://github.com/AstraZeneca-NGS/VarDict/pull/119",
+    "https://github.com/PolinaBevad/VarDictJava/commit/92c62cf6c3520b877c394a4c9fd5fe0d371cd972",
+]
+canonical_sv_vcf_anchoring = [
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/398",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/225",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/pull/229",
+    "https://github.com/AstraZeneca-NGS/VarDict/pull/111",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/382",
+    "https://github.com/clintval/vartovcf/pull/192",
+    "https://github.com/clintval/vartovcf/commit/baaaddb415",
+    "https://github.com/clintval/vartovcf/pull/107",
+    "https://github.com/clintval/vartovcf/pull/108",
+    "https://github.com/samtools/hts-specs",
+]
+amplicon_single_primer = [
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/301",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/pull/303",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/326",
+    "https://github.com/AstraZeneca-NGS/VarDict/issues/191",
+]
+paired_somatic_amplicon = [
+    "https://github.com/AstraZeneca-NGS/VarDictJava/issues/378",
+    "https://github.com/AstraZeneca-NGS/VarDictJava/pull/155",
+    "https://github.com/AstraZeneca-NGS/VarDict/pull/109",
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/pull/1",
+    "https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/pull/3",
+]
+clinical_benchmark_dois = [
+    "https://doi.org/10.1093/nar/gkw227",
+    "https://doi.org/10.1038/s41587-021-00993-6",
+    "https://doi.org/10.1038/s41597-022-01359-2",
+    "https://doi.org/10.6084/m9.figshare.19128005.v2",
+    "https://doi.org/10.6084/m9.figshare.13511829.v4",
+]

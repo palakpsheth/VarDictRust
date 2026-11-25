@@ -1355,6 +1355,101 @@ esac
             self.assertEqual(r_bad.returncode, 2, f"Expected exit 2 on unknown flag, got {r_bad.returncode}")
             self.assertIn("ERROR: unknown flag '--bogus-flag'", r_bad.stderr)
 
+    def test_check_release_consistency_keys_recipe_license_on_recipe_pin_version(self):
+        """Verify --version 1.1.0 --phase pre-tag keys Bioconda/nf-core MIT checks on each recipe's own pinned version."""
+        import importlib.util
+
+        script_path = (
+            ROOT_DIR
+            / ".agents"
+            / "skills"
+            / "vardictrust-release"
+            / "scripts"
+            / "check_release_consistency.py"
+        )
+        spec = importlib.util.spec_from_file_location("check_release_consistency", script_path)
+        self.assertIsNotNone(spec)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = pathlib.Path(tmpdir)
+            for item in ROOT_DIR.iterdir():
+                if item.name in {".git", ".worktrees", "target", "scratch", ".venv", ".venv_docs"}:
+                    continue
+                if item.name == "packaging":
+                    shutil.copytree(item, tmp_root / "packaging")
+                else:
+                    os.symlink(item, tmp_root / item.name)
+
+            # 1) Simulate Phase 1 pre-tag for 1.1.0 while Bioconda & nf-core recipes remain pinned to 1.0.10:
+            errs_pretag: list[str] = []
+            mod.check_pre_tag_surfaces(tmp_root, "1.1.0", errs_pretag, phase="pre-tag")
+            pkg_errs_pretag = [
+                e
+                for e in errs_pretag
+                if "packaging/bioconda/recipes/vardictrust/meta.yaml" in e
+                or "packaging/nf-core/modules/vardictrust/" in e
+            ]
+            self.assertEqual(
+                pkg_errs_pretag,
+                [],
+                f"pre-tag 1.1.0 must accept 1.0.10 recipe licenses before Phase 3A/3B: {pkg_errs_pretag}",
+            )
+
+            # 2) Once recipes bump their own pinned version to 1.1.0, stale GPL dual-licensing is rejected:
+            bc_meta = tmp_root / "packaging" / "bioconda" / "recipes" / "vardictrust" / "meta.yaml"
+            nf_env = tmp_root / "packaging" / "nf-core" / "modules" / "vardictrust" / "environment.yml"
+            nf_meta = tmp_root / "packaging" / "nf-core" / "modules" / "vardictrust" / "meta.yml"
+            bc_meta.write_text(
+                bc_meta.read_text(encoding="utf-8").replace(
+                    '{% set version = "1.0.10" %}', '{% set version = "1.1.0" %}'
+                ),
+                encoding="utf-8",
+            )
+            nf_env.write_text(
+                nf_env.read_text(encoding="utf-8").replace(
+                    "bioconda::vardictrust=1.0.10", "bioconda::vardictrust=1.1.0"
+                ),
+                encoding="utf-8",
+            )
+            errs_stale_gpl: list[str] = []
+            mod.check_pre_tag_surfaces(tmp_root, "1.1.0", errs_stale_gpl, phase="post-nfcore")
+            self.assertTrue(
+                any("packaging/bioconda/recipes/vardictrust/meta.yaml" in e for e in errs_stale_gpl),
+                f"Expected Bioconda pure-MIT error once meta.yaml version is 1.1.0, got: {errs_stale_gpl}",
+            )
+            self.assertTrue(
+                any("packaging/nf-core/modules/vardictrust/meta.yml" in e for e in errs_stale_gpl),
+                f"Expected nf-core pure-MIT error once environment.yml version is 1.1.0, got: {errs_stale_gpl}",
+            )
+
+            # 3) Switching both 1.1.0 recipes to pure MIT clears all recipe license errors:
+            bc_meta.write_text(
+                bc_meta.read_text(encoding="utf-8")
+                .replace("license: MIT AND GPL-2.0-or-later", "license: MIT")
+                .replace("license_family: GPL2", "license_family: MIT"),
+                encoding="utf-8",
+            )
+            nf_meta.write_text(
+                re.sub(
+                    r'licence:\s*\n\s*-\s*"MIT"\s*\n\s*-\s*"GPL-2\.0-or-later"',
+                    'licence:\n    - "MIT"',
+                    nf_meta.read_text(encoding="utf-8"),
+                ),
+                encoding="utf-8",
+            )
+            errs_clean_mit: list[str] = []
+            mod.check_pre_tag_surfaces(tmp_root, "1.1.0", errs_clean_mit, phase="post-nfcore")
+            pkg_errs_clean = [
+                e
+                for e in errs_clean_mit
+                if "packaging/bioconda/recipes/vardictrust/meta.yaml" in e
+                or "packaging/nf-core/modules/vardictrust/" in e
+            ]
+            self.assertEqual(pkg_errs_clean, [], f"Expected 0 recipe license errors on pure MIT 1.1.0: {pkg_errs_clean}")
+
 
 if __name__ == "__main__":
     unittest.main()

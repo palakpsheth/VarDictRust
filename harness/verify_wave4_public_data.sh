@@ -294,7 +294,19 @@ import gzip, os, subprocess, sys
 vdr, fa_hg19, fa_hg1k, grch38_ref, giab_ref, vj_bams, g4_dir, w4, tmp = sys.argv[1:10]
 
 # 3a) All 6 joachimwolff/VarDictJava#4 tumor/normal multi-allelic pairs
-arg_secondary = {(140453033, "A"), (140453033, "T"), (140453035, "A"), (140453065, "A"), (140453065, "T")}
+# Note: in ArgumentNA_Tumor|Normal, 140453065 C>A (Q=7.3 < -q 25) and 140453033 G>A (SN=1.0 < 1.5)
+# are the failing primary candidates that prematurely aborted VarDictJava v1.8.3's somatic loop;
+# somatic_continue_after_bad_var recovers 16 passing secondary alleles across the slice.
+arg_secondary = {
+    (140453033, "T"),
+    (140453035, "A"),
+    (140453036, "CA"),
+    (140453065, "T"),
+    (140453081, "T"),
+    (140453095, "G"),
+    (140453108, "A"),
+    (140453116, "G"),
+}
 cases = [
     (
         "ArgumentNA_fisher",
@@ -302,7 +314,7 @@ cases = [
         f"{vj_bams}/ArgumentNA_Tumor.bam|{vj_bams}/ArgumentNA_Normal.bam",
         ["-R", "chr7:140453010-140453158", "-q", "25", "-f", "0.001", "-F", "0x100", "-k", "1", "-M", "20", "-p", "--fisher"],
         lambda pos, ref, alt: (pos, alt) in arg_secondary,
-        4,
+        8,
     ),
     (
         "ArgumentNA_nofisher",
@@ -310,7 +322,7 @@ cases = [
         f"{vj_bams}/ArgumentNA_Tumor.bam|{vj_bams}/ArgumentNA_Normal.bam",
         ["-R", "chr7:140453010-140453158", "-q", "25", "-f", "0.001", "-F", "0x100", "-k", "1", "-M", "20", "-p"],
         lambda pos, ref, alt: (pos, alt) in arg_secondary,
-        4,
+        8,
     ),
     (
         "Colo829_chr1_756309",
@@ -884,12 +896,17 @@ def verify_paired_amp_vcf(label, ref_fa, vcf_gz):
         for req_k in ("STATUS", "GDAMP", "TLAMP", "NCAMP", "AMPFLAG"):
             if req_k not in kv:
                 raise AssertionError(f"{label}: missing {req_k} in INFO at {chrom}:{pos}: {info}")
-        gdamp, tlamp, ncamp = int(kv["GDAMP"]), int(kv["TLAMP"]), int(kv["NCAMP"])
+        gdamp, tlamp, ncamp, ampflag = int(kv["GDAMP"]), int(kv["TLAMP"]), int(kv["NCAMP"]), int(kv["AMPFLAG"])
         if tlamp >= 2:
             tlamp2_n += 1
-        if (gdamp < tlamp or ncamp > 0) and flt == "PASS":
-            raise AssertionError(f"{label}: AMPBIAS discordant call {chrom}:{pos} (GDAMP={gdamp}, TLAMP={tlamp}, NCAMP={ncamp}) promoted to PASS!")
-        if "AMPBIAS" in flt.split(";"):
+        # Ports var2vcf_valid.pl:185: (($gamp < $tamp - $ncamp) || $ampflag), evaluated outside normal_clean
+        is_amp_discordant = (gdamp < (tlamp - ncamp)) or (ampflag != 0)
+        flt_tags = flt.split(";")
+        if is_amp_discordant and (flt == "PASS" or "AMPBIAS" not in flt_tags):
+            raise AssertionError(
+                f"{label}: AMPBIAS discordant call {chrom}:{pos} (GDAMP={gdamp}, TLAMP={tlamp}, NCAMP={ncamp}, AMPFLAG={ampflag}) missing AMPBIAS: FILTER={flt}"
+            )
+        if "AMPBIAS" in flt_tags:
             ampbias_n += 1
         if kv["STATUS"] == "StrongSomatic" and (chrom, pos_i, alt) in kp_loci:
             somatic_kp += 1

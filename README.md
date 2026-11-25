@@ -14,7 +14,7 @@
 
 **VarDictRust** is a fast, memory-safe Rust NGS variant caller that delivers byte-identical results to [VarDictJava](https://github.com/AstraZeneca-NGS/VarDictJava) v1.8.3 by default (`--compat=vardictjava` / `--parity`)—with opt-in `--compat=off` accuracy, SV/mate-pileup, and SAM `=`/`X`-aligner fixes plus `--vcf-all-alleles` multi-allelic VCF emission—while running **7.7×–33.9× faster on WGS/WES** (up to **51.2× faster** on amplicons) in **8.3×–15.7× less memory**. It consolidates the Java → R → Perl pipeline (plus native multithreaded BGZF and `.tbi`/`.csi` indexing) into a **single binary**, eliminating JVM crashes, WGS out-of-memory errors, and runtime dependency friction.
 
-- **Dual-Mode Parity & Opt-In Accuracy (`--compat=vardictjava|off`):** Bitwise identical variant calls, `FILTER` tags, and somatic `STATUS` decisions to VarDictJava v1.8.3 by default (`--compat=vardictjava` / `--parity`, $\varepsilon = 10^{-6}$, 0 diffs), with opt-in `--compat=off` activating 17 accuracy, SV/mate-pileup, and `=`/`X`-aligner fixes (`##VarDictRustCompat=off`) plus `--vcf-all-alleles` multi-allelic emission.
+- **Dual-Mode Parity & Opt-In Accuracy (`--compat=vardictjava|off`):** Bitwise identical variant calls, `FILTER` tags, and somatic `STATUS` decisions to VarDictJava v1.8.3 by default (`--compat=vardictjava` / `--parity`, $\varepsilon = 10^{-6}$, 0 diffs), with opt-in `--compat=off` activating 21 accuracy, SV/mate-pileup, somatic multi-allelic/amplicon, and `=`/`X`-aligner fixes (`##VarDictRustCompat=off`) plus `--vcf-all-alleles` multi-allelic emission and `--amplicon-single-primer` (`-sp`) single-primer panel support.
 - **High-Throughput Speed:** **7.7×–33.9× faster** on WGS/WES, **51.2× faster** on amplicon panels, and **3.20× parallel scaling** on 8 threads across full chromosomes (`3:48.78` $\to$ `1:11.44` on `chr1`, where VarDictJava OOM-crashes on 31 GiB hosts).
 - **Bounded $O(1)$ Memory:** Flat RSS scaling ($1.34\times$ from 10 Mbp to 249 Mbp on Chr1, `0.97` $\to$ `1.31 GiB`), using **8.3×–15.7× less RAM** than VarDictJava on WGS/WES and **18.6× less RAM** than unchunked `vardictcpp` (`24.34 GiB`) on whole-chromosome 1.
 - **Zero External Runtimes:** Prebuilt static Linux (`x86_64`/`aarch64` `musl`) and native Linux (`x86_64` `gnu`) / macOS (`arm64`/`x86_64`) binaries—no JVM, R, or Perl.
@@ -201,12 +201,16 @@ Pair-matched somatic calling with LOH detection and somatic `STATUS` classificat
 vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" -c 1 -S 2 -E 3 -z target.bed > somatic.vcf
 ```
 
-### 3. Targeted Amplicon Panels (8-Column BED & Primer Trimming)
+### 3. Targeted Amplicon Panels (8-Column BED, Single-Primer `-sp` & Paired Somatic)
 
-Trims primer bias artifacts (`AMPBIAS`) using overlapping primer coordinates from an 8-column BED file:
+Trims primer bias artifacts (`AMPBIAS`) using overlapping primer coordinates from an 8-column BED file (`chr, start, end, gene, score, strand, insert_start, insert_end`). For QIAseq / ArcherDX single-primer extension (SPE) panels—where `col8 == col3` (5'-primed) or `col7 == col2` (3'-primed) and opposite fragment ends shear randomly—pass `-sp` (`--amplicon-single-primer`); for paired tumor-normal amplicon calling, add `--compat=off`:
 
 ```bash
+# Single-sample two-primer amplicon panel
 vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -a 10:0.95 -z -b amplicon.bam amplicon_8col.bed > amplicon.vcf
+
+# Single-primer extension (QIAseq / ArcherDX) paired tumor-normal amplicon panel
+vardictrust -G GRCh38.fa -f 0.01 -N "TUMOR|NORMAL" -b "tumor.bam|normal.bam" -a 10:0.95 -sp -z --compat=off qiaseq_8col.bed > somatic_amp.vcf
 ```
 
 ### 4. RNA-Seq Splicing Analysis
@@ -234,7 +238,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b sample.bam -R chr1:1000000-2000000
 
 ### 6. Correctness Mode (--compat=off), =/X Alignments & Multi-Allelic VCF (v1.1.0+)
 
-Enable all 17 `CompatProfile` accuracy, SV/mate-pileup, and SAM `=`/`X` (`minimap2 --eqx` / `pbmm2`) fixes (`##VarDictRustCompat=off`) alongside multi-allelic VCF emission (on `main` / upcoming `v1.1.0`):
+Enable all 21 `CompatProfile` accuracy, SV/mate-pileup, somatic multi-allelic/amplicon, and SAM `=`/`X` (`minimap2 --eqx` / `pbmm2`) fixes (`##VarDictRustCompat=off`) alongside multi-allelic VCF emission (on `main` / upcoming `v1.1.0`):
 
 ```bash
 vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b eqx_aligned.bam -c 1 -S 2 -E 3 -z targets.bed --compat=off --vcf-all-alleles --output calls.vcf.gz --tbi
@@ -248,7 +252,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b eqx_aligned.bam -c 1 -S 2 -E 3 -z 
 | :--- | :--- | :--- | :--- | :--- |
 | **Germline Calling** | `SimpleMode` (`-b sample.bam`) | WGS, WES, Targeted Panels | `VCFv4.2` (`10` cols) or `.var` (`36` / `38` cols with `--fisher`) | Constitutional SNV, InDel, and MNV discovery; family trios; population cohorts. |
 | **Somatic Paired Calling** | `SomaticMode` (`-b "tumor\|normal"`) | Paired Tumor / Normal WGS & WES | `VCFv4.2` (`11` cols) or `.var` (`55` / `61` cols with `--fisher`) | Cancer somatic mutations down to 1% AF, LOH detection, `STATUS` classification. |
-| **Targeted Amplicon Panel** | `AmpliconMode` (`-a 10:0.95`) | AmpliSeq, HaloPlex, PCR Panels | `VCFv4.2` (`10` cols) or `.var` (`38` / `40` cols with `--fisher`) | Overlapping amplicon panels; trims primer bias ([`AMPBIAS`](DIVERGENCES.md#amplicon-primer-trimming)) via 8-column BED. |
+| **Targeted Amplicon Panel** | `AmpliconMode` (`-a 10:0.95` [`-sp`]; paired with `--compat=off`) | AmpliSeq, QIAseq SPE, Ion Torrent, PCR Panels | `VCFv4.2` (`10` / `11` cols) or `.var` (`38`/`40` or `55`/`61` cols) | Two-primer and single-primer (`-sp`) panels; trims primer bias ([`AMPBIAS`](DIVERGENCES.md#amplicon-primer-trimming)) via 8-col BED. |
 | **RNA-Seq Splicing** | `SplicingMode` (`-i` / `--splice`) | Spliced RNA-Seq BAM / CRAM | `4` columns (`qstart-qend`, `cnt`, `mean_pos`, `strand`) | Exon-intron splice junction quantification and split-read intron coverage matrix. |
 | **Structural Variants & CRISPR** | `SimpleMode` / `SomaticMode` (`-L`, `-J`, `-j`) | Short-Read WGS, WES, CRISPR Assays | `VCFv4.2` (`<DEL>`, `<DUP>`, `<INV>`, `<INS>`) + `CRISPR` tag | Large split-read/discordant-mate SV discovery (disable via `-U`) and CRISPR cut-site (`-J`/`-j`) scoring. |
 | **Pileup-Only Inspection** | `SimpleMode` / `AmpliconMode` (`-p`) | Any Indexed BAM / CRAM | `VCFv4.2` or `.var` across every reference locus | Unfiltered per-base depth, reference quality, and non-variant pileup auditing. |
@@ -257,7 +261,7 @@ vardictrust -G GRCh38.fa -f 0.01 -N SAMPLE -b eqx_aligned.bam -c 1 -S 2 -E 3 -z 
 > **Assumptions & Coordinate Conventions:**
 > - **Coordinate Contracts:** BAM/CRAM alignments use 0-based half-open intervals (`[start, end)`); VCF records use 1-based closed intervals (`[start, end]`). Passing `-z` shifts 0-based BED intervals by `+1`.
 > - **Statistical Rounding:** Variant frequencies (`AF`), quality scores (`QUAL`), and p-values use IEEE 754 round-to-nearest-even (**Banker's rounding**), matching Java `RoundingMode.HALF_EVEN` and R `round()` by default ([`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even), replicating OpenJDK `DecimalFormat` fixed-point underflow ties) and exact binary IEEE 754 ties via `round_half_even_compat` under `--compat=off`.
-> - **Compatibility Profiles (`--compat=vardictjava|off`):** Default invocations (`--compat=vardictjava`, aliases `vardictjava-1.8.3` / `1.8.3`, or `--parity`) preserve 100% VarDictJava v1.8.3 byte-for-byte parity; opt-in `--compat=off` activates all 17 [`CompatProfile`](ROADMAP.md) correctness switches and stamps `##VarDictRustCompat=off` in VCF headers.
+> - **Compatibility Profiles (`--compat=vardictjava|off`):** Default invocations (`--compat=vardictjava`, aliases `vardictjava-1.8.3` / `1.8.3`, or `--parity`) preserve 100% VarDictJava v1.8.3 byte-for-byte parity; opt-in `--compat=off` activates all 21 [`CompatProfile`](ROADMAP.md) correctness switches and stamps `##VarDictRustCompat=off` in VCF headers.
 > - **Multi-Allelic Collapsing:** Single-sample and paired somatic VCF output select the top-AF candidate per locus by default matching [`var2vcf_valid.pl` / `var2vcf_paired.pl`](DIVERGENCES.md#consolidation-of-the-three-language-pipeline); pass `--vcf-all-alleles` (`--all-alleles`) to emit all alleles at multi-allelic loci (`var2vcf_*.pl -A`).
 
 ---
@@ -344,14 +348,14 @@ VarDictRust enforces the **[rewrites.bio](https://rewrites.bio) Prime Directive*
 1. **Fidelity by Default:** Matches every VarDictJava v1.8.3 output decision on valid inputs in default parity mode (`--compat=vardictjava` / `--parity`), including IEEE 754 banker's rounding ([`round_half_even`](DIVERGENCES.md#statistical-rounding--floating-point-half-even)), exact odds ratios, OpenJDK [`JavaHashMap`](DIVERGENCES.md#ub-3-var-row-order-across-positions-follows-hashmap-iteration-order-282-family) iteration order, and in-engine somatic classification ([`SomaticPostProcessModule`](DIVERGENCES.md#somatic-status-determination)).
 2. **Robustness by Construction:** Enforces `#![forbid(unsafe_code)]` and returns `Result<_, VardictError>` without panicking where VarDictJava crashes on malformed CIGARs ([`modifyCigar` #341 family](docs/upstream-bugs.md), [PR #402](DIVERGENCES.md#category-1-cigar-and-realignment-resilience) — safely skipped per read by default and repaired via `cigar_homopolymer_merge` under `--compat=off`), null pointers, or missing indexes ([Issue #187](DIVERGENCES.md#category-7-cli-diagnostics-and-error-messages)).
 3. **Bounded Memory at Any Depth:** Processes reads in bounded halo tiles with cross-tile `.var` boundary deduplication (`SplitVarDeduper`, `200 kbp` retention window), disk-backed whole-stream VCF candidate spilling (`SpillableVcfAccumulator` above `8 MiB`), and zero-allocation hot-path stack scratch buffers, eliminating whole-chromosome JVM heap exhaustion ([Issues #197 and #384](https://github.com/AstraZeneca-NGS/VarDictJava/issues/197)).
-4. **Dual-Mode Compatibility & Opt-In Features:** Replicates upstream output quirks by default ([UB-1 through UB-7](docs/upstream-bugs.md)), pinned explicitly via `--parity` / `--compat=vardictjava` (aliases `vardictjava-1.8.3`, `1.8.3`); opt-in `--compat=off` activates all 17 `CompatProfile` switches (`sanitize_sample_info`, `standard_dup_symbolic_alt`, `shift3_3prime_alleles`, `strict_region_bounds`, `suppress_pileup_sentinels`, `live_duprate`, `preserve_mixed_sex_contigs`, `cigar_homopolymer_merge`, `eqx_cigar_read_length`, `preserve_discordant_svs`, `mark_dup_sv_inclusive_end`, `sv_lazy_mate_pileup`, `exact_binary_half_even`, `reconcile_vd_dp`, `coordinate_sorted_vars`, `exact_35_overlap`, and `exact_cigar_dlen_match`, stamping `##VarDictRustCompat=off` in VCF headers without per-bug `--fix` flag sprawl) alongside explicit opt-in CLI capabilities (`--vcf-all-alleles` / `--all-alleles`, `--output`, `--tbi` / `--csi`, `--stats-json`) per [`ROADMAP.md`](ROADMAP.md).
+4. **Dual-Mode Compatibility & Opt-In Features:** Replicates upstream output quirks by default ([UB-1 through UB-7](docs/upstream-bugs.md)), pinned explicitly via `--parity` / `--compat=vardictjava` (aliases `vardictjava-1.8.3`, `1.8.3`); opt-in `--compat=off` activates all 21 `CompatProfile` switches (`sanitize_sample_info`, `standard_dup_symbolic_alt`, `shift3_3prime_alleles`, `strict_region_bounds`, `suppress_pileup_sentinels`, `live_duprate`, `preserve_mixed_sex_contigs`, `cigar_homopolymer_merge`, `eqx_cigar_read_length`, `preserve_discordant_svs`, `mark_dup_sv_inclusive_end`, `sv_lazy_mate_pileup`, `exact_binary_half_even`, `reconcile_vd_dp`, `coordinate_sorted_vars`, `exact_35_overlap`, `exact_cigar_dlen_match`, `somatic_continue_after_bad_var`, `adaptor_all_consensus_dirs`, `canonical_sv_vcf_anchoring`, and `paired_somatic_amplicon`, stamping `##VarDictRustCompat=off` in VCF headers without per-bug `--fix` flag sprawl) alongside explicit opt-in CLI capabilities (`--vcf-all-alleles` / `--all-alleles`, `--amplicon-single-primer` / `-sp`, `--output`, `--tbi` / `--csi`, `--stats-json`) per [`ROADMAP.md`](ROADMAP.md).
 5. **Documented Quirks & Testing Matrix:** Cataloged in [`DIVERGENCES.md`](DIVERGENCES.md) and [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md).
 
 ---
 
 ## CLI Parameter Reference
 
-The CLI surface (`90` CLI flags across 7 functional groups) combines full VarDictJava v1.8.3 [`CmdParser.java`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/CmdParser.java) flag parity with all 18/18 consolidated `var2vcf_valid.pl` / `var2vcf_paired.pl` post-filters, `--compat=vardictjava|off` profile selection, and native compressed VCF/index/telemetry options (see the [Migration Guide](docs/migration.md) for side-by-side pipeline translation), verified by differential testing:
+The CLI surface (`91` CLI flags across 7 functional groups) combines full VarDictJava v1.8.3 [`CmdParser.java`](https://github.com/AstraZeneca-NGS/VarDictJava/blob/0886261/src/main/java/com/astrazeneca/vardict/CmdParser.java) flag parity with `--amplicon-single-primer` (`-sp`), all 18/18 consolidated `var2vcf_valid.pl` / `var2vcf_paired.pl` post-filters, `--compat=vardictjava|off` profile selection, and native compressed VCF/index/telemetry options (see the [Migration Guide](docs/migration.md) for side-by-side pipeline translation), verified by differential testing:
 
 *Evidence Status Vocabulary:*
 - `corpus` — Verified against integration corpus test cases or [Tier-2](docs/testing/test-matrix-and-ci-audit.md#tier-2) oracle sweeps.
@@ -379,7 +383,7 @@ The CLI surface (`90` CLI flags across 7 functional groups) combines full VarDic
 | — | `--csi` | Write a pure-Rust CSI (`.csi`) index alongside a BGZF-compressed `--output` `.vcf.gz`/`.vcf.bgz` file (`noodles::csi`; supports contigs `> 512 Mbp`) | off | `parity-exempt` |
 | — | `--stats-json` | Write run telemetry JSON (`mode`, `threads`, `regions_count`, `tiles_count`, `elapsed_ms`, `peak_rss_kb`, `exceptions_caught`) to `<PATH>` | — | `no-output` |
 | — | `--parity` | Explicitly lock 100% VarDictJava v1.8.3 byte-for-byte parity mode (default in `v1.x`) | on | `parity-exempt` |
-| — | `--compat` | Pin target compatibility contract (`'vardictjava'` [aliases `'vardictjava-1.8.3'`, `'1.8.3'`] for 100% upstream parity, or `'off'` to activate all 17 `CompatProfile` accuracy, SV/mate-pileup, and SAM `=`/`X` fixes and stamp `##VarDictRustCompat=off`) | `vardictjava` | `parity-exempt` |
+| — | `--compat` | Pin target compatibility contract (`'vardictjava'` [aliases `'vardictjava-1.8.3'`, `'1.8.3'`] for 100% upstream parity, or `'off'` to activate all 21 `CompatProfile` accuracy, SV/mate-pileup, somatic multi-allelic/amplicon, and SAM `=`/`X` fixes and stamp `##VarDictRustCompat=off`) | `vardictjava` | `parity-exempt` |
 | — | `--emit-intermediate` | Emit legacy `.var` table instead of VCF | off | `corpus` |
 | `-d` | — | Delimiter for splitting region info | `\t` | `corpus` |
 | `-v` | — | Accepted and ignored (never read by VarDictJava v1.8.3) | — | `parity-exempt` |
@@ -391,7 +395,7 @@ The CLI surface (`90` CLI flags across 7 functional groups) combines full VarDic
 
 | Short | Long | Description | Default | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`; also enabled automatically when `-E <COL>` is passed) | off | `parity-exempt` |
+| — | `--no-end` | Omit `END` tag in VCF `INFO` (ports `var2vcf_valid.pl -E`; also enabled automatically in default `--compat=vardictjava` mode when `-E <COL>` is passed) | off | `parity-exempt` |
 | — | `--pass-only` | Emit only `PASS` variants in VCF output (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -S`) | off | `parity-exempt` |
 | — | `--paired-strict` | Disable germline rescue in paired somatic VCF filtering and apply `P<FLOAT>` / `P0.01Likely` / `InDelLikely` tags (ports `var2vcf_paired.pl -M`) | off | `parity-exempt` |
 | — | `--vcf-all-alleles`, `--all-alleles` | Emit all alleles at the same position in single-sample, amplicon, and paired somatic VCF output instead of collapsing to the top-AF winner (ports `var2vcf_valid.pl` / `var2vcf_paired.pl -A`) | off | `parity-exempt` |
@@ -416,7 +420,7 @@ The CLI surface (`90` CLI flags across 7 functional groups) combines full VarDic
 | :--- | :--- | :--- | :--- | :--- |
 | `-c` | — | BED chromosome column (1-based; default 3 for 13-col UCSC `refGene`; 4-col BED & 8-col amplicon BED auto-detected) | `3` | `corpus` |
 | `-S` | — | BED start column (default 7 for 13-col UCSC `refGene`) | `7` | `corpus` |
-| `-E` | — | BED end column (default 8 for 13-col UCSC `refGene`; also omits single-sample VCF `INFO/END` matching `var2vcf_valid.pl -E`) | `8` | `corpus` |
+| `-E` | — | BED end column (default 8 for 13-col UCSC `refGene`; also omits single-sample VCF `INFO/END` in default `--compat=vardictjava` mode matching `var2vcf_valid.pl -E`) | `8` | `corpus` |
 | `-s` | — | BED segment-start column | `10` (= `-S` if set) | `corpus` |
 | `-e` | — | BED segment-end column | `11` (= `-E` if set) | `corpus` |
 | `-g` | — | BED gene column | `13` | `corpus` |
@@ -458,6 +462,7 @@ The CLI surface (`90` CLI flags across 7 functional groups) combines full VarDic
 | `-V` | — | Min normal AF (somatic mode) | `0.05` | `corpus` |
 | — | `--fisher` | In-engine Fisher exact test (p-value / odds ratio) | off | `corpus` |
 | `-a` | `--amplicon` | Amplicon mode `"int:float"` (distance:fraction) | auto `10:0.95` on 8-col BED | `corpus` |
+| `-sp` | `--amplicon-single-primer` | Single-primer extension amplicon mode: check `-a` distance only on primed edge (`col8 == col3` or `col7 == col2`) and bypass un-primed overlap fraction ([`AstraZeneca-NGS/VarDictJava#303`](https://github.com/AstraZeneca-NGS/VarDictJava/pull/303)) | off | `corpus` |
 | `-i` | `--splice` | RNA splicing mode (emits sorted 4-column intron count table) | off | `corpus` |
 | — | `--mfreq` | Mono frequency threshold | `0.25` | `corpus` |
 | — | `--nmfreq` | Normal mono frequency threshold | `0.1` | `corpus` |
@@ -484,9 +489,9 @@ The CLI surface (`90` CLI flags across 7 functional groups) combines full VarDic
 | — | `--threads` | Thread count (`-th`/`--th`/`-th<N>` aliases; bare `-th` = all cores; falls back to `RAYON_NUM_THREADS` when `-th` is omitted) | `RAYON_NUM_THREADS` or all cores | `no-output` |
 | — | `--tile-size` | Region tile size in bp (bounded-memory WGS) | auto (`<= 1 Mbp` untiled; `> 1 Mbp` `100 kbp` tiles; max `500 Mbp`) | `no-output` |
 
-*Commons-CLI Single-Dash Compatibility:* Upstream Java single-dash long options (`-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`, `-trim`, `-VS`) and boolean-prefix short-option clusters (`-pz`, `-pz0`, `-uk`, `-ua`, `-pR`) are normalized transparently alongside standard `--` GNU long flags, while Rust-native GNU `--vcf-*`, post-filter, output/compatibility, and shell/manpage flags reject single-dash typos (`-vcf-*`, `-all-alleles`, `-pass-only`, `-paired-strict`, `-min-splitreads`, `-no-pstd-filter`, `-no-end`, `-index`, `-stats-json`, `-parity`, `-compat`, `-completions`, `-manpage`) with an actionable `--` hint before short-flag cluster splitting.
+*Commons-CLI Single-Dash & `vardictcpp` Alias Compatibility:* Upstream Java single-dash long options (`-sp`, `-fisher`, `-adaptor`, `-chimeric`, `-deldupvar`, `-nosv`, `-splice`, `-header`, `-dedup`, `-debug`, `-verbose`, `-amplicon`, `-DP`, `-default-printer`, `-defaultPrinter`, `-mfreq`, `-nmfreq`, `-insert-size`, `-insert-std`, `-ref-extension`, `-crispr`, `-trim`, `-VS`), hidden `vardictcpp v2..v4` drop-in CLI aliases (`--vcfall`/`-vcfall` for `--vcf-all-alleles`, `--noend`/`-noend` for `--no-end`, `--vcfpass`/`-vcfpass` for `--pass-only`, and `--vcf`/`-vcf` VCF output no-op; [`MHH-Bioinformatics-Hematology/vardictcpp#4`](https://github.com/MHH-Bioinformatics-Hematology/vardictcpp/pull/4)), and boolean-prefix short-option clusters (`-pz`, `-pz0`, `-uk`, `-ua`, `-pR`) are normalized transparently alongside standard `--` GNU long flags, while Rust-native GNU `--vcf-*`, post-filter, output/compatibility, and shell/manpage flags reject single-dash typos (`-vcf-*`, `-all-alleles`, `-amplicon-single-primer`, `-pass-only`, `-paired-strict`, `-min-splitreads`, `-no-pstd-filter`, `-no-end`, `-index`, `-stats-json`, `-parity`, `-compat`, `-completions`, `-manpage`) with an actionable `--` hint before short-flag cluster splitting.
 
-*Loud-Error Legacy Flags (`AGENTS.md §12`):* Passing either of the 2 remaining unimplemented VarDictJava options (`-C`, `-Z` / `-downsample` / `--downsample`) or `-VS STRICT` fails fast with `VardictError::Unsupported("<flag> not implemented in VarDictRust; use VarDictJava")`, paired BAM (`-b "tumor|normal"`) combined with amplicon mode (`-a`) in VCF mode fails fast with `VardictError::Unsupported` (`#378`), unknown `--compat` targets fail fast with `VardictError::Unsupported`, and conflicting `--compat`/`--parity` flags fail fast with `VardictError::Parse` rather than ignoring the flag.
+*Loud-Error Legacy Flags (`AGENTS.md §12`):* Passing either of the 2 remaining unimplemented VarDictJava options (`-C`, `-Z` / `-downsample` / `--downsample`) or `-VS STRICT` fails fast with `VardictError::Unsupported("<flag> not implemented in VarDictRust; use VarDictJava")`, paired BAM (`-b "tumor|normal"`) combined with amplicon mode (`-a`) in default `--compat=vardictjava` VCF mode fails fast with `VardictError::Unsupported` (`AstraZeneca-NGS/VarDictJava#378`; supported under `--compat=off`), unknown `--compat` targets fail fast with `VardictError::Unsupported`, and conflicting `--compat`/`--parity` flags fail fast with `VardictError::Parse` rather than ignoring the flag.
 
 *Reproducible Profiling Hooks:* When compiled with opt-in Cargo features (`profile-cpu`, `profile-heap`, or `profile-dhat`), `vardictrust` honors `VARDICT_PROFILE_CPU`, `VARDICT_PROFILE_HEAP`, and `VARDICT_PROFILE_DHAT` output directory environment variables (driven via [`harness/profile.sh`](harness/README.md)).
 
@@ -501,7 +506,7 @@ Per the [rewrites.bio](https://rewrites.bio) manifesto, we disclose all AI tools
 
 - **AI Systems Used:** Google DeepMind Gemini / Antigravity CLI, Anthropic Claude Code, and Qoder.
 - **Scope of AI Assistance:** Implementation of core Rust modules under human architectural direction, cleanroom Rust statistical and VCF post-filtering routines, test harness engineering, and adversarial differential verification.
-- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 746 automated Cargo workspace tests (531 core library tests, 110 corpus and modality parity tests, 39 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 32 CLI tests, and 29 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 37 harness diagnostic self-tests (25 shell tests and 12 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
+- **Verification Guarantee (Evidence Before Completion):** **Zero** AI-generated code was accepted on model assertion. Every algorithmic component was validated against VarDictJava v1.8.3 across 768 automated Cargo workspace tests (550 core library tests, 110 corpus and modality parity tests, 40 engine behavior tests, 2 amplicon streaming memory tests, 3 CRAM stack tests, 33 CLI tests, and 30 CLI integration binary tests) enforcing a `>= 90%` line-coverage gate (`cargo-llvm-cov`), 37 harness diagnostic self-tests (25 shell tests and 12 Python test suites), the 92-case integration corpus, 10 slice fixtures, 18 multi-modal slices across 6 cohorts, the 89-job 12-cell full-corpus sweep, and multi-gigabyte public benchmarks (SEQC2, GIAB HG008, GIAB HG002, GIAB HG005, GIAB NA24385 b37) under float tolerance $\varepsilon = 10^{-6}$, with reproducibility documented in [`docs/testing/test-matrix-and-ci-audit.md`](docs/testing/test-matrix-and-ci-audit.md) and workflow skills in [`.agents/skills/`](AGENTS.md#19-repository-specific-agent-skills).
 
 ---
 

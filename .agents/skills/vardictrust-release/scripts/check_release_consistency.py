@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (746 total:
-531 core lib + 110 corpus_parity + 39 engine_behavior + 2 amplicon_stream_mem
-+ 3 cram_stack + 32 CLI bin + 29 CLI integration binary tests), engine
+Verifies that all version-bearing files, workspace test counts (768 total:
+550 core lib + 110 corpus_parity + 40 engine_behavior + 2 amplicon_stream_mem
++ 3 cram_stack + 33 CLI bin + 30 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
 """
@@ -21,14 +21,14 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 746,
-    "core_lib": 531,
+    "total_workspace": 768,
+    "core_lib": 550,
     "corpus_parity": 110,
-    "engine_behavior": 39,
+    "engine_behavior": 40,
     "amplicon_stream_mem": 2,
     "cram_stack": 3,
-    "cli_bin": 32,
-    "cli_integration": 29,
+    "cli_bin": 33,
+    "cli_integration": 30,
     "harness_self_tests": 37,
 }
 
@@ -285,7 +285,7 @@ EXPECTED_CLI_HEADINGS = (
     "6. Structural Variants & Complex Indels",
     "7. Performance & Concurrency",
 )
-EXPECTED_CLI_FLAG_COUNT = 90
+EXPECTED_CLI_FLAG_COUNT = 91
 
 
 def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None:
@@ -302,8 +302,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "README.md",
-        r"`(?:87|89)` CLI flags|89 CLI flags|89-flag|6 functional groups",
-        "README.md stale 87/89 CLI flags or 6 functional groups",
+        r"`(?:87|89|90)` CLI flags|(?:89|90) CLI flags|(?:89|90)-flag|6 functional groups",
+        "README.md stale 87/89/90 CLI flags or 6 functional groups",
         errors,
     )
 
@@ -383,6 +383,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
                         ]
                         if field_name == "unique_mode_second_in_pair_enabled":
                             shorts_list.append("-UN")
+                        if field_name == "amplicon_single_primer":
+                            shorts_list.append("-sp")
                         is_pos = not shorts_list and not longs_list
                         cli_specs.append(
                             (tuple(shorts_list), tuple(longs_list), is_pos)
@@ -411,8 +413,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "ROADMAP.md",
-        r"`(?:87|89)`-flag CLI surface|89 CLI flags|89-flag|6 functional groups",
-        "ROADMAP.md stale 87/89-flag CLI surface or 6 functional groups",
+        r"`(?:87|89|90)`-flag CLI surface|(?:89|90) CLI flags|(?:89|90)-flag|6 functional groups",
+        "ROADMAP.md stale 87/89/90-flag CLI surface or 6 functional groups",
         errors,
     )
 
@@ -441,8 +443,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "docs/ecosystem-survey.md",
-        r"(?:87|89)-flag|`(?:87|89)` CLI flags|89 CLI flags|6 functional groups",
-        "docs/ecosystem-survey.md stale 87/89-flag or 6 functional groups",
+        r"(?:87|89|90)-flag|`(?:87|89|90)` CLI flags|(?:89|90) CLI flags|6 functional groups",
+        "docs/ecosystem-survey.md stale 87/89/90-flag or 6 functional groups",
         errors,
     )
 
@@ -456,8 +458,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"(?:87|89)-flag CLI surface|89 CLI flags|89-flag|6 functional groups",
-        "test-matrix-and-ci-audit.md stale 87/89-flag CLI surface or 6 functional groups",
+        r"(?:87|89|90)-flag CLI surface|(?:89|90) CLI flags|(?:89|90)-flag|6 functional groups",
+        "test-matrix-and-ci-audit.md stale 87/89/90-flag CLI surface or 6 functional groups",
         errors,
     )
 
@@ -471,8 +473,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "wiki/Home.md",
-        r"(?:87|89)-flag|89 CLI flags|6 functional groups",
-        "wiki/Home.md stale 87/89-flag or 6 functional groups",
+        r"(?:87|89|90)-flag|(?:89|90) CLI flags|6 functional groups",
+        "wiki/Home.md stale 87/89/90-flag or 6 functional groups",
         errors,
     )
 
@@ -689,24 +691,69 @@ def check_pre_tag_surfaces(
             f"{lic_rel} must remain pure MIT without copyleft dual-licensing",
             errors,
         )
-    if version == "1.0.10":
+    # Key Bioconda and nf-core recipe license checks on each recipe's own pinned
+    # package version so `--version 1.1.0 --phase pre-tag` succeeds while Phase 3A/3B
+    # recipes are still legitimately pinned to 1.0.10 (palakpsheth/VarDictRust#156).
+    bioconda_meta_rel = "packaging/bioconda/recipes/vardictrust/meta.yaml"
+    bioconda_meta_text = read_text(repo_root, bioconda_meta_rel, errors)
+    bioconda_ver_m = (
+        re.search(r'\{%\s*set\s+version\s*=\s*"([^"]+)"\s*%\}', bioconda_meta_text)
+        if bioconda_meta_text
+        else None
+    )
+    bioconda_pin_ver = bioconda_ver_m.group(1) if bioconda_ver_m else version
+    if bioconda_pin_ver == "1.0.10":
         require_regex(
             repo_root,
-            "packaging/bioconda/recipes/vardictrust/meta.yaml",
+            bioconda_meta_rel,
             r"^\s*license:\s*MIT AND GPL-2\.0-or-later\s*$",
             "Bioconda meta.yaml license == MIT AND GPL-2.0-or-later while pinned to 1.0.10",
             errors,
         )
         require_regex(
             repo_root,
-            "packaging/bioconda/recipes/vardictrust/meta.yaml",
+            bioconda_meta_rel,
             r"^\s*license_family:\s*GPL2\s*$",
             "Bioconda meta.yaml license_family == GPL2 while pinned to 1.0.10",
             errors,
         )
+    else:
         require_regex(
             repo_root,
-            "packaging/nf-core/modules/vardictrust/meta.yml",
+            bioconda_meta_rel,
+            r"^\s*license:\s*MIT\s*$",
+            "Bioconda meta.yaml license == MIT for 1.1.0+",
+            errors,
+        )
+        require_regex(
+            repo_root,
+            bioconda_meta_rel,
+            r"^\s*license_family:\s*MIT\s*$",
+            "Bioconda meta.yaml license_family == MIT for 1.1.0+",
+            errors,
+        )
+        forbid_regex(
+            repo_root,
+            bioconda_meta_rel,
+            r"GPL-2\.0|GPL-2\.0-or-later|GPL2",
+            f"{bioconda_meta_rel} must be pure MIT without copyleft dual-licensing for 1.1.0+",
+            errors,
+        )
+
+    nfcore_meta_rel = "packaging/nf-core/modules/vardictrust/meta.yml"
+    nfcore_env_text = read_text(
+        repo_root, "packaging/nf-core/modules/vardictrust/environment.yml", errors
+    )
+    nfcore_ver_m = (
+        re.search(r"bioconda::vardictrust=([^\s\"']+)", nfcore_env_text)
+        if nfcore_env_text
+        else None
+    )
+    nfcore_pin_ver = nfcore_ver_m.group(1) if nfcore_ver_m else version
+    if nfcore_pin_ver == "1.0.10":
+        require_regex(
+            repo_root,
+            nfcore_meta_rel,
             r'licence:\s*\n\s*-\s*"MIT"\s*\n\s*-\s*"GPL-2\.0-or-later"',
             "nf-core meta.yml licence == [MIT, GPL-2.0-or-later] while pinned to 1.0.10",
             errors,
@@ -714,36 +761,18 @@ def check_pre_tag_surfaces(
     else:
         require_regex(
             repo_root,
-            "packaging/bioconda/recipes/vardictrust/meta.yaml",
-            r"^\s*license:\s*MIT\s*$",
-            "Bioconda meta.yaml license == MIT for 1.1.0+",
-            errors,
-        )
-        require_regex(
-            repo_root,
-            "packaging/bioconda/recipes/vardictrust/meta.yaml",
-            r"^\s*license_family:\s*MIT\s*$",
-            "Bioconda meta.yaml license_family == MIT for 1.1.0+",
-            errors,
-        )
-        require_regex(
-            repo_root,
-            "packaging/nf-core/modules/vardictrust/meta.yml",
+            nfcore_meta_rel,
             r'licence:\s*\n\s*-\s*"MIT"',
             "nf-core meta.yml licence == [MIT] for 1.1.0+",
             errors,
         )
-        for pkg_lic_rel in (
-            "packaging/bioconda/recipes/vardictrust/meta.yaml",
-            "packaging/nf-core/modules/vardictrust/meta.yml",
-        ):
-            forbid_regex(
-                repo_root,
-                pkg_lic_rel,
-                r"GPL-2\.0|GPL-2\.0-or-later|GPL2",
-                f"{pkg_lic_rel} must be pure MIT without copyleft dual-licensing for 1.1.0+",
-                errors,
-            )
+        forbid_regex(
+            repo_root,
+            nfcore_meta_rel,
+            r"GPL-2\.0|GPL-2\.0-or-later|GPL2",
+            f"{nfcore_meta_rel} must be pure MIT without copyleft dual-licensing for 1.1.0+",
+            errors,
+        )
 
     cargo_toml_text = read_text(repo_root, "Cargo.toml", errors)
     if cargo_toml_text:
