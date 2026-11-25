@@ -254,6 +254,53 @@ fn lookup_raw_extracnt(
         .map_or(0, |c| c.extracnt)
 }
 
+#[inline]
+fn lookup_pre_anchored_dup(
+    position: i32,
+    desc: &str,
+    insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    orig_non_ins: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    overlay: &rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
+) -> bool {
+    insertion_variants
+        .get(&position)
+        .and_then(|m| m.map.get(desc))
+        .or_else(|| {
+            overlay
+                .get(&position)
+                .or_else(|| orig_non_ins.get(&position))
+                .and_then(|m| m.map.get(desc))
+        })
+        .is_some_and(|c| c.pre_anchored_dup)
+}
+
+#[inline]
+fn long_ins_inserted_bases(stripped_desc: &str, description_string: &str) -> i32 {
+    if !stripped_desc
+        .bytes()
+        .any(|b| matches!(b, b'&' | b'#' | b'^'))
+    {
+        return (stripped_desc.len().min(i32::MAX as usize) as i32).max(1);
+    }
+    let head_len = stripped_desc
+        .bytes()
+        .take_while(|b| !matches!(b, b'&' | b'#' | b'^'))
+        .count();
+    let tail_ins_len = if let Some((_, tail)) = get_hash_group_caret_group(description_string) {
+        if get_begin_digits(tail).is_some() {
+            0
+        } else {
+            tail.bytes().take_while(|&b| b != b'&').count()
+        }
+    } else if let Some(caret_ins) = get_caret_atgnc(description_string) {
+        caret_ins.len()
+    } else {
+        0
+    };
+    let total = head_len.saturating_add(tail_ins_len).min(i32::MAX as usize) as i32;
+    total.max(1)
+}
+
 impl<'a> ToVarsBuilder<'a> {
     /// Create a new ToVarsBuilder with reference, region, chromosomes_lengths and config.
     pub fn new(
@@ -292,6 +339,19 @@ impl<'a> ToVarsBuilder<'a> {
     #[inline]
     fn get_ref_base_i32(&self, pos: i32) -> Option<u8> {
         u32::try_from(pos).ok().and_then(|pu| self.get_ref_base(pu))
+    }
+
+    /// Returns the 1-bp-upstream reference base at `anchor_pos - 1` iff `anchor_pos > 1`
+    /// and `anchor_pos - 1` is loaded in `self.reference` with a non-`N`/`n` base
+    /// (`CompatProfile::canonical_sv_vcf_anchoring`; `AstraZeneca-NGS/VarDictJava#398`,
+    /// `clintval/vartovcf#192`).
+    #[inline]
+    fn upstream_non_n_anchor_base(&self, anchor_pos: i32) -> Option<u8> {
+        if anchor_pos <= 1 {
+            return None;
+        }
+        self.get_ref_base_i32(anchor_pos - 1)
+            .filter(|&b| b != b'N' && b != b'n')
     }
 
     /// Convert VariationData into a map of position -> Vars container.
@@ -1497,6 +1557,8 @@ impl<'a> ToVarsBuilder<'a> {
 
         if !variations_at_pos.variants.is_empty() {
             let standard_dup_symbolic_alt = self.config.compat.standard_dup_symbolic_alt;
+            let canonical_sv_vcf_anchoring = self.config.compat.canonical_sv_vcf_anchoring;
+            let sv_min_len = self.config.sv_min_len;
             let mut gt1_buf = crate::types::StackBuf::<24>::new();
             let genotype1_current: std::borrow::Cow<'_, str> =
                 if let Some(ref ref_var) = variations_at_pos.ref_variant {
@@ -1506,6 +1568,8 @@ impl<'a> ToVarsBuilder<'a> {
                                 &ref_var.description,
                                 &mut gt1_buf,
                                 standard_dup_symbolic_alt,
+                                canonical_sv_vcf_anchoring,
+                                sv_min_len,
                             )
                         } else {
                             std::borrow::Cow::Borrowed(ref_var.description.as_str())
@@ -1516,6 +1580,8 @@ impl<'a> ToVarsBuilder<'a> {
                                 &first_var.description,
                                 &mut gt1_buf,
                                 standard_dup_symbolic_alt,
+                                canonical_sv_vcf_anchoring,
+                                sv_min_len,
                             )
                         } else {
                             std::borrow::Cow::Owned(first_var.description.clone())
@@ -1525,6 +1591,8 @@ impl<'a> ToVarsBuilder<'a> {
                             &ref_var.description,
                             &mut gt1_buf,
                             standard_dup_symbolic_alt,
+                            canonical_sv_vcf_anchoring,
+                            sv_min_len,
                         )
                     } else {
                         std::borrow::Cow::Borrowed(ref_var.description.as_str())
@@ -1535,6 +1603,8 @@ impl<'a> ToVarsBuilder<'a> {
                             &first_var.description,
                             &mut gt1_buf,
                             standard_dup_symbolic_alt,
+                            canonical_sv_vcf_anchoring,
+                            sv_min_len,
                         )
                     } else {
                         std::borrow::Cow::Owned(first_var.description.clone())
@@ -1577,6 +1647,8 @@ impl<'a> ToVarsBuilder<'a> {
                 let mut msint_len = 0;
 
                 let mut start_position = position;
+                let mut canonical_symbolic_sv_locked = false;
+                let mut canonical_symbolic_del = false;
 
                 if let Some(stripped_desc) = description_string.strip_prefix('+') {
                     if !description_string.contains('&')
@@ -1624,21 +1696,73 @@ impl<'a> ToVarsBuilder<'a> {
                         varallele.push_str(stripped_desc);
                     }
 
-                    if standard_dup_symbolic_alt {
-                        if let Some(dup_val) = get_dup_num_compat(&varallele, true) {
+                    let parse_neg_dup = standard_dup_symbolic_alt || canonical_sv_vcf_anchoring;
+                    if parse_neg_dup {
+                        if let Some(dup_val) = get_dup_num_compat(&varallele, parse_neg_dup) {
                             let dup_span = ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1);
-                            end_position = (i64::from(start_position) + dup_span - 1)
-                                .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
-                                as i32;
+                            if canonical_sv_vcf_anchoring {
+                                // clintval/vartovcf#192 & clintval/vartovcf#107:
+                                // - Origin A (pre_anchored_dup == true, already at bp - 1):
+                                //   keep start_position and set end_position = start_position + dup_span.
+                                // - Origin B (pre_anchored_dup == false, unshifted at bp):
+                                //   shift start_position to bp - 1 iff loaded & non-N, setting
+                                //   end_position = start_position + dup_span (= bp + dup_span - 1).
+                                let pre_anchored = lookup_pre_anchored_dup(
+                                    position,
+                                    description_string,
+                                    insertion_variants,
+                                    orig_non_ins,
+                                    overlay,
+                                );
+                                if pre_anchored {
+                                    end_position = (i64::from(start_position) + dup_span)
+                                        .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                                        as i32;
+                                } else if let Some(b_prev) =
+                                    self.upstream_non_n_anchor_base(start_position)
+                                {
+                                    start_position = start_position.saturating_sub(1);
+                                    refallele.clear();
+                                    refallele.push(b_prev as char);
+                                    end_position = (i64::from(start_position) + dup_span)
+                                        .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                                        as i32;
+                                } else {
+                                    end_position = (i64::from(start_position) + dup_span - 1)
+                                        .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                                        as i32;
+                                }
+                                canonical_symbolic_sv_locked = true;
+                            } else {
+                                end_position = (i64::from(start_position) + dup_span - 1)
+                                    .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                                    as i32;
+                            }
                             genotype2 = format_plus_genotype(&mut gt2_buf, dup_span);
                             varallele = "<DUP>".to_string();
-                        } else if varallele.len() > self.config.sv_min_len as usize {
-                            end_position = end_position
-                                .saturating_add(varallele.len().min(i32::MAX as usize) as i32);
+                        } else if varallele.len() > sv_min_len as usize {
+                            if canonical_sv_vcf_anchoring {
+                                // Origin C (clintval/vartovcf#107, AstraZeneca-NGS/VarDictJava#398,
+                                // ToVarsBuilder.java:692-694): varallele carries the leading 1-bp
+                                // reference base, so use exact inserted base count ins_len so
+                                // END - POS == ins_len == SVLEN and clamp refallele to 1 bp.
+                                let anchor_base =
+                                    self.get_ref_base_i32(start_position).unwrap_or(b'N');
+                                refallele.clear();
+                                refallele.push(anchor_base as char);
+                                let ins_len =
+                                    long_ins_inserted_bases(stripped_desc, description_string);
+                                end_position = start_position.saturating_add(ins_len);
+                                genotype2 = format_plus_genotype(&mut gt2_buf, i64::from(ins_len));
+                                canonical_symbolic_sv_locked = true;
+                            } else {
+                                end_position = end_position
+                                    .saturating_add(varallele.len().min(i32::MAX as usize) as i32);
+                            }
                             varallele = "<DUP>".to_string();
                         }
                     } else {
-                        if varallele.len() > self.config.sv_min_len as usize {
+                        if varallele.len() > sv_min_len as usize {
                             end_position = end_position
                                 .saturating_add(varallele.len().min(i32::MAX as usize) as i32);
                             varallele = "<DUP>".to_string();
@@ -1653,7 +1777,7 @@ impl<'a> ToVarsBuilder<'a> {
                         }
                     }
                 } else if description_string.starts_with('-') {
-                    if i64::from(deletion_length) < i64::from(self.config.sv_min_len) {
+                    if i64::from(deletion_length) < i64::from(sv_min_len) {
                         // replace first -digits with empty string
                         varallele = if let Some(rest) = description_string.strip_prefix('-') {
                             let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
@@ -1678,7 +1802,9 @@ impl<'a> ToVarsBuilder<'a> {
                             genotype2 =
                                 std::borrow::Cow::Owned(format!("<INV{}>", deletion_length));
                         }
-                    } else if matches_begin_minus_number_caret(description_string) {
+                    } else if matches_begin_minus_number_caret(description_string)
+                        || (canonical_sv_vcf_anchoring && get_inv_num(description_string).is_some())
+                    {
                         varallele = "<INV>".to_string();
                         genotype2 = std::borrow::Cow::Owned(format!("<INV{}>", deletion_length));
                     } else {
@@ -1692,45 +1818,82 @@ impl<'a> ToVarsBuilder<'a> {
                         && self.config.three_prime
                         && self.config.compat.shift3_3prime_alleles
                         && shift3 > 0;
-                    if simple_del {
-                        if self.config.three_prime {
-                            start_position = start_position.saturating_add(shift3);
-                            if shift_del_alleles {
-                                end_position = end_position.saturating_add(shift3);
-                            }
-                        }
-                        let anchor_lookup_pos = if shift_del_alleles {
+                    if canonical_sv_vcf_anchoring && varallele == "<INV>" {
+                        // clintval/vartovcf#192: anchor <INV> (both -len^... and -len<invN>)
+                        // at del_seq_pos - 1 when loaded & non-N so END - POS == deletion_length.
+                        let del_seq_pos = if shift_del_alleles {
                             position.saturating_add(shift3)
                         } else {
                             position
                         };
-                        let base_prev = anchor_lookup_pos
-                            .checked_sub(1)
-                            .and_then(|p| self.get_ref_base_i32(p))
-                            .unwrap_or(b'N');
-                        if varallele != "<DEL>" {
-                            varallele.clear();
-                            varallele.push(base_prev as char);
-                        }
-                        refallele.push(base_prev as char);
-                        start_position = start_position.saturating_sub(1);
-                    }
-
-                    let del_seq_pos = if shift_del_alleles {
-                        position.saturating_add(shift3)
-                    } else {
-                        position
-                    };
-                    if matches_some_sv_numbers(description_string) {
-                        let base_cur = self.get_ref_base_i32(del_seq_pos).unwrap_or(b'N');
-                        refallele.clear();
-                        refallele.push(base_cur as char);
-                    } else if i64::from(deletion_length) < i64::from(self.config.sv_min_len) {
-                        let del_end = (i64::from(del_seq_pos) + i64::from(deletion_length) - 1)
+                        end_position = (i64::from(del_seq_pos) + i64::from(deletion_length) - 1)
                             .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
                             as i32;
-                        self.join_ref_into(scratch1, del_seq_pos, del_end);
-                        refallele.push_str(scratch1);
+                        if let Some(b_prev) = self.upstream_non_n_anchor_base(del_seq_pos) {
+                            start_position = del_seq_pos - 1;
+                            refallele.push(b_prev as char);
+                        } else {
+                            start_position = del_seq_pos;
+                            let base_cur = self.get_ref_base_i32(del_seq_pos).unwrap_or(b'N');
+                            refallele.push(base_cur as char);
+                        }
+                        canonical_symbolic_sv_locked = true;
+                    } else if canonical_sv_vcf_anchoring && varallele == "<DEL>" {
+                        // AstraZeneca-NGS/VarDictJava#398, AstraZeneca-NGS/VarDictJava#225,
+                        // AstraZeneca-NGS/VarDictJava#229, AstraZeneca-NGS/VarDict#111,
+                        // AstraZeneca-NGS/VarDictJava#382, clintval/vartovcf#192:
+                        // anchor both simple and complex (&/#/^) symbolic <DEL> at position - 1
+                        // when loaded & non-N (else unshifted >= 1), clamping refallele to 1 bp.
+                        if let Some(b_prev) = self.upstream_non_n_anchor_base(position) {
+                            start_position = position - 1;
+                            refallele.push(b_prev as char);
+                        } else {
+                            start_position = position;
+                            let base_cur = self.get_ref_base_i32(position).unwrap_or(b'N');
+                            refallele.push(base_cur as char);
+                        }
+                        canonical_symbolic_del = true;
+                    } else {
+                        if simple_del {
+                            if self.config.three_prime {
+                                start_position = start_position.saturating_add(shift3);
+                                if shift_del_alleles {
+                                    end_position = end_position.saturating_add(shift3);
+                                }
+                            }
+                            let anchor_lookup_pos = if shift_del_alleles {
+                                position.saturating_add(shift3)
+                            } else {
+                                position
+                            };
+                            let base_prev = anchor_lookup_pos
+                                .checked_sub(1)
+                                .and_then(|p| self.get_ref_base_i32(p))
+                                .unwrap_or(b'N');
+                            if varallele != "<DEL>" {
+                                varallele.clear();
+                                varallele.push(base_prev as char);
+                            }
+                            refallele.push(base_prev as char);
+                            start_position = start_position.saturating_sub(1);
+                        }
+
+                        let del_seq_pos = if shift_del_alleles {
+                            position.saturating_add(shift3)
+                        } else {
+                            position
+                        };
+                        if matches_some_sv_numbers(description_string) {
+                            let base_cur = self.get_ref_base_i32(del_seq_pos).unwrap_or(b'N');
+                            refallele.clear();
+                            refallele.push(base_cur as char);
+                        } else if i64::from(deletion_length) < i64::from(sv_min_len) {
+                            let del_end = (i64::from(del_seq_pos) + i64::from(deletion_length) - 1)
+                                .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
+                                as i32;
+                            self.join_ref_into(scratch1, del_seq_pos, del_end);
+                            refallele.push_str(scratch1);
+                        }
                     }
                 } else {
                     self.join_ref_into(
@@ -1757,35 +1920,46 @@ impl<'a> ToVarsBuilder<'a> {
                 }
 
                 if let Some(extra) = get_amp_atgc(description_string) {
-                    let extra_len = extra.len().min(i32::MAX as usize) as i32;
-                    if let Some(idx) = varallele.find('&') {
-                        varallele.remove(idx);
-                    }
-                    if let Some(ext_start) = end_position.checked_add(1) {
-                        self.join_ref_into(
-                            scratch1,
-                            ext_start,
-                            end_position.saturating_add(extra_len),
-                        );
+                    if canonical_symbolic_sv_locked {
+                        // Canonical symbolic <DUP> / <INV> already fixed start_position,
+                        // end_position, 1-bp refallele, and varallele.
+                    } else if canonical_symbolic_del {
+                        let extra_len = extra.len().min(i32::MAX as usize) as i32;
+                        if let Some(ext_start) = end_position.checked_add(1) {
+                            self.join_ref_into(
+                                scratch1,
+                                ext_start,
+                                end_position.saturating_add(extra_len),
+                            );
+                        } else {
+                            scratch1.clear();
+                        }
+                        if !scratch1.is_empty() {
+                            genotype1_current_inner.to_mut().push_str(scratch1);
+                        }
+                        end_position = end_position.saturating_add(extra_len);
+                        if let Some(&cov_prev) =
+                            position.checked_sub(1).and_then(|p| ref_coverage.get(&p))
+                        {
+                            total_pos_coverage_adj = cov_prev;
+                        }
+                        if vref.pos_coverage > total_pos_coverage_adj {
+                            total_pos_coverage_adj = vref.pos_coverage;
+                        }
+                        if total_pos_coverage_adj > 0 {
+                            vref.frequency =
+                                vref.pos_coverage as f64 / total_pos_coverage_adj as f64;
+                        }
                     } else {
-                        scratch1.clear();
-                    }
-                    refallele.push_str(scratch1);
-                    if !scratch1.is_empty() {
-                        genotype1_current_inner.to_mut().push_str(scratch1);
-                    }
-                    end_position = end_position.saturating_add(extra_len);
-
-                    if let Some(vextra) = get_amp_atgc(&varallele) {
-                        let vextra_len = vextra.len().min(i32::MAX as usize) as i32;
+                        let extra_len = extra.len().min(i32::MAX as usize) as i32;
                         if let Some(idx) = varallele.find('&') {
                             varallele.remove(idx);
                         }
-                        if let Some(vext_start) = end_position.checked_add(1) {
+                        if let Some(ext_start) = end_position.checked_add(1) {
                             self.join_ref_into(
                                 scratch1,
-                                vext_start,
-                                end_position.saturating_add(vextra_len),
+                                ext_start,
+                                end_position.saturating_add(extra_len),
                             );
                         } else {
                             scratch1.clear();
@@ -1794,73 +1968,105 @@ impl<'a> ToVarsBuilder<'a> {
                         if !scratch1.is_empty() {
                             genotype1_current_inner.to_mut().push_str(scratch1);
                         }
-                        end_position = end_position.saturating_add(vextra_len);
-                    }
+                        end_position = end_position.saturating_add(extra_len);
 
-                    if description_string.starts_with('+') {
-                        if let Some(ch) = refallele.chars().next() {
-                            refallele.drain(..ch.len_utf8());
+                        if let Some(vextra) = get_amp_atgc(&varallele) {
+                            let vextra_len = vextra.len().min(i32::MAX as usize) as i32;
+                            if let Some(idx) = varallele.find('&') {
+                                varallele.remove(idx);
+                            }
+                            if let Some(vext_start) = end_position.checked_add(1) {
+                                self.join_ref_into(
+                                    scratch1,
+                                    vext_start,
+                                    end_position.saturating_add(vextra_len),
+                                );
+                            } else {
+                                scratch1.clear();
+                            }
+                            refallele.push_str(scratch1);
+                            if !scratch1.is_empty() {
+                                genotype1_current_inner.to_mut().push_str(scratch1);
+                            }
+                            end_position = end_position.saturating_add(vextra_len);
                         }
-                        if let Some(ch) = varallele.chars().next() {
-                            varallele.drain(..ch.len_utf8());
-                        }
-                        start_position = start_position.saturating_add(1);
-                    }
 
-                    if varallele == "<DEL>" && !refallele.is_empty() {
-                        let ref_base = self.get_ref_base_i32(start_position).unwrap_or(b'N');
-                        refallele.clear();
-                        refallele.push(ref_base as char);
-                        if let Some(&cov_prev) = start_position
-                            .checked_sub(1)
-                            .and_then(|p| ref_coverage.get(&p))
-                        {
-                            total_pos_coverage_adj = cov_prev;
+                        if description_string.starts_with('+') {
+                            if let Some(ch) = refallele.chars().next() {
+                                refallele.drain(..ch.len_utf8());
+                            }
+                            if let Some(ch) = varallele.chars().next() {
+                                varallele.drain(..ch.len_utf8());
+                            }
+                            start_position = start_position.saturating_add(1);
                         }
-                        if vref.pos_coverage > total_pos_coverage_adj {
-                            total_pos_coverage_adj = vref.pos_coverage;
+
+                        if varallele == "<DEL>" && !refallele.is_empty() {
+                            let ref_base = self.get_ref_base_i32(start_position).unwrap_or(b'N');
+                            refallele.clear();
+                            refallele.push(ref_base as char);
+                            if let Some(&cov_prev) = start_position
+                                .checked_sub(1)
+                                .and_then(|p| ref_coverage.get(&p))
+                            {
+                                total_pos_coverage_adj = cov_prev;
+                            }
+                            if vref.pos_coverage > total_pos_coverage_adj {
+                                total_pos_coverage_adj = vref.pos_coverage;
+                            }
+                            vref.frequency =
+                                vref.pos_coverage as f64 / total_pos_coverage_adj as f64;
                         }
-                        vref.frequency = vref.pos_coverage as f64 / total_pos_coverage_adj as f64;
                     }
                 }
 
                 if let Some((matched_sequence, tail)) =
                     get_hash_group_caret_group(description_string)
                 {
-                    let matched_len = matched_sequence.len().min(i32::MAX as usize) as i32;
-                    let prev_end = end_position;
-                    end_position = end_position.saturating_add(matched_len);
-                    if let Some(m_start) = prev_end.checked_add(1) {
-                        self.join_ref_into(scratch1, m_start, end_position);
+                    if canonical_symbolic_sv_locked {
+                        // Keep canonical <DUP> / <INV> coordinates and 1-bp refallele intact.
+                    } else if canonical_symbolic_del {
+                        let matched_len = matched_sequence.len().min(i32::MAX as usize) as i32;
+                        end_position = end_position.saturating_add(matched_len);
+                        if let Some(deletion) = get_begin_digits(tail) {
+                            end_position = end_position.saturating_add(deletion);
+                        }
                     } else {
-                        scratch1.clear();
-                    }
-                    refallele.push_str(scratch1);
-
-                    if let Some(deletion) = get_begin_digits(tail) {
-                        if let Some(del_start) = end_position.checked_add(1) {
-                            self.join_ref_into(
-                                scratch1,
-                                del_start,
-                                end_position.saturating_add(deletion),
-                            );
+                        let matched_len = matched_sequence.len().min(i32::MAX as usize) as i32;
+                        let prev_end = end_position;
+                        end_position = end_position.saturating_add(matched_len);
+                        if let Some(m_start) = prev_end.checked_add(1) {
+                            self.join_ref_into(scratch1, m_start, end_position);
                         } else {
                             scratch1.clear();
                         }
                         refallele.push_str(scratch1);
-                        end_position = end_position.saturating_add(deletion);
-                    }
 
-                    // replaceFirst("#", "").replaceFirst("\\^(\\d+)?", "") in Java:
-                    let cleaned_varallele = varallele.replacen('#', "", 1);
-                    let cleaned_varallele =
-                        if let Some((prefix, rest)) = cleaned_varallele.split_once('^') {
-                            let tail = rest.trim_start_matches(|c: char| c.is_ascii_digit());
-                            format!("{prefix}{tail}")
-                        } else {
-                            cleaned_varallele
-                        };
-                    varallele = cleaned_varallele;
+                        if let Some(deletion) = get_begin_digits(tail) {
+                            if let Some(del_start) = end_position.checked_add(1) {
+                                self.join_ref_into(
+                                    scratch1,
+                                    del_start,
+                                    end_position.saturating_add(deletion),
+                                );
+                            } else {
+                                scratch1.clear();
+                            }
+                            refallele.push_str(scratch1);
+                            end_position = end_position.saturating_add(deletion);
+                        }
+
+                        // replaceFirst("#", "").replaceFirst("\\^(\\d+)?", "") in Java:
+                        let cleaned_varallele = varallele.replacen('#', "", 1);
+                        let cleaned_varallele =
+                            if let Some((prefix, rest)) = cleaned_varallele.split_once('^') {
+                                let tail = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+                                format!("{prefix}{tail}")
+                            } else {
+                                cleaned_varallele
+                            };
+                        varallele = cleaned_varallele;
+                    }
 
                     if genotype1_current_inner.contains('#') {
                         genotype1_current_inner =
@@ -1879,7 +2085,9 @@ impl<'a> ToVarsBuilder<'a> {
                 }
 
                 if get_caret_atgnc(description_string).is_some() {
-                    varallele = varallele.replacen('^', "", 1);
+                    if !canonical_symbolic_sv_locked && !canonical_symbolic_del {
+                        varallele = varallele.replacen('^', "", 1);
+                    }
                     if genotype1_current_inner.contains('^') {
                         genotype1_current_inner =
                             std::borrow::Cow::Owned(genotype1_current_inner.replacen('^', "i", 1));
@@ -2324,14 +2532,25 @@ fn format_plus_genotype1<'b>(
     desc: &str,
     buf: &'b mut crate::types::StackBuf<24>,
     standard_dup_symbolic_alt: bool,
+    canonical_sv_vcf_anchoring: bool,
+    sv_min_len: u32,
 ) -> std::borrow::Cow<'b, str> {
-    if standard_dup_symbolic_alt {
+    let parse_neg_dup = standard_dup_symbolic_alt || canonical_sv_vcf_anchoring;
+    if parse_neg_dup {
         if let Some(dup_val) = get_dup_num_compat(desc, true) {
             let dup_span = ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1);
             return format_plus_genotype(buf, dup_span);
         }
     } else if let Some(dup_val) = get_dup_num(desc) {
         return format_plus_genotype(buf, (dup_val as u32).saturating_add(SV_FLANK_BP as u32));
+    }
+    if canonical_sv_vcf_anchoring {
+        if let Some(stripped_desc) = desc.strip_prefix('+') {
+            if stripped_desc.len().saturating_add(1) > sv_min_len as usize {
+                let ins_len = long_ins_inserted_bases(stripped_desc, desc);
+                return format_plus_genotype(buf, ins_len);
+            }
+        }
     }
     format_plus_genotype(buf, (desc.len() as i32).saturating_sub(1))
 }
@@ -5666,29 +5885,57 @@ mod tests {
         assert_eq!(leg_l50_180.end_pos, 288);
         assert_eq!(leg_l50_180.genotype.as_deref(), Some("+130/+107"));
 
-        // 2. COMPAT_OFF normalizes <dup-N> to <DUP> with positive i64 span (>= 1) and unifies genotype1
+        // 2a. Isolated standard_dup_symbolic_alt (without canonical_sv_vcf_anchoring) normalizes
+        //     <dup-N> to <DUP> with positive i64 span (>= 1) and unifies genotype1 at unshifted bp
+        let mut cfg_std_dup_only = Config::default();
+        cfg_std_dup_only.compat = crate::config::CompatProfile {
+            standard_dup_symbolic_alt: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        let aligned_std_only =
+            ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_std_dup_only)
+                .build_aligned_variants(&var_data);
+
+        let std100 = &aligned_std_only.get(&100).unwrap().variants[0];
+        assert_eq!(std100.ref_allele, "G");
+        assert_eq!(std100.var_allele, "<DUP>");
+        assert_eq!(std100.start_pos, 100);
+        assert_eq!(std100.end_pos, 157);
+        assert_eq!(std100.genotype.as_deref(), Some("+58/+58"));
+
+        let std180 = &aligned_std_only.get(&180).unwrap().variants[0];
+        assert_eq!(std180.ref_allele, "G");
+        assert_eq!(std180.var_allele, "<DUP>");
+        assert_eq!(std180.start_pos, 180);
+        assert_eq!(std180.end_pos, 359);
+        assert_eq!(std180.genotype.as_deref(), Some("+180/+180"));
+
+        // 2b. Full COMPAT_OFF also activates canonical_sv_vcf_anchoring, shifting unanchored
+        //     (pre_anchored_dup == false) <dup±N> start_pos to bp - 1 with 1-bp padding ref_allele
+        //     so END - POS == dup_span
         let mut cfg_off = Config::default();
         cfg_off.compat = crate::config::COMPAT_OFF;
         let builder_off = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off);
         let aligned_off = builder_off.build_aligned_variants(&var_data);
 
         let off100 = &aligned_off.get(&100).unwrap().variants[0];
-        assert_eq!(off100.ref_allele, "G");
+        assert_eq!(off100.ref_allele, "A");
         assert_eq!(off100.var_allele, "<DUP>");
-        assert_eq!(off100.start_pos, 100);
+        assert_eq!(off100.start_pos, 99);
         assert_eq!(off100.end_pos, 157);
         assert_eq!(off100.genotype.as_deref(), Some("+58/+58"));
 
         let off120 = &aligned_off.get(&120).unwrap().variants[0];
+        assert_eq!(off120.ref_allele, "A");
         assert_eq!(off120.var_allele, "<DUP>");
-        assert_eq!(off120.start_pos, 120);
+        assert_eq!(off120.start_pos, 119);
         assert_eq!(off120.end_pos, 177);
         assert_eq!(off120.genotype.as_deref(), Some("G/+58"));
 
         let off140 = &aligned_off.get(&140).unwrap().variants[0];
-        assert_eq!(off140.ref_allele, "T");
+        assert_eq!(off140.ref_allele, "A");
         assert_eq!(off140.var_allele, "<DUP>");
-        assert_eq!(off140.start_pos, 140);
+        assert_eq!(off140.start_pos, 139);
         assert_eq!(off140.end_pos, 140);
         assert_eq!(off140.genotype.as_deref(), Some("+1/+1"));
 
@@ -5697,16 +5944,16 @@ mod tests {
         assert!(off160.iter().all(|v| v.var_allele != "<DUP>"));
 
         let off180 = &aligned_off.get(&180).unwrap().variants[0];
-        assert_eq!(off180.ref_allele, "G");
+        assert_eq!(off180.ref_allele, "A");
         assert_eq!(off180.var_allele, "<DUP>");
-        assert_eq!(off180.start_pos, 180);
+        assert_eq!(off180.start_pos, 179);
         assert_eq!(off180.end_pos, 359);
         assert_eq!(off180.genotype.as_deref(), Some("+180/+180"));
 
         let off200 = &aligned_off.get(&200).unwrap().variants[0];
-        assert_eq!(off200.ref_allele, "T");
+        assert_eq!(off200.ref_allele, "A");
         assert_eq!(off200.var_allele, "<DUP>");
-        assert_eq!(off200.start_pos, 200);
+        assert_eq!(off200.start_pos, 199);
         assert_eq!(off200.end_pos, 279);
         assert_eq!(off200.genotype.as_deref(), Some("+80/+80"));
 
@@ -5720,14 +5967,16 @@ mod tests {
             .build_aligned_variants(&var_data);
 
         let l50_180 = &aligned_off_l50.get(&180).unwrap().variants[0];
+        assert_eq!(l50_180.ref_allele, "A");
         assert_eq!(l50_180.var_allele, "<DUP>");
-        assert_eq!(l50_180.start_pos, 180);
+        assert_eq!(l50_180.start_pos, 179);
         assert_eq!(l50_180.end_pos, 359);
         assert_eq!(l50_180.genotype.as_deref(), Some("+180/+180"));
 
         let l50_200 = &aligned_off_l50.get(&200).unwrap().variants[0];
+        assert_eq!(l50_200.ref_allele, "A");
         assert_eq!(l50_200.var_allele, "<DUP>");
-        assert_eq!(l50_200.start_pos, 200);
+        assert_eq!(l50_200.start_pos, 199);
         assert_eq!(l50_200.end_pos, 279);
         assert_eq!(l50_200.genotype.as_deref(), Some("+80/+80"));
     }
@@ -6474,5 +6723,683 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn compat_off_canonical_sv_vcf_anchoring_three_dup_origins_inv_complex_del_and_fallbacks() {
+        let mut seq: Vec<u8> = (0..600).map(|i| b"ACGT"[i % 4]).collect();
+        // Explicit deterministic bases (1-based pos -> index pos - 1):
+        seq[0] = b'G'; // pos 1 (contig start)
+        seq[48] = b'N'; // pos 49 ('N' upstream of pos 50)
+        seq[49] = b'C'; // pos 50
+        seq[58] = b'n'; // pos 59 ('n' upstream of pos 60)
+        seq[59] = b'T'; // pos 60
+        seq[97] = b'A'; // pos 98
+        seq[98] = b'C'; // pos 99 (pre-anchored <dup80> key = bp - 1)
+        seq[99] = b'G'; // pos 100
+        seq[118] = b'T'; // pos 119 (upstream of unanchored <dup80> at 120)
+        seq[119] = b'G'; // pos 120
+        seq[138] = b'A'; // pos 139
+        seq[139] = b'C'; // pos 140 (Origin C1 pure long insertion)
+        seq[149] = b'G'; // pos 150 (Origin C2 +150bp#A^GC)
+        seq[159] = b'T'; // pos 160 (Origin C3 +150bp&AT)
+        seq[198] = b'C'; // pos 199 (upstream of -200^ACGT <INV> at 200)
+        seq[199] = b'G'; // pos 200
+        seq[218] = b'T'; // pos 219 (upstream of -80^...<inv40>... <INV> at 220)
+        seq[219] = b'A'; // pos 220
+        seq[238] = b'G'; // pos 239 (upstream of -50<inv50> <INV> at 240)
+        seq[239] = b'C'; // pos 240
+        seq[258] = b'A'; // pos 259 (upstream of -150#A^GC <DEL> at 260)
+        seq[259] = b'T'; // pos 260
+        seq[268] = b'G'; // pos 269 (upstream of -150#AC^10 <DEL> at 270)
+        seq[269] = b'C'; // pos 270
+        seq[278] = b'T'; // pos 279 (upstream of -150&AT <DEL> at 280)
+        seq[279] = b'A'; // pos 280
+
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 600,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq.clone());
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 600)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(600),
+            gene: "SV_ANCHOR".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32, pre_anchored_dup: bool| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - (cnt / 2);
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 25.0 * f64::from(cnt);
+            v.pstd = true;
+            v.qstd = true;
+            v.pre_anchored_dup = pre_anchored_dup;
+            v
+        };
+        let sv_box = |ty: &str| {
+            Some(Box::new(Sv {
+                r#type: ty.to_string(),
+                pairs: 4,
+                splits: 6,
+                clusters: 1,
+            }))
+        };
+
+        let flank50 = "A".repeat(50);
+        let desc_dup80 = format!("+{flank50}<dup80>{flank50}"); // dup_span = 180
+        let ins150 = "C".repeat(150);
+        let desc_long_ins_pure = format!("+{ins150}");
+        let desc_long_ins_hash = format!("+{ins150}#A^GC");
+        let desc_long_ins_amp = format!("+{ins150}&AT");
+        let flank20 = "T".repeat(20);
+        let desc_inv_caret_sv = format!("-80^{flank20}<inv40>{flank20}");
+
+        let mut vd = VariationData::new();
+
+        // Origin A: pre_anchored_dup = true at bi = 99 (already bp - 1)
+        vd.ref_coverage.insert(99, 10);
+        let mut vm99 = VariationMap::new();
+        vm99.sv = sv_box("DUP");
+        vd.non_insertion_variants.insert(99, vm99);
+        let mut ins99 = VariationMap::new();
+        ins99.map.insert(desc_dup80.clone(), mk_var(10, true));
+        vd.insertion_variants.insert(99, ins99);
+
+        // Origin B: pre_anchored_dup = false at bp = 120
+        vd.ref_coverage.insert(120, 20);
+        let mut vm120 = VariationMap::new();
+        vm120.sv = sv_box("DUP");
+        vm120.map.insert("G".to_string(), mk_var(10, false));
+        vd.non_insertion_variants.insert(120, vm120);
+        let mut ins120 = VariationMap::new();
+        ins120.map.insert(desc_dup80.clone(), mk_var(10, false));
+        vd.insertion_variants.insert(120, ins120);
+
+        // Origin C1: pure +150bp (> sv_min_len = 100) at pos 140
+        vd.ref_coverage.insert(140, 10);
+        vd.non_insertion_variants.insert(140, VariationMap::new());
+        let mut ins140 = VariationMap::new();
+        ins140
+            .map
+            .insert(desc_long_ins_pure.clone(), mk_var(10, false));
+        vd.insertion_variants.insert(140, ins140);
+
+        // Origin C2: +150bp#A^GC (> sv_min_len = 100) at pos 150
+        vd.ref_coverage.insert(150, 10);
+        vd.non_insertion_variants.insert(150, VariationMap::new());
+        let mut ins150_map = VariationMap::new();
+        ins150_map
+            .map
+            .insert(desc_long_ins_hash.clone(), mk_var(10, false));
+        vd.insertion_variants.insert(150, ins150_map);
+
+        // Origin C3: +150bp&AT (> sv_min_len = 100) at pos 160
+        vd.ref_coverage.insert(160, 10);
+        vd.non_insertion_variants.insert(160, VariationMap::new());
+        let mut ins160 = VariationMap::new();
+        ins160
+            .map
+            .insert(desc_long_ins_amp.clone(), mk_var(10, false));
+        vd.insertion_variants.insert(160, ins160);
+
+        // <INV> Form 1: -200^ACGT at pos 200 (>= sv_min_len = 100, BEGIN_MINUS_NUMBER_CARET)
+        vd.ref_coverage.insert(200, 10);
+        let mut vm200 = VariationMap::new();
+        vm200.sv = sv_box("INV");
+        vm200.map.insert("-200^ACGT".to_string(), mk_var(10, false));
+        vd.non_insertion_variants.insert(200, vm200);
+
+        // <INV> Form 2: -80^...<inv40>... at pos 220 (< sv_min_len = 100, INV_NUM + SOME_SV_NUMBERS)
+        vd.ref_coverage.insert(220, 10);
+        let mut vm220 = VariationMap::new();
+        vm220.sv = sv_box("INV");
+        vm220
+            .map
+            .insert(desc_inv_caret_sv.clone(), mk_var(10, false));
+        vd.non_insertion_variants.insert(220, vm220);
+
+        // <INV> Form 3: -50<inv50> without '^' at pos 240 (simple_del == true!)
+        vd.ref_coverage.insert(240, 10);
+        let mut vm240 = VariationMap::new();
+        vm240.sv = sv_box("INV");
+        vm240
+            .map
+            .insert("-50<inv50>".to_string(), mk_var(10, false));
+        vd.non_insertion_variants.insert(240, vm240);
+
+        // Complex <DEL> 1: -150#A^GC at pos 260
+        vd.ref_coverage.insert(260, 10);
+        let mut vm260 = VariationMap::new();
+        vm260.sv = sv_box("DEL");
+        vm260.map.insert("-150#A^GC".to_string(), mk_var(10, false));
+        vd.non_insertion_variants.insert(260, vm260);
+
+        // Complex <DEL> 2: -150#AC^10 at pos 270
+        vd.ref_coverage.insert(270, 10);
+        let mut vm270 = VariationMap::new();
+        vm270.sv = sv_box("DEL");
+        vm270
+            .map
+            .insert("-150#AC^10".to_string(), mk_var(10, false));
+        vd.non_insertion_variants.insert(270, vm270);
+
+        // Complex <DEL> 3: -150&AT at pos 280
+        vd.ref_coverage.insert(280, 10);
+        let mut vm280 = VariationMap::new();
+        vm280.sv = sv_box("DEL");
+        vm280.map.insert("-150&AT".to_string(), mk_var(10, false));
+        vd.non_insertion_variants.insert(280, vm280);
+
+        // Fallback 1: position == 1 (contig start — must NEVER produce POS = 0 or REF = "N")
+        vd.ref_coverage.insert(1, 40);
+        let mut vm1 = VariationMap::new();
+        vm1.sv = sv_box("DEL");
+        vm1.map.insert("-150".to_string(), mk_var(10, false));
+        vm1.map.insert("-150#A^GC".to_string(), mk_var(10, false));
+        vm1.map.insert("-200^ACGT".to_string(), mk_var(10, false));
+        vd.non_insertion_variants.insert(1, vm1);
+        let mut ins1 = VariationMap::new();
+        ins1.map.insert(desc_dup80.clone(), mk_var(10, false));
+        vd.insertion_variants.insert(1, ins1);
+
+        // Fallback 2: 'N' at pos 49 (upstream of pos 50) and 'n' at pos 59 (upstream of pos 60)
+        for p in [50, 60] {
+            vd.ref_coverage.insert(p, 40);
+            let mut vmp = VariationMap::new();
+            vmp.sv = sv_box("DEL");
+            vmp.map.insert("-150".to_string(), mk_var(10, false));
+            vmp.map.insert("-150#A^GC".to_string(), mk_var(10, false));
+            vmp.map.insert("-200^ACGT".to_string(), mk_var(10, false));
+            vd.non_insertion_variants.insert(p, vmp);
+            let mut insp = VariationMap::new();
+            insp.map.insert(desc_dup80.clone(), mk_var(10, false));
+            vd.insertion_variants.insert(p, insp);
+        }
+
+        // 1. Default COMPAT_VARDICTJAVA_1_8_3 preserves legacy coordinates & alleles verbatim
+        let cfg_leg = Config {
+            sv_min_len: 100,
+            compat: crate::config::COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+        let aligned_leg = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg)
+            .build_aligned_variants(&vd);
+        let leg140 = &aligned_leg.get(&140).unwrap().variants[0];
+        assert_eq!(
+            (leg140.start_pos, leg140.end_pos, leg140.var_allele.as_str()),
+            (140, 291, "<DUP>")
+        );
+        let leg150 = &aligned_leg.get(&150).unwrap().variants[0];
+        assert_eq!(leg150.ref_allele.len(), 2);
+        let leg160 = &aligned_leg.get(&160).unwrap().variants[0];
+        assert_eq!(leg160.var_allele, "DUP>");
+        let leg200 = &aligned_leg.get(&200).unwrap().variants[0];
+        assert_eq!(
+            (
+                leg200.start_pos,
+                leg200.end_pos,
+                leg200.ref_allele.as_str(),
+                leg200.var_allele.as_str()
+            ),
+            (200, 399, "", "<INV>")
+        );
+        let leg240 = &aligned_leg.get(&240).unwrap().variants[0];
+        assert_eq!(leg240.var_allele, "G");
+        let leg270 = &aligned_leg.get(&270).unwrap().variants[0];
+        assert_eq!(leg270.ref_allele.len(), 12);
+        let leg1_simple_del = aligned_leg
+            .get(&1)
+            .unwrap()
+            .variants
+            .iter()
+            .find(|v| v.description == "-150")
+            .unwrap();
+        assert_eq!(
+            (
+                leg1_simple_del.start_pos,
+                leg1_simple_del.ref_allele.as_str()
+            ),
+            (0, "N")
+        );
+
+        // 2. Isolated canonical_sv_vcf_anchoring AND full COMPAT_OFF satisfy all canonical SV invariants
+        let isolated_anchor = crate::config::CompatProfile {
+            canonical_sv_vcf_anchoring: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        for compat in [isolated_anchor, crate::config::COMPAT_OFF] {
+            let cfg = Config {
+                sv_min_len: 100,
+                compat,
+                ..Config::default()
+            };
+            let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg);
+            let aligned = builder.build_aligned_variants(&vd);
+
+            // Origin A (pre_anchored_dup = true at 99): stays at 99, END = 279 (END - POS == 180)
+            let v99 = &aligned.get(&99).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v99.start_pos,
+                    v99.end_pos,
+                    v99.ref_allele.as_str(),
+                    v99.var_allele.as_str()
+                ),
+                (99, 279, "C", "<DUP>")
+            );
+            assert_eq!(v99.genotype.as_deref(), Some("+180/+180"));
+
+            // Origin B (pre_anchored_dup = false at 120): shifts to 119, END = 299 (END - POS == 180)
+            let v120 = &aligned.get(&120).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v120.start_pos,
+                    v120.end_pos,
+                    v120.ref_allele.as_str(),
+                    v120.var_allele.as_str()
+                ),
+                (119, 299, "T", "<DUP>")
+            );
+            assert_eq!(v120.genotype.as_deref(), Some("G/+180"));
+
+            // Origin C1: pure +150bp at 140 -> POS = 140, END = 290, genotype = +150/+150
+            let v140 = &aligned.get(&140).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v140.start_pos,
+                    v140.end_pos,
+                    v140.ref_allele.as_str(),
+                    v140.var_allele.as_str()
+                ),
+                (140, 290, "C", "<DUP>")
+            );
+            assert_eq!(v140.genotype.as_deref(), Some("+150/+150"));
+
+            // Origin C2: +150bp#A^GC at 150 -> POS = 150, END = 302 (152 inserted bases), 1-bp REF = "G"
+            let v150 = &aligned.get(&150).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v150.start_pos,
+                    v150.end_pos,
+                    v150.ref_allele.as_str(),
+                    v150.var_allele.as_str()
+                ),
+                (150, 302, "G", "<DUP>")
+            );
+            assert_eq!(v150.genotype.as_deref(), Some("+152/+152"));
+
+            // Origin C3: +150bp&AT at 160 -> POS = 160, END = 310 (150 inserted bases), 1-bp REF = "T", ALT = "<DUP>"
+            let v160 = &aligned.get(&160).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v160.start_pos,
+                    v160.end_pos,
+                    v160.ref_allele.as_str(),
+                    v160.var_allele.as_str()
+                ),
+                (160, 310, "T", "<DUP>")
+            );
+            assert_eq!(v160.genotype.as_deref(), Some("+150/+150"));
+
+            // <INV> Form 1 (-200^ACGT at 200): POS = 199, END = 399 (END - POS == 200), REF = "C"
+            let v200 = &aligned.get(&200).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v200.start_pos,
+                    v200.end_pos,
+                    v200.ref_allele.as_str(),
+                    v200.var_allele.as_str()
+                ),
+                (199, 399, "C", "<INV>")
+            );
+            assert_eq!(v200.genotype.as_deref(), Some("-200iACGT/<INV200>"));
+
+            // <INV> Form 2 (-80^...<inv40>... at 220): POS = 219, END = 299 (END - POS == 80), REF = "T"
+            let v220 = &aligned.get(&220).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v220.start_pos,
+                    v220.end_pos,
+                    v220.ref_allele.as_str(),
+                    v220.var_allele.as_str()
+                ),
+                (219, 299, "T", "<INV>")
+            );
+
+            // <INV> Form 3 (-50<inv50> without '^' at 240): POS = 239, END = 289 (END - POS == 50), REF = "G", ALT = "<INV>"
+            let v240 = &aligned.get(&240).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v240.start_pos,
+                    v240.end_pos,
+                    v240.ref_allele.as_str(),
+                    v240.var_allele.as_str()
+                ),
+                (239, 289, "G", "<INV>")
+            );
+            assert_eq!(v240.genotype.as_deref(), Some("-50<inv50>/<INV50>"));
+
+            // Complex <DEL> 1 (-150#A^GC at 260): POS = 259, END = 410, 1-bp REF = "A", ALT = "<DEL>"
+            let v260 = &aligned.get(&260).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v260.start_pos,
+                    v260.end_pos,
+                    v260.ref_allele.as_str(),
+                    v260.var_allele.as_str()
+                ),
+                (259, 410, "A", "<DEL>")
+            );
+
+            // Complex <DEL> 2 (-150#AC^10 at 270): POS = 269, END = 431, 1-bp REF = "G", ALT = "<DEL>"
+            let v270 = &aligned.get(&270).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v270.start_pos,
+                    v270.end_pos,
+                    v270.ref_allele.as_str(),
+                    v270.var_allele.as_str()
+                ),
+                (269, 431, "G", "<DEL>")
+            );
+
+            // Complex <DEL> 3 (-150&AT at 280): POS = 279, END = 431, 1-bp REF = "T", ALT = "<DEL>"
+            let v280 = &aligned.get(&280).unwrap().variants[0];
+            assert_eq!(
+                (
+                    v280.start_pos,
+                    v280.end_pos,
+                    v280.ref_allele.as_str(),
+                    v280.var_allele.as_str()
+                ),
+                (279, 431, "T", "<DEL>")
+            );
+
+            // Fallbacks at pos 1 (contig start), pos 50 ('N' at 49), and pos 60 ('n' at 59)
+            for (p, exp_ref) in [(1, "G"), (50, "C"), (60, "T")] {
+                let vars_p = &aligned.get(&p).unwrap().variants;
+                assert_eq!(vars_p.len(), 4, "expected 4 variants at fallback pos {p}");
+                for v in vars_p {
+                    assert_eq!(v.start_pos, p, "unshifted start_pos at fallback pos {p}");
+                    assert_eq!(v.ref_allele, exp_ref, "1-bp non-N ref_allele at pos {p}");
+                }
+                let del_s = vars_p.iter().find(|v| v.description == "-150").unwrap();
+                assert_eq!(
+                    (del_s.end_pos, del_s.var_allele.as_str()),
+                    (p + 149, "<DEL>")
+                );
+                let del_c = vars_p
+                    .iter()
+                    .find(|v| v.description == "-150#A^GC")
+                    .unwrap();
+                assert_eq!(
+                    (del_c.end_pos, del_c.var_allele.as_str()),
+                    (p + 150, "<DEL>")
+                );
+                let inv_p = vars_p
+                    .iter()
+                    .find(|v| v.description == "-200^ACGT")
+                    .unwrap();
+                assert_eq!(
+                    (inv_p.end_pos, inv_p.var_allele.as_str()),
+                    (p + 199, "<INV>")
+                );
+                let dup_p = vars_p.iter().find(|v| v.description == desc_dup80).unwrap();
+                assert_eq!(
+                    (dup_p.end_pos, dup_p.var_allele.as_str()),
+                    (p + 179, "<DUP>")
+                );
+            }
+
+            // Single-position build_vars_at_position agrees 100% with build_aligned_variants
+            for &pos in aligned.keys() {
+                let single = builder
+                    .build_vars_at_position_with_ref_mode(&vd, pos, RefSiteMode::DropAll)
+                    .unwrap();
+                let full = aligned.get(&pos).unwrap();
+                assert_eq!(single.variants.len(), full.variants.len());
+                for (sv, fv) in single.variants.iter().zip(full.variants.iter()) {
+                    assert_eq!(
+                        (
+                            &sv.start_pos,
+                            &sv.end_pos,
+                            &sv.ref_allele,
+                            &sv.var_allele,
+                            &sv.genotype
+                        ),
+                        (
+                            &fv.start_pos,
+                            &fv.end_pos,
+                            &fv.ref_allele,
+                            &fv.var_allele,
+                            &fv.genotype
+                        ),
+                        "single vs batch mismatch at pos {pos}"
+                    );
+                }
+            }
+        }
+
+        // 3. Isolated canonical_sv_vcf_anchoring at default sv_min_len = 1000 also shifts Origin B <dup80>
+        let cfg_iso_1000 = Config {
+            sv_min_len: 1000,
+            compat: isolated_anchor,
+            ..Config::default()
+        };
+        let aligned_iso_1000 =
+            ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_iso_1000)
+                .build_aligned_variants(&vd);
+        let iso99 = &aligned_iso_1000.get(&99).unwrap().variants[0];
+        assert_eq!(
+            (
+                iso99.start_pos,
+                iso99.end_pos,
+                iso99.ref_allele.as_str(),
+                iso99.var_allele.as_str()
+            ),
+            (99, 279, "C", "<DUP>")
+        );
+        let iso120 = &aligned_iso_1000.get(&120).unwrap().variants[0];
+        assert_eq!(
+            (
+                iso120.start_pos,
+                iso120.end_pos,
+                iso120.ref_allele.as_str(),
+                iso120.var_allele.as_str()
+            ),
+            (119, 299, "T", "<DUP>")
+        );
+
+        // 4. Fallback 3: unloaded position - 1 (sequence_start = 100, variant at pos = 100)
+        let mut partial_ref = Reference::new();
+        partial_ref
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 100,
+                sequence_end: 500,
+            });
+        partial_ref.region_sequences.push(seq[99..500].to_vec());
+        let partial_region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(500),
+            gene: "PARTIAL".to_string(),
+            amplicon: None,
+        };
+        let mut partial_vd = VariationData::new();
+        partial_vd.ref_coverage.insert(100, 40);
+        let mut pvm = VariationMap::new();
+        pvm.sv = sv_box("DEL");
+        pvm.map.insert("-150".to_string(), mk_var(10, false));
+        pvm.map.insert("-150#A^GC".to_string(), mk_var(10, false));
+        pvm.map.insert("-200^ACGT".to_string(), mk_var(10, false));
+        partial_vd.non_insertion_variants.insert(100, pvm);
+        let mut pins = VariationMap::new();
+        pins.map.insert(desc_dup80, mk_var(10, false));
+        partial_vd.insertion_variants.insert(100, pins);
+
+        let cfg_partial = Config {
+            sv_min_len: 100,
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let partial_aligned =
+            ToVarsBuilder::new(&partial_ref, &partial_region, &chr_lengths, &cfg_partial)
+                .build_aligned_variants(&partial_vd);
+        for v in &partial_aligned.get(&100).unwrap().variants {
+            assert_eq!(
+                (v.start_pos, v.ref_allele.as_str()),
+                (100, "G"),
+                "unloaded pos 99 must keep pos 100 and 'G' for {}",
+                v.description
+            );
+        }
+    }
+
+    #[test]
+    fn test_isolated_canonical_sv_anchoring_normalizes_negative_dup_span_and_genotype1() {
+        let mut seq = b"GTCG".repeat(100);
+        assert_eq!(seq.len(), 400);
+        seq[0] = b'G'; // pos 1
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 400,
+            });
+        ref_genome.region_sequences.push(seq);
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), 400);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(400),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32, pre_anchored_dup: bool| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - (cnt / 2);
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 25.0 * f64::from(cnt);
+            v.pstd = true;
+            v.qstd = true;
+            v.pre_anchored_dup = pre_anchored_dup;
+            v
+        };
+        let sv_box = |ty: &str| {
+            Some(Box::new(Sv {
+                r#type: ty.to_string(),
+                pairs: 4,
+                splits: 6,
+                clusters: 1,
+            }))
+        };
+
+        let flank50 = "ACGT".repeat(12) + "AC";
+        let desc_neg30 = format!("+{flank50}<dup-30>{flank50}");
+        let desc_pos20 = format!("+{flank50}<dup20>{flank50}");
+
+        let mut vd = VariationData::new();
+        // Pos 99: homozygous `pre_anchored_dup = true` `<dup-30>` (already shifted to bp - 1 = 99; ref[98] = 'C')
+        vd.ref_coverage.insert(99, 12);
+        let mut vm99 = VariationMap::new();
+        vm99.sv = sv_box("DUP");
+        vd.non_insertion_variants.insert(99, vm99);
+        let mut ins99 = VariationMap::new();
+        ins99.map.insert(desc_neg30.clone(), mk_var(12, true));
+        vd.insertion_variants.insert(99, ins99);
+
+        // Pos 120: heterozygous `pre_anchored_dup = false` `<dup-30>` (shifts 120 -> 119; ref[118] = 'C', ref[119] = 'G')
+        vd.ref_coverage.insert(120, 40);
+        let mut vm120 = VariationMap::new();
+        vm120.sv = sv_box("DUP");
+        vm120.map.insert("G".to_string(), mk_var(30, false));
+        vd.non_insertion_variants.insert(120, vm120);
+        let mut ins120 = VariationMap::new();
+        ins120.map.insert(desc_neg30, mk_var(10, false));
+        vd.insertion_variants.insert(120, ins120);
+
+        // Pos 160: homozygous `pre_anchored_dup = false` `<dup20>` (`dup_span = 2 * 50 + 20 = 120`)
+        vd.ref_coverage.insert(160, 12);
+        let mut vm160 = VariationMap::new();
+        vm160.sv = sv_box("DUP");
+        vd.non_insertion_variants.insert(160, vm160);
+        let mut ins160 = VariationMap::new();
+        ins160.map.insert(desc_pos20, mk_var(12, false));
+        vd.insertion_variants.insert(160, ins160);
+
+        let isolated_anchor = crate::config::CompatProfile {
+            canonical_sv_vcf_anchoring: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        assert!(!isolated_anchor.standard_dup_symbolic_alt);
+        let cfg = Config {
+            sv_min_len: 1000,
+            compat: isolated_anchor,
+            ..Config::default()
+        };
+        let aligned = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg)
+            .build_aligned_variants(&vd);
+
+        let v99 = &aligned.get(&99).unwrap().variants[0];
+        assert_eq!(
+            (
+                v99.start_pos,
+                v99.end_pos,
+                v99.ref_allele.as_str(),
+                v99.var_allele.as_str(),
+                v99.genotype.as_deref()
+            ),
+            (99, 169, "C", "<DUP>", Some("+70/+70"))
+        );
+
+        let v120 = &aligned.get(&120).unwrap().variants[0];
+        assert_eq!(
+            (
+                v120.start_pos,
+                v120.end_pos,
+                v120.ref_allele.as_str(),
+                v120.var_allele.as_str(),
+                v120.genotype.as_deref()
+            ),
+            (119, 189, "C", "<DUP>", Some("G/+70"))
+        );
+
+        let v160 = &aligned.get(&160).unwrap().variants[0];
+        assert_eq!(
+            (
+                v160.start_pos,
+                v160.end_pos,
+                v160.ref_allele.as_str(),
+                v160.var_allele.as_str(),
+                v160.genotype.as_deref()
+            ),
+            (159, 279, "C", "<DUP>", Some("+120/+120"))
+        );
     }
 }

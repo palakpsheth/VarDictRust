@@ -130,6 +130,7 @@ fn collect_all_flag_tokens(cmd: &clap::Command) -> Vec<String> {
         }
     }
     flags.push("-UN".to_string());
+    flags.push("-sp".to_string());
     flags.push("-th".to_string());
     flags
 }
@@ -337,6 +338,10 @@ fn write_zsh_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Resu
     )?;
     writeln!(
         out,
+        "        '(-sp --amplicon-single-primer)-sp[Single-primer amplicon mode (VarDictJava single-dash alias)]' \\"
+    )?;
+    writeln!(
+        out,
         "        '(-th --threads)-th[Threads (VarDictJava single-dash alias)]::THREADS: ' \\"
     )?;
     writeln!(out, "        '::BED file:_files'")?;
@@ -406,6 +411,10 @@ fn write_fish_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Res
     )?;
     writeln!(
         out,
+        "complete -c vardictrust -o sp -d 'Single-primer amplicon mode (VarDictJava single-dash alias for --amplicon-single-primer)'"
+    )?;
+    writeln!(
+        out,
         "complete -c vardictrust -o th -d 'Threads (VarDictJava single-dash alias for --threads)'"
     )?;
     Ok(())
@@ -433,6 +442,9 @@ fn format_man_arg_synopsis(arg: &clap::Arg) -> String {
     }
     if arg.get_id().as_str() == "unique_mode_second_in_pair_enabled" {
         parts.push("-UN".to_string());
+    }
+    if arg.get_id().as_str() == "amplicon_single_primer" {
+        parts.push("-sp".to_string());
     }
     if let Some(longs) = arg.get_long_and_visible_aliases() {
         for l in longs {

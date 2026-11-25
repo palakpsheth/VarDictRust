@@ -2,13 +2,14 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::Once;
 
 use libfuzzer_sys::fuzz_target;
 use vardictrust_core::config::{Config, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
 use vardictrust_core::javamap::JavaHashMap;
 use vardictrust_core::postprocess::amplicon::{
-    amplicon_post_process, amplicon_post_process_streaming, amplicon_retain_strict_bounds,
-    amplicon_select_vcf_rows_compat,
+    aggregate_sample_amplicon_vars, amplicon_post_process, amplicon_post_process_streaming,
+    amplicon_retain_strict_bounds, amplicon_select_vcf_rows_compat,
 };
 use vardictrust_core::postprocess::simple::simple_post_process;
 use vardictrust_core::postprocess::somatic::{somatic_post_process_at, PositionPipelineFn};
@@ -367,7 +368,150 @@ fn synth_vars_map(
     map
 }
 
+fn max_vcovs_capacity(vars_per_amplicon: &[JavaHashMap<i32, Vars>]) -> i32 {
+    // Mirror AmpliconPostProcessModule.java:76-80,106-110 (`amplicon.rs:1037-1051,1101-1104`):
+    // `vcovs` pushes `tv.total_pos_cov` once per in-insert candidate `Variant` (or 1 baseline
+    // entry when an amplicon has 0 in-insert candidates), so `ncamp` is bounded by the sum of
+    // per-amplicon max candidate counts (`<= amp_regions.len() * 3` for `synth_vars_at`).
+    vars_per_amplicon
+        .iter()
+        .map(|m| {
+            m.iter()
+                .map(|(_, vt)| vt.variants.len().max(1))
+                .max()
+                .unwrap_or(1)
+        })
+        .sum::<usize>()
+        .min(i32::MAX as usize) as i32
+}
+
+fn assert_aggregate_sample_amplicon_invariants(
+    max_vcovs_cap: i32,
+    amp_regions: &[Region],
+    agg_vars: &JavaHashMap<i32, Vars>,
+    agg_conc: &vardictrust_core::postprocess::amplicon::SampleAmpliconConcordance,
+) {
+    for (_, entry) in agg_vars.iter() {
+        for v in &entry.variants {
+            let mut lookup = v.clone();
+            if lookup.var_type_cow() == "Complex" {
+                lookup.adj_complex();
+            }
+            assert!(
+                agg_conc
+                    .allele_concordance
+                    .get(&lookup.start_pos)
+                    .is_some_and(|entries| {
+                        entries.iter().any(|(r, a, _)| {
+                            r.as_ref() == lookup.ref_allele && a.as_ref() == lookup.var_allele
+                        })
+                    }),
+                "post-adj_complex aggregated variant missing from allele_concordance: start={}, ref={}, alt={}",
+                lookup.start_pos,
+                lookup.ref_allele,
+                lookup.var_allele
+            );
+            let resolved = agg_conc.resolve(
+                lookup.start_pos,
+                lookup.end_pos,
+                &lookup.ref_allele,
+                &lookup.var_allele,
+                amp_regions,
+            );
+            assert!(
+                0 <= resolved.gdamp
+                    && resolved.gdamp <= resolved.tlamp
+                    && 0 <= resolved.ncamp
+                    && resolved.ncamp <= max_vcovs_cap,
+                "invalid SampleAmpliconConcordance bounds: {resolved:?} (max_vcovs_cap={max_vcovs_cap}, amps={})",
+                amp_regions.len()
+            );
+        }
+    }
+    if let Some(first_reg) = amp_regions.first() {
+        let fb = agg_conc.resolve(
+            first_reg.start.0 as i32,
+            first_reg.start.0 as i32,
+            "N",
+            "<FUS>",
+            amp_regions,
+        );
+        assert!(
+            fb.gdamp == 0
+                && 0 <= fb.tlamp
+                && fb.tlamp <= amp_regions.len() as i32
+                && 0 <= fb.ncamp
+                && fb.ncamp <= max_vcovs_cap,
+            "invalid fallback SampleAmpliconConcordance bounds: {fb:?} (max_vcovs_cap={max_vcovs_cap})"
+        );
+    }
+}
+
+fn check_multiallelic_ncamp_regression_once() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let mut cfg = Config::default();
+        cfg.amplicon = Some("10:0.95".to_string());
+        cfg.compat = COMPAT_OFF;
+        let seg = vec![Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(150),
+            gene: "AMP0".to_string(),
+            amplicon: Some(AmpliconInfo {
+                insert_start: Pos1(105),
+                insert_end: Pos1(145),
+            }),
+        }];
+        let mk_var = |ref_a: &str, var_a: &str, desc: &str, end_pos: i32, dp: i32, vd: i32| {
+            let mut v = Variant::new();
+            v.start_pos = 120;
+            v.end_pos = end_pos;
+            v.ref_allele = ref_a.to_string();
+            v.var_allele = var_a.to_string();
+            v.description = desc.to_string();
+            v.total_pos_cov = dp;
+            v.pos_coverage = vd;
+            v.fwd = (vd + 1) / 2;
+            v.rev = vd / 2;
+            v.hicnt = vd;
+            v.hicov = dp;
+            v.frequency = vd as f64 / dp as f64;
+            v.hi_freq = v.frequency;
+            v.extra_freq = v.frequency;
+            v.mean_quality = 35.0;
+            v.mean_position = 15.0;
+            v.mean_mapping_quality = 60.0;
+            v.hq_lq_ratio = 10.0;
+            v.pstd = true;
+            v.qstd = true;
+            v.var_type = v.var_type();
+            v
+        };
+        // num_amps = 1 with 3 in-insert variants at pos 120 having total_pos_cov = [200, 1, 1]:
+        // eff_maxcov / 50.0 = 4.0 -> two low-DP candidates yield ncamp = 2 (> num_amps = 1),
+        // plus a Complex MNP exercising adj_complex() key normalization (120 -> 122).
+        let mut vars = Vars::new();
+        vars.variants
+            .push(mk_var("ACAAAGT", "ACTTTGT", "-7&ACTTTGT", 126, 200, 50));
+        vars.variants.push(mk_var("A", "C", "C", 120, 1, 1));
+        vars.variants.push(mk_var("A", "G", "G", 120, 1, 1));
+        let mut amp0 = JavaHashMap::new();
+        amp0.insert(120, vars);
+        let amps = vec![amp0];
+        let cap = max_vcovs_capacity(&amps);
+        let splice = HashSet::default();
+        let (agg_vars, conc) = aggregate_sample_amplicon_vars(&cfg, &seg, amps, &splice);
+        assert_aggregate_sample_amplicon_invariants(cap, &seg, &agg_vars, &conc);
+        let complex_hit = conc.resolve(122, 124, "AAA", "TTT", &seg);
+        assert_eq!(complex_hit.gdamp, 1);
+        assert_eq!(complex_hit.tlamp, 1);
+        assert_eq!(complex_hit.ncamp, 2);
+    });
+}
+
 fuzz_target!(|data: &[u8]| {
+    check_multiallelic_ncamp_regression_once();
     if data.len() < 16 || data.len() > MAX_FUZZ_INPUT_BYTES {
         return;
     }
@@ -424,10 +568,23 @@ fuzz_target!(|data: &[u8]| {
     base_cfg.min_reads = u32::from(cur.u8() % 5);
     base_cfg.lofreq = cur.f64_bounded(0.2).max(0.001);
     base_cfg.vcf_all_alleles = cur.bool();
-    base_cfg.compat = if cur.bool() {
-        COMPAT_OFF
-    } else {
-        COMPAT_VARDICTJAVA_1_8_3
+    base_cfg.amplicon_single_primer = cur.bool();
+    base_cfg.compat = {
+        let mut compat = if cur.bool() {
+            COMPAT_OFF
+        } else {
+            COMPAT_VARDICTJAVA_1_8_3
+        };
+        let w4_bits = cur.u8();
+        if (w4_bits & 1) != 0 {
+            compat.strict_region_bounds = (w4_bits & 2) != 0;
+            compat.reconcile_vd_dp = (w4_bits & 4) != 0;
+            compat.somatic_continue_after_bad_var = (w4_bits & 8) != 0;
+            compat.adaptor_all_consensus_dirs = (w4_bits & 16) != 0;
+            compat.canonical_sv_vcf_anchoring = (w4_bits & 32) != 0;
+            compat.paired_somatic_amplicon = (w4_bits & 64) != 0;
+        }
+        compat
     };
 
     let reconcile_vd_dp = base_cfg.compat.reconcile_vd_dp;
@@ -463,7 +620,22 @@ fuzz_target!(|data: &[u8]| {
     }
     if base_cfg.compat.strict_region_bounds {
         for row in &simple_rows {
-            assert!(row.start_pos >= region.start.0 as i32 && row.start_pos <= region.end.0 as i32);
+            let in_bounds =
+                row.start_pos >= region.start.0 as i32 && row.start_pos <= region.end.0 as i32;
+            let is_padded_sv = base_cfg.compat.canonical_sv_vcf_anchoring
+                && row.start_pos >= 1
+                && row.var_allele.starts_with('<')
+                && row.end_pos > row.start_pos
+                && row.start_pos.saturating_add(1) == region.start.0 as i32;
+            assert!(
+                in_bounds || is_padded_sv,
+                "strict_region_bounds simple row out of bounds: start_pos={}, end_pos={}, alt={}, region={}..={}",
+                row.start_pos,
+                row.end_pos,
+                row.var_allele,
+                region.start.0,
+                region.end.0
+            );
         }
     }
 
@@ -516,6 +688,23 @@ fuzz_target!(|data: &[u8]| {
     );
     for sv in &somatic_rows {
         assert!(!sv.status.is_empty());
+        if base_cfg.compat.strict_region_bounds {
+            let sp = sv.variant1.start_pos;
+            let in_bounds = sp >= region.start.0 as i32 && sp <= region.end.0 as i32;
+            let is_padded_sv = base_cfg.compat.canonical_sv_vcf_anchoring
+                && sp >= 1
+                && sv.variant1.var_allele.starts_with('<')
+                && sv.variant1.end_pos > sp
+                && sp.saturating_add(1) == region.start.0 as i32;
+            assert!(
+                in_bounds || is_padded_sv,
+                "strict_region_bounds somatic row out of bounds: start_pos={sp}, end_pos={}, alt={}, region={}..={}",
+                sv.variant1.end_pos,
+                sv.variant1.var_allele,
+                region.start.0,
+                region.end.0
+            );
+        }
         if reconcile_vd_dp {
             for v in std::iter::once(&sv.variant1).chain(sv.variant2.as_ref()) {
                 assert!(
@@ -644,7 +833,12 @@ fuzz_target!(|data: &[u8]| {
     .expect("infallible collector in amplicon_post_process_streaming");
 
     if amp_cfg.compat.strict_region_bounds {
-        amplicon_retain_strict_bounds(&mut streamed_amp, &region, &amplicons_on_positions);
+        amplicon_retain_strict_bounds(
+            &mut streamed_amp,
+            &region,
+            &amplicons_on_positions,
+            amp_cfg.compat.canonical_sv_vcf_anchoring,
+        );
     }
     let finalized_streamed = if !amp_cfg.emit_intermediate && !amp_cfg.vcf_all_alleles {
         amplicon_select_vcf_rows_compat(streamed_amp, amp_cfg.compat.exact_binary_half_even)
@@ -660,4 +854,9 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(lhs.ncamp, rhs.ncamp);
         assert_eq!(lhs.ampflag, rhs.ampflag);
     }
+
+    let max_vcovs_cap = max_vcovs_capacity(&vars_per_amplicon);
+    let (agg_vars, agg_conc) =
+        aggregate_sample_amplicon_vars(&amp_cfg, &amp_regions, vars_per_amplicon, &splice);
+    assert_aggregate_sample_amplicon_invariants(max_vcovs_cap, &amp_regions, &agg_vars, &agg_conc);
 });

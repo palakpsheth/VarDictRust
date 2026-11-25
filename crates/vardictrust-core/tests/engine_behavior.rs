@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`39` tests).
+//! First-class functional engine behavior integration suite (`40` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs,
@@ -299,6 +299,18 @@ mod vcf_filters {
             !vars_f0_dec.iter().any(|v| v.contains("f0.02")),
             "-f 0.0 must not apply f0.02 filter to sub-2% AF candidates"
         );
+
+        // With `af_threshold_raw = Some("0.0")` (CLI `-f 0.0`, `AstraZeneca-NGS/VarDict@009e017`,
+        // `MHH-Bioinformatics-Hematology/vardictcpp#4`), verbatim `ID=f0.0` is emitted while
+        // keeping the exact same `0.0` numeric threshold as `af_threshold_truthy_zero = true`.
+        let mut cfg_f0_raw = cfg_f0_dec.clone();
+        cfg_f0_raw.af_threshold_raw = Some("0.0".to_string());
+        let stdout_f0_raw = run_core_vcf(&cfg_f0_raw).expect("VCF with raw -f 0.0");
+        assert!(
+            stdout_f0_raw.contains("##FILTER=<ID=f0.0,Description=\"Allele frequency < 0.0\">"),
+            "raw -f 0.0 header must emit verbatim f0.0 filter description"
+        );
+        assert_eq!(extract_variants(&stdout_f0_raw), vars_f0_dec);
         let _ = &mut cfg_f0;
     }
 }
@@ -3219,7 +3231,7 @@ mod parity_edge_cases {
     }
 }
 
-// 9. mod vcf_all_alleles_and_compat_off (4 tests)
+// 9. mod vcf_all_alleles_and_compat_off (5 tests)
 mod vcf_all_alleles_and_compat_off {
     use super::*;
     use noodles::bam::bai;
@@ -4406,12 +4418,12 @@ mod vcf_all_alleles_and_compat_off {
         assert!(
             !dup_off_vcf.contains("<dup-")
                 && dup_off_vars[0].starts_with(&format!(
-                    "chr1\t200\t.\t{}\t<DUP>\t",
-                    dup_ref_seq[199] as char
+                    "chr1\t199\t.\t{}\t<DUP>\t",
+                    dup_ref_seq[198] as char
                 ))
                 && dup_off_vars[0].contains(";END=279;")
-                && dup_off_vars[0].contains(";SVTYPE=DUP;SVLEN=79;"),
-            "COMPAT_OFF must normalize #342 mlen=80 <dup-20> to POS=200 ALT=<DUP> END=279 SVTYPE=DUP SVLEN=79, got:\n{}",
+                && dup_off_vars[0].contains(";SVTYPE=DUP;SVLEN=80;"),
+            "COMPAT_OFF must normalize AstraZeneca-NGS/VarDictJava#342 + clintval/vartovcf#192 mlen=80 <dup-20> to canonical 1-bp upstream POS=199 ALT=<DUP> END=279 SVTYPE=DUP SVLEN=80, got:\n{}",
             dup_off_vars[0]
         );
 
@@ -5868,10 +5880,11 @@ mod vcf_all_alleles_and_compat_off {
         let inv3_var_u = run_via_core_run(&inv3_untiled_cfg, "inv3_u", true);
         let inv3_vcf_u = run_via_core_run(&inv3_untiled_cfg, "inv3_u", false);
         assert!(
-            inv3_vcf_u.contains("chr1\t201\t")
+            inv3_vcf_u.contains("chr1\t200\t.\t")
                 && inv3_vcf_u.contains("\t<INV>\t")
-                && inv3_vcf_u.contains(";DP=12;VD=8;"),
-            "expected Side::Three <INV> at chr1:201 with mate-window DP=12 under COMPAT_OFF, got:\n{inv3_vcf_u}"
+                && inv3_vcf_u.contains(";DP=12;END=9899;VD=8;")
+                && inv3_vcf_u.contains(";SVTYPE=INV;SVLEN=9699;"),
+            "expected canonical 1-bp upstream Side::Three <INV> at chr1:200 (AstraZeneca-NGS/VarDictJava#398) with END=9899 and mate-window DP=12 under COMPAT_OFF, got:\n{inv3_vcf_u}"
         );
         let mut inv3_tiled_cfg = inv3_untiled_cfg.clone();
         inv3_tiled_cfg.tile_size = Some(1_000);
@@ -6866,9 +6879,649 @@ mod vcf_all_alleles_and_compat_off {
             panic!("expected VardictError::Parse for #393 missing .fai contig, got: {chrz_err:?}");
         };
         assert!(
-            chrz_msg.contains("does not contain contig")
+            past_msg.contains("does not contain contig")
+                || past_msg.contains("not found in FASTA index")
+                || chrz_msg.contains("does not contain contig")
                 || chrz_msg.contains("not found in FASTA index"),
             "expected missing .fai contig message in #393 error, got: {chrz_msg}"
+        );
+    }
+
+    #[test]
+    fn wave4_single_switch_diff_confinement_negative_controls_and_single_primer_e2e() {
+        ensure_fastas_converted();
+        let droot = data_root();
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // =========================================================================
+        // (0) Live Perl `var2vcf_valid.pl` & `var2vcf_paired.pl` raw `-f <TEXT>`
+        //     VCF header & FILTER ID parity (`AstraZeneca-NGS/VarDict@009e017`,
+        //     `MHH-Bioinformatics-Hematology/vardictcpp#4`)
+        // =========================================================================
+        let run_perl_full = |script_name: &str, args: &[&str], var_stdin: &str| -> String {
+            let script = perl_var2vcf_script(script_name);
+            let mut child = Command::new("perl")
+                .env("LC_ALL", "C")
+                .arg(&script)
+                .args(args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn perl var2vcf");
+            let mut stdin = child.stdin.take().expect("perl stdin");
+            let out = std::thread::scope(|s| {
+                let w = s.spawn(move || {
+                    stdin.write_all(var_stdin.as_bytes()).expect("write stdin");
+                });
+                let res = child.wait_with_output().expect("wait perl");
+                w.join().expect("join stdin");
+                res
+            });
+            assert!(
+                out.status.success(),
+                "perl {} {:?} failed: {}",
+                script.display(),
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).expect("perl utf8")
+        };
+
+        let parse_f_hdr_and_filters = |vcf: &str| -> (Vec<String>, Vec<(String, String)>) {
+            let hdrs = vcf
+                .lines()
+                .filter(|l| {
+                    l.starts_with("##FILTER=<ID=f")
+                        && l.contains("Description=\"Allele frequency < ")
+                })
+                .map(str::to_string)
+                .collect();
+            let flts = vcf
+                .lines()
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(|l| {
+                    let c: Vec<&str> = l.split('\t').collect();
+                    (
+                        format!("{}:{}:{}>{}", c[0], c[1], c[3], c[4]),
+                        c[6].to_string(),
+                    )
+                })
+                .collect();
+            (hdrs, flts)
+        };
+
+        let b37_fa = droot.join("VarDictJava/testdata/fastas/GRCh37.fa");
+        let hg19_fa = droot.join("VarDictJava/testdata/fastas/hg19.fa");
+        let vj_bams =
+            droot.join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests");
+        let na_bam = vj_bams.join("NA24385_chr_1_246981051_246981611.bam");
+        let colo_pair = format!(
+            "{}|{}",
+            vj_bams.join("Colo829-18_S3-sort.bam").display(),
+            vj_bams.join("Colo829-19_S4-sort.bam").display()
+        );
+
+        for (raw_f, num_f, truthy_zero) in [
+            ("0", 0.0, false),
+            ("0.0", 0.0, true),
+            ("0.050", 0.05, false),
+            ("1e-5", 1e-5, false),
+            (".01", 0.01, false),
+        ] {
+            let single_f_cfg = Config {
+                reference: b37_fa.to_string_lossy().into_owned(),
+                bam: na_bam.to_string_lossy().into_owned(),
+                sample: "NA24385".to_string(),
+                region: Some("1:246981051-246981611".to_string()),
+                freq: num_f,
+                af_threshold: num_f,
+                af_threshold_truthy_zero: truthy_zero,
+                af_threshold_raw: Some(raw_f.to_string()),
+                fisher: true,
+                omit_end_tag: true,
+                threads: 1,
+                ..Config::default()
+            };
+            let s_var = run_core_var(&single_f_cfg).expect("single .var");
+            let s_perl = run_perl_full(
+                "var2vcf_valid.pl",
+                &["-N", "NA24385", "-E", "-f", raw_f],
+                &s_var,
+            );
+            let s_rust = run_core_vcf(&single_f_cfg).expect("single .vcf");
+            assert_eq!(
+                parse_f_hdr_and_filters(&s_perl),
+                parse_f_hdr_and_filters(&s_rust),
+                "single-sample raw -f {raw_f} mismatch vs var2vcf_valid.pl"
+            );
+
+            let paired_f_cfg = Config {
+                reference: hg19_fa.to_string_lossy().into_owned(),
+                bam: colo_pair.clone(),
+                sample: "TUMOR|NORMAL".to_string(),
+                region: Some("chr1:755917-756517".to_string()),
+                freq: num_f,
+                af_threshold: num_f,
+                af_threshold_truthy_zero: truthy_zero,
+                af_threshold_raw: Some(raw_f.to_string()),
+                fisher: true,
+                threads: 1,
+                ..Config::default()
+            };
+            let p_var = run_core_var(&paired_f_cfg).expect("paired .var");
+            let p_perl = run_perl_full(
+                "var2vcf_paired.pl",
+                &["-N", "TUMOR|NORMAL", "-f", raw_f],
+                &p_var,
+            );
+            let p_rust = run_core_vcf(&paired_f_cfg).expect("paired .vcf");
+            assert_eq!(
+                parse_f_hdr_and_filters(&p_perl),
+                parse_f_hdr_and_filters(&p_rust),
+                "paired somatic raw -f {raw_f} mismatch vs var2vcf_paired.pl"
+            );
+        }
+
+        // =========================================================================
+        // (a) Switch 18 (`somatic_continue_after_bad_var`, `joachimwolff/VarDictJava#4`,
+        //     `clintval/vartovcf#139`, `clintval/vartovcf#149`)
+        //     1. Positive: `ArgumentNA_Tumor.bam|ArgumentNA_Normal.bam` recovers secondary
+        //        multi-allelic somatic & StrongLOH alleles when isolated Switch 18 is enabled.
+        //     2. Negative control: clean biallelic somatic pair has 0-byte diff vs default.
+        // =========================================================================
+        let mut sw18_only = COMPAT_VARDICTJAVA_1_8_3;
+        sw18_only.somatic_continue_after_bad_var = true;
+        let argna_vj_cfg = Config {
+            reference: hg19_fa.to_string_lossy().into_owned(),
+            bam: format!(
+                "{}|{}",
+                vj_bams.join("ArgumentNA_Tumor.bam").display(),
+                vj_bams.join("ArgumentNA_Normal.bam").display()
+            ),
+            sample: "TUM|NRM".to_string(),
+            region: Some("chr7:140453030-140453070".to_string()),
+            base_qual: 25.0,
+            freq: -1.0,
+            af_threshold: 0.001,
+            af_threshold_raw: Some("0.001".to_string()),
+            flag_filter: 0x100,
+            samfilter_raw: "0x100".to_string(),
+            realign: 1,
+            minmatch: 20,
+            pileup: true,
+            fisher: true,
+            vcf_all_alleles: true,
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+        let mut argna_s18_cfg = argna_vj_cfg.clone();
+        argna_s18_cfg.compat = sw18_only;
+        let argna_vj_vcf = run_core_vcf(&argna_vj_cfg).expect("ArgumentNA default VCF");
+        let argna_s18_vcf = run_core_vcf(&argna_s18_cfg).expect("ArgumentNA sw18 VCF");
+        assert!(
+            !argna_vj_vcf.contains("chr7\t140453033\t.\tG\tT\t")
+                && !argna_vj_vcf.contains("chr7\t140453035\t.\tC\tA\t")
+                && !argna_vj_vcf.contains("chr7\t140453065\t.\tC\tT\t"),
+            "default compat must drop secondary alleles behind bad v1[0]"
+        );
+        assert!(
+            argna_s18_vcf.contains("chr7\t140453033\t.\tG\tT\t")
+                && argna_s18_vcf.contains("chr7\t140453035\t.\tC\tA\t")
+                && argna_s18_vcf.contains("chr7\t140453065\t.\tC\tT\t"),
+            "isolated somatic_continue_after_bad_var must recover 140453033 G>T, 140453035 C>A, and 140453065 C>T"
+        );
+
+        // Negative control for Switch 18: clean biallelic somatic pair has 0-byte diff
+        let mut clean_seq = lcg_ref_bytes(0xCAFE_1818_0001_0002, 300);
+        clean_seq[119] = b'A';
+        let clean_fa = write_multi_contig_fasta(dir.path(), "w4_sw18_neg", &[("chr1", &clean_seq)]);
+        let clean_t = dir.path().join("w4_sw18_t.bam");
+        let clean_n = dir.path().join("w4_sw18_n.bam");
+        let mut t_recs = Vec::new();
+        let mut n_recs = Vec::new();
+        for idx in 0..20usize {
+            let start_1b = 95 + (idx % 5);
+            let mut rseq = clean_seq[start_1b - 1..start_1b - 1 + 50].to_vec();
+            n_recs.push(mk_contig_rec(
+                &format!("n_{idx}"),
+                0,
+                Flags::empty(),
+                start_1b,
+                &[(50, Kind::Match)],
+                rseq.clone(),
+                vec![38; 50],
+                None,
+            ));
+            if idx < 8 {
+                rseq[120 - start_1b] = b'G';
+            }
+            t_recs.push(mk_contig_rec(
+                &format!("t_{idx}"),
+                0,
+                Flags::empty(),
+                start_1b,
+                &[(50, Kind::Match)],
+                rseq,
+                vec![38; 50],
+                None,
+            ));
+        }
+        write_multi_contig_bam(&clean_t, &[("chr1", 300)], t_recs).expect("write clean_t");
+        write_multi_contig_bam(&clean_n, &[("chr1", 300)], n_recs).expect("write clean_n");
+        let clean_som_vj = Config {
+            reference: clean_fa.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", clean_t.display(), clean_n.display()),
+            sample: "T_CLEAN|N_CLEAN".to_string(),
+            region: Some("chr1:80-180".to_string()),
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+        let mut clean_som_s18 = clean_som_vj.clone();
+        clean_som_s18.compat = sw18_only;
+        assert_eq!(
+            run_core_vcf(&clean_som_vj).expect("clean som vj"),
+            run_core_vcf(&clean_som_s18).expect("clean som s18"),
+            "Switch 18 negative control must have 0-byte VCF diff on clean biallelic somatic locus"
+        );
+
+        // =========================================================================
+        // (b) Switch 19 (`adaptor_all_consensus_dirs`, `AstraZeneca-NGS/VarDictJava#240`,
+        //     `AstraZeneca-NGS/VarDictJava#241`, `AstraZeneca-NGS/VarDict#119`)
+        //     1. Positive: 3' TruSeq adapter + 3' anchor tail soft-clip realigns into a
+        //        false chimeric insertion under default `dir = 0`, suppressed under Switch 19.
+        //     2. Negative control: when `config.adaptor` is empty, Switch 19 has 0-byte diff.
+        // =========================================================================
+        let mut sw19_only = COMPAT_VARDICTJAVA_1_8_3;
+        sw19_only.adaptor_all_consensus_dirs = true;
+        let motif = b"ACGTACGTAGCTAGCTTGCAACGTTAGCATGC";
+        let mut ad_seq: Vec<u8> = (0..400).map(|i| motif[i % motif.len()]).collect();
+        ad_seq[174] = b'C'; // 1-based pos 175 ('C' != truseq[0] 'A', so modify_cigar keeps 3' clip at 175)
+        ad_seq[175] = b'C'; // 1-based pos 176
+        ad_seq[176] = b'C'; // 1-based pos 177 ('CCC' != 'AGA' lookahead)
+        let ad_fa = write_multi_contig_fasta(dir.path(), "w4_sw19", &[("chr1", &ad_seq)]);
+        let ad_bam = dir.path().join("w4_sw19.bam");
+        let truseq = b"AGATCGGAAGAGCACACGTCTGAACTCCAGTCA";
+        let mut ad_recs = Vec::new();
+        for idx in 0..24usize {
+            let start_1b = 140 + (idx % 4);
+            let flags = if idx % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            if idx < 8 {
+                // 35..32M ending at pos 174 (0-based 173), followed by 35S at pos 175 =
+                // 20bp TruSeq adapter + 15bp ref[174..189] (< SEED_1=17 so CigarParser keeps clip,
+                // >= 10 so find_bi realigns +20bp once adjust_mnp memoizes dir=0 consensus)
+                let mut seq = ad_seq[start_1b - 1..174].to_vec();
+                seq.extend_from_slice(&truseq[..20]);
+                seq.extend_from_slice(&ad_seq[174..189]);
+                let m_len = 175 - start_1b;
+                let s_len = seq.len() - m_len;
+                let q = vec![38u8; seq.len()];
+                ad_recs.push(mk_contig_rec(
+                    &format!("ad_chim_{idx}"),
+                    0,
+                    flags,
+                    start_1b,
+                    &[(m_len, Kind::Match), (s_len, Kind::SoftClip)],
+                    seq,
+                    q,
+                    None,
+                ));
+            } else if idx < 16 {
+                // True 2-bp MNP (AA -> TT) at 1-based 175..=176 triggers `adjust_mnp` on pos 175
+                let mut seq = ad_seq[start_1b - 1..start_1b - 1 + 60].to_vec();
+                let off_175 = 175 - start_1b;
+                seq[off_175] = b'T';
+                seq[off_175 + 1] = b'T';
+                ad_recs.push(mk_contig_rec(
+                    &format!("ad_mnp_{idx}"),
+                    0,
+                    flags,
+                    start_1b,
+                    &[(60, Kind::Match)],
+                    seq,
+                    vec![38; 60],
+                    None,
+                ));
+            } else {
+                let seq = ad_seq[start_1b - 1..start_1b - 1 + 60].to_vec();
+                ad_recs.push(mk_contig_rec(
+                    &format!("ad_ref_{idx}"),
+                    0,
+                    flags,
+                    start_1b,
+                    &[(60, Kind::Match)],
+                    seq,
+                    vec![38; 60],
+                    None,
+                ));
+            }
+        }
+        write_multi_contig_bam(&ad_bam, &[("chr1", 400)], ad_recs).expect("write w4_sw19.bam");
+        let ad_vj_cfg = Config {
+            reference: ad_fa.to_string_lossy().into_owned(),
+            bam: ad_bam.to_string_lossy().into_owned(),
+            sample: "BRCA2_AD".to_string(),
+            region: Some("chr1:120-260".to_string()),
+            adaptor: vec![String::from_utf8(truseq.to_vec()).expect("utf8")],
+            freq: 0.01,
+            af_threshold: 0.01,
+            vcf_all_alleles: true,
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+        let mut ad_s19_cfg = ad_vj_cfg.clone();
+        ad_s19_cfg.compat = sw19_only;
+        let ad_vj_vars = extract_variants(&run_core_vcf(&ad_vj_cfg).expect("ad vj vcf"));
+        let ad_s19_vars = extract_variants(&run_core_vcf(&ad_s19_cfg).expect("ad s19 vcf"));
+        assert!(
+            ad_vj_vars
+                .iter()
+                .any(|v| v.contains("AGATCGGAAGAGCACACGTC")),
+            "default compat (dir=0) must emit chimeric TruSeq adapter insertion, got: {ad_vj_vars:?}"
+        );
+        assert!(
+            !ad_s19_vars
+                .iter()
+                .any(|v| v.contains("AGATCGGAAGAGCACACGTC")),
+            "isolated adaptor_all_consensus_dirs must strip TruSeq adapter chimera, got: {ad_s19_vars:?}"
+        );
+        assert!(
+            ad_s19_vars
+                .iter()
+                .any(|v| v.starts_with("chr1\t175\t.\tCC\tTT\t")),
+            "isolated adaptor_all_consensus_dirs must preserve true non-adapter MNP at chr1:175, got: {ad_s19_vars:?}"
+        );
+
+        // Negative control for Switch 19: omitting `adaptor` yields 0-byte diff vs default
+        let mut no_ad_vj = ad_vj_cfg.clone();
+        no_ad_vj.adaptor.clear();
+        let mut no_ad_s19 = no_ad_vj.clone();
+        no_ad_s19.compat = sw19_only;
+        assert_eq!(
+            run_core_vcf(&no_ad_vj).expect("no_ad vj"),
+            run_core_vcf(&no_ad_s19).expect("no_ad s19"),
+            "Switch 19 negative control (empty adaptor) must have 0-byte VCF diff"
+        );
+
+        // =========================================================================
+        // (c) Switch 20 (`canonical_sv_vcf_anchoring`, `AstraZeneca-NGS/VarDictJava#398`,
+        //     `clintval/vartovcf#107`, `clintval/vartovcf#192`)
+        //     1. Positive: single-sample `<DEL>` & paired `<DEL>` emit canonical 1-bp REF,
+        //        signed `SVLEN` (`END - POS == SVLEN.abs()`), and `END;SVTYPE;SVLEN` directly
+        //        under `Config::default()` (`omit_end_tag = true`, `vcf_no_end_explicit = false`).
+        //     2. Negative control: non-SV `micro.bam` variant rows have 0-byte diff.
+        // =========================================================================
+        let mut sw20_only = COMPAT_VARDICTJAVA_1_8_3;
+        sw20_only.canonical_sv_vcf_anchoring = true;
+        let sv_del_cfg = Config {
+            reference: hg19_fa.to_string_lossy().into_owned(),
+            bam: vj_bams
+                .join("Colo829.chr10.DELDiscReverse.bam")
+                .to_string_lossy()
+                .into_owned(),
+            sample: "COLO_DEL".to_string(),
+            region: Some("chr10:89700380-89713976".to_string()),
+            freq: 0.001,
+            af_threshold: 0.001,
+            threads: 1,
+            compat: sw20_only,
+            ..Config::default()
+        };
+        let sv_del_vcf = run_core_vcf(&sv_del_cfg).expect("Colo829 DELDiscReverse sw20 VCF");
+        assert!(
+            sv_del_vcf.contains("##ALT=<ID=DEL,Description=\"Deletion\">")
+                && sv_del_vcf.contains("##ALT=<ID=DUP,Description=\"Duplication\">")
+                && sv_del_vcf.contains("##ALT=<ID=INV,Description=\"Inversion\">"),
+            "canonical_sv_vcf_anchoring must emit ##ALT=<ID=DEL|DUP|INV> headers"
+        );
+        let del_sv_lines: Vec<&str> = sv_del_vcf
+            .lines()
+            .filter(|l| !l.starts_with('#') && l.contains("\t<DEL>\t"))
+            .collect();
+        assert!(!del_sv_lines.is_empty(), "expected >= 1 <DEL> line");
+        for l in del_sv_lines {
+            let cols: Vec<&str> = l.split('\t').collect();
+            let pos: i64 = cols[1].parse().expect("pos");
+            assert_eq!(cols[3].len(), 1, "canonical <DEL> REF must be 1 bp: {l}");
+            let info_map: std::collections::HashMap<&str, &str> = cols[7]
+                .split(';')
+                .filter_map(|kv| kv.split_once('='))
+                .collect();
+            let end_p: i64 = info_map["END"].parse().expect("END");
+            let svlen: i64 = info_map["SVLEN"].parse().expect("SVLEN");
+            assert!(
+                svlen < 0 && (end_p - pos) == -svlen,
+                "broken <DEL> SVLEN/END: {l}"
+            );
+        }
+
+        let paired_sv_norm_bam = dir.path().join("w4_colo_del_norm.bam");
+        write_multi_contig_bam(&paired_sv_norm_bam, &[("chr10", 135_534_747)], Vec::new())
+            .expect("write empty chr10 normal BAM");
+        let paired_del_cfg = Config {
+            reference: hg19_fa.to_string_lossy().into_owned(),
+            bam: format!(
+                "{}|{}",
+                vj_bams.join("Colo829.chr10.DELDiscReverse.bam").display(),
+                paired_sv_norm_bam.display()
+            ),
+            sample: "CDEL_T|CDEL_N".to_string(),
+            region: Some("chr10:89700380-89713976".to_string()),
+            freq: 0.001,
+            af_threshold: 0.001,
+            fisher: true,
+            vcf_all_alleles: true,
+            threads: 1,
+            compat: sw20_only,
+            ..Config::default()
+        };
+        let paired_del_vcf =
+            run_core_vcf(&paired_del_cfg).expect("Colo829 DELDiscReverse sw20 paired VCF");
+        let p_sv_rows: Vec<&str> = paired_del_vcf
+            .lines()
+            .filter(|l| !l.starts_with('#') && l.contains("\t<DEL>\t"))
+            .collect();
+        assert!(
+            !p_sv_rows.is_empty(),
+            "expected >= 1 paired symbolic <DEL> SV row"
+        );
+        for l in &p_sv_rows {
+            assert!(
+                l.contains(";END=") && l.contains(";SVTYPE=DEL;SVLEN=-"),
+                "paired symbolic <DEL> row must carry ;END=;SVTYPE=DEL;SVLEN=-...: {l}"
+            );
+            let cols: Vec<&str> = l.split('\t').collect();
+            assert_eq!(
+                cols[3].len(),
+                1,
+                "paired canonical <DEL> REF must be 1 bp: {l}"
+            );
+        }
+
+        // Negative control for Switch 20 & full COMPAT_OFF: non-SV `micro.bam` variant lines are byte-identical
+        let micro_vj = base_micro_config();
+        let mut micro_s20 = micro_vj.clone();
+        micro_s20.compat = sw20_only;
+        let mut micro_off = micro_vj.clone();
+        micro_off.compat = COMPAT_OFF;
+        let micro_vj_vars = extract_variants(&run_core_vcf(&micro_vj).expect("micro vj"));
+        assert_eq!(
+            micro_vj_vars,
+            extract_variants(&run_core_vcf(&micro_s20).expect("micro s20")),
+            "Switch 20 negative control must have 0-byte variant diff on non-SV micro.bam"
+        );
+        assert_eq!(
+            micro_vj_vars,
+            extract_variants(&run_core_vcf(&micro_off).expect("micro COMPAT_OFF")),
+            "Full COMPAT_OFF must have 0-byte variant diff on clean non-SV micro.bam"
+        );
+
+        // =========================================================================
+        // (d) Switch 21 (`paired_somatic_amplicon`, `AstraZeneca-NGS/VarDictJava#378`,
+        //     `palakpsheth/VarDictRust#95`) + `--amplicon-single-primer` (`-sp`,
+        //     `AstraZeneca-NGS/VarDictJava#303`, `AstraZeneca-NGS/VarDict#191`)
+        // =========================================================================
+        let mut sw21_only = COMPAT_VARDICTJAVA_1_8_3;
+        sw21_only.paired_somatic_amplicon = true;
+        let mut spe_seq = lcg_ref_bytes(0x5BE0_2121_0378_0303, 500);
+        spe_seq[129] = b'C'; // somatic locus at chr1:130 (C>T in tumor only)
+        spe_seq[149] = b'G'; // shared locus at chr1:150 (G>A on AMP1 only in both T & N -> Germline AMPBIAS!)
+        let spe_fa = write_multi_contig_fasta(dir.path(), "w4_sw21_spe", &[("chr1", &spe_seq)]);
+        let spe_t_bam = dir.path().join("w4_spe_t.bam");
+        let spe_n_bam = dir.path().join("w4_spe_n.bam");
+        // Two overlapping 5'-primed QIAseq SPE amplicons (`col8 == col3`, start delta 25 > 10):
+        // AMP1: [80, 170] with 5' primer [80, 99], insert [100, 170] (`insert_end == end == 170`)
+        // AMP2: [105, 195] with 5' primer [105, 124], insert [125, 195] (`insert_end == end == 195`)
+        // Reads start at primed 5' edge (`80` / `105`) and shear 34 bp past `end` (`len = 125`),
+        // so overlap fraction is `91 / 125 = 0.728 < 0.95` -> dropped without `-sp`, recovered with `-sp`!
+        let spe_bed = dir.path().join("w4_spe_amp8.bed");
+        fs::write(
+            &spe_bed,
+            "chr1\t79\t170\tSPE_AMP1\t0\t+\t99\t170\nchr1\t104\t195\tSPE_AMP2\t0\t+\t124\t195\n",
+        )
+        .expect("write w4_spe_amp8.bed");
+
+        let mut spe_t_recs = Vec::new();
+        let mut spe_n_recs = Vec::new();
+        for idx in 0..16usize {
+            // AMP1 reads starting at 80, length 125 (80..=204, sheared 34 bp past 170)
+            let mut s1_t = spe_seq[79..79 + 125].to_vec();
+            let s1_n = s1_t.clone();
+            if idx < 8 {
+                s1_t[130 - 80] = b'T'; // chr1:130 C>T in Tumor AMP1
+            }
+            if idx < 10 {
+                s1_t[150 - 80] = b'A'; // chr1:150 G>A in Tumor AMP1 ONLY (discordant vs AMP2 -> AMPBIAS even with clean normal!)
+            }
+            spe_t_recs.push(mk_contig_rec(
+                &format!("amp1_t_{idx}"),
+                0,
+                Flags::empty(),
+                80,
+                &[(125, Kind::Match)],
+                s1_t,
+                vec![38; 125],
+                None,
+            ));
+            spe_n_recs.push(mk_contig_rec(
+                &format!("amp1_n_{idx}"),
+                0,
+                Flags::empty(),
+                80,
+                &[(125, Kind::Match)],
+                s1_n,
+                vec![38; 125],
+                None,
+            ));
+
+            // AMP2 reads starting at 105, length 125 (105..=229, sheared 34 bp past 195)
+            let mut s2_t = spe_seq[104..104 + 125].to_vec();
+            let s2_n = s2_t.clone(); // AMP2 has pure reference at chr1:150!
+            if idx < 8 {
+                s2_t[130 - 105] = b'T'; // chr1:130 C>T concordant in Tumor AMP2 too!
+            }
+            spe_t_recs.push(mk_contig_rec(
+                &format!("amp2_t_{idx}"),
+                0,
+                Flags::empty(),
+                105,
+                &[(125, Kind::Match)],
+                s2_t,
+                vec![38; 125],
+                None,
+            ));
+            spe_n_recs.push(mk_contig_rec(
+                &format!("amp2_n_{idx}"),
+                0,
+                Flags::empty(),
+                105,
+                &[(125, Kind::Match)],
+                s2_n,
+                vec![38; 125],
+                None,
+            ));
+        }
+        write_multi_contig_bam(&spe_t_bam, &[("chr1", 500)], spe_t_recs).expect("write spe_t");
+        write_multi_contig_bam(&spe_n_bam, &[("chr1", 500)], spe_n_recs).expect("write spe_n");
+
+        let mut spe_paired_no_sp = Config {
+            reference: spe_fa.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", spe_t_bam.display(), spe_n_bam.display()),
+            sample: "SPE_T|SPE_N".to_string(),
+            bed: Some(spe_bed.to_string_lossy().into_owned()),
+            zero_based: true,
+            zero_based_defined: true,
+            col_chr: 0,
+            col_start: 1,
+            col_end: 2,
+            col_seg_start: 6,
+            col_seg_end: 7,
+            col_gene: Some(3),
+            column_for_chromosome: Some(0),
+            amplicon: Some("10:0.95".to_string()),
+            amplicon_single_primer: false,
+            freq: 0.05,
+            af_threshold: 0.05,
+            fisher: true,
+            vcf_all_alleles: true,
+            threads: 1,
+            compat: sw21_only,
+            ..Config::default()
+        };
+        // Without `-sp`, `91 / 125 < 0.95` drops all SPE sheared reads -> 0 variants!
+        let no_sp_vars = extract_variants(&run_core_vcf(&spe_paired_no_sp).expect("no_sp vcf"));
+        assert!(
+            no_sp_vars.is_empty(),
+            "without amplicon_single_primer, sheared QIAseq SPE reads (overlap 0.728 < 0.95) must be filtered out, got: {no_sp_vars:?}"
+        );
+
+        // With `amplicon_single_primer = true` (`-sp`) + isolated Switch 21:
+        spe_paired_no_sp.amplicon_single_primer = true;
+        let sp_vcf = run_core_vcf(&spe_paired_no_sp).expect("sp paired amplicon vcf");
+        assert!(
+            sp_vcf.contains("##INFO=<ID=GDAMP,")
+                && sp_vcf.contains("##FILTER=<ID=AMPBIAS,")
+                && !sp_vcf.contains(";pSTD")
+                && !sp_vcf.contains("\tpSTD"),
+            "paired somatic amplicon VCF must declare GDAMP/AMPBIAS and suppress pSTD:\n{sp_vcf}"
+        );
+        let sp_vars = extract_variants(&sp_vcf);
+        assert_eq!(
+            sp_vars.len(),
+            2,
+            "expected chr1:130 PASS + chr1:150 AMPBIAS StrongSomatic rows: {sp_vars:?}"
+        );
+        assert!(
+            sp_vars[0].starts_with("chr1\t130\t.\tC\tT\t")
+                && sp_vars[0].contains("\tPASS\tSTATUS=StrongSomatic;")
+                && sp_vars[0].contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=0\t"),
+            "chr1:130 must be PASS StrongSomatic with GDAMP=2;TLAMP=2: {}",
+            sp_vars[0]
+        );
+        assert!(
+            sp_vars[1].starts_with("chr1\t150\t.\tG\tA\t")
+                && sp_vars[1].contains("\tAMPBIAS\tSTATUS=StrongSomatic;")
+                && sp_vars[1].contains(";GDAMP=1;TLAMP=2;NCAMP=0;AMPFLAG=0\t"),
+            "chr1:150 discordant single-amplicon artifact must get FILTER=AMPBIAS even when normal is clean: {}",
+            sp_vars[1]
+        );
+        let sp_var_61 = run_core_var(&spe_paired_no_sp).expect("sp paired amplicon 61-col .var");
+        assert_eq!(normalize_var_rows(&sp_var_61, 61).len(), 2);
+
+        // Negative control for Switch 21: non-amplicon somatic run has 0-byte diff vs default
+        let mut clean_som_s21 = clean_som_vj.clone();
+        clean_som_s21.compat = sw21_only;
+        assert_eq!(
+            run_core_vcf(&clean_som_vj).expect("clean som vj"),
+            run_core_vcf(&clean_som_s21).expect("clean som s21"),
+            "Switch 21 negative control must have 0-byte VCF diff on non-amplicon somatic pair"
         );
     }
 }

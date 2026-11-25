@@ -1,4 +1,4 @@
-//! Process-level CLI smoke and robustness tests (`25` tests).
+//! Process-level CLI smoke and robustness tests (`26` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
@@ -8211,5 +8211,438 @@ fn wave3_cli_fai_bounds_393_and_bed_apostrophe_172() {
             || chrz_stderr.contains("not found in FASTA index"))
             && !chrz_stderr.contains("panicked"),
         "expected clean missing .fai contig error without panic, got:\n{chrz_stderr}"
+    );
+}
+
+#[test]
+fn wave4_vardictcpp_cli_aliases_and_paired_amplicon_cram_tbi_csi_stats_e2e() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::io::Write as _;
+    use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+    use noodles::sam::alignment::record::Flags;
+    use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+    use std::io::Read as _;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // 1. `vardictcpp v2..v4` CLI aliases (`--vcf`, `--vcfall`, `--noend`, `--vcfpass`;
+    //    `MHH-Bioinformatics-Hematology/vardictcpp#4`) byte-equivalence & conflict guards
+    let micro_fa = "fixtures/micro/micro.ref.fa";
+    let micro_bam = "fixtures/micro/micro.bam";
+    for (lhs, rhs) in [
+        (vec!["--vcf"], vec!["-v"]),
+        (vec!["-v", "--vcfall"], vec!["-v", "--vcf-all-alleles"]),
+        (vec!["-v", "--noend"], vec!["-v", "--no-end"]),
+        (vec!["-v", "--vcfpass"], vec!["-v", "--pass-only"]),
+        (
+            vec!["--vcf", "--vcfall", "--noend", "--vcfpass"],
+            vec!["-v", "--vcf-all-alleles", "--no-end", "--pass-only"],
+        ),
+    ] {
+        let out_l = base_cmd()
+            .args([
+                "-G",
+                micro_fa,
+                "-b",
+                micro_bam,
+                "-R",
+                "chr1:40-260",
+                "--threads=1",
+            ])
+            .args(&lhs)
+            .output()
+            .expect("spawn alias lhs");
+        let out_r = base_cmd()
+            .args([
+                "-G",
+                micro_fa,
+                "-b",
+                micro_bam,
+                "-R",
+                "chr1:40-260",
+                "--threads=1",
+            ])
+            .args(&rhs)
+            .output()
+            .expect("spawn alias rhs");
+        assert!(out_l.status.success() && out_r.status.success());
+        assert_eq!(
+            out_l.stdout, out_r.stdout,
+            "CLI alias byte mismatch: {lhs:?} vs {rhs:?}"
+        );
+    }
+
+    for conflicting_flag in ["--emit-intermediate", "-i"] {
+        let bad = base_cmd()
+            .args([
+                "-G",
+                micro_fa,
+                "-b",
+                micro_bam,
+                "-R",
+                "chr1:40-260",
+                "--vcf",
+                conflicting_flag,
+            ])
+            .output()
+            .expect("spawn conflicting --vcf");
+        assert!(
+            !bad.status.success(),
+            "--vcf combined with {conflicting_flag} must fail"
+        );
+        assert!(
+            !String::from_utf8_lossy(&bad.stderr).contains("panicked"),
+            "conflicting --vcf error must not panic"
+        );
+    }
+
+    // 1b. CLI `-c 1 -S 2 -E 3 -z` `fixtures/micro/micro.bed` diff-confinement:
+    //     `-E 3` keeps `omit_end_tag = true` on non-symbolic SNVs/indels under `--compat=off`,
+    //     guaranteeing 0 variant diffs vs default `--compat=vardictjava`.
+    let micro_bed = "fixtures/micro/micro.bed";
+    let micro_bed_vj = base_cmd()
+        .args([
+            "-G",
+            micro_fa,
+            "-b",
+            micro_bam,
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-z",
+            "--threads=1",
+            micro_bed,
+        ])
+        .output()
+        .expect("spawn micro.bed default");
+    let micro_bed_off = base_cmd()
+        .args([
+            "-G",
+            micro_fa,
+            "-b",
+            micro_bam,
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "-z",
+            "--threads=1",
+            "--compat=off",
+            micro_bed,
+        ])
+        .output()
+        .expect("spawn micro.bed --compat=off");
+    assert!(micro_bed_vj.status.success() && micro_bed_off.status.success());
+    let micro_bed_vj_str = String::from_utf8(micro_bed_vj.stdout).expect("utf8");
+    let micro_bed_off_str = String::from_utf8(micro_bed_off.stdout).expect("utf8");
+    let micro_vj_data: Vec<&str> = micro_bed_vj_str
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    let micro_off_data: Vec<&str> = micro_bed_off_str
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    assert!(!micro_vj_data.is_empty());
+    assert!(
+        micro_off_data.iter().all(|l| !l.contains(";END=")),
+        "-E 3 must omit ;END= on non-symbolic variants under --compat=off: {micro_off_data:?}"
+    );
+    assert_eq!(
+        micro_vj_data, micro_off_data,
+        "-c 1 -S 2 -E 3 -z micro.bed must produce 0 variant diffs under --compat=off"
+    );
+
+    // 2. Paired somatic amplicon on `.cram` (`tumor_amp.cram|normal_amp.cram`) with
+    //    8-column QIAseq SPE BED (`col8 == col3`), `-a 10:0.95 -sp`, `--compat=off`,
+    //    `--output .vcf.gz --tbi` & `--csi`, `--vcfall`, `--fisher`, and `--stats-json`
+    //    (`AstraZeneca-NGS/VarDictJava#378`, `AstraZeneca-NGS/VarDictJava#303`,
+    //    `palakpsheth/VarDictRust#95`).
+    let ref_len = 500usize;
+    let bases = [b'A', b'C', b'G', b'T'];
+    let mut seed = 0x9537_8303_2026_1125u64;
+    let mut ref_seq: Vec<u8> = (0..ref_len)
+        .map(|i| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let mut b = bases[((seed >> 33) & 3) as usize];
+            if i % 5 == 0 {
+                b = bases[(i / 5) % 4];
+            }
+            b
+        })
+        .collect();
+    ref_seq[139] = b'A'; // chr1:140 A>G StrongSomatic
+    ref_seq[159] = b'C'; // chr1:160 C>T Germline
+
+    let fa_path = dir.path().join("paired_amp_cram.fa");
+    let fai_path = dir.path().join("paired_amp_cram.fa.fai");
+    {
+        let mut fa_bytes = b">chr1\n".to_vec();
+        fa_bytes.extend_from_slice(&ref_seq);
+        fa_bytes.push(b'\n');
+        std::fs::write(&fa_path, &fa_bytes).expect("write fa");
+        std::fs::write(
+            &fai_path,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .expect("write fai");
+    }
+
+    let mk_rec = |name: &str, pos_1b: usize, seq: Vec<u8>| -> RecordBuf {
+        let len = seq.len();
+        let cigar: Cigar = [Op::new(Kind::Match, len)].into_iter().collect();
+        RecordBuf::builder()
+            .set_name(name)
+            .set_flags(Flags::empty())
+            .set_reference_sequence_id(0)
+            .set_alignment_start(Position::try_from(pos_1b).expect("pos"))
+            .set_mapping_quality(noodles::sam::alignment::record::MappingQuality::new(60).unwrap())
+            .set_cigar(cigar)
+            .set_sequence(seq.into())
+            .set_quality_scores(vec![38u8; len].into())
+            .build()
+    };
+
+    let mut t_recs = Vec::new();
+    let mut n_recs = Vec::new();
+    for idx in 0..16usize {
+        // 5'-primed SPE reads starting at 110 (AMP1: [110, 190], insert [130, 190]) and
+        // 115 (AMP2: [115, 195], insert [135, 195]), length 115 (sheared past 190/195).
+        let mut s1_t = ref_seq[109..109 + 115].to_vec();
+        let mut s1_n = s1_t.clone();
+        if idx < 8 {
+            s1_t[140 - 110] = b'G';
+        }
+        if idx < 9 {
+            s1_t[160 - 110] = b'T';
+            s1_n[160 - 110] = b'T';
+        }
+        t_recs.push(mk_rec(&format!("t1_{idx}"), 110, s1_t));
+        n_recs.push(mk_rec(&format!("n1_{idx}"), 110, s1_n));
+
+        let mut s2_t = ref_seq[114..114 + 115].to_vec();
+        let mut s2_n = s2_t.clone();
+        if idx < 8 {
+            s2_t[140 - 115] = b'G';
+        }
+        if idx < 9 {
+            s2_t[160 - 115] = b'T';
+            s2_n[160 - 115] = b'T';
+        }
+        t_recs.push(mk_rec(&format!("t2_{idx}"), 115, s2_t));
+        n_recs.push(mk_rec(&format!("n2_{idx}"), 115, s2_n));
+    }
+
+    let t_bam = dir.path().join("tumor_spe.bam");
+    let n_bam = dir.path().join("normal_spe.bam");
+    t_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+    n_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+    write_indexed_bam(&t_bam, "chr1", ref_len, &t_recs).expect("write t_bam");
+    write_indexed_bam(&n_bam, "chr1", ref_len, &n_recs).expect("write n_bam");
+
+    let encode_cram = |bam_p: &Path, cram_p: &Path| {
+        let fai = noodles::fasta::fai::fs::read(&fai_path).expect("read fai");
+        let fasta_reader = noodles::fasta::io::IndexedReader::new(
+            std::io::BufReader::new(std::fs::File::open(&fa_path).expect("open fa")),
+            fai,
+        );
+        let repo = noodles::fasta::Repository::new(
+            noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+        );
+        let mut bam_rdr = noodles::bam::io::reader::Builder
+            .build_from_path(bam_p)
+            .expect("open bam");
+        let bam_hdr = bam_rdr.read_header().expect("read bam hdr");
+        let mut cram_w = noodles::cram::io::writer::Builder::default()
+            .set_reference_sequence_repository(repo)
+            .build_from_path(cram_p)
+            .expect("create cram");
+        cram_w
+            .write_alignment_header(&bam_hdr)
+            .expect("write cram hdr");
+        for rec in bam_rdr.record_bufs(&bam_hdr) {
+            let rec = rec.expect("bam rec");
+            cram_w
+                .write_alignment_record(&bam_hdr, &rec)
+                .expect("write cram rec");
+        }
+        cram_w.try_finish(&bam_hdr).expect("finish cram");
+
+        let mut rdr =
+            noodles::cram::io::Reader::new(std::fs::File::open(cram_p).expect("open cram"));
+        let _ = rdr.read_header().expect("read cram hdr");
+        let container_pos = rdr.position().expect("cram pos");
+        let mut container = noodles::cram::io::reader::Container::default();
+        let container_len = rdr.read_container(&mut container).expect("read container");
+        assert!(container_len > 0);
+        let landmark = container.header().landmarks()[0] as u64;
+        let slice_len = (container_len - container.header().landmarks()[0]) as u64;
+        let crai = vec![noodles::cram::crai::Record::new(
+            Some(0),
+            Position::try_from(1usize).ok(),
+            ref_len,
+            container_pos,
+            landmark,
+            slice_len,
+        )];
+        noodles::cram::crai::fs::write(cram_p.with_extension("cram.crai"), &crai)
+            .expect("write crai");
+    };
+
+    let t_cram = dir.path().join("tumor_spe.cram");
+    let n_cram = dir.path().join("normal_spe.cram");
+    encode_cram(&t_bam, &t_cram);
+    encode_cram(&n_bam, &n_cram);
+
+    let amp_bed = dir.path().join("spe_cram.amp8.bed");
+    std::fs::write(
+        &amp_bed,
+        "chr1\t109\t190\tSPE_C1\t0\t+\t129\t190\nchr1\t114\t195\tSPE_C2\t0\t+\t134\t195\n",
+    )
+    .expect("write spe_cram.amp8.bed");
+
+    let cram_pair = format!("{}|{}", t_cram.display(), n_cram.display());
+    let out_tbi_gz = dir.path().join("paired_amp_tbi.vcf.gz");
+    let out_tbi_stats = dir.path().join("paired_amp_stats.json");
+    let tbi_run = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&cram_pair)
+        .args([
+            "-N",
+            "TUMOR_CRAM|NORMAL_CRAM",
+            "-a",
+            "10:0.95",
+            "-sp",
+            "-f",
+            "0.050",
+            "--compat=off",
+            "--vcfall",
+            "--fisher",
+            "--threads=1",
+            "--tbi",
+        ])
+        .arg("--output")
+        .arg(&out_tbi_gz)
+        .arg("--stats-json")
+        .arg(&out_tbi_stats)
+        .arg(&amp_bed)
+        .output()
+        .expect("spawn paired cram amplicon --tbi");
+    assert!(
+        tbi_run.status.success(),
+        "paired cram amplicon --tbi failed: {}",
+        String::from_utf8_lossy(&tbi_run.stderr)
+    );
+    assert!(tbi_run.stdout.is_empty());
+
+    let out_csi_gz = dir.path().join("paired_amp_csi.vcf.gz");
+    let csi_run = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&cram_pair)
+        .args([
+            "-N",
+            "TUMOR_CRAM|NORMAL_CRAM",
+            "-a",
+            "10:0.95",
+            "--amplicon-single-primer",
+            "-f",
+            "0.050",
+            "--compat=off",
+            "--vcfall",
+            "--fisher",
+            "--threads=1",
+            "--csi",
+        ])
+        .arg("--output")
+        .arg(&out_csi_gz)
+        .arg(&amp_bed)
+        .output()
+        .expect("spawn paired cram amplicon --csi");
+    assert!(
+        csi_run.status.success(),
+        "paired cram amplicon --csi failed: {}",
+        String::from_utf8_lossy(&csi_run.stderr)
+    );
+
+    let mut dec_tbi = String::new();
+    noodles::bgzf::io::Reader::new(std::fs::File::open(&out_tbi_gz).expect("open tbi vcf.gz"))
+        .read_to_string(&mut dec_tbi)
+        .expect("decompress tbi vcf.gz");
+    let mut dec_csi = String::new();
+    noodles::bgzf::io::Reader::new(std::fs::File::open(&out_csi_gz).expect("open csi vcf.gz"))
+        .read_to_string(&mut dec_csi)
+        .expect("decompress csi vcf.gz");
+    assert_eq!(
+        dec_tbi, dec_csi,
+        "paired amplicon CRAM --tbi vs --csi VCF bytes diverged"
+    );
+    assert!(
+        dec_tbi.contains("##VarDictRustCompat=off\n")
+            && dec_tbi.contains("##FILTER=<ID=f0.050,Description=\"Allele frequency < 0.050\">\n")
+            && dec_tbi.contains("##INFO=<ID=GDAMP,")
+            && dec_tbi.contains("##FILTER=<ID=AMPBIAS,")
+    );
+    let data_lines: Vec<&str> = dec_tbi
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    assert_eq!(
+        data_lines.len(),
+        2,
+        "expected 2 paired amplicon CRAM rows, got:\n{dec_tbi}"
+    );
+    assert!(
+        data_lines[0].starts_with("chr1\t140\t.\tA\tG\t")
+            && data_lines[0].contains("\tPASS\tSTATUS=StrongSomatic;")
+            && data_lines[0].contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=0\t")
+    );
+    assert!(
+        data_lines[1].starts_with("chr1\t160\t.\tC\tT\t")
+            && data_lines[1].contains("\tPASS\tSTATUS=Germline;")
+            && data_lines[1].contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=0\t")
+    );
+
+    let tbi_idx = noodles::tabix::fs::read(dir.path().join("paired_amp_tbi.vcf.gz.tbi"))
+        .expect("read paired_amp_tbi.vcf.gz.tbi");
+    assert_eq!(
+        tbi_idx
+            .reference_sequences()
+            .iter()
+            .filter(|rs| !rs.bins().is_empty())
+            .count(),
+        1
+    );
+    let csi_idx = noodles::csi::io::Reader::new(
+        std::fs::File::open(dir.path().join("paired_amp_csi.vcf.gz.csi"))
+            .expect("open paired_amp_csi.vcf.gz.csi"),
+    )
+    .read_index()
+    .expect("read paired_amp_csi.vcf.gz.csi");
+    assert_eq!(
+        csi_idx
+            .reference_sequences()
+            .iter()
+            .filter(|rs| !rs.bins().is_empty())
+            .count(),
+        1
+    );
+
+    let stats_text = std::fs::read_to_string(&out_tbi_stats).expect("read stats.json");
+    assert!(
+        stats_text.contains("\"regions_count\": 2")
+            && stats_text.contains("\"tiles_count\": 1")
+            && stats_text.contains("\"exceptions_caught\": 0"),
+        "expected regions_count=2, tiles_count=1, exceptions_caught=0 in stats.json, got:\n{stats_text}"
     );
 }

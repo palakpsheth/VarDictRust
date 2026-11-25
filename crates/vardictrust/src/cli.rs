@@ -32,9 +32,11 @@ const UNSUPPORTED_FLAGS: &[&str] = &[
 /// otherwise collide with short options or boolean clusters.
 const GNU_ONLY_LONG_FLAGS_SINGLE_DASH: &[&str] = &[
     "-pass-only",
+    "-vcfpass",
     "-paired-strict",
     "-vcf-all-alleles",
     "-all-alleles",
+    "-vcfall",
     "-vcf-pval",
     "-min-splitreads",
     "-no-pstd-filter",
@@ -50,6 +52,9 @@ const GNU_ONLY_LONG_FLAGS_SINGLE_DASH: &[&str] = &[
     "-vcf-msi",
     "-vcf-cluster-dist",
     "-no-end",
+    "-noend",
+    "-vcf",
+    "-amplicon-single-primer",
     "-output",
     "-tbi",
     "-csi",
@@ -131,6 +136,7 @@ fn is_known_single_dash_long_flag(flag: &str) -> bool {
         flag,
         "-th"
             | "-UN"
+            | "-sp"
             | "-fisher"
             | "-chimeric"
             | "-deldupvar"
@@ -615,6 +621,7 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
         } else if matches!(
             arg.as_str(),
             "-UN"
+                | "-sp"
                 | "-fisher"
                 | "-chimeric"
                 | "-deldupvar"
@@ -705,10 +712,34 @@ pub fn normalize_args(args: &[String]) -> Vec<String> {
     out
 }
 
+fn arg_has_splice_short(arg: &str) -> bool {
+    let head = arg.split_once('=').map_or(arg, |(h, _)| h);
+    if arg.starts_with("--")
+        || is_known_single_dash_long_flag(head)
+        || GNU_ONLY_LONG_FLAGS_SINGLE_DASH.contains(&head)
+    {
+        return false;
+    }
+    let Some(rest) = head.strip_prefix('-') else {
+        return false;
+    };
+    for ch in rest.chars() {
+        if ch == 'i' {
+            return true;
+        }
+        if !is_bool_short_flag(ch) {
+            return false;
+        }
+    }
+    false
+}
+
 /// Fail loudly if any known-unimplemented VarDictJava flag was supplied.
 /// Runs before Clap parsing, which would otherwise emit a generic
 /// "unexpected argument" error instead of the actionable §12 message.
 pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types::VardictError> {
+    let mut saw_long_vcf = false;
+    let mut saw_non_vcf_mode = false;
     let mut i = 1;
     while let Some(arg) = args.get(i) {
         if arg == "--" {
@@ -725,6 +756,16 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
                 "Unknown single-dash option '{head}'; did you mean '-{head}'?"
             )));
         }
+        if head == "--vcf" {
+            saw_long_vcf = true;
+        }
+        if head == "--emit-intermediate"
+            || head == "--splice"
+            || head == "-splice"
+            || arg_has_splice_short(arg)
+        {
+            saw_non_vcf_mode = true;
+        }
         let (unsupported_short, consumes_next) = classify_short_cluster(arg);
         if let Some(ch) = unsupported_short {
             return Err(vardictrust_core::types::VardictError::Unsupported(format!(
@@ -738,6 +779,12 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
         } else {
             1
         };
+    }
+    if saw_long_vcf && saw_non_vcf_mode {
+        return Err(vardictrust_core::types::VardictError::Parse(
+            "Conflicting flags: --vcf cannot be combined with --emit-intermediate or -i/--splice"
+                .to_string(),
+        ));
     }
     Ok(())
 }
@@ -892,7 +939,7 @@ pub struct Cli {
     #[arg(long = "parity", help_heading = "Core Inputs & Outputs")]
     pub parity: bool,
 
-    /// Compatibility profile: 'vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] for 100% v1.8.3 parity, or 'off' to enable 17 CompatProfile accuracy/scale/--eqx fixes (stamps ##VarDictRustCompat=off). [default: vardictjava]
+    /// Compatibility profile: 'vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] for 100% v1.8.3 parity, or 'off' to enable 21 CompatProfile accuracy/scale/SV/amplicon/--eqx fixes (including somatic_continue_after_bad_var [joachimwolff/VarDictJava#4], adaptor_all_consensus_dirs [AstraZeneca-NGS/VarDictJava#240], canonical_sv_vcf_anchoring [AstraZeneca-NGS/VarDictJava#398], and paired_somatic_amplicon [AstraZeneca-NGS/VarDictJava#378]; stamps ##VarDictRustCompat=off). [default: vardictjava]
     #[arg(
         long = "compat",
         value_name = "TARGET",
@@ -917,7 +964,7 @@ pub struct Cli {
     /// VCF format output. Defined but never read by VarDictJava v1.8.3
     /// (CmdParser.java:224 vs parseCmd 59-186); accepted and ignored for
     /// drop-in compatibility.
-    #[arg(short = 'v', help_heading = "Core Inputs & Outputs")]
+    #[arg(short = 'v', alias = "vcf", help_heading = "Core Inputs & Outputs")]
     pub vcf_output_noop: bool,
 
     /// Verbose mode.
@@ -943,11 +990,19 @@ pub struct Cli {
 
     // ── 2. VCF Post-Filtering (var2vcf) ──────────────────────────────────────
     /// Omit the END tag in VCF INFO output (ports var2vcf_valid.pl -E).
-    #[arg(long = "no-end", help_heading = "VCF Post-Filtering (var2vcf)")]
+    #[arg(
+        long = "no-end",
+        alias = "noend",
+        help_heading = "VCF Post-Filtering (var2vcf)"
+    )]
     pub no_end: bool,
 
     /// Emit only PASS variants in VCF output (ports var2vcf_valid.pl / var2vcf_paired.pl -S).
-    #[arg(long = "pass-only", help_heading = "VCF Post-Filtering (var2vcf)")]
+    #[arg(
+        long = "pass-only",
+        alias = "vcfpass",
+        help_heading = "VCF Post-Filtering (var2vcf)"
+    )]
     pub pass_only: bool,
 
     /// Disable germline rescue in paired somatic VCF filtering (ports var2vcf_paired.pl -M).
@@ -958,6 +1013,7 @@ pub struct Cli {
     #[arg(
         long = "vcf-all-alleles",
         visible_alias = "all-alleles",
+        alias = "vcfall",
         help_heading = "VCF Post-Filtering (var2vcf)"
     )]
     pub vcf_all_alleles: bool,
@@ -1406,6 +1462,14 @@ pub struct Cli {
     )]
     pub amplicon: Vec<String>,
 
+    /// Single-primer amplicon mode (`-sp` / `--amplicon-single-primer`): require only the primed amplicon end to match within the `-a` distance threshold and bypass the un-primed overlap-fraction check (ports `AstraZeneca-NGS/VarDictJava#303`).
+    #[arg(
+        long = "amplicon-single-primer",
+        alias = "sp",
+        help_heading = "Modality Flags: Somatic & Amplicon"
+    )]
+    pub amplicon_single_primer: bool,
+
     /// Splice mode.
     #[arg(
         short = 'i',
@@ -1644,26 +1708,44 @@ impl Cli {
             }
         }
 
-        let freq_str = self.freq.first().map(|s| s.as_str()).unwrap_or("0.01");
-        let parsed_freq: f64 = vardictrust_core::config::parse_java_number_f64(freq_str)
-            .or_else(|e| {
-                if freq_str.eq_ignore_ascii_case("0e0") {
-                    Ok(0.0)
-                } else {
-                    Err(e)
+        let (parsed_freq, af_threshold, af_threshold_truthy_zero, af_threshold_raw) =
+            if let Some(freq_str) = self.freq.first().map(String::as_str) {
+                let parsed: f64 = vardictrust_core::config::parse_java_number_f64(freq_str)
+                    .map_err(|e| {
+                        vardictrust_core::types::VardictError::Parse(format!(
+                            "Invalid -f value '{freq_str}': {e}"
+                        ))
+                    })?;
+                if !parsed.is_finite() {
+                    return Err(vardictrust_core::types::VardictError::Parse(format!(
+                        "Invalid -f value '{freq_str}': must be a finite number"
+                    )));
                 }
-            })
-            .map_err(|e| {
-                vardictrust_core::types::VardictError::Parse(format!(
-                    "Invalid -f value '{}': {}",
-                    freq_str, e
-                ))
-            })?;
-        // In Perl (`var2vcf_valid.pl:21`: `my $Freq = $opt_f ? $opt_f : 0.02;`),
-        // only `"0"` (or `""`) is falsy; non-`"0"` zero spellings such as `"0.0"`
-        // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
-        let af_threshold_truthy_zero = parsed_freq == 0.0 && freq_str.trim() != "0";
-        let af_threshold = if parsed_freq == 0.0 { 0.0 } else { parsed_freq };
+                let trimmed = freq_str.trim();
+                let af_raw = if parsed >= 0.0 {
+                    let cleaned = trimmed
+                        .strip_suffix(['f', 'F', 'd', 'D'])
+                        .unwrap_or(trimmed);
+                    let (_, norm_raw) =
+                        vardictrust_core::config::validate_vcf_nonneg_float_token(cleaned)
+                            .map_err(|reason| {
+                                vardictrust_core::types::VardictError::Parse(format!(
+                                    "Invalid -f value '{freq_str}': {reason}"
+                                ))
+                            })?;
+                    Some(norm_raw.to_string())
+                } else {
+                    None
+                };
+                // In Perl (`var2vcf_valid.pl:21`: `my $Freq = $opt_f ? $opt_f : 0.02;`),
+                // only `"0"` (or `""`) is falsy; non-`"0"` zero spellings such as `"0.0"`
+                // or `"0.00"` are truthy strings in Perl boolean context and keep `0.0`.
+                let truthy_zero = parsed == 0.0 && trimmed != "0";
+                let af_thr = if parsed == 0.0 { 0.0 } else { parsed };
+                (parsed, af_thr, truthy_zero, af_raw)
+            } else {
+                (0.01, 0.01, false, None)
+            };
 
         let sample_regexp = match self.sample_regexp.first() {
             Some(raw) => vardictrust_core::config::validate_sample_regexp(raw)
@@ -1714,6 +1796,14 @@ impl Cli {
             }
             "10:0.95".to_string()
         });
+        if self.amplicon_single_primer
+            && (region_opt.is_some() || (amplicon.is_none() && self.bed.is_none()))
+        {
+            return Err(vardictrust_core::types::VardictError::Parse(
+                "--amplicon-single-primer (-sp) requires amplicon mode (-a or an 8-column amplicon BED)"
+                    .to_string(),
+            ));
+        }
 
         let (vcf_pval, vcf_pval_raw) = match self.vcf_pval.first() {
             Some((val, raw)) => (*val, Some(raw.clone())),
@@ -1729,6 +1819,7 @@ impl Cli {
             // receives -f from the pipeline, not java's pileup override).
             af_threshold,
             af_threshold_truthy_zero,
+            af_threshold_raw,
             sample,
             sample_explicit,
             region: region_opt,
@@ -1787,6 +1878,7 @@ impl Cli {
             fisher: self.fisher,
             tile_size,
             amplicon,
+            amplicon_single_primer: self.amplicon_single_primer,
             extension: self.extension.first().copied().unwrap_or(0),
             extension_nuc: self.extension_nuc.first().copied().unwrap_or(2),
             three_prime: self.three_prime,
@@ -1831,6 +1923,7 @@ impl Cli {
             unique_mode_alignment_enabled: self.unique_mode_alignment_enabled,
             unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
             omit_end_tag: self.no_end || !self.col_end.is_empty(),
+            vcf_no_end_explicit: self.no_end,
             include_n: self.include_n,
             output_path: self.output.first().cloned(),
             index_output: self.tbi,
@@ -2068,7 +2161,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
 
         let mut cmd = Cli::command();
-        assert_eq!(cmd.get_arguments().count(), 90);
+        assert_eq!(cmd.get_arguments().count(), 91);
         let short_about = cmd
             .get_about()
             .expect("Cli::command() must define short about")
@@ -2091,9 +2184,10 @@ mod tests {
             "expected --compat=off in short help:\n{rendered_help}"
         );
         assert!(
-            rendered_help.contains("17 CompatProfile")
+            rendered_help.contains("21 CompatProfile")
+                && !rendered_help.contains("17 CompatProfile")
                 && !rendered_help.contains("13 CompatProfile"),
-            "expected 17 CompatProfile switches in short help:\n{rendered_help}"
+            "expected 21 CompatProfile switches in short help:\n{rendered_help}"
         );
         assert!(
             rendered_help.contains("-h / --header"),
@@ -2101,9 +2195,10 @@ mod tests {
         );
         let rendered_long_help = cmd.render_long_help().to_string();
         assert!(
-            rendered_long_help.contains("17 CompatProfile")
+            rendered_long_help.contains("21 CompatProfile")
+                && !rendered_long_help.contains("17 CompatProfile")
                 && !rendered_long_help.contains("13 CompatProfile"),
-            "expected 17 CompatProfile switches in long help:\n{rendered_long_help}"
+            "expected 21 CompatProfile switches in long help:\n{rendered_long_help}"
         );
         assert!(
             rendered_long_help.contains("18/18 var2vcf"),
@@ -2235,7 +2330,7 @@ mod tests {
             r"\-\-vcf\-all\-alleles",
             r"\-\-all\-alleles",
             r"\-\-compat=off",
-            "17 CompatProfile",
+            "21 CompatProfile",
             r"\-\-completions",
             r"\-H",
             r"\-h",
@@ -2246,6 +2341,7 @@ mod tests {
             r"\-z [ZERO_BASED]",
             r"\-k [REALIGN]",
             r"\-a [AMPLICON], \-\-amplicon[=AMPLICON]",
+            r"\-sp, \-\-amplicon\-single\-primer",
         ] {
             assert!(
                 man_text.contains(needle),
@@ -2259,6 +2355,7 @@ mod tests {
             r"\-z[=",
             r"\-k[=",
             "13 CompatProfile",
+            "17 CompatProfile",
         ] {
             assert!(
                 !man_text.contains(forbidden),
@@ -2483,8 +2580,12 @@ mod tests {
         assert_eq!(parse_java_number_f64("22.5f").unwrap(), 22.5);
         assert_eq!(parse_java_number_f64("22.5D").unwrap(), 22.5);
         assert_eq!(parse_java_number_f64("1.5e2").unwrap(), 150.0);
+        assert_eq!(parse_java_number_f64("1e1").unwrap(), 10.0);
+        assert_eq!(parse_java_number_f64("1e-5").unwrap(), 1e-5);
+        assert_eq!(parse_java_number_f64("0.05d").unwrap(), 0.05);
+        assert!(parse_java_number_i32("1e1").is_err());
 
-        for bad in ["1e1", "NaN", "inf", "Infinity", " 10", "10 ", ""] {
+        for bad in ["NaN", "inf", "Infinity", " 10", "10 ", ""] {
             assert!(
                 parse_java_number_i32(bad).is_err(),
                 "expected i32 parse error on '{bad}'"
@@ -2661,12 +2762,49 @@ mod tests {
         assert!(csi_no_end_cfg.index_csi);
         assert!(!csi_no_end_cfg.index_output);
         assert!(csi_no_end_cfg.omit_end_tag);
+        assert!(csi_no_end_cfg.vcf_no_end_explicit);
 
         let col_end_cfg = Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "-E", "3"]))
             .unwrap()
             .to_config()
             .unwrap();
         assert!(col_end_cfg.omit_end_tag);
+        assert!(!col_end_cfg.vcf_no_end_explicit);
+
+        let col_end_compat_off_cfg = Cli::try_parse_from(args(&[
+            "-b",
+            "a.bam",
+            "-G",
+            "r.fa",
+            "-E",
+            "3",
+            "--compat=off",
+        ]))
+        .unwrap()
+        .to_config()
+        .unwrap();
+        assert!(
+            col_end_compat_off_cfg.omit_end_tag && !col_end_compat_off_cfg.vcf_no_end_explicit,
+            "-E <col_end> must keep omit_end_tag=true for non-SV BED diff-confinement while leaving vcf_no_end_explicit=false so symbolic SVs retain INFO/END"
+        );
+
+        for explicit_no_end in ["--no-end", "--noend"] {
+            let explicit_cfg = Cli::try_parse_from(args(&[
+                "-b",
+                "a.bam",
+                "-G",
+                "r.fa",
+                "-E",
+                "3",
+                "--compat=off",
+                explicit_no_end,
+            ]))
+            .unwrap()
+            .to_config()
+            .unwrap();
+            assert!(explicit_cfg.omit_end_tag);
+            assert!(explicit_cfg.vcf_no_end_explicit);
+        }
 
         let bad_compat_cli =
             Cli::try_parse_from(args(&["-b", "a.bam", "-G", "r.fa", "--compat", "modern"]))
@@ -4016,7 +4154,7 @@ mod tests {
         ])
         .expect("--compat=vardictjava must succeed");
         assert_eq!(vj_cli_cfg.compat, COMPAT_VARDICTJAVA_1_8_3);
-        let vj_all_17 = [
+        let vj_all_21 = [
             vj_cli_cfg.compat.sanitize_sample_info,
             vj_cli_cfg.compat.standard_dup_symbolic_alt,
             vj_cli_cfg.compat.shift3_3prime_alleles,
@@ -4034,8 +4172,12 @@ mod tests {
             vj_cli_cfg.compat.coordinate_sorted_vars,
             vj_cli_cfg.compat.exact_35_overlap,
             vj_cli_cfg.compat.exact_cigar_dlen_match,
+            vj_cli_cfg.compat.somatic_continue_after_bad_var,
+            vj_cli_cfg.compat.adaptor_all_consensus_dirs,
+            vj_cli_cfg.compat.canonical_sv_vcf_anchoring,
+            vj_cli_cfg.compat.paired_somatic_amplicon,
         ];
-        assert_eq!(vj_all_17, [false; 17]);
+        assert_eq!(vj_all_21, [false; 21]);
 
         let off_cli_cfg = parse_cfg(&[
             "-G",
@@ -4048,7 +4190,7 @@ mod tests {
         ])
         .expect("--compat=off must succeed");
         assert_eq!(off_cli_cfg.compat, COMPAT_OFF);
-        let off_all_17 = [
+        let off_all_21 = [
             off_cli_cfg.compat.sanitize_sample_info,
             off_cli_cfg.compat.standard_dup_symbolic_alt,
             off_cli_cfg.compat.shift3_3prime_alleles,
@@ -4066,8 +4208,12 @@ mod tests {
             off_cli_cfg.compat.coordinate_sorted_vars,
             off_cli_cfg.compat.exact_35_overlap,
             off_cli_cfg.compat.exact_cigar_dlen_match,
+            off_cli_cfg.compat.somatic_continue_after_bad_var,
+            off_cli_cfg.compat.adaptor_all_consensus_dirs,
+            off_cli_cfg.compat.canonical_sv_vcf_anchoring,
+            off_cli_cfg.compat.paired_somatic_amplicon,
         ];
-        assert_eq!(off_all_17, [true; 17]);
+        assert_eq!(off_all_21, [true; 21]);
 
         // Positional BED alongside `--compat off` must not miscount `"off"` as a positional BED
         let bed_off_cfg = parse_cfg(&[
@@ -4305,7 +4451,7 @@ mod tests {
         use clap::CommandFactory;
         use vardictrust_core::config::{COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
 
-        assert_eq!(Cli::command().get_arguments().count(), 90);
+        assert_eq!(Cli::command().get_arguments().count(), 91);
 
         let parse_cfg = |raw_flags: &[&str]| -> vardictrust_core::config::Config {
             let norm = normalize_args(&args(raw_flags));
@@ -4374,5 +4520,383 @@ mod tests {
         assert_eq!(off_implicit.vcf_min_splitreads, 1);
         assert!(!off_implicit.vcf_min_splitreads_explicit);
         assert_eq!(off_implicit.compat, COMPAT_OFF);
+    }
+
+    #[test]
+    fn wave4_af_raw_single_primer_and_vardictcpp_aliases_cli_contract() {
+        use clap::CommandFactory;
+        use std::io::Write as _;
+        use vardictrust_core::types::VardictError;
+
+        let parse_res =
+            |raw_flags: &[&str]| -> Result<vardictrust_core::config::Config, VardictError> {
+                let norm = normalize_args(&args(raw_flags));
+                check_unsupported(&norm)?;
+                let cli =
+                    Cli::try_parse_from(&norm).map_err(|e| VardictError::Parse(e.to_string()))?;
+                cli.to_config()
+            };
+
+        // 1. Omitted vs explicit -f / --af-threshold -> af_threshold_raw
+        let omitted = parse_res(&["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10"]).unwrap();
+        assert!((omitted.af_threshold - 0.01).abs() < f64::EPSILON);
+        assert!(omitted.af_threshold_raw.is_none());
+        assert!(!omitted.amplicon_single_primer);
+
+        for (flag, raw_f, exp_val, exp_raw, exp_truthy_zero) in [
+            ("-f", "0.050", 0.05, "0.050", false),
+            ("-f", "1e-5", 1e-5, "1e-5", false),
+            ("-f", "0.0", 0.0, "0.0", true),
+            ("-f", "0", 0.0, "0", false),
+            ("-f", ".01", 0.01, ".01", false),
+            ("-f", "0.05d", 0.05, "0.05", false),
+            ("--af-threshold", " 0.050 ", 0.05, "0.050", false),
+            ("--af-threshold", "\t1e-5F\n", 1e-5, "1e-5", false),
+        ] {
+            let cfg = parse_res(&["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10", flag, raw_f])
+                .unwrap_or_else(|e| panic!("{flag} {raw_f:?} failed: {e}"));
+            assert!(
+                (cfg.af_threshold - exp_val).abs() <= 1e-15,
+                "{flag} {raw_f:?}: af_threshold={}",
+                cfg.af_threshold
+            );
+            assert_eq!(
+                cfg.af_threshold_raw.as_deref(),
+                Some(exp_raw),
+                "{flag} {raw_f:?}"
+            );
+            assert_eq!(
+                cfg.af_threshold_truthy_zero, exp_truthy_zero,
+                "{flag} {raw_f:?}"
+            );
+        }
+
+        // Pileup -p overrides freq to -1.0 while preserving af_threshold and af_threshold_raw
+        let pileup_f = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "-f",
+            "0.001",
+            "-p",
+        ])
+        .unwrap();
+        assert_eq!(pileup_f.freq, -1.0);
+        assert!((pileup_f.af_threshold - 0.001).abs() <= 1e-15);
+        assert_eq!(pileup_f.af_threshold_raw.as_deref(), Some("0.001"));
+
+        // Invalid -f values fail cleanly
+        for bad_f in ["0.05;bad", "0.05 0.1", "NaN", "inf"] {
+            assert!(
+                parse_res(&["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10", "-f", bad_f]).is_err(),
+                "expected Err on -f {bad_f:?}"
+            );
+        }
+
+        // 2. -sp / --amplicon-single-primer + error without -a or 8-column BED
+        for sp_argv in [
+            &["-G", "r.fa", "-b", "a.bam", "-a", "-sp", "panel.bed"][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-sp",
+                "-a",
+                "10:0.95",
+                "panel.bed",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "--amplicon-single-primer",
+                "-a",
+                "panel.bed",
+            ][..],
+        ] {
+            let cfg_sp = parse_res(sp_argv).unwrap_or_else(|e| panic!("{sp_argv:?} failed: {e}"));
+            assert!(cfg_sp.amplicon_single_primer);
+            assert!(cfg_sp.amplicon.is_some());
+            assert_eq!(cfg_sp.bed.as_deref(), Some("panel.bed"));
+        }
+
+        for bad_sp in [
+            &["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-100", "-sp"][..],
+            &["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-100", "-a", "-sp"][..],
+            &["-G", "r.fa", "-b", "a.bam", "-sp"][..],
+        ] {
+            let err = parse_res(bad_sp).expect_err(&format!("expected Err for {bad_sp:?}"));
+            assert!(matches!(err, VardictError::Parse(_)), "got {err:?}");
+            assert!(
+                err.to_string()
+                    .contains("--amplicon-single-primer (-sp) requires amplicon mode"),
+                "unexpected msg: {err}"
+            );
+        }
+
+        let mut bed4 = tempfile::NamedTempFile::new().expect("temp 4-col bed");
+        writeln!(bed4, "chr1\t10\t100\tGENE1").unwrap();
+        let bed4_path = bed4.path().to_str().unwrap().to_string();
+        let cfg_bed4 = parse_res(&["-G", "missing_ref.fa", "-b", "a.bam", "-sp", &bed4_path])
+            .expect("-sp with BED path parses before BED column inspection");
+        assert!(cfg_bed4.amplicon_single_primer);
+        let run_err_4 = vardictrust_core::run(&cfg_bed4)
+            .expect_err("-sp on 4-col BED without -a must fail in resolve_effective_config");
+        assert!(matches!(run_err_4, VardictError::Parse(_)));
+        assert!(
+            run_err_4
+                .to_string()
+                .contains("--amplicon-single-primer (-sp) requires amplicon mode"),
+            "unexpected 4-col BED error: {run_err_4}"
+        );
+
+        let mut bed8 = tempfile::NamedTempFile::new().expect("temp 8-col bed");
+        writeln!(bed8, "chr1\t10\t100\tGENE1\t0\t+\t20\t100").unwrap();
+        let bed8_path = bed8.path().to_str().unwrap().to_string();
+        let cfg_bed8 =
+            parse_res(&["-G", "missing_ref.fa", "-b", "a.bam", "-sp", &bed8_path]).unwrap();
+        let run_err_8 = vardictrust_core::run(&cfg_bed8)
+            .expect_err("expected missing FASTA failure after passing resolve_effective_config");
+        assert!(
+            !run_err_8
+                .to_string()
+                .contains("--amplicon-single-primer (-sp) requires amplicon mode"),
+            "8-col amplicon BED must auto-satisfy -sp without -a, got: {run_err_8}"
+        );
+
+        // 3. Hidden vardictcpp v2..v4 aliases (--vcfall, --noend, --vcfpass, --vcf) keeping count == 91
+        let mut cmd = Cli::command();
+        assert_eq!(cmd.get_arguments().count(), 91);
+        let short_help = cmd.render_help().to_string();
+        let long_help = cmd.render_long_help().to_string();
+        for hidden_alias in ["--vcfall", "--noend", "--vcfpass"] {
+            assert!(
+                !short_help.contains(hidden_alias) && !long_help.contains(hidden_alias),
+                "hidden alias {hidden_alias} must not appear in --help"
+            );
+        }
+        assert!(
+            !short_help.contains("-v, --vcf") && !long_help.contains("-v, --vcf"),
+            "--vcf alias on -v must remain hidden in --help"
+        );
+        for switch_citation in [
+            "somatic_continue_after_bad_var",
+            "joachimwolff/VarDictJava#4",
+            "adaptor_all_consensus_dirs",
+            "AstraZeneca-NGS/VarDictJava#240",
+            "canonical_sv_vcf_anchoring",
+            "AstraZeneca-NGS/VarDictJava#398",
+            "paired_somatic_amplicon",
+            "AstraZeneca-NGS/VarDictJava#378",
+        ] {
+            assert!(
+                short_help.contains(switch_citation),
+                "missing '{switch_citation}' in --compat help:\n{short_help}"
+            );
+        }
+
+        let cpp_cfg = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "--vcf",
+            "--vcfall",
+            "--noend",
+            "--vcfpass",
+        ])
+        .unwrap();
+        assert!(cpp_cfg.vcf_all_alleles);
+        assert!(cpp_cfg.omit_end_tag);
+        assert!(cpp_cfg.vcf_no_end_explicit);
+        assert!(cpp_cfg.vcf_pass_only);
+
+        // 4. GNU_ONLY_LONG_FLAGS_SINGLE_DASH rejecting -vcf, -vcfall, -noend, -vcfpass, -amplicon-single-primer
+        for single_dash in [
+            "-vcf",
+            "-vcfall",
+            "-noend",
+            "-vcfpass",
+            "-amplicon-single-primer",
+        ] {
+            let err = parse_res(&["-G", "r.fa", "-b", "a.bam", single_dash, "-R", "chr1:1-10"])
+                .expect_err(&format!("expected Parse error on {single_dash}"));
+            assert!(matches!(err, VardictError::Parse(_)));
+            let want = format!("did you mean '-{single_dash}'?");
+            assert!(err.to_string().contains(&want), "got {err}");
+        }
+
+        // 5. --vcf + --emit-intermediate / -i / --splice error, while legacy -v -i succeeds
+        for conflict in [
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--vcf",
+                "--emit-intermediate",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--emit-intermediate",
+                "--vcf",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--vcf",
+                "-i",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--vcf",
+                "--splice",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--vcf",
+                "-splice",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--vcf",
+                "-pi",
+            ][..],
+        ] {
+            let err = parse_res(conflict).expect_err(&format!("expected conflict on {conflict:?}"));
+            assert!(matches!(err, VardictError::Parse(_)), "got {err:?}");
+            assert!(err.to_string().contains("--vcf"), "got {err}");
+        }
+        let legacy_vi = parse_res(&["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10", "-v", "-i"])
+            .expect("legacy -v -i must remain accepted");
+        assert!(legacy_vi.splice);
+        let sample_named_vcf = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "-N",
+            "--vcf",
+            "--emit-intermediate",
+        ])
+        .expect("-N --vcf must not trigger --vcf flag conflict");
+        assert_eq!(sample_named_vcf.sample, "--vcf");
+        assert!(sample_named_vcf.emit_intermediate);
+
+        // 6. completions_man.rs -sp parity across Bash, Zsh, Fish, and Manpage
+        let mut bash_buf = Vec::new();
+        completions_man::write_completions(CompletionShell::Bash, &mut bash_buf).unwrap();
+        let bash_txt = String::from_utf8(bash_buf).unwrap();
+        assert!(bash_txt.contains(" -sp ") && bash_txt.contains("--amplicon-single-primer"));
+
+        let mut zsh_buf = Vec::new();
+        completions_man::write_completions(CompletionShell::Zsh, &mut zsh_buf).unwrap();
+        let zsh_txt = String::from_utf8(zsh_buf).unwrap();
+        assert!(zsh_txt.contains("'(-sp --amplicon-single-primer)-sp["));
+        assert!(zsh_txt.contains("--amplicon-single-primer["));
+
+        let mut fish_buf = Vec::new();
+        completions_man::write_completions(CompletionShell::Fish, &mut fish_buf).unwrap();
+        let fish_txt = String::from_utf8(fish_buf).unwrap();
+        assert!(
+            fish_txt.contains(" -sp ") && fish_txt.contains("complete -c vardictrust -o sp -d")
+        );
+    }
+
+    #[test]
+    fn test_negative_f_freq_parity_and_non_finite_rejection() {
+        use vardictrust_core::types::VardictError;
+
+        let parse_res =
+            |raw_flags: &[&str]| -> Result<vardictrust_core::config::Config, VardictError> {
+                let norm = normalize_args(&args(raw_flags));
+                check_unsupported(&norm)?;
+                let cli =
+                    Cli::try_parse_from(&norm).map_err(|e| VardictError::Parse(e.to_string()))?;
+                cli.to_config()
+            };
+
+        for (flag_args, exp) in [
+            (&["-f", "-1"][..], -1.0),
+            (&["-f", "-0.01"][..], -0.01),
+            (&["-f=-1e-2"][..], -0.01),
+            (&["--af-threshold", "-1"][..], -1.0),
+        ] {
+            let mut argv = vec!["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10"];
+            argv.extend_from_slice(flag_args);
+            let mut cfg = parse_res(&argv).unwrap_or_else(|e| panic!("{flag_args:?} failed: {e}"));
+            assert!(
+                (cfg.freq - exp).abs() <= 1e-15,
+                "{flag_args:?}: freq={}",
+                cfg.freq
+            );
+            assert!(
+                (cfg.af_threshold - exp).abs() <= 1e-15,
+                "{flag_args:?}: af_threshold={}",
+                cfg.af_threshold
+            );
+            assert!(!cfg.af_threshold_truthy_zero);
+            assert_eq!(cfg.af_threshold_raw, None, "{flag_args:?}");
+            cfg.validate_vcf_thresholds().unwrap();
+        }
+
+        let neg_zero = parse_res(&["-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10", "-f", "-0.0"])
+            .expect("-f -0.0 must normalize to 0.0");
+        assert_eq!(neg_zero.af_threshold.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(neg_zero.af_threshold_raw.as_deref(), Some("0.0"));
+
+        for non_finite in ["NaN", "Infinity"] {
+            let err = parse_res(&[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "-f",
+                non_finite,
+            ])
+            .expect_err(&format!("expected Err on -f {non_finite}"));
+            assert!(matches!(err, VardictError::Parse(_)));
+            assert!(
+                err.to_string().contains("Invalid -f value"),
+                "unexpected error for -f {non_finite}: {err}"
+            );
+        }
     }
 }
