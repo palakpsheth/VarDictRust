@@ -510,13 +510,15 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                         good_variants_on_amp.insert(amplicon_number, good_vars);
                     }
                     if !any_kept {
+                        // Mirror pure-reference amplicon handling (`AmpliconPostProcessModule.java:94-95`,
+                        // lines 521-522 below, and `aggregate_sample_amplicon_positions`): push
+                        // `fallback_cov` to `vcovs` without inflating `maxcov` above variant-carrying
+                        // amplicons, so a 10,000x wild-type (`0` alt) amplicon never marks a 100x
+                        // variant-carrying amplicon as `NCAMP = 1` (`1 < 2 - 1` falsely clearing `AMPBIAS`).
                         let fallback_cov = ref_amplicon
                             .map_or(0, |r| r.total_pos_cov)
                             .max(skipped_eq_cov);
                         vcovs.push(fallback_cov);
-                        if fallback_cov > maxcov {
-                            maxcov = fallback_cov;
-                        }
                     }
                 } else if let Some(ref_var) = ref_amplicon {
                     vcovs.push(ref_var.total_pos_cov);
@@ -3539,6 +3541,67 @@ mod tests {
                     ampflag: false,
                 }
             );
+
+            // Exact `10,000x` pure-ref (`variants = []`) vs `10,000x` skipped `REF == ALT` parity
+            // alongside a `100x` variant-carrying amplicon (`AmpliconPostProcessModule.java:94-95`):
+            // `amp0` (`0/10,000` variant reads) must NOT inflate `maxcov` to mark variant-carrying
+            // `amp1` (`100x`) as `NCAMP = 1` (which would falsely excuse `1 < 2 - 1` `AMPBIAS`).
+            let build_skewed_pair = |use_skipped_eq: bool| {
+                let mut s0 = crate::javamap::JavaHashMap::new();
+                let mut s1 = crate::javamap::JavaHashMap::new();
+                let mut vs0 = Vars::new();
+                if use_skipped_eq {
+                    let mut eq_hi = make_good_variant(170, "C", "C", 1.0);
+                    eq_hi.total_pos_cov = 10_000;
+                    vs0.variants.push(eq_hi);
+                } else {
+                    let mut rv_hi = Variant::new();
+                    rv_hi.start_pos = 170;
+                    rv_hi.end_pos = 170;
+                    rv_hi.ref_allele = "C".to_string();
+                    rv_hi.var_allele = "C".to_string();
+                    rv_hi.total_pos_cov = 10_000;
+                    vs0.ref_variant = Some(rv_hi);
+                }
+                s0.insert(170, vs0);
+                let mut vs1 = Vars::new();
+                let mut v_lo = make_good_variant(170, "C", "T", 0.50);
+                v_lo.total_pos_cov = 100;
+                vs1.variants.push(v_lo);
+                s1.insert(170, vs1);
+                (s0, s1)
+            };
+            let mut skew_pos = BTreeMap::new();
+            skew_pos.insert(170, vec![(0, amp0.clone()), (1, amp1.clone())]);
+            let (clean0, clean1) = build_skewed_pair(false);
+            let (iupac0, iupac1) = build_skewed_pair(true);
+            let single_clean = amplicon_post_process(
+                cfg,
+                &amp0,
+                &[clean0.clone(), clean1.clone()],
+                &skew_pos,
+                &splice,
+            )
+            .expect("single_clean");
+            let single_iupac = amplicon_post_process(
+                cfg,
+                &amp0,
+                &[iupac0.clone(), iupac1.clone()],
+                &skew_pos,
+                &splice,
+            )
+            .expect("single_iupac");
+            assert_eq!(single_clean[0].ncamp, 0);
+            assert_eq!(single_iupac[0].ncamp, single_clean[0].ncamp);
+            let (_, conc_clean) =
+                aggregate_sample_amplicon_vars(cfg, &segment, vec![clean0, clean1], &splice);
+            let (_, conc_iupac) =
+                aggregate_sample_amplicon_vars(cfg, &segment, vec![iupac0, iupac1], &splice);
+            assert_eq!(
+                conc_iupac.resolve(170, 170, "C", "T", &segment),
+                conc_clean.resolve(170, 170, "C", "T", &segment)
+            );
+            assert_eq!(conc_iupac.resolve(170, 170, "C", "T", &segment).ncamp, 0);
 
             // End-to-end paired somatic amplicon pure-`eq` reference hydration invariants:
             // (a) `StrongSomatic` at 170 when Normal has ONLY sanitized `"C" -> "C"` (`fwd = 85, rev = 95, ref_fwd = 10, ref_rev = 10, DP = 200`):
