@@ -5,8 +5,11 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Once;
 
 use libfuzzer_sys::fuzz_target;
-use vardictrust_core::config::{Config, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
+use vardictrust_core::config::{CompatProfile, Config, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
 use vardictrust_core::javamap::JavaHashMap;
+use vardictrust_core::output::vcf::{
+    build_single_vcf_event, format_paired_vcf_record, SingleVcfEvent,
+};
 use vardictrust_core::postprocess::amplicon::{
     aggregate_sample_amplicon_vars, amplicon_post_process, amplicon_post_process_streaming,
     amplicon_retain_strict_bounds, amplicon_select_vcf_rows_compat,
@@ -161,7 +164,37 @@ fn fuzz_fisher_exact(cur: &mut ByteCursor<'_>) {
     }
 }
 
-fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, reconcile_vd_dp: bool) -> Variant {
+fn reduce_iupac_alt_outside_brackets(alt: &str) -> String {
+    let bytes = alt.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'<' {
+            if let Some(rel_close) = bytes[i + 1..].iter().position(|&c| c == b'>') {
+                out.push_str(&alt[i..=i + 1 + rel_close]);
+                i += rel_close + 2;
+                continue;
+            }
+        }
+        let mapped = match b {
+            b'A' | b'a' | b'W' | b'w' | b'M' | b'm' | b'R' | b'r' | b'D' | b'd' | b'H' | b'h'
+            | b'V' | b'v' => b'A',
+            b'C' | b'c' | b'S' | b's' | b'Y' | b'y' | b'B' | b'b' => b'C',
+            b'G' | b'g' | b'K' | b'k' => b'G',
+            b'T' | b't' | b'U' | b'u' => b'T',
+            b'N' | b'n' => b'N',
+            b'-' | b'+' | b'&' | b'#' | b'^' | b'<' | b'>' | b'/' => b,
+            _ => b'N',
+        };
+        out.push(mapped as char);
+        i += 1;
+    }
+    out
+}
+
+fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, compat: &CompatProfile) -> Variant {
+    let reconcile_vd_dp = compat.reconcile_vd_dp;
     let mut v = Variant::new();
     let kind_sel = cur.u8() % 10;
     let shift = i32::from(cur.u8() % 5) - 1;
@@ -177,11 +210,15 @@ fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, reconcile_vd_dp: 
             v.end_pos = v.start_pos;
         }
         1..=3 => {
-            // SNV
+            // SNV (occasionally injecting IUPAC ambiguity code into ALT)
             let r_idx = usize::from(cur.u8()) % 4;
-            let a_idx = (r_idx + 1 + usize::from(cur.u8() % 3)) % 4;
             let rb = b"ACGT"[r_idx] as char;
-            let ab = b"ACGT"[a_idx] as char;
+            let ab = if (cur.u8() & 7) == 0 {
+                b"RYMKSWBDHV"[usize::from(cur.u8()) % 10] as char
+            } else {
+                let a_idx = (r_idx + 1 + usize::from(cur.u8()) % 3) % 4;
+                b"ACGT"[a_idx] as char
+            };
             v.ref_allele = rb.to_string();
             v.var_allele = ab.to_string();
             v.description = ab.to_string();
@@ -285,20 +322,69 @@ fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, reconcile_vd_dp: 
     v.msint = i32::from(cur.u8() % 5);
     v.shift3 = i32::from(cur.u8() % 8);
     v.nm = f64::from(cur.u8() % 6);
+    if !compat.nonnegative_subtracted_means && (cur.u8() & 0x0f) == 0 {
+        v.mean_quality = -2.5;
+        v.nm = -0.5;
+    }
     v.bias = ["0;0", "2;2", "2;1", "0;2", "1;2"][usize::from(cur.u8()) % 5].to_string();
     v.left_seq = cur.dna_string(8);
     v.right_seq = cur.dna_string(8);
     v.crispr = i32::from(cur.u8() as i8);
+    if compat.sanitize_iupac_alt_alleles {
+        v.var_allele = reduce_iupac_alt_outside_brackets(&v.var_allele);
+    }
     v.var_type = v.var_type();
-    if reconcile_vd_dp {
+    if compat.reconcile_strand_and_hq_sums {
+        let vd = v.pos_coverage.max(0);
+        v.pos_coverage = vd;
+        v.hicnt = v.hicnt.max(0).min(vd);
+        v.hicov = v.hicov.max(v.hicnt).max(0);
+        if vd == 0 {
+            v.fwd = 0;
+            v.rev = 0;
+        } else {
+            let mut f = v.fwd.max(0);
+            let mut r = v.rev.max(0);
+            if f == 0 && r == 0 {
+                f = vd;
+            } else {
+                let sum = i64::from(f) + i64::from(r);
+                let vd64 = i64::from(vd);
+                if sum < vd64 {
+                    let add = (vd64 - sum) as i32;
+                    if f >= r {
+                        f = f.saturating_add(add);
+                    } else {
+                        r = r.saturating_add(add);
+                    }
+                } else if sum > vd64 {
+                    let excess = sum - vd64;
+                    if f >= r {
+                        let sub = excess.min(i64::from(f));
+                        f -= sub as i32;
+                        r -= (excess - sub) as i32;
+                    } else {
+                        let sub = excess.min(i64::from(r));
+                        r -= sub as i32;
+                        f -= (excess - sub) as i32;
+                    }
+                }
+            }
+            v.fwd = f;
+            v.rev = r;
+        }
+    }
+    if reconcile_vd_dp || compat.reconcile_rd_vd_dp {
         v.pos_coverage = v.pos_coverage.max(0);
         v.ref_fwd_cov = v.ref_fwd_cov.max(0);
         v.ref_rev_cov = v.ref_rev_cov.max(0);
-        v.total_pos_cov = v
-            .total_pos_cov
-            .max(v.pos_coverage)
-            .max(v.ref_fwd_cov.saturating_add(v.ref_rev_cov))
-            .max(0);
+        let rd = v.ref_fwd_cov.saturating_add(v.ref_rev_cov);
+        let min_dp = if compat.reconcile_rd_vd_dp {
+            rd.saturating_add(v.pos_coverage)
+        } else {
+            rd.max(v.pos_coverage)
+        };
+        v.total_pos_cov = v.total_pos_cov.max(min_dp).max(0);
         v.hicnt = v.hicnt.max(0);
         v.hicov = v.hicov.max(v.hicnt).max(0);
         v.frequency = if v.total_pos_cov > 0 {
@@ -317,17 +403,42 @@ fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, reconcile_vd_dp: 
             0.0
         };
     }
+    if compat.nonnegative_subtracted_means {
+        let clamp_nonneg = |x: f64| if x.is_finite() && x > 0.0 { x } else { 0.0 };
+        v.mean_position = clamp_nonneg(v.mean_position);
+        v.mean_quality = clamp_nonneg(v.mean_quality);
+        v.mean_mapping_quality = clamp_nonneg(v.mean_mapping_quality);
+        v.nm = clamp_nonneg(v.nm);
+    }
     v
 }
 
-fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32, reconcile_vd_dp: bool) -> Vars {
+fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32, compat: &CompatProfile) -> Vars {
     let mut vars = Vars::new();
     if cur.bool() {
-        let mut rv = synth_variant_at(cur, pos, reconcile_vd_dp);
+        let mut rv = synth_variant_at(cur, pos, compat);
         rv.ref_allele = "A".to_string();
         rv.var_allele = "A".to_string();
         rv.description = "A".to_string();
         rv.var_type.clear();
+        if compat.reconcile_strand_and_hq_sums
+            || compat.reconcile_rd_vd_dp
+            || compat.reconcile_vd_dp
+        {
+            rv.pos_coverage = 0;
+            rv.fwd = 0;
+            rv.rev = 0;
+            rv.frequency = 0.0;
+            rv.ref_fwd_cov = rv.ref_fwd_cov.max(0);
+            rv.ref_rev_cov = rv.ref_rev_cov.max(0);
+            rv.total_pos_cov = rv
+                .total_pos_cov
+                .max(rv.ref_fwd_cov.saturating_add(rv.ref_rev_cov))
+                .max(0);
+            if compat.reconcile_strand_and_hq_sums {
+                rv.hicnt = rv.hicnt.max(0).min(rv.hicov.max(0));
+            }
+        }
         vars.ref_variant = Some(rv);
     }
     if (cur.u8() & 7) == 0 {
@@ -336,7 +447,7 @@ fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32, reconcile_vd_dp: bool) -> V
     let n_alts = usize::from(cur.u8() % 4); // 0..=3 variants per position
     let populate_desc_map = cur.bool();
     for _ in 0..n_alts {
-        let v = synth_variant_at(cur, pos, reconcile_vd_dp);
+        let v = synth_variant_at(cur, pos, compat);
         if populate_desc_map {
             vars.var_desc_to_variant
                 .insert(v.description.clone(), v.clone());
@@ -350,7 +461,7 @@ fn synth_vars_map(
     cur: &mut ByteCursor<'_>,
     reg_start: u32,
     reg_span: u32,
-    reconcile_vd_dp: bool,
+    compat: &CompatProfile,
 ) -> JavaHashMap<i32, Vars> {
     let mut map = JavaHashMap::new();
     let count = (usize::from(cur.u8()) % MAX_POSITIONS).saturating_add(1);
@@ -362,7 +473,7 @@ fn synth_vars_map(
         }
         let off = u32::from(cur.u16()) % span_with_halo;
         let pos = origin.saturating_add(off).min(i32::MAX as u32) as i32;
-        let entry = synth_vars_at(cur, pos, reconcile_vd_dp);
+        let entry = synth_vars_at(cur, pos, compat);
         map.insert(pos, entry);
     }
     map
@@ -507,7 +618,199 @@ fn check_multiallelic_ncamp_regression_once() {
         assert_eq!(complex_hit.gdamp, 1);
         assert_eq!(complex_hit.tlamp, 1);
         assert_eq!(complex_hit.ncamp, 2);
+
+        // Regression guard: `combine_analysis` `CombineVerdict::Germline` rescues construct
+        // `sv.variant2` via `Variant::new()` with empty `ref_allele`/`var_allele`/`var_type`
+        // (`TYPE` lives exclusively on `sv.variant1`) and `pos_coverage > 0`.
+        let mut som_cfg = Config::default();
+        som_cfg.compat = COMPAT_OFF;
+        let som_reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(150),
+            gene: "SOM".to_string(),
+            amplicon: None,
+        };
+        let mut bam1 = JavaHashMap::new();
+        let mut vars1 = Vars::new();
+        vars1
+            .variants
+            .push(mk_var("ACGTACGTACG", "A", "-10", 130, 40, 3));
+        bam1.insert(120, vars1);
+        let mut bam2 = JavaHashMap::new();
+        let mut vars2 = Vars::new();
+        vars2.variants.push(mk_var("A", "C", "C", 120, 40, 8));
+        bam2.insert(120, vars2);
+        let rescue_pipe = |_reg: &Region,
+                           _sp: &mut HashSet<String, _>,
+                           _rl: &mut i32,
+                           _pos: i32|
+         -> Result<Option<Vars>, VardictError> {
+            let mut comb = Vars::new();
+            comb.variants
+                .push(mk_var("ACGTACGTACG", "A", "-10", 130, 80, 12));
+            Ok(Some(comb))
+        };
+        let rescue_ref: &PositionPipelineFn<'_> = &rescue_pipe;
+        let som_rows = somatic_post_process_at(
+            &som_cfg,
+            &som_reg,
+            &bam1,
+            &bam2,
+            &splice,
+            Some(rescue_ref),
+            100,
+        );
+        let rescued = som_rows
+            .iter()
+            .find(|sv| sv.variant1.description == "-10")
+            .expect("CombineVerdict::Germline rescue row must be emitted");
+        assert_eq!(rescued.status, "Germline");
+        let rescued_v2 = rescued
+            .variant2
+            .as_ref()
+            .expect("CombineVerdict::Germline must populate variant2 subtraction placeholder");
+        assert!(rescued_v2.ref_allele.is_empty() && rescued_v2.var_allele.is_empty());
+        assert_eq!(rescued_v2.pos_coverage, 9);
+        assert_wave5_variant_invariants(&rescued.variant1, &som_cfg.compat, false, true);
+        let rescued_v2_ref_only =
+            rescued_v2.ref_allele == rescued_v2.var_allele && rescued_v2.pos_coverage == 0;
+        assert_wave5_variant_invariants(rescued_v2, &som_cfg.compat, rescued_v2_ref_only, false);
+        let paired_rec = format_paired_vcf_record(rescued, &som_reg.chr, &som_cfg);
+        assert_wave5_vcf_line_invariants(paired_rec.as_str(), &som_cfg, true);
     });
+}
+
+fn assert_wave5_variant_invariants(
+    v: &Variant,
+    compat: &CompatProfile,
+    is_ref_only: bool,
+    check_var_type: bool,
+) {
+    if compat.reconcile_rd_vd_dp {
+        let rd = i64::from(v.ref_fwd_cov.max(0)) + i64::from(v.ref_rev_cov.max(0));
+        let vd = i64::from(v.pos_coverage.max(0));
+        assert!(
+            i64::from(v.total_pos_cov) >= rd + vd,
+            "reconcile_rd_vd_dp violated DP ({}) >= RD ({rd}) + VD ({vd})",
+            v.total_pos_cov
+        );
+    }
+    if compat.reconcile_strand_and_hq_sums {
+        assert!(
+            v.fwd >= 0
+                && v.rev >= 0
+                && i64::from(v.fwd) + i64::from(v.rev) == i64::from(v.pos_coverage),
+            "reconcile_strand_and_hq_sums violated fwd ({}) + rev ({}) == VD ({})",
+            v.fwd,
+            v.rev,
+            v.pos_coverage
+        );
+        if is_ref_only {
+            assert!(
+                0 <= v.hicnt && v.hicnt <= v.hicov.max(0),
+                "ref-only row violated 0 <= hicnt ({}) <= hicov ({})",
+                v.hicnt,
+                v.hicov
+            );
+        } else {
+            assert!(
+                0 <= v.hicnt && v.hicnt <= v.pos_coverage,
+                "reconcile_strand_and_hq_sums violated 0 <= hicnt ({}) <= VD ({})",
+                v.hicnt,
+                v.pos_coverage
+            );
+        }
+    }
+    if compat.nonnegative_subtracted_means {
+        assert!(
+            v.mean_position >= 0.0
+                && v.mean_quality >= 0.0
+                && v.mean_mapping_quality >= 0.0
+                && v.nm >= 0.0,
+            "nonnegative_subtracted_means violated non-negative means: pmean={}, qmean={}, mq={}, nm={}",
+            v.mean_position,
+            v.mean_quality,
+            v.mean_mapping_quality,
+            v.nm
+        );
+    }
+    if check_var_type
+        && compat.recompute_vartype_after_adj_complex
+        && !is_ref_only
+        && !(v.ref_allele.is_empty() && v.var_allele.is_empty())
+    {
+        assert_eq!(
+            v.var_type.as_str(),
+            v.var_type_cow().as_ref(),
+            "recompute_vartype_after_adj_complex stale var_type on ref={} alt={}",
+            v.ref_allele,
+            v.var_allele
+        );
+    }
+}
+
+fn assert_wave5_vcf_line_invariants(line: &str, config: &Config, paired: bool) {
+    let cols: Vec<&str> = line.split('\t').collect();
+    assert_eq!(cols.len(), if paired { 11 } else { 10 });
+    let alt = cols[4];
+    let qual: f64 = cols[5].parse().unwrap_or(-1.0);
+    let info = cols[7];
+    if config.compat.nonnegative_subtracted_means {
+        assert!(
+            qual >= 0.0,
+            "nonnegative_subtracted_means violated QUAL >= 0 in VCF: {line}"
+        );
+    }
+    if config.compat.omit_nonsv_vcf_end && !alt.starts_with('<') {
+        assert!(
+            !info.starts_with("END=") && !info.contains(";END="),
+            "omit_nonsv_vcf_end leaked non-SV END= in VCF: {line}"
+        );
+    }
+    let fmt_keys: Vec<&str> = cols[8].split(':').collect();
+    let dp_idx = fmt_keys.iter().position(|&k| k == "DP").unwrap_or(1);
+    let vd_idx = fmt_keys.iter().position(|&k| k == "VD").unwrap_or(2);
+    let ad_idx = fmt_keys.iter().position(|&k| k == "AD").unwrap_or(3);
+    let ald_idx = fmt_keys.iter().position(|&k| k == "ALD").unwrap_or(6);
+    for sample_col in &cols[9..] {
+        let vals: Vec<&str> = sample_col.split(':').collect();
+        let gt = vals.first().copied().unwrap_or("");
+        if config.compat.canonical_vcf_gt {
+            assert_ne!(gt, "1/0", "canonical_vcf_gt emitted 1/0 in VCF: {line}");
+        }
+        let ad_parts: Vec<i64> = vals[ad_idx]
+            .split(',')
+            .map(|s| s.parse::<i64>().unwrap_or(0))
+            .collect();
+        if !paired && config.compat.strict_vcf_ad_number_r {
+            let expected_len = if alt == "." { 1 } else { 2 };
+            assert_eq!(
+                ad_parts.len(),
+                expected_len,
+                "strict_vcf_ad_number_r violated AD cardinality ({expected_len}) on alt={alt}: {line}"
+            );
+        }
+        if config.compat.reconcile_rd_vd_dp {
+            let dp: i64 = vals[dp_idx].parse().unwrap_or(0);
+            let ad_sum: i64 = ad_parts.iter().copied().sum();
+            assert!(
+                dp >= ad_sum,
+                "reconcile_rd_vd_dp violated FORMAT DP ({dp}) >= sum(AD) ({ad_sum}): {line}"
+            );
+        }
+        if config.compat.reconcile_strand_and_hq_sums {
+            let vd: i64 = vals[vd_idx].parse().unwrap_or(0);
+            let ald_sum: i64 = vals[ald_idx]
+                .split(',')
+                .map(|s| s.parse::<i64>().unwrap_or(0))
+                .sum();
+            assert_eq!(
+                ald_sum, vd,
+                "reconcile_strand_and_hq_sums violated sum(ALD) ({ald_sum}) == VD ({vd}): {line}"
+            );
+        }
+    }
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -584,12 +887,24 @@ fuzz_target!(|data: &[u8]| {
             compat.canonical_sv_vcf_anchoring = (w4_bits & 32) != 0;
             compat.paired_somatic_amplicon = (w4_bits & 64) != 0;
         }
+        if (w4_bits & 128) != 0 {
+            let w5_bits = cur.u8();
+            compat.nonnegative_subtracted_means = (w5_bits & 1) != 0; // Switch 23
+            compat.reconcile_strand_and_hq_sums = (w5_bits & 2) != 0; // Switch 24
+            compat.reconcile_rd_vd_dp = (w5_bits & 4) != 0; // Switch 25
+            compat.sanitize_iupac_alt_alleles = (w5_bits & 8) != 0; // Switch 26
+            compat.recompute_vartype_after_adj_complex = (w5_bits & 16) != 0; // Switch 29
+            compat.strict_vcf_ad_number_r = (w5_bits & 32) != 0; // Switch 30
+            compat.omit_nonsv_vcf_end = (w5_bits & 64) != 0; // Switch 31
+            compat.canonical_vcf_gt = (w5_bits & 128) != 0; // Switch 32
+        }
         compat
     };
+    base_cfg.omit_end_tag = cur.bool();
 
     let reconcile_vd_dp = base_cfg.compat.reconcile_vd_dp;
-    let aligned_bam1 = synth_vars_map(&mut cur, reg_start, reg_span, reconcile_vd_dp);
-    let aligned_bam2 = synth_vars_map(&mut cur, reg_start, reg_span, reconcile_vd_dp);
+    let aligned_bam1 = synth_vars_map(&mut cur, reg_start, reg_span, &base_cfg.compat);
+    let aligned_bam2 = synth_vars_map(&mut cur, reg_start, reg_span, &base_cfg.compat);
 
     // Populate optional splice junction strings matching synthesized deletions.
     let mut splice = HashSet::default();
@@ -639,12 +954,23 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
+    let mut vcf_scratch = String::with_capacity(256);
+    for row in &simple_rows {
+        let is_ref_only = row.ref_allele == row.var_allele && row.pos_coverage == 0;
+        assert_wave5_variant_invariants(row, &base_cfg.compat, is_ref_only, true);
+        if let SingleVcfEvent::Record(rec) =
+            build_single_vcf_event(&mut vcf_scratch, row, &region, &base_cfg, None)
+        {
+            assert_wave5_vcf_line_invariants(rec.as_str(), &base_cfg, false);
+        }
+    }
+
     // Part C: somatic_post_process_at with mock PositionPipelineFn returning Ok(Some), Ok(None), or Err.
     let max_rl = i32::from(cur.u8() % 150) + 25;
     let use_pipeline = cur.bool();
     let pipe_seed = cur.u8();
     let call_counter = Cell::new(0u8);
-    let comb_template = synth_vars_at(&mut cur, reg_start as i32, reconcile_vd_dp);
+    let comb_template = synth_vars_at(&mut cur, reg_start as i32, &base_cfg.compat);
     let mock_pipe = |comb_reg: &Region,
                      splice_set: &mut HashSet<String, _>,
                      rl: &mut i32,
@@ -688,6 +1014,16 @@ fuzz_target!(|data: &[u8]| {
     );
     for sv in &somatic_rows {
         assert!(!sv.status.is_empty());
+        assert_wave5_variant_invariants(&sv.variant1, &base_cfg.compat, false, true);
+        if let Some(ref v2) = sv.variant2 {
+            // `SomaticVariant::variant2` carries normal-sample counts/means only (`TYPE` lives on
+            // `sv.variant1`, and `CombineVerdict::Germline` leaves `v2.ref_allele`/`var_allele`
+            // empty), so keep count/mean invariants active while skipping `var_type` on `v2`.
+            let v2_ref_only = v2.ref_allele == v2.var_allele && v2.pos_coverage == 0;
+            assert_wave5_variant_invariants(v2, &base_cfg.compat, v2_ref_only, false);
+        }
+        let paired_rec = format_paired_vcf_record(sv, &region.chr, &base_cfg);
+        assert_wave5_vcf_line_invariants(paired_rec.as_str(), &base_cfg, true);
         if base_cfg.compat.strict_region_bounds {
             let sp = sv.variant1.start_pos;
             let in_bounds = sp >= region.start.0 as i32 && sp <= region.end.0 as i32;
@@ -780,7 +1116,7 @@ fuzz_target!(|data: &[u8]| {
         });
 
         let amp_span = a_end.saturating_sub(a_start).saturating_add(1);
-        let amp_map = synth_vars_map(&mut cur, a_start, amp_span, reconcile_vd_dp);
+        let amp_map = synth_vars_map(&mut cur, a_start, amp_span, &amp_cfg.compat);
         for &p in amp_map.keys() {
             if candidate_positions.len() < MAX_POSITIONS {
                 candidate_positions.insert(p);
@@ -853,6 +1189,18 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(lhs.tlamp, rhs.tlamp);
         assert_eq!(lhs.ncamp, rhs.ncamp);
         assert_eq!(lhs.ampflag, rhs.ampflag);
+        let is_ref_only =
+            lhs.variant.ref_allele == lhs.variant.var_allele && lhs.variant.pos_coverage == 0;
+        assert_wave5_variant_invariants(&lhs.variant, &amp_cfg.compat, is_ref_only, true);
+        if let SingleVcfEvent::Record(rec) = build_single_vcf_event(
+            &mut vcf_scratch,
+            &lhs.variant,
+            &region,
+            &amp_cfg,
+            Some((lhs.gdamp, lhs.tlamp, lhs.ncamp, lhs.ampflag)),
+        ) {
+            assert_wave5_vcf_line_invariants(rec.as_str(), &amp_cfg, false);
+        }
     }
 
     let max_vcovs_cap = max_vcovs_capacity(&vars_per_amplicon);

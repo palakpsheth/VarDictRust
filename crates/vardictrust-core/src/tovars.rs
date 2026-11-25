@@ -87,6 +87,70 @@ fn merge_key_owned(
     false
 }
 
+#[inline]
+fn clamp_nonneg_pos_zero(v: f64) -> f64 {
+    if v > 0.0 {
+        v
+    } else {
+        0.0
+    }
+}
+
+/// Reconciles `(cnt, fwd, rev, hicnt)` under `CompatProfile::reconcile_strand_and_hq_sums`
+/// (`AstraZeneca-NGS/VarDictJava#316`, `clintval/vartovcf#120`, `clintval/vartovcf#142`)
+/// into `(vd, fwd, rev, hicnt, locnt)` without signed `.clamp(0, cnt)` panics or `0 / 0`.
+#[inline]
+pub(crate) fn reconcile_strand_and_hq(
+    cnt: i32,
+    fwd: i32,
+    rev: i32,
+    hicnt: i32,
+) -> (i32, i32, i32, i32, i32) {
+    let vd = cnt.max(0);
+    let hicnt_eff = hicnt.max(0).min(vd);
+    let locnt_eff = vd.saturating_sub(hicnt_eff);
+    let mut fwd_eff = fwd.max(0);
+    let mut rev_eff = rev.max(0);
+    if vd == 0 {
+        fwd_eff = 0;
+        rev_eff = 0;
+    } else if fwd_eff == 0 && rev_eff == 0 {
+        fwd_eff = vd;
+        rev_eff = 0;
+    } else {
+        let sum = i64::from(fwd_eff) + i64::from(rev_eff);
+        let vd64 = i64::from(vd);
+        if sum < vd64 {
+            let add = (vd64 - sum) as i32;
+            if fwd_eff >= rev_eff {
+                fwd_eff = fwd_eff.saturating_add(add);
+            } else {
+                rev_eff = rev_eff.saturating_add(add);
+            }
+        } else if sum > vd64 {
+            let excess = sum - vd64;
+            if fwd_eff >= rev_eff {
+                let sub_major = excess.min(i64::from(fwd_eff));
+                fwd_eff -= sub_major as i32;
+                rev_eff -= (excess - sub_major) as i32;
+            } else {
+                let sub_major = excess.min(i64::from(rev_eff));
+                rev_eff -= sub_major as i32;
+                fwd_eff -= (excess - sub_major) as i32;
+            }
+        }
+    }
+    (vd, fwd_eff, rev_eff, hicnt_eff, locnt_eff)
+}
+
+#[derive(Clone, Copy)]
+struct CommonFieldFlags {
+    exact_binary_half_even: bool,
+    reconcile_dp: bool,
+    reconcile_strand_hq: bool,
+    nonnegative_subtracted_means: bool,
+}
+
 /// Fill the fields shared by every create_variant/create_insertion record
 /// (ToVarsBuilder.java's common tvref initialization).
 #[allow(clippy::too_many_arguments)]
@@ -104,28 +168,37 @@ fn fill_common_fields(
     locnt: i32,
     hicov: i32,
     duprate: f64,
-    exact_binary_half_even: bool,
-    reconcile_vd_dp: bool,
+    flags: CommonFieldFlags,
 ) {
     tvref.description = description.to_string();
     tvref.fwd = fwd;
     tvref.rev = rev;
     tvref.bias.clear();
     let _ = std::fmt::Write::write_fmt(&mut tvref.bias, format_args!("{}", bias));
-    tvref.mean_position =
-        round_half_even_compat(cnt.pmean / cnt.cnt as f64, 1, exact_binary_half_even);
+    let mut pmean =
+        round_half_even_compat(cnt.pmean / cnt.cnt as f64, 1, flags.exact_binary_half_even);
+    let mut qmean = base_quality;
+    let mut mqmean = mapping_quality;
+    let mut nm = round_half_even_compat(cnt.nm / cnt.cnt as f64, 1, flags.exact_binary_half_even);
+    if flags.nonnegative_subtracted_means {
+        pmean = clamp_nonneg_pos_zero(pmean);
+        qmean = clamp_nonneg_pos_zero(qmean);
+        mqmean = clamp_nonneg_pos_zero(mqmean);
+        nm = clamp_nonneg_pos_zero(nm);
+    }
+    tvref.mean_position = pmean;
     tvref.pstd = cnt.pstd;
-    tvref.mean_quality = base_quality;
+    tvref.mean_quality = qmean;
     tvref.qstd = cnt.qstd;
-    tvref.mean_mapping_quality = mapping_quality;
+    tvref.mean_mapping_quality = mqmean;
     tvref.hq_lq_ratio = hicnt as f64 / if locnt != 0 { locnt as f64 } else { 0.5 };
     tvref.shift3 = 0;
     tvref.msi = 0.0;
-    tvref.nm = round_half_even_compat(cnt.nm / cnt.cnt as f64, 1, exact_binary_half_even);
+    tvref.nm = nm;
     tvref.hicnt = hicnt;
     tvref.hicov = hicov;
     tvref.duprate = duprate;
-    if reconcile_vd_dp {
+    if flags.reconcile_dp {
         let pos_cov_eff = cnt.cnt.max(0);
         let ttcov_eff = ttcov.max(pos_cov_eff).max(0);
         tvref.pos_coverage = pos_cov_eff;
@@ -133,7 +206,7 @@ fn fill_common_fields(
             round_half_even_compat(
                 pos_cov_eff as f64 / ttcov_eff as f64,
                 4,
-                exact_binary_half_even,
+                flags.exact_binary_half_even,
             )
         } else {
             0.0
@@ -149,10 +222,35 @@ fn fill_common_fields(
             0.0
         };
         tvref.total_pos_cov = ttcov_eff;
+    } else if flags.reconcile_strand_hq {
+        let pos_cov_eff = cnt.cnt.max(0);
+        tvref.pos_coverage = pos_cov_eff;
+        tvref.frequency = if pos_cov_eff > 0 && ttcov > 0 {
+            round_half_even_compat(
+                pos_cov_eff as f64 / ttcov as f64,
+                4,
+                flags.exact_binary_half_even,
+            )
+        } else {
+            0.0
+        };
+        tvref.hi_freq = if hicov > 0 && hicnt > 0 {
+            hicnt as f64 / hicov as f64
+        } else {
+            0.0
+        };
+        tvref.extra_freq = if cnt.extracnt != 0 {
+            cnt.extracnt as f64 / ttcov as f64
+        } else {
+            0.0
+        };
     } else {
         tvref.pos_coverage = cnt.cnt;
-        tvref.frequency =
-            round_half_even_compat(cnt.cnt as f64 / ttcov as f64, 4, exact_binary_half_even);
+        tvref.frequency = round_half_even_compat(
+            cnt.cnt as f64 / ttcov as f64,
+            4,
+            flags.exact_binary_half_even,
+        );
         tvref.hi_freq = if hicov > 0 {
             hicnt as f64 / hicov as f64
         } else {
@@ -225,6 +323,14 @@ impl<'m, I: Iterator<Item = &'m i32>> Iterator for PositionIter<I> {
             Self::Sorted(it) => it.next(),
         }
     }
+}
+
+#[derive(Clone, Copy)]
+struct NonInsBuildCtx {
+    position: i32,
+    total_pos_coverage: i32,
+    hicov: i32,
+    duprate: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -354,6 +460,18 @@ impl<'a> ToVarsBuilder<'a> {
             .filter(|&b| b != b'N' && b != b'n')
     }
 
+    #[inline]
+    fn is_explicit_del_span_loaded(&self, lo: i32, hi: i32) -> bool {
+        if lo < 1 || hi < lo {
+            return false;
+        }
+        let lo_u32 = lo as u32;
+        let hi_u32 = hi as u32;
+        crate::reference::is_loaded(&self.region.chr, lo_u32, hi_u32, self.reference)
+            && self.get_ref_base(lo_u32).is_some()
+            && self.get_ref_base(hi_u32).is_some()
+    }
+
     /// Convert VariationData into a map of position -> Vars container.
     pub fn build_aligned_variants(
         &self,
@@ -445,13 +563,16 @@ impl<'a> ToVarsBuilder<'a> {
                 },
             );
             self.push_non_insertion_variants(
-                duprate,
+                NonInsBuildCtx {
+                    position: target_pos,
+                    total_pos_coverage: total_cov,
+                    hicov,
+                    duprate,
+                },
                 var_map,
-                total_cov,
                 &mut var,
                 &mut debug_lines,
                 sorted_keys.as_slice(),
-                hicov,
                 |sv| {
                     target_vars.sv = format!("{}-{}-{}", sv.splits, sv.pairs, sv.clusters);
                 },
@@ -827,7 +948,7 @@ impl<'a> ToVarsBuilder<'a> {
         let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
         let mut buf = [0u8; 4];
         let sole_key = (ref_base as char).encode_utf8(&mut buf);
-        let vref = self.build_ref_variant_from_cnt(
+        let mut vref = self.build_ref_variant_from_cnt(
             position,
             site.total_cov,
             site.duprate,
@@ -835,6 +956,12 @@ impl<'a> ToVarsBuilder<'a> {
             sole_key,
             &[],
         );
+        if self.config.compat.nonnegative_subtracted_means {
+            vref.mean_position = clamp_nonneg_pos_zero(vref.mean_position);
+            vref.mean_quality = clamp_nonneg_pos_zero(vref.mean_quality);
+            vref.mean_mapping_quality = clamp_nonneg_pos_zero(vref.mean_mapping_quality);
+            vref.nm = clamp_nonneg_pos_zero(vref.nm);
+        }
         let mut vars = crate::variations::Vars::new();
         vars.ref_variant = Some(vref);
         vars
@@ -885,13 +1012,18 @@ impl<'a> ToVarsBuilder<'a> {
         _insertion_variations: Option<&crate::variations::VariationMap>,
         non_insertion_variations: &crate::variations::VariationMap,
     ) -> i32 {
-        let clamp_nonneg = self.config.compat.reconcile_vd_dp;
+        let reconcile_strand_hq = self.config.compat.reconcile_strand_and_hq_sums;
+        let clamp_nonneg =
+            self.config.compat.reconcile_vd_dp || self.config.compat.reconcile_rd_vd_dp;
         let mut hicov: i32 = 0;
         for (key, val) in &non_insertion_variations.map {
             if key == "SV" || key.starts_with('+') {
                 continue;
             }
-            let h = if clamp_nonneg {
+            let h = if reconcile_strand_hq {
+                let vd = val.cnt.max(0);
+                val.hicnt.max(0).min(vd)
+            } else if clamp_nonneg {
                 val.hicnt.max(0)
             } else {
                 val.hicnt
@@ -1061,24 +1193,47 @@ impl<'a> ToVarsBuilder<'a> {
         total_pos_coverage: i32,
         hicov: i32,
         duprate: f64,
+        is_ref_allele: bool,
     ) -> Variant {
         let exact_binary_half_even = self.config.compat.exact_binary_half_even;
-        let fwd = cnt.fwd;
-        let rev = cnt.rev;
+        let reconcile_strand_hq = self.config.compat.reconcile_strand_and_hq_sums;
+        let reconcile_dp =
+            self.config.compat.reconcile_vd_dp || self.config.compat.reconcile_rd_vd_dp;
+        let (_vd, fwd, rev, hicnt_eff, locnt) = if reconcile_strand_hq {
+            if is_ref_allele {
+                let vd = cnt.cnt.max(0);
+                let hc = cnt.hicnt.max(0).min(vd);
+                (
+                    vd,
+                    cnt.fwd.max(0),
+                    cnt.rev.max(0),
+                    hc,
+                    vd.saturating_sub(hc),
+                )
+            } else {
+                reconcile_strand_and_hq(cnt.cnt, cnt.fwd, cnt.rev, cnt.hicnt)
+            }
+        } else {
+            let hc = if reconcile_dp {
+                cnt.hicnt.max(0)
+            } else {
+                cnt.hicnt
+            };
+            (cnt.cnt, cnt.fwd, cnt.rev, hc, cnt.locnt)
+        };
         let min_reads_bias = i32::try_from(self.config.min_reads_bias).unwrap_or(i32::MAX);
         let bias = strand_bias(fwd, rev, min_reads_bias);
         let base_quality =
             round_half_even_compat(cnt.qmean / cnt.cnt as f64, 1, exact_binary_half_even);
         let mapping_quality =
             round_half_even_compat(cnt.mqmean / cnt.cnt as f64, 1, exact_binary_half_even);
-        let hicnt = cnt.hicnt;
-        let locnt = cnt.locnt;
 
-        let reconcile_vd_dp = self.config.compat.reconcile_vd_dp;
-        let (hicnt_eff, ttcov, hicov_eff) = if reconcile_vd_dp {
+        let (ttcov, hicov_eff) = if reconcile_dp {
             let pc = cnt.cnt.max(0);
-            let hc = hicnt.max(0);
-            (hc, total_pos_coverage.max(pc).max(0), hicov.max(hc).max(0))
+            (
+                total_pos_coverage.max(pc).max(0),
+                hicov.max(hicnt_eff).max(0),
+            )
         } else {
             let mut ttcov = total_pos_coverage;
             if cnt.cnt > total_pos_coverage
@@ -1087,7 +1242,12 @@ impl<'a> ToVarsBuilder<'a> {
             {
                 ttcov = cnt.cnt;
             }
-            (hicnt, ttcov, hicov)
+            let hc_cov = if reconcile_strand_hq {
+                hicov.max(hicnt_eff).max(0)
+            } else {
+                hicov
+            };
+            (ttcov, hc_cov)
         };
 
         let mut tvref = Variant::empty_internal();
@@ -1105,8 +1265,12 @@ impl<'a> ToVarsBuilder<'a> {
             locnt,
             hicov_eff,
             duprate,
-            exact_binary_half_even,
-            reconcile_vd_dp,
+            CommonFieldFlags {
+                exact_binary_half_even,
+                reconcile_dp,
+                reconcile_strand_hq,
+                nonnegative_subtracted_means: self.config.compat.nonnegative_subtracted_means,
+            },
         );
         tvref
     }
@@ -1122,12 +1286,15 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> Variant {
         let hicov = if sole_key == "SV" || sole_key.starts_with('+') {
             0
-        } else if self.config.compat.reconcile_vd_dp {
+        } else if self.config.compat.reconcile_strand_and_hq_sums {
+            let vd = cnt.cnt.max(0);
+            cnt.hicnt.max(0).min(vd)
+        } else if self.config.compat.reconcile_vd_dp || self.config.compat.reconcile_rd_vd_dp {
             cnt.hicnt.max(0)
         } else {
             cnt.hicnt
         };
-        let mut tvref = self.build_variant_from_cnt(sole_key, cnt, total_cov, hicov, duprate);
+        let mut tvref = self.build_variant_from_cnt(sole_key, cnt, total_cov, hicov, duprate, true);
         self.update_ref_variant(
             position,
             total_cov,
@@ -1156,13 +1323,16 @@ impl<'a> ToVarsBuilder<'a> {
         hicov: i32,
     ) {
         self.push_non_insertion_variants(
-            duprate,
+            NonInsBuildCtx {
+                position,
+                total_pos_coverage,
+                hicov,
+                duprate,
+            },
             non_insertion_variations,
-            total_pos_coverage,
             var,
             debug_lines,
             keys,
-            hicov,
             |sv| {
                 let entry = crate::variations::get_or_put_vars(aligned_vars, position);
                 entry.sv = format!("{}-{}-{}", sv.splits, sv.pairs, sv.clusters);
@@ -1172,17 +1342,19 @@ impl<'a> ToVarsBuilder<'a> {
 
     fn push_non_insertion_variants<F>(
         &self,
-        duprate: f64,
+        ctx: NonInsBuildCtx,
         non_insertion_variations: &crate::variations::VariationMap,
-        total_pos_coverage: i32,
         var: &mut Vec<Variant>,
         debug_lines: &mut Vec<String>,
         keys: &[&str],
-        hicov: i32,
         mut on_sv: F,
     ) where
         F: FnMut(&crate::variations::Sv),
     {
+        let ref_base = self.get_ref_base_i32(ctx.position).unwrap_or(b'N');
+        let mut ref_buf = [0u8; 4];
+        let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ref_buf);
+
         for &description_string in keys {
             if description_string == "SV" {
                 if let Some(ref sv) = non_insertion_variations.sv {
@@ -1197,9 +1369,10 @@ impl<'a> ToVarsBuilder<'a> {
                 let tvref = self.build_variant_from_cnt(
                     description_string,
                     cnt,
-                    total_pos_coverage,
-                    hicov,
-                    duprate,
+                    ctx.total_pos_coverage,
+                    ctx.hicov,
+                    ctx.duprate,
+                    description_string == ref_base_str,
                 );
 
                 if self.config.debug {
@@ -1354,8 +1527,19 @@ impl<'a> ToVarsBuilder<'a> {
                         continue;
                     }
                     let exact_binary_half_even = self.config.compat.exact_binary_half_even;
-                    let fwd = cnt.fwd;
-                    let rev = cnt.rev;
+                    let reconcile_strand_hq = self.config.compat.reconcile_strand_and_hq_sums;
+                    let reconcile_dp =
+                        self.config.compat.reconcile_vd_dp || self.config.compat.reconcile_rd_vd_dp;
+                    let (_vd, fwd, rev, hicnt, locnt) = if reconcile_strand_hq {
+                        reconcile_strand_and_hq(cnt.cnt, cnt.fwd, cnt.rev, cnt.hicnt)
+                    } else {
+                        let hc = if reconcile_dp {
+                            cnt.hicnt.max(0)
+                        } else {
+                            cnt.hicnt
+                        };
+                        (cnt.cnt, cnt.fwd, cnt.rev, hc, cnt.locnt)
+                    };
                     let min_reads_bias =
                         i32::try_from(self.config.min_reads_bias).unwrap_or(i32::MAX);
                     let bias = strand_bias(fwd, rev, min_reads_bias);
@@ -1369,13 +1553,6 @@ impl<'a> ToVarsBuilder<'a> {
                         1,
                         exact_binary_half_even,
                     );
-                    let reconcile_vd_dp = self.config.compat.reconcile_vd_dp;
-                    let hicnt = if reconcile_vd_dp {
-                        cnt.hicnt.max(0)
-                    } else {
-                        cnt.hicnt
-                    };
-                    let locnt = cnt.locnt;
 
                     ttcov = self.adjust_insertion_coverage_and_next_ref(
                         orig_non_ins,
@@ -1390,7 +1567,7 @@ impl<'a> ToVarsBuilder<'a> {
                     if hicov < hicnt {
                         hicov = hicnt;
                     }
-                    if reconcile_vd_dp {
+                    if reconcile_dp || reconcile_strand_hq {
                         hicov = hicov.max(0);
                     }
 
@@ -1409,8 +1586,15 @@ impl<'a> ToVarsBuilder<'a> {
                         locnt,
                         hicov,
                         duprate,
-                        exact_binary_half_even,
-                        reconcile_vd_dp,
+                        CommonFieldFlags {
+                            exact_binary_half_even,
+                            reconcile_dp,
+                            reconcile_strand_hq,
+                            nonnegative_subtracted_means: self
+                                .config
+                                .compat
+                                .nonnegative_subtracted_means,
+                        },
                     );
 
                     if self.config.debug {
@@ -1558,7 +1742,13 @@ impl<'a> ToVarsBuilder<'a> {
         if !variations_at_pos.variants.is_empty() {
             let standard_dup_symbolic_alt = self.config.compat.standard_dup_symbolic_alt;
             let canonical_sv_vcf_anchoring = self.config.compat.canonical_sv_vcf_anchoring;
-            let sv_min_len = self.config.sv_min_len;
+            let sv_min_len = if self.config.compat.sv_respect_min_len {
+                self.config
+                    .sv_min_len
+                    .min(crate::sv::MAX_EXPLICIT_SV_SEQ_BP as u32)
+            } else {
+                self.config.sv_min_len
+            };
             let mut gt1_buf = crate::types::StackBuf::<24>::new();
             let genotype1_current: std::borrow::Cow<'_, str> =
                 if let Some(ref ref_var) = variations_at_pos.ref_variant {
@@ -1777,7 +1967,10 @@ impl<'a> ToVarsBuilder<'a> {
                         }
                     }
                 } else if description_string.starts_with('-') {
-                    if i64::from(deletion_length) < i64::from(sv_min_len) {
+                    let can_materialize_del = i64::from(deletion_length) < i64::from(sv_min_len)
+                        && (!self.config.compat.sv_respect_min_len
+                            || self.is_explicit_del_span_loaded(position, end_position));
+                    if can_materialize_del {
                         // replace first -digits with empty string
                         varallele = if let Some(rest) = description_string.strip_prefix('-') {
                             let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
@@ -1887,12 +2080,18 @@ impl<'a> ToVarsBuilder<'a> {
                             let base_cur = self.get_ref_base_i32(del_seq_pos).unwrap_or(b'N');
                             refallele.clear();
                             refallele.push(base_cur as char);
-                        } else if i64::from(deletion_length) < i64::from(sv_min_len) {
+                        } else if can_materialize_del {
                             let del_end = (i64::from(del_seq_pos) + i64::from(deletion_length) - 1)
                                 .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
                                 as i32;
-                            self.join_ref_into(scratch1, del_seq_pos, del_end);
-                            refallele.push_str(scratch1);
+                            if !self.config.compat.sv_respect_min_len
+                                || self.is_explicit_del_span_loaded(del_seq_pos, del_end)
+                            {
+                                self.join_ref_into(scratch1, del_seq_pos, del_end);
+                                refallele.push_str(scratch1);
+                            } else {
+                                varallele = "<DEL>".to_string();
+                            }
                         }
                     }
                 } else {
@@ -2228,16 +2427,24 @@ impl<'a> ToVarsBuilder<'a> {
                 drop(genotype2);
 
                 let exact_binary_half_even = self.config.compat.exact_binary_half_even;
-                if self.config.compat.reconcile_vd_dp {
+                if self.config.compat.reconcile_vd_dp || self.config.compat.reconcile_rd_vd_dp {
                     if vref.pos_coverage < 0 {
                         vref.pos_coverage = 0;
                     }
                     if vref.hicnt < 0 {
                         vref.hicnt = 0;
                     }
-                    let final_dp = total_pos_coverage_adj
+                    let mut final_dp = total_pos_coverage_adj
                         .max(vref.total_pos_cov)
-                        .max(vref.pos_coverage);
+                        .max(vref.pos_coverage)
+                        .max(0);
+                    if self.config.compat.reconcile_rd_vd_dp {
+                        let rd_vd_sum = reference_forward_coverage_adj
+                            .max(0)
+                            .saturating_add(reference_reverse_coverage_adj.max(0))
+                            .saturating_add(vref.pos_coverage.max(0));
+                        final_dp = final_dp.max(rd_vd_sum);
+                    }
                     if final_dp > vref.total_pos_cov && final_dp > 0 {
                         let raw_extracnt = lookup_raw_extracnt(
                             position,
@@ -2297,6 +2504,9 @@ impl<'a> ToVarsBuilder<'a> {
                 vref.start_pos = start_position;
                 vref.end_pos = end_position;
                 validate_ref_allele_in_place(&mut refallele);
+                if self.config.compat.sanitize_iupac_alt_alleles {
+                    validate_alt_allele_in_place(&mut varallele);
+                }
                 vref.ref_allele = refallele;
                 vref.var_allele = varallele;
                 vref.genotype = Some(genotype);
@@ -2342,17 +2552,18 @@ impl<'a> ToVarsBuilder<'a> {
                     .retain(|vref| !matches_any_sv(&vref.var_allele));
             }
         } else if let Some(ref mut vref) = variations_at_pos.ref_variant {
-            let raw_extracnt = if self.config.compat.reconcile_vd_dp {
-                lookup_raw_extracnt(
-                    position,
-                    vref.description.as_str(),
-                    insertion_variants,
-                    orig_non_ins,
-                    overlay,
-                )
-            } else {
-                0
-            };
+            let raw_extracnt =
+                if self.config.compat.reconcile_vd_dp || self.config.compat.reconcile_rd_vd_dp {
+                    lookup_raw_extracnt(
+                        position,
+                        vref.description.as_str(),
+                        insertion_variants,
+                        orig_non_ins,
+                        overlay,
+                    )
+                } else {
+                    0
+                };
             self.update_ref_variant(
                 position,
                 total_pos_coverage_adj,
@@ -2369,12 +2580,22 @@ impl<'a> ToVarsBuilder<'a> {
             variations_at_pos.ref_variant = Some(Variant::new());
         }
 
+        if self.config.pileup && self.config.compat.pileup_preserve_shifted_ref {
+            variations_at_pos
+                .ref_variant
+                .get_or_insert_with(Variant::new);
+        }
+
         if variations_at_pos.ref_variant.is_some()
             && self.config.pileup
-            && (changed_ref_variant_at_pos || self.config.amplicon.is_some())
+            && (changed_ref_variant_at_pos
+                || self.config.amplicon.is_some()
+                || self.config.compat.pileup_preserve_shifted_ref)
         {
             if let Some(ref mut vref) = variations_at_pos.ref_variant {
-                let raw_extracnt = if self.config.compat.reconcile_vd_dp {
+                let raw_extracnt = if self.config.compat.reconcile_vd_dp
+                    || self.config.compat.reconcile_rd_vd_dp
+                {
                     lookup_raw_extracnt(
                         position,
                         vref.description.as_str(),
@@ -2411,7 +2632,7 @@ impl<'a> ToVarsBuilder<'a> {
         debug_lines: &[String],
     ) {
         let exact_binary_half_even = self.config.compat.exact_binary_half_even;
-        if self.config.compat.reconcile_vd_dp {
+        if self.config.compat.reconcile_vd_dp || self.config.compat.reconcile_rd_vd_dp {
             let fwd = ref_counts.fwd.max(0);
             let rev = ref_counts.rev.max(0);
             let ref_cov_eff = fwd.saturating_add(rev);
@@ -2461,15 +2682,7 @@ impl<'a> ToVarsBuilder<'a> {
         vref.end_pos = position;
 
         let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
-        let valid_base = match ref_base {
-            b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
-            b'S' | b'Y' | b'B' => b'C',
-            b'K' => b'G',
-            b'm' | b'r' | b'w' | b'v' | b'h' | b'd' => b'a',
-            b's' | b'y' | b'b' => b'c',
-            b'k' => b'g',
-            _ => ref_base,
-        } as char;
+        let valid_base = reduce_iupac_byte(ref_base) as char;
 
         vref.ref_allele.clear();
         vref.ref_allele.push(valid_base);
@@ -2500,6 +2713,41 @@ impl<'a> ToVarsBuilder<'a> {
         }
         if vref.rev < 0 {
             vref.rev = 0;
+        }
+        if self.config.compat.reconcile_strand_and_hq_sums {
+            let (vd, fwd, rev, hicnt, locnt) =
+                reconcile_strand_and_hq(vref.pos_coverage, vref.fwd, vref.rev, vref.hicnt);
+            vref.pos_coverage = vd;
+            vref.fwd = fwd;
+            vref.rev = rev;
+            vref.hicnt = hicnt;
+            vref.hq_lq_ratio = hicnt as f64 / if locnt != 0 { locnt as f64 } else { 0.5 };
+            vref.hicov = vref.hicov.max(hicnt).max(0);
+            vref.hi_freq = if vref.hicov > 0 && hicnt > 0 {
+                round_half_even_compat(
+                    hicnt as f64 / vref.hicov as f64,
+                    4,
+                    self.config.compat.exact_binary_half_even,
+                )
+            } else {
+                0.0
+            };
+            let min_reads_bias = i32::try_from(self.config.min_reads_bias).unwrap_or(i32::MAX);
+            let alt_bias = strand_bias(fwd, rev, min_reads_bias);
+            if let Some(semi_idx) = vref.bias.find(';') {
+                vref.bias.truncate(semi_idx + 1);
+            } else {
+                vref.bias.clear();
+            }
+            let _ = std::fmt::Write::write_fmt(&mut vref.bias, format_args!("{alt_bias}"));
+        }
+        if self.config.compat.reconcile_rd_vd_dp {
+            let rd_vd_sum = vref
+                .ref_fwd_cov
+                .max(0)
+                .saturating_add(vref.ref_rev_cov.max(0))
+                .saturating_add(vref.pos_coverage.max(0));
+            vref.total_pos_cov = vref.total_pos_cov.max(rd_vd_sum);
         }
     }
 }
@@ -2560,47 +2808,62 @@ pub fn strand_bias(fwd: i32, rev: i32, min_reads_bias: i32) -> i32 {
     crate::variations::util::strand_bias(fwd, rev, 0.05, min_reads_bias)
 }
 
+#[inline]
+fn reduce_iupac_byte(b: u8) -> u8 {
+    match b {
+        b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
+        b'S' | b'Y' | b'B' => b'C',
+        b'K' => b'G',
+        b'm' | b'r' | b'w' | b'v' | b'h' | b'd' => b'a',
+        b's' | b'y' | b'b' => b'c',
+        b'k' => b'g',
+        other => other,
+    }
+}
+
 fn validate_ref_allele_in_place(ref_allele: &mut String) {
-    if !ref_allele.bytes().any(|b| {
-        matches!(
-            b,
-            b'M' | b'R'
-                | b'W'
-                | b'V'
-                | b'H'
-                | b'D'
-                | b'S'
-                | b'Y'
-                | b'B'
-                | b'K'
-                | b'm'
-                | b'r'
-                | b'w'
-                | b'v'
-                | b'h'
-                | b'd'
-                | b's'
-                | b'y'
-                | b'b'
-                | b'k'
-        )
-    }) {
+    if !ref_allele.bytes().any(|b| reduce_iupac_byte(b) != b) {
         return;
     }
     let mut bytes = std::mem::take(ref_allele).into_bytes();
     for b in &mut bytes {
-        *b = match *b {
-            b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => b'A',
-            b'S' | b'Y' | b'B' => b'C',
-            b'K' => b'G',
-            b'm' | b'r' | b'w' | b'v' | b'h' | b'd' => b'a',
-            b's' | b'y' | b'b' => b'c',
-            b'k' => b'g',
-            other => other,
-        };
+        *b = reduce_iupac_byte(*b);
     }
     if let Ok(s) = String::from_utf8(bytes) {
         *ref_allele = s;
+    }
+}
+
+/// Sanitize `ALT` allele IUPAC ambiguity bases (`AstraZeneca-NGS/VarDictJava#267`,
+/// `AstraZeneca-NGS/VarDictJava#287`, `AstraZeneca-NGS/VarDict#137`, `bcbio/bcbio-nextgen#3321`),
+/// skipping closed `<...>` symbolic tokens (`<DUP>`, `<DEL>`, `<INV>`, `<dup-5>`, etc.) while
+/// still reducing malformed unclosed `'<'` prefixes.
+fn validate_alt_allele_in_place(alt_allele: &mut String) {
+    if matches!(alt_allele.as_str(), "<DUP>" | "<DEL>" | "<INV>") {
+        return;
+    }
+    if !alt_allele.bytes().any(|b| reduce_iupac_byte(b) != b) {
+        return;
+    }
+    let mut bytes = std::mem::take(alt_allele).into_bytes();
+    let mut i = 0usize;
+    while let Some(&b) = bytes.get(i) {
+        if b == b'<' {
+            if let Some(rel_close) = bytes
+                .get(i + 1..)
+                .and_then(|tail| tail.iter().position(|&c| c == b'>'))
+            {
+                i = i.saturating_add(rel_close).saturating_add(2);
+                continue;
+            }
+        }
+        if let Some(slot) = bytes.get_mut(i) {
+            *slot = reduce_iupac_byte(b);
+        }
+        i += 1;
+    }
+    if let Ok(s) = String::from_utf8(bytes) {
+        *alt_allele = s;
     }
 }
 
@@ -7401,5 +7664,707 @@ mod tests {
             ),
             (159, 279, "C", "<DUP>", Some("+120/+120"))
         );
+    }
+
+    #[test]
+    fn wave5_3c_switch23_nonnegative_subtracted_means_floors_negatives_neg_zero_and_nan() {
+        // bcbio/bcbio-nextgen#1704: subtracted sums (< 0.0), -0.0, and NaN must floor to +0.0
+        // inside fill_common_fields (before can_prune_doomed & sort_variants) and hydrate_compact_ref_site.
+        let seq = vec![b'A'; 100];
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+
+        let mut vd = VariationData::new();
+        // Pos 10: SNV "G" with negative subtracted sums and SNV "C" with tiny negative sums (-0.01 -> -0.0)
+        // plus insertion "+TT" with negative sums. Also check sort_variants order when "G" has higher cnt (10)
+        // than "T" (cnt = 2, qmean = 0.0 -> metric 0.0): in legacy, G's negative mean_quality (-5.0 * 10 = -50)
+        // sorts AFTER T (0.0); under Switch 23, G's mean_quality floors to 0.0 -> metric tie 0.0 broken
+        // lexicographically ("G" before "T")!
+        vd.ref_coverage.insert(10, 30);
+        let mut vm10 = VariationMap::new();
+        let mut v_neg = Variation::new();
+        v_neg.cnt = 10;
+        v_neg.hicnt = 10;
+        v_neg.fwd = 5;
+        v_neg.rev = 5;
+        v_neg.pmean = -25.0;
+        v_neg.qmean = -50.0;
+        v_neg.mqmean = -120.0;
+        v_neg.nm = -4.0;
+        vm10.map.insert("G".to_string(), v_neg);
+
+        let mut v_neg_zero = Variation::new();
+        v_neg_zero.cnt = 10;
+        v_neg_zero.hicnt = 10;
+        v_neg_zero.fwd = 5;
+        v_neg_zero.rev = 5;
+        v_neg_zero.pmean = -0.1; // -0.1 / 10 = -0.01 -> rounds to -0.0 at 1 decimal!
+        v_neg_zero.qmean = -0.1;
+        v_neg_zero.mqmean = -0.1;
+        v_neg_zero.nm = -0.1;
+        vm10.map.insert("C".to_string(), v_neg_zero);
+
+        let mut v_tie = Variation::new();
+        v_tie.cnt = 2;
+        v_tie.hicnt = 2;
+        v_tie.fwd = 1;
+        v_tie.rev = 1;
+        vm10.map.insert("T".to_string(), v_tie);
+        vd.non_insertion_variants.insert(10, vm10);
+
+        let mut ins10 = VariationMap::new();
+        let mut v_ins_neg = Variation::new();
+        v_ins_neg.cnt = 4;
+        v_ins_neg.hicnt = 4;
+        v_ins_neg.fwd = 2;
+        v_ins_neg.rev = 2;
+        v_ins_neg.pmean = -12.0;
+        v_ins_neg.qmean = -40.0;
+        v_ins_neg.mqmean = -60.0;
+        v_ins_neg.nm = -2.0;
+        ins10.map.insert("+TT".to_string(), v_ins_neg);
+        vd.insertion_variants.insert(10, ins10);
+
+        // Pos 20: doomed pruning check when read_pos = 0.0 and base_qual = 0.0:
+        // In legacy, negative mean_position (-2.0 < 0.0) prunes pos 20 as doomed;
+        // under Switch 23, mean_position floors to 0.0 (>= 0.0), so pos 20 is NOT pruned!
+        vd.ref_coverage.insert(20, 20);
+        let mut vm20 = VariationMap::new();
+        let mut v20 = Variation::new();
+        v20.cnt = 5;
+        v20.hicnt = 5;
+        v20.fwd = 3;
+        v20.rev = 2;
+        v20.pmean = -10.0;
+        v20.qmean = -15.0;
+        v20.mqmean = 200.0;
+        vm20.map.insert("G".to_string(), v20);
+        vd.non_insertion_variants.insert(20, vm20);
+
+        let mut cfg_leg = Config::default();
+        cfg_leg.read_pos = 0.0;
+        cfg_leg.base_qual = 0.0;
+        let b_leg = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg);
+        let al_leg = b_leg.build_aligned_variants_pruned(&vd, RefSiteMode::DropAll, &|p| p == 20);
+        let leg_vars10 = &al_leg.get(&10).unwrap().variants;
+        let leg_g = leg_vars10.iter().find(|v| v.description == "G").unwrap();
+        assert_eq!(leg_g.mean_position, -2.5);
+        assert_eq!(leg_g.mean_quality, -5.0);
+        assert_eq!(leg_g.mean_mapping_quality, -12.0);
+        assert_eq!(leg_g.nm, -0.4);
+        let leg_c = leg_vars10.iter().find(|v| v.description == "C").unwrap();
+        assert!(leg_c.mean_position.is_sign_negative());
+        // Legacy pruned pos 20 because -2.0 < 0.0
+        assert!(al_leg.get(&20).unwrap().variants.is_empty());
+
+        let mut cfg_sw23 = cfg_leg.clone();
+        cfg_sw23.compat = crate::config::CompatProfile {
+            nonnegative_subtracted_means: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        let b_sw23 = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_sw23);
+        let al_sw23 = b_sw23.build_aligned_variants_pruned(&vd, RefSiteMode::DropAll, &|p| p == 20);
+        let sw23_vars10 = &al_sw23.get(&10).unwrap().variants;
+        // "+TT", "C", "G", "T" all have mean_quality == 0.0, so lexicographic tie-break puts "G" before "T"!
+        let g_idx = sw23_vars10
+            .iter()
+            .position(|v| v.description == "G")
+            .unwrap();
+        let t_idx = sw23_vars10
+            .iter()
+            .position(|v| v.description == "T")
+            .unwrap();
+        assert!(
+            g_idx < t_idx,
+            "floored mean_quality must run before sort_variants"
+        );
+        for desc in ["G", "C", "+TT"] {
+            let v = sw23_vars10.iter().find(|v| v.description == desc).unwrap();
+            assert_eq!(
+                v.mean_position.to_bits(),
+                0.0_f64.to_bits(),
+                "{desc} mean_position"
+            );
+            assert_eq!(
+                v.mean_quality.to_bits(),
+                0.0_f64.to_bits(),
+                "{desc} mean_quality"
+            );
+            assert_eq!(
+                v.mean_mapping_quality.to_bits(),
+                0.0_f64.to_bits(),
+                "{desc} mean_mapping_quality"
+            );
+            assert_eq!(v.nm.to_bits(), 0.0_f64.to_bits(), "{desc} nm");
+        }
+        // Pos 20 survived doomed-pruning because floored mean_position (0.0) >= read_pos (0.0)
+        assert_eq!(al_sw23.get(&20).unwrap().variants.len(), 1);
+
+        // hydrate_compact_ref_site with negative sums AND cnt == 0 (0.0 / 0.0 = NaN -> +0.0)
+        let mut neg_ref_cnt = Variation::new();
+        neg_ref_cnt.cnt = 4;
+        neg_ref_cnt.pmean = -8.0;
+        neg_ref_cnt.qmean = -20.0;
+        neg_ref_cnt.mqmean = -40.0;
+        neg_ref_cnt.nm = -1.2;
+        let hyd_neg = b_sw23.hydrate_compact_ref_site(
+            30,
+            &CompactRefSite {
+                total_cov: 10,
+                duprate: 0.0,
+                cnt: neg_ref_cnt,
+            },
+        );
+        let rv_neg = hyd_neg.ref_variant.unwrap();
+        assert_eq!(rv_neg.mean_position.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(rv_neg.mean_quality.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(rv_neg.mean_mapping_quality.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(rv_neg.nm.to_bits(), 0.0_f64.to_bits());
+
+        let hyd_nan = b_sw23.hydrate_compact_ref_site(
+            31,
+            &CompactRefSite {
+                total_cov: 10,
+                duprate: 0.0,
+                cnt: Variation::new(), // 0.0 / 0.0 = NaN
+            },
+        );
+        let rv_nan = hyd_nan.ref_variant.unwrap();
+        assert_eq!(rv_nan.mean_position.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(rv_nan.mean_quality.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(rv_nan.mean_mapping_quality.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(rv_nan.nm.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn wave5_3c_switch24_reconcile_strand_and_hq_sums_handles_neg_vd_spill_zero_strands_and_bias() {
+        // AstraZeneca-NGS/VarDictJava#316, clintval/vartovcf#120, clintval/vartovcf#142:
+        // Isolated Switch 24 test (with reconcile_vd_dp = false, reconcile_rd_vd_dp = false).
+        let seq = vec![b'A'; 100];
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+
+        let mut vd = VariationData::new();
+        // Pos 10: ref "A" has fwd=8, rev=8 -> ref_bias = 2.
+        // - SNV "G": cnt = 2 (vd = 2), fwd = 6, rev = 6, hicnt = 5, locnt = 9 ->
+        //   fwd+rev=12 > 2 subtracts 6 from fwd (0) and spills 4 onto rev (2) -> (0, 2),
+        //   hicnt = 2, locnt = 0 -> hq_lq_ratio = 2 / 0.5 = 4.0, bias = "2;0" (not "2;2"!).
+        // - SNV "T": cnt = 3 (vd = 3), fwd = 0, rev = 0, hicnt = -2 ->
+        //   fwd+rev == 0 && vd > 0 -> (3, 0), hicnt = 0, locnt = 3 -> hq_lq_ratio = 0.0, bias = "2;0".
+        // - SNV "C": cnt = -3 (pos_coverage = -3!), fwd = 4, rev = 2, hicnt = 5 ->
+        //   must NOT panic on .clamp(0, -3)! Reconciles vd = 0, fwd = 0, rev = 0, hicnt = 0, locnt = 0, bias = "2;0".
+        // - Insertion "+AT": cnt = 4, fwd = 1, rev = 1, hicnt = 7 ->
+        //   sum = 2 < 4 adds +2 to larger/fwd -> (3, 1), hicnt = 4, locnt = 0 -> bias = "2;2".
+        vd.ref_coverage.insert(10, 20);
+        let mut vm10 = VariationMap::new();
+        let mut v_ref = Variation::new();
+        v_ref.cnt = 16;
+        v_ref.hicnt = 16;
+        v_ref.fwd = 8;
+        v_ref.rev = 8;
+        v_ref.qmean = 560.0;
+        v_ref.mqmean = 960.0;
+        v_ref.pmean = 320.0;
+        vm10.map.insert("A".to_string(), v_ref);
+
+        let mut v_spill = Variation::new();
+        v_spill.cnt = 2;
+        v_spill.fwd = 6;
+        v_spill.rev = 6;
+        v_spill.hicnt = 5;
+        v_spill.locnt = 9;
+        v_spill.qmean = 70.0;
+        v_spill.mqmean = 120.0;
+        v_spill.pmean = 40.0;
+        vm10.map.insert("G".to_string(), v_spill);
+
+        let mut v_zero_strands = Variation::new();
+        v_zero_strands.cnt = 3;
+        v_zero_strands.fwd = 0;
+        v_zero_strands.rev = 0;
+        v_zero_strands.hicnt = -2;
+        v_zero_strands.locnt = 10;
+        v_zero_strands.qmean = 105.0;
+        v_zero_strands.mqmean = 180.0;
+        v_zero_strands.pmean = 60.0;
+        vm10.map.insert("T".to_string(), v_zero_strands);
+
+        let mut v_neg_cnt = Variation::new();
+        v_neg_cnt.cnt = -3;
+        v_neg_cnt.fwd = 4;
+        v_neg_cnt.rev = 2;
+        v_neg_cnt.hicnt = 5;
+        v_neg_cnt.locnt = 1;
+        v_neg_cnt.qmean = -90.0;
+        v_neg_cnt.mqmean = -180.0;
+        v_neg_cnt.pmean = -60.0;
+        vm10.map.insert("C".to_string(), v_neg_cnt);
+        vd.non_insertion_variants.insert(10, vm10);
+
+        let mut ins10 = VariationMap::new();
+        let mut v_ins = Variation::new();
+        v_ins.cnt = 4;
+        v_ins.fwd = 1;
+        v_ins.rev = 1;
+        v_ins.hicnt = 7;
+        v_ins.locnt = 3;
+        v_ins.qmean = 140.0;
+        v_ins.mqmean = 240.0;
+        v_ins.pmean = 80.0;
+        ins10.map.insert("+AT".to_string(), v_ins);
+        vd.insertion_variants.insert(10, ins10);
+
+        let mut cfg_sw24 = Config::default();
+        cfg_sw24.pileup = true; // keep all variants regardless of freq
+        cfg_sw24.compat = crate::config::CompatProfile {
+            reconcile_strand_and_hq_sums: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        assert!(!cfg_sw24.compat.reconcile_vd_dp);
+        let builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_sw24);
+        let aligned = builder.build_aligned_variants(&vd);
+        let vars10 = &aligned.get(&10).unwrap().variants;
+
+        let g = vars10.iter().find(|v| v.description == "G").unwrap();
+        assert_eq!((g.pos_coverage, g.fwd, g.rev, g.hicnt), (2, 0, 2, 2));
+        assert_eq!(g.hq_lq_ratio, 4.0);
+        // calc_hicov clamps v_ref (16) + v_spill (min(5,2)=2) + v_zero (0) + v_neg (0) = 18
+        assert_eq!(g.hicov, 18);
+        assert_eq!(g.bias, "2;0");
+
+        let t = vars10.iter().find(|v| v.description == "T").unwrap();
+        assert_eq!((t.pos_coverage, t.fwd, t.rev, t.hicnt), (3, 3, 0, 0));
+        assert_eq!(t.hq_lq_ratio, 0.0);
+        assert_eq!(t.bias, "2;0");
+
+        let c = vars10.iter().find(|v| v.description == "C").unwrap();
+        assert_eq!((c.pos_coverage, c.fwd, c.rev, c.hicnt), (0, 0, 0, 0));
+        assert_eq!(c.frequency, 0.0);
+        assert_eq!(c.bias, "2;0");
+
+        let ins = vars10.iter().find(|v| v.description == "+AT").unwrap();
+        assert_eq!(
+            (ins.pos_coverage, ins.fwd, ins.rev, ins.hicnt),
+            (4, 3, 1, 4)
+        );
+        assert_eq!(ins.hq_lq_ratio, 8.0);
+        assert_eq!(ins.bias, "2;2");
+
+        // Also test direct adjust_variant_counts on a Variant with pos_coverage = -3 and "2;1" bias prefix!
+        let mut raw_v = Variant::new();
+        raw_v.pos_coverage = -3;
+        raw_v.fwd = 5;
+        raw_v.rev = 4;
+        raw_v.hicnt = 6;
+        raw_v.bias = "2;1".to_string();
+        builder.adjust_variant_counts(10, &mut raw_v);
+        assert_eq!(
+            (raw_v.pos_coverage, raw_v.fwd, raw_v.rev, raw_v.hicnt),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(raw_v.bias, "2;0");
+
+        let mut raw_spill = Variant::new();
+        raw_spill.pos_coverage = 2;
+        raw_spill.fwd = 6;
+        raw_spill.rev = 6;
+        raw_spill.hicnt = 5;
+        raw_spill.bias = "1;2".to_string();
+        builder.adjust_variant_counts(10, &mut raw_spill);
+        assert_eq!(
+            (
+                raw_spill.pos_coverage,
+                raw_spill.fwd,
+                raw_spill.rev,
+                raw_spill.hicnt
+            ),
+            (2, 0, 2, 2)
+        );
+        assert_eq!(raw_spill.bias, "1;0");
+    }
+
+    #[test]
+    fn wave5_3c_switch25_reconcile_rd_vd_dp_isolated_enforces_dp_ge_rd_plus_vd() {
+        // AstraZeneca-NGS/VarDict#168, AstraZeneca-NGS/VarDictJava#323:
+        // Isolated reconcile_rd_vd_dp = true with reconcile_vd_dp = false!
+        let seq = vec![b'A'; 100];
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32, fwd: i32, rev: i32, extracnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = fwd;
+            v.rev = rev;
+            v.extracnt = extracnt;
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 20.0 * f64::from(cnt);
+            v
+        };
+
+        let mut vd = VariationData::new();
+        // Pos 10: ref_coverage = 12, but RD = 8 + 7 = 15, SNV "G" VD = 6 (extracnt = 9), ins "+T" VD = 5!
+        // Legacy keeps DP = 12 (< RD + VD = 21); isolated Switch 25 raises SNV DP to 15 + 6 = 21
+        // (AF = 6/21 = 0.2857, extra_freq = 9/21 = 0.4286) and insertion DP to 15 + 5 = 20!
+        vd.ref_coverage.insert(10, 12);
+        let mut vm10 = VariationMap::new();
+        vm10.map.insert("A".to_string(), mk_var(15, 8, 7, 0));
+        vm10.map.insert("G".to_string(), mk_var(6, 3, 3, 9));
+        vd.non_insertion_variants.insert(10, vm10);
+        let mut ins10 = VariationMap::new();
+        ins10.map.insert("+T".to_string(), mk_var(5, 3, 2, 0));
+        vd.insertion_variants.insert(10, ins10);
+
+        // Pos 20: pure reference site with ref_coverage = 10, RD = 9 + 6 = 15, extracnt = 3.
+        vd.ref_coverage.insert(20, 10);
+        let mut vm20 = VariationMap::new();
+        vm20.map.insert("A".to_string(), mk_var(15, 9, 6, 3));
+        vd.non_insertion_variants.insert(20, vm20);
+
+        let mut cfg_leg = Config::default();
+        cfg_leg.bam = "tumor.bam|normal.bam".to_string();
+        let al_leg = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg)
+            .build_aligned_variants_with_ref_mode(&vd, RefSiteMode::KeepAll);
+        assert_eq!(al_leg.get(&10).unwrap().variants[0].total_pos_cov, 12);
+        assert_eq!(
+            al_leg
+                .get(&20)
+                .unwrap()
+                .ref_variant
+                .as_ref()
+                .unwrap()
+                .total_pos_cov,
+            10
+        );
+
+        let mut cfg_sw25 = cfg_leg.clone();
+        cfg_sw25.compat = crate::config::CompatProfile {
+            reconcile_rd_vd_dp: true,
+            reconcile_vd_dp: false,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        assert!(!cfg_sw25.compat.reconcile_vd_dp);
+        let b_sw25 = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_sw25);
+        let al_sw25 = b_sw25.build_aligned_variants_with_ref_mode(&vd, RefSiteMode::KeepAll);
+        let vars10 = &al_sw25.get(&10).unwrap().variants;
+        let g = vars10.iter().find(|v| v.description == "G").unwrap();
+        assert_eq!(g.total_pos_cov, 21);
+        assert_eq!(g.frequency, 0.2857);
+        assert_eq!(g.extra_freq, 0.4286);
+        let ins = vars10.iter().find(|v| v.description == "+T").unwrap();
+        assert_eq!(ins.total_pos_cov, 20);
+        assert_eq!(ins.frequency, 0.25);
+
+        let rv20 = al_sw25.get(&20).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(rv20.total_pos_cov, 15);
+        assert_eq!(rv20.extra_freq, 0.2);
+
+        let mut compact = rustc_hash::FxHashMap::default();
+        let _ =
+            b_sw25.build_aligned_variants_with_ref_mode(&vd, RefSiteMode::CompactOut(&mut compact));
+        let hyd20 = b_sw25.hydrate_compact_ref_site(20, compact.get(&20).unwrap());
+        assert_eq!(hyd20.ref_variant.unwrap().total_pos_cov, 15);
+    }
+
+    #[test]
+    fn wave5_3c_switch26_sanitize_iupac_alt_alleles_preserves_closed_tags_and_reduces_unclosed() {
+        // AstraZeneca-NGS/VarDictJava#267, AstraZeneca-NGS/VarDictJava#287,
+        // AstraZeneca-NGS/VarDict#137, bcbio/bcbio-nextgen#3321:
+        // Verify symbolic <INV>/<DUP>/<DEL>, mixed "RC<dup-5>GT" -> "AC<dup-5>GT",
+        // malformed unclosed "<dup-5RT" -> "<aup-5AT", and ToVarsBuilder end-to-end gating.
+        for sym in ["<INV>", "<DUP>", "<DEL>"] {
+            let mut s = sym.to_string();
+            validate_alt_allele_in_place(&mut s);
+            assert_eq!(s, sym, "symbolic SV tag {sym} must be preserved verbatim");
+        }
+
+        let mut mixed = "RC<dup-5>GT".to_string();
+        validate_alt_allele_in_place(&mut mixed);
+        assert_eq!(mixed, "AC<dup-5>GT");
+
+        let mut unclosed = "<dup-5RT".to_string();
+        validate_alt_allele_in_place(&mut unclosed);
+        assert_eq!(unclosed, "<aup-5AT");
+
+        let mut all_iupac = "MRWVHDSYBKmrwvhdsybkACGTN".to_string();
+        validate_alt_allele_in_place(&mut all_iupac);
+        assert_eq!(all_iupac, "AAAAAACCCGaaaaaacccgACGTN");
+
+        // End-to-end ToVarsBuilder check: legacy preserves IUPAC ALT "R" and "+RGT",
+        // while Switch 26 reduces them to "A" and "AAAGT" while keeping "<INV>" untouched!
+        let seq = vec![b'A'; 300];
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 300,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+        let chr_lengths = HashMap::from([("chr1".to_string(), 300)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(300),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+
+        let mk = |cnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - cnt / 2;
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 20.0 * f64::from(cnt);
+            v
+        };
+
+        let mut vd = VariationData::new();
+        vd.ref_coverage.insert(50, 20);
+        let mut vm50 = VariationMap::new();
+        vm50.map.insert("Y".to_string(), mk(8));
+        vm50.map.insert("-180^AAAA<inv80>TTTT".to_string(), mk(6));
+        vd.non_insertion_variants.insert(50, vm50);
+        let mut ins50 = VariationMap::new();
+        ins50.map.insert("+RKG".to_string(), mk(5));
+        vd.insertion_variants.insert(50, ins50);
+
+        let cfg_leg = Config::default();
+        let al_leg = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg)
+            .build_aligned_variants(&vd);
+        let v_leg = &al_leg.get(&50).unwrap().variants;
+        assert_eq!(
+            v_leg
+                .iter()
+                .find(|v| v.description == "Y")
+                .unwrap()
+                .var_allele,
+            "Y"
+        );
+        assert_eq!(
+            v_leg
+                .iter()
+                .find(|v| v.description == "+RKG")
+                .unwrap()
+                .var_allele,
+            "ARKG"
+        );
+
+        let cfg_sw26 = Config {
+            compat: crate::config::CompatProfile {
+                sanitize_iupac_alt_alleles: true,
+                ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+            },
+            ..Config::default()
+        };
+        let al_sw26 = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_sw26)
+            .build_aligned_variants(&vd);
+        let v_sw26 = &al_sw26.get(&50).unwrap().variants;
+        assert_eq!(
+            v_sw26
+                .iter()
+                .find(|v| v.description == "Y")
+                .unwrap()
+                .var_allele,
+            "C"
+        );
+        assert_eq!(
+            v_sw26
+                .iter()
+                .find(|v| v.description == "+RKG")
+                .unwrap()
+                .var_allele,
+            "AAGG"
+        );
+        assert_eq!(
+            v_sw26
+                .iter()
+                .find(|v| v.description.starts_with("-180^"))
+                .unwrap()
+                .var_allele,
+            "<INV>"
+        );
+    }
+
+    #[test]
+    fn wave5_3c_switch28_pileup_preserve_shifted_ref_hydrates_100pct_indel_and_complex_sites() {
+        // AstraZeneca-NGS/VarDictJava#330: under -p (pileup = true) and pileup_preserve_shifted_ref,
+        // both 100%-indel positions (ref_variant == None, start_position != position) and
+        // adj_complex-candidate positions (start_position == position, changed_ref_variant_at_pos == false)
+        // must carry a FASTA-hydrated ref_variant!
+        let mut seq = vec![b'A'; 100];
+        seq[49] = b'G'; // pos 50 = 'G'
+        seq[59] = b'C'; // pos 60 = 'C'
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+
+        let mk = |cnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - cnt / 2;
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 20.0 * f64::from(cnt);
+            v
+        };
+
+        let mut vd = VariationData::new();
+        // Pos 50: 100% "-2" deletion (no "G" ref entry -> ref_variant initially None; shifts to 49)
+        vd.ref_coverage.insert(50, 20);
+        let mut vm50 = VariationMap::new();
+        vm50.map.insert("-2".to_string(), mk(20));
+        vd.non_insertion_variants.insert(50, vm50);
+
+        // Pos 60: 100% MNV "CA" (later trimmed by adj_complex from 60 -> 61; start_position == 60 in ToVarsBuilder!)
+        vd.ref_coverage.insert(60, 18);
+        let mut vm60 = VariationMap::new();
+        vm60.map.insert("CA".to_string(), mk(18));
+        vd.non_insertion_variants.insert(60, vm60);
+
+        let mut cfg_leg = Config::default();
+        cfg_leg.pileup = true;
+        let al_leg = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg)
+            .build_aligned_variants(&vd);
+        assert!(
+            al_leg.get(&50).unwrap().ref_variant.is_none(),
+            "legacy -p drops ref_variant on 100%-indel site"
+        );
+        assert!(
+            al_leg.get(&60).unwrap().ref_variant.is_none(),
+            "legacy -p drops ref_variant on 100%-MNV site"
+        );
+
+        let mut cfg_sw28 = cfg_leg.clone();
+        cfg_sw28.compat = crate::config::CompatProfile {
+            pileup_preserve_shifted_ref: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        let b_sw28 = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_sw28);
+        let al_sw28 = b_sw28.build_aligned_variants(&vd);
+
+        let rv50 = al_sw28
+            .get(&50)
+            .unwrap()
+            .ref_variant
+            .as_ref()
+            .expect("Switch 28 must hydrate ref_variant at 100%-indel pos 50");
+        assert_eq!(
+            (
+                rv50.start_pos,
+                rv50.end_pos,
+                rv50.ref_allele.as_str(),
+                rv50.var_allele.as_str(),
+                rv50.genotype.as_deref(),
+                rv50.total_pos_cov,
+                rv50.bias.as_str()
+            ),
+            (50, 50, "G", "G", Some("G/G"), 20, "0;0")
+        );
+
+        let rv60 = al_sw28
+            .get(&60)
+            .unwrap()
+            .ref_variant
+            .as_ref()
+            .expect("Switch 28 must hydrate ref_variant at adj_complex-candidate pos 60");
+        assert_eq!(
+            (
+                rv60.start_pos,
+                rv60.end_pos,
+                rv60.ref_allele.as_str(),
+                rv60.var_allele.as_str(),
+                rv60.genotype.as_deref(),
+                rv60.total_pos_cov,
+                rv60.bias.as_str()
+            ),
+            (60, 60, "C", "C", Some("C/C"), 18, "0;0")
+        );
+
+        // Single-position builder must match full builder
+        let single50 = b_sw28.build_vars_at_position(&vd, 50).unwrap();
+        assert_eq!(single50.ref_variant.unwrap().ref_allele, "G");
     }
 }

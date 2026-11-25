@@ -1459,9 +1459,14 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     };
 
     let exact_tie = config.compat.exact_binary_half_even;
-    // ref==alt (-p pileup reference calls) become ALT ".", GT "0/0".
-    let alt_is_dot = variant.ref_allele == variant.var_allele;
-    let gt = if alt_is_dot {
+    let dot_alt_compat = config.compat.strict_vcf_ad_number_r
+        || config.compat.omit_nonsv_vcf_end
+        || config.compat.canonical_vcf_gt;
+    // ref==alt (-p pileup reference calls) and (under Wave-5 VCF schema switches)
+    // explicit "." var_allele become ALT ".", GT "0/0".
+    let alt_is_dot =
+        variant.ref_allele == variant.var_allele || (dot_alt_compat && variant.var_allele == ".");
+    let mut gt = if alt_is_dot {
         "0/0"
     } else {
         let af = crate::types::round_half_even_compat(variant.frequency, 4, exact_tie);
@@ -1475,6 +1480,15 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
             "0/0"
         }
     };
+    if config.compat.canonical_vcf_gt
+        && (gt == "1/0" || (!alt_is_dot && gt == "0/0" && variant.pos_coverage > 0))
+    {
+        // Switch 32 (`clintval/vartovcf#99`, `clintval/vartovcf#54`,
+        // `AstraZeneca-NGS/VarDictJava#344`, `AstraZeneca-NGS/VarDict#186`):
+        // canonicalize unphased `1/0 -> 0/1` and promote concrete non-dot `0/0`
+        // carriers (`vd > 0`) to `0/1`.
+        gt = "0/1";
+    }
 
     let qual_val = if variant.pos_coverage <= 1 {
         0
@@ -1485,9 +1499,19 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         // table col 19, printed by Java at HALF_EVEN 1dp (SimpleOutputVariant.java:155
         // getRoundedValueToPrint("0.0", …) / :206 DecimalFormat("0.0")), so the
         // multiplicand is the table-rounded value, not the raw mean.
-        ((variant.pos_coverage as f64).ln() / std::f64::consts::LN_2
-            * crate::types::round_half_even_compat(variant.mean_quality, 1, exact_tie))
-            as i32
+        // Switch 23 (`bcbio/bcbio-nextgen#1704`): clamp `q.max(0.0)` and `QUAL >= 0`.
+        let q = crate::types::round_half_even_compat(variant.mean_quality, 1, exact_tie);
+        let q = if config.compat.nonnegative_subtracted_means {
+            q.max(0.0)
+        } else {
+            q
+        };
+        let raw_qual = ((variant.pos_coverage as f64).ln() / std::f64::consts::LN_2 * q) as i32;
+        if config.compat.nonnegative_subtracted_means {
+            raw_qual.max(0)
+        } else {
+            raw_qual
+        }
     };
 
     buf.push_str(&region.chr);
@@ -1517,10 +1541,13 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     buf.push_str(var_type);
     buf.push_str(";DP=");
     crate::util::push_i32(buf, variant.total_pos_cov);
-    let emit_end_tag = if config.compat.canonical_sv_vcf_anchoring
-        && !alt_is_dot
-        && symbolic_sv_type_token(&variant.var_allele).is_some()
-    {
+    // Switch 31 (`clintval/vartovcf#105`): `omit_nonsv_vcf_end` takes precedence
+    // over `!config.omit_end_tag` (including `-R` runs where `omit_end_tag == false`
+    // unless `-E`/`--no-end` was passed), retaining `;END=` strictly on symbolic SVs.
+    let is_symbolic_sv = !alt_is_dot && symbolic_sv_type_token(&variant.var_allele).is_some();
+    let emit_end_tag = if config.compat.omit_nonsv_vcf_end {
+        is_symbolic_sv && !config.vcf_no_end_explicit
+    } else if config.compat.canonical_sv_vcf_anchoring && is_symbolic_sv {
         !config.vcf_no_end_explicit
     } else {
         !config.omit_end_tag
@@ -1712,7 +1739,15 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
     let rd = i64::from(variant.ref_fwd_cov) + i64::from(variant.ref_rev_cov);
     let vd = variant.pos_coverage;
     crate::util::push_i64(buf, rd);
-    if vd != 0 {
+    // Switch 30 (`clintval/vartovcf#101`, `AstraZeneca-NGS/VarDict#75`,
+    // `AstraZeneca-NGS/VarDict#76`, `EBIvariation/vcf-validator#99`):
+    // emit `,vd` iff `!alt_is_dot` so `FORMAT/AD` obeys `Number=R`.
+    let emit_vd_ad = if config.compat.strict_vcf_ad_number_r {
+        !alt_is_dot
+    } else {
+        vd != 0
+    };
+    if emit_vd_ad {
         buf.push(',');
         crate::util::push_i32(buf, vd);
     }
@@ -2705,7 +2740,8 @@ fn paired_gt(af: f64, freq: f64, gt_freq: f64) -> &'static str {
 /// at HALF_EVEN 1dp — pass the already-rounded values. Perl lacks a zero guard;
 /// both-zero cannot occur for emitted records (placeholders always keep one
 /// real side), guarded to 0.
-fn paired_qual_col(vd1: i32, qual1: f64, vd2: i32, qual2: f64) -> i32 {
+/// Under Switch 23 (`bcbio/bcbio-nextgen#1704`), clamps `q.max(0.0)` and `QUAL >= 0`.
+fn paired_qual_col(vd1: i32, qual1: f64, vd2: i32, qual2: f64, nonnegative_means: bool) -> i32 {
     let (vd, q) = if vd1 > vd2 {
         (vd1, qual1)
     } else {
@@ -2714,8 +2750,21 @@ fn paired_qual_col(vd1: i32, qual1: f64, vd2: i32, qual2: f64) -> i32 {
     if vd <= 0 {
         0
     } else {
-        ((vd as f64).ln() / std::f64::consts::LN_2 * q) as i32
+        let q = if nonnegative_means { q.max(0.0) } else { q };
+        let raw_qual = ((vd as f64).ln() / std::f64::consts::LN_2 * q) as i32;
+        if nonnegative_means {
+            raw_qual.max(0)
+        } else {
+            raw_qual
+        }
     }
+}
+
+#[derive(Clone, Copy)]
+struct PairedSampleFmtOpts {
+    fisher: bool,
+    exact_binary_half_even: bool,
+    emit_vd_ad: bool,
 }
 
 /// Append one per-sample FORMAT column directly into `buf` without clearing it.
@@ -2726,9 +2775,10 @@ fn push_paired_sample_field(
     gt: &str,
     sbf: f64,
     oddratio: &(impl std::ops::Deref<Target = str>, f64),
-    fisher: bool,
-    exact_binary_half_even: bool,
+    opts: PairedSampleFmtOpts,
 ) {
+    let exact_binary_half_even = opts.exact_binary_half_even;
+    let fisher = opts.fisher;
     let mq = crate::types::round_half_even_compat(
         crate::types::round_half_even_compat(v.mean_mapping_quality, 1, exact_binary_half_even),
         0,
@@ -2749,8 +2799,10 @@ fn push_paired_sample_field(
     crate::util::push_i32(buf, v.ref_rev_cov);
     buf.push(':');
     crate::util::push_i64(buf, i64::from(v.ref_fwd_cov) + i64::from(v.ref_rev_cov));
-    buf.push(',');
-    crate::util::push_i32(buf, v.pos_coverage);
+    if opts.emit_vd_ad {
+        buf.push(',');
+        crate::util::push_i32(buf, v.pos_coverage);
+    }
     buf.push(':');
     push_vcf_rounded(buf, fisher, v.frequency, 4, exact_binary_half_even);
     buf.push(':');
@@ -2798,7 +2850,18 @@ fn paired_sample_field_into(
     // 192 B covers the 21-field sample column at typical widths; longer
     // alleles regrow once and the capacity is retained across rows.
     buf.reserve(192);
-    push_paired_sample_field(buf, v, gt, sbf, oddratio, fisher, false);
+    push_paired_sample_field(
+        buf,
+        v,
+        gt,
+        sbf,
+        oddratio,
+        PairedSampleFmtOpts {
+            fisher,
+            exact_binary_half_even: false,
+            emit_vd_ad: true,
+        },
+    );
 }
 
 static ZERO_VARIANT: std::sync::OnceLock<crate::variations::Variant> = std::sync::OnceLock::new();
@@ -3123,10 +3186,42 @@ pub fn format_paired_vcf_record(
         filters.push(FilterTag::Text("AMPBIAS"));
     }
 
-    let gt = paired_gt(af1, eff_freq, eff_gt_freq);
-    let gtm = paired_gt(af2, eff_freq, eff_gt_freq);
+    let dot_alt_compat = config.compat.strict_vcf_ad_number_r
+        || config.compat.omit_nonsv_vcf_end
+        || config.compat.canonical_vcf_gt;
+    let alt_is_dot = dot_alt_compat && v1.var_allele == ".";
 
-    let qual_col = paired_qual_col(vd1, qual1, vd2, qual2);
+    let (mut gt, mut gtm) = if alt_is_dot {
+        ("0/0", "0/0")
+    } else {
+        (
+            paired_gt(af1, eff_freq, eff_gt_freq),
+            paired_gt(af2, eff_freq, eff_gt_freq),
+        )
+    };
+    if config.compat.canonical_vcf_gt && !alt_is_dot {
+        if gt == "1/0" {
+            gt = "0/1";
+        }
+        if gtm == "1/0" {
+            gtm = "0/1";
+        }
+        if gt == "0/0" && gtm == "0/0" && (vd1 > 0 || vd2 > 0) {
+            if vd1 >= vd2 && vd1 > 0 {
+                gt = "0/1";
+            } else {
+                gtm = "0/1";
+            }
+        }
+    }
+
+    let qual_col = paired_qual_col(
+        vd1,
+        qual1,
+        vd2,
+        qual2,
+        config.compat.nonnegative_subtracted_means,
+    );
 
     let sample_tumor = config.sample.split('|').next().unwrap_or(&config.sample);
 
@@ -3197,7 +3292,7 @@ pub fn format_paired_vcf_record(
             ";AMPFLAG=0"
         });
     }
-    if config.compat.canonical_sv_vcf_anchoring {
+    if config.compat.canonical_sv_vcf_anchoring && !alt_is_dot {
         if let Some(svtype) = symbolic_sv_type_token(&v1.var_allele) {
             let inv_hint = v1
                 .genotype
@@ -3230,9 +3325,14 @@ pub fn format_paired_vcf_record(
     line.push_str(
         "\tGT:DP:VD:ALD:RD:AD:AF:BIAS:PMEAN:PSTD:QUAL:QSTD:SBF:ODDRATIO:MQ:SN:HIAF:ADJAF:NM\t",
     );
-    push_paired_sample_field(&mut line, v1, gt, p1, &or1, config.fisher, exact_tie);
+    let sample_opts = PairedSampleFmtOpts {
+        fisher: config.fisher,
+        exact_binary_half_even: exact_tie,
+        emit_vd_ad: !(config.compat.strict_vcf_ad_number_r && alt_is_dot),
+    };
+    push_paired_sample_field(&mut line, v1, gt, p1, &or1, sample_opts);
     line.push('\t');
-    push_paired_sample_field(&mut line, v2, gtm, p2, &or2, config.fisher, exact_tie);
+    push_paired_sample_field(&mut line, v2, gtm, p2, &or2, sample_opts);
 
     PairedVcfRecord {
         line,
@@ -7590,6 +7690,537 @@ mod tests {
         assert!(
             !dup_amp_vj.contains(";SVTYPE=") && !dup_amp_vj.contains(";SVLEN="),
             "default COMPAT_VARDICTJAVA_1_8_3 amplicon VCF must omit SVTYPE/SVLEN: {dup_amp_vj}"
+        );
+    }
+
+    #[test]
+    fn test_wave5_switch23_nonnegative_vcf_qual_single_and_paired() {
+        // Switch 23 (`bcbio/bcbio-nextgen#1704`): negative subtracted `mean_quality`
+        // (or hostile `.var` / fuzz inputs) must clamp `q.max(0.0)` and `QUAL >= 0`
+        // under `nonnegative_subtracted_means` while keeping default parity unchanged.
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(500),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let vj_cfg = Config::default();
+        let mut s23_cfg = Config::default();
+        s23_cfg.compat.nonnegative_subtracted_means = true;
+
+        let mut neg_var = amplicon_passing_variant();
+        neg_var.pos_coverage = 8; // log2(8) = 3
+        neg_var.mean_quality = -12.4;
+
+        let rec_vj = format_vcf_record(&neg_var, &region, &vj_cfg, &[], 1.0, "1.0", None);
+        assert_eq!(rec_vj.split('\t').nth(5), Some("-37"));
+
+        let rec_s23 = format_vcf_record(&neg_var, &region, &s23_cfg, &[], 1.0, "1.0", None);
+        assert_eq!(rec_s23.split('\t').nth(5), Some("0"));
+
+        let mut neg_inf_var = neg_var.clone();
+        neg_inf_var.mean_quality = f64::NEG_INFINITY;
+        let rec_neg_inf = format_vcf_record(&neg_inf_var, &region, &s23_cfg, &[], 1.0, "1.0", None);
+        assert_eq!(rec_neg_inf.split('\t').nth(5), Some("0"));
+
+        // Positive rounded quality remains unchanged (`int(2 * 35.5) == 71`).
+        let rec_pos = format_vcf_record(&p2_variant(), &region, &s23_cfg, &[], 1.0, "1.0", None);
+        assert_eq!(rec_pos.split('\t').nth(5), Some("71"));
+
+        // Paired tumor-dominant (`vd1 > vd2`) and normal-dominant/tie (`vd1 <= vd2`) negative QUAL
+        let mut t_dom = clean_normal();
+        t_dom.pos_coverage = 8;
+        t_dom.mean_quality = -15.0;
+        let mut n_sub = clean_normal();
+        n_sub.pos_coverage = 2;
+        let sv_t_dom = somatic_sv(t_dom, Some(n_sub), "StrongSomatic");
+        assert_eq!(
+            format_paired_vcf_record(&sv_t_dom, "chr1", &vj_cfg)
+                .as_str()
+                .split('\t')
+                .nth(5),
+            Some("-45")
+        );
+        assert_eq!(
+            format_paired_vcf_record(&sv_t_dom, "chr1", &s23_cfg)
+                .as_str()
+                .split('\t')
+                .nth(5),
+            Some("0")
+        );
+
+        let mut t_sub = clean_normal();
+        t_sub.pos_coverage = 4;
+        t_sub.mean_quality = 35.0;
+        let mut n_tie = clean_normal();
+        n_tie.pos_coverage = 4; // vd1 == vd2 picks side 2
+        n_tie.mean_quality = -10.5;
+        let sv_n_tie = somatic_sv(t_sub, Some(n_tie), "StrongLOH");
+        assert_eq!(
+            format_paired_vcf_record(&sv_n_tie, "chr1", &vj_cfg)
+                .as_str()
+                .split('\t')
+                .nth(5),
+            Some("-21")
+        );
+        assert_eq!(
+            format_paired_vcf_record(&sv_n_tie, "chr1", &s23_cfg)
+                .as_str()
+                .split('\t')
+                .nth(5),
+            Some("0")
+        );
+    }
+
+    #[test]
+    fn test_wave5_switch30_strict_vcf_ad_number_r_and_dot_alt_normalization() {
+        // Switch 30 (`clintval/vartovcf#101`, `AstraZeneca-NGS/VarDict#75`,
+        // `AstraZeneca-NGS/VarDict#76`, `EBIvariation/vcf-validator#99`):
+        // single-sample `FORMAT/AD` (`Number=R`) must emit `RD` (`1` value) when `ALT == "."`
+        // even if `VD > 0`, and `RD,VD` (`2` values, including `RD,0`) when `ALT != "."`.
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(500),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let vj_cfg = Config::default();
+        let mut s30_cfg = Config::default();
+        s30_cfg.compat.strict_vcf_ad_number_r = true;
+
+        let sample_ad = |line: &str| -> String {
+            line.split('\t')
+                .nth(9)
+                .unwrap()
+                .split(':')
+                .nth(3)
+                .unwrap()
+                .to_string()
+        };
+
+        // 1. `ref == alt` (`-p` pileup row -> `ALT == "."`) with `vd = 30 > 0`, `rd = 20`
+        let mut ref_row = amplicon_passing_variant();
+        ref_row.var_type = String::new();
+        ref_row.var_allele = ref_row.ref_allele.clone();
+        assert_eq!(
+            sample_ad(&format_vcf_record(
+                &ref_row,
+                &region,
+                &vj_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "20,30"
+        );
+        let rec_ref_s30 = format_vcf_record(&ref_row, &region, &s30_cfg, &[], 1.0, "1.0", None);
+        assert_eq!(rec_ref_s30.split('\t').nth(4), Some("."));
+        assert_eq!(sample_ad(&rec_ref_s30), "20");
+
+        // 2. Explicit `var_allele == "."` with `vd = 30 > 0`, `frequency = 0.6` (`dot_alt` normalization)
+        let mut dot_var = amplicon_passing_variant();
+        dot_var.ref_allele = "A".to_string();
+        dot_var.var_allele = ".".to_string();
+        dot_var.pos_coverage = 30;
+        dot_var.frequency = 0.6;
+        let rec_dot_vj = format_vcf_record(&dot_var, &region, &vj_cfg, &[], 1.0, "1.0", None);
+        assert_eq!(sample_ad(&rec_dot_vj), "20,30");
+        assert!(rec_dot_vj.split('\t').nth(9).unwrap().starts_with("1/0:"));
+
+        let rec_dot_s30 = format_vcf_record(&dot_var, &region, &s30_cfg, &[], 1.0, "1.0", None);
+        assert_eq!(rec_dot_s30.split('\t').nth(4), Some("."));
+        assert_eq!(sample_ad(&rec_dot_s30), "20");
+        assert!(
+            rec_dot_s30.split('\t').nth(9).unwrap().starts_with("0/0:"),
+            "dot-ALT normalization must emit GT=0/0: {rec_dot_s30}"
+        );
+
+        // 3. `ALT != "."` with `vd == 0` (`RD,0` instead of bare `RD`)
+        let mut zero_vd_snv = amplicon_passing_variant();
+        zero_vd_snv.ref_allele = "A".to_string();
+        zero_vd_snv.var_allele = "G".to_string();
+        zero_vd_snv.pos_coverage = 0;
+        zero_vd_snv.fwd = 0;
+        zero_vd_snv.rev = 0;
+        zero_vd_snv.frequency = 0.0;
+        assert_eq!(
+            sample_ad(&format_vcf_record(
+                &zero_vd_snv,
+                &region,
+                &vj_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "20"
+        );
+        let rec_zero_s30 =
+            format_vcf_record(&zero_vd_snv, &region, &s30_cfg, &[], 1.0, "1.0", None);
+        assert_eq!(rec_zero_s30.split('\t').nth(4), Some("G"));
+        assert_eq!(sample_ad(&rec_zero_s30), "20,0");
+
+        // 4. Paired `ALT == "."` vs `ALT != "."` (`vd == 0`) `FORMAT/AD` (index 5 in paired sample field)
+        let mut pt_dot = clean_normal();
+        pt_dot.ref_allele = "A".to_string();
+        pt_dot.var_allele = ".".to_string();
+        pt_dot.pos_coverage = 12;
+        pt_dot.frequency = 0.65;
+        let prec_dot_s30 = format_paired_vcf_record(
+            &somatic_sv(pt_dot, Some(clean_normal()), "StrongSomatic"),
+            "chr1",
+            &s30_cfg,
+        );
+        let pcols: Vec<&str> = prec_dot_s30.as_str().split('\t').collect();
+        assert_eq!(pcols[4], ".");
+        let t_parts: Vec<&str> = pcols[9].split(':').collect();
+        let n_parts: Vec<&str> = pcols[10].split(':').collect();
+        assert_eq!(t_parts[0], "0/0");
+        assert_eq!(n_parts[0], "0/0");
+        assert_eq!(t_parts[5], "40");
+        assert_eq!(n_parts[5], "40");
+    }
+
+    #[test]
+    fn test_wave5_switch31_omit_nonsv_vcf_end_with_region_mode_omit_end_false() {
+        // Switch 31 (`clintval/vartovcf#105`): CLI `-R` sets `omit_end_tag = false` when
+        // `-E`/`--no-end` is not passed; `omit_nonsv_vcf_end` must take precedence over
+        // `!config.omit_end_tag`, omitting `;END=` on all non-symbolic records while
+        // retaining `;END=` on symbolic `<...>` SVs unless `vcf_no_end_explicit` is true.
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(5000),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let mut vj_region_cfg = Config::default();
+        vj_region_cfg.omit_end_tag = false;
+        vj_region_cfg.vcf_no_end_explicit = false;
+
+        let mut s31_region_cfg = vj_region_cfg.clone();
+        s31_region_cfg.compat.omit_nonsv_vcf_end = true;
+
+        let mut compat_off_region_cfg = vj_region_cfg.clone();
+        compat_off_region_cfg.compat = crate::config::COMPAT_OFF;
+
+        // 1. Non-SV SNV, sequence deletion (`end_pos = 103`), `<R,R>`, dot-ALT, and mid-allele `<dup-12>`
+        let snv = amplicon_passing_variant();
+        let mut seq_del = amplicon_passing_variant();
+        seq_del.ref_allele = "ATGC".to_string();
+        seq_del.var_allele = "A".to_string();
+        seq_del.start_pos = 100;
+        seq_del.end_pos = 103;
+        seq_del.var_type = "Deletion".to_string();
+
+        let mut rr_var = amplicon_passing_variant();
+        rr_var.var_allele = "<R,R>".to_string();
+
+        let mut mid_dup = amplicon_passing_variant();
+        mid_dup.var_allele = "ACGT<dup-12>TTAA".to_string();
+        mid_dup.end_pos = 112;
+
+        for non_sv in [&snv, &seq_del, &rr_var, &mid_dup] {
+            let vj_line = format_vcf_record(non_sv, &region, &vj_region_cfg, &[], 1.0, "1.0", None);
+            assert!(
+                vj_line.contains(";END="),
+                "default VJ with omit_end_tag=false must keep ;END=: {vj_line}"
+            );
+            for cfg in [&s31_region_cfg, &compat_off_region_cfg] {
+                let off_line = format_vcf_record(non_sv, &region, cfg, &[], 1.0, "1.0", None);
+                assert!(
+                    !off_line.contains(";END="),
+                    "omit_nonsv_vcf_end must suppress ;END= even when omit_end_tag=false: {off_line}"
+                );
+            }
+        }
+
+        // 2. Symbolic `<DEL>`, `<DUP>`, `<INV>` (simple and amplicon) retain `;END=` unless `vcf_no_end_explicit`
+        let mut sym_del = amplicon_passing_variant();
+        sym_del.start_pos = 1000;
+        sym_del.end_pos = 1400;
+        sym_del.ref_allele = "A".to_string();
+        sym_del.var_allele = "<DEL>".to_string();
+        sym_del.var_type = "Deletion".to_string();
+        sym_del.sv = "5-3-1".to_string();
+
+        for amp in [None, Some((2, 2, 0, false))] {
+            let line_keep =
+                format_vcf_record(&sym_del, &region, &s31_region_cfg, &[], 1.0, "1.0", amp);
+            assert!(
+                line_keep.contains(";END=1400;"),
+                "symbolic <DEL> must retain ;END=1400; when vcf_no_end_explicit=false: {line_keep}"
+            );
+
+            let mut bed_like_s31 = s31_region_cfg.clone();
+            bed_like_s31.omit_end_tag = true;
+            let line_bed_keep =
+                format_vcf_record(&sym_del, &region, &bed_like_s31, &[], 1.0, "1.0", amp);
+            assert!(
+                line_bed_keep.contains(";END=1400;"),
+                "symbolic <DEL> must retain ;END=1400; when omit_end_tag=true and vcf_no_end_explicit=false: {line_bed_keep}"
+            );
+
+            let mut explicit_no_end = s31_region_cfg.clone();
+            explicit_no_end.omit_end_tag = true;
+            explicit_no_end.vcf_no_end_explicit = true;
+            let line_no_end =
+                format_vcf_record(&sym_del, &region, &explicit_no_end, &[], 1.0, "1.0", amp);
+            assert!(
+                !line_no_end.contains(";END="),
+                "vcf_no_end_explicit=true must suppress ;END= on symbolic <DEL>: {line_no_end}"
+            );
+        }
+
+        // 3. Paired VCF with `omit_end_tag = false` never emits non-SV `;END=`
+        let paired_seq_del = format_paired_vcf_record(
+            &somatic_sv(seq_del, Some(clean_normal()), "StrongSomatic"),
+            "chr1",
+            &compat_off_region_cfg,
+        );
+        assert!(!paired_seq_del.as_str().contains(";END="));
+    }
+
+    #[test]
+    fn test_wave5_switch32_canonical_vcf_gt_single_and_paired_somatic_statuses() {
+        // Switch 32 (`clintval/vartovcf#99`, `clintval/vartovcf#54`,
+        // `AstraZeneca-NGS/VarDictJava#344`, `AstraZeneca-NGS/VarDict#186`):
+        // canonicalize unphased `1/0 -> 0/1` and promote concrete `!alt_is_dot` calls
+        // with zero `'1'` genotypes and `VD > 0` to `0/1` without promoting matched-normal
+        // noise on `LikelySomatic` or tumor wild-type on `StrongLOH`.
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(500),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let mut vj_cfg = Config::default();
+        vj_cfg.af_threshold = 0.02;
+        let mut s32_cfg = vj_cfg.clone();
+        s32_cfg.compat.canonical_vcf_gt = true;
+
+        let single_gt = |line: &str| -> String {
+            line.split('\t')
+                .nth(9)
+                .unwrap()
+                .split(':')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let paired_gts = |rec: &PairedVcfRecord| -> (String, String) {
+            let cols: Vec<&str> = rec.as_str().split('\t').collect();
+            (
+                cols[9].split(':').next().unwrap().to_string(),
+                cols[10].split(':').next().unwrap().to_string(),
+            )
+        };
+
+        // 1. Single-sample: `1/0 -> 0/1`, `1/1 -> 1/1`, sub-threshold `vd > 0` (`0/0 -> 0/1`),
+        //    `vd == 0` stays `0/0`, and `ALT == "."` (`ref == alt` or `"."`) with `vd > 0` stays `0/0`.
+        let mut het_hi = amplicon_passing_variant();
+        het_hi.frequency = 0.65; // 0.5 <= 0.65 <= 0.8
+        assert_eq!(
+            single_gt(&format_vcf_record(
+                &het_hi,
+                &region,
+                &vj_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "1/0"
+        );
+        assert_eq!(
+            single_gt(&format_vcf_record(
+                &het_hi,
+                &region,
+                &s32_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "0/1"
+        );
+
+        let mut hom = amplicon_passing_variant();
+        hom.frequency = 0.90;
+        assert_eq!(
+            single_gt(&format_vcf_record(
+                &hom,
+                &region,
+                &s32_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "1/1"
+        );
+
+        let mut low_af = amplicon_passing_variant();
+        low_af.pos_coverage = 3;
+        low_af.fwd = 2;
+        low_af.rev = 1;
+        low_af.total_pos_cov = 600;
+        low_af.frequency = 0.005; // < 0.02
+        assert_eq!(
+            single_gt(&format_vcf_record(
+                &low_af,
+                &region,
+                &vj_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "0/0"
+        );
+        assert_eq!(
+            single_gt(&format_vcf_record(
+                &low_af,
+                &region,
+                &s32_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "0/1"
+        );
+        let mut scratch = String::new();
+        let SingleVcfEvent::Record(ev_low) =
+            build_single_vcf_event(&mut scratch, &low_af, &region, &s32_cfg, None)
+        else {
+            panic!("expected SingleVcfEvent::Record");
+        };
+        assert_eq!(single_gt(ev_low.as_str()), "0/1");
+
+        let mut zero_vd = low_af.clone();
+        zero_vd.pos_coverage = 0;
+        zero_vd.fwd = 0;
+        zero_vd.rev = 0;
+        zero_vd.frequency = 0.0;
+        assert_eq!(
+            single_gt(&format_vcf_record(
+                &zero_vd,
+                &region,
+                &s32_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "0/0"
+        );
+
+        let mut pileup_ref = amplicon_passing_variant();
+        pileup_ref.var_allele = pileup_ref.ref_allele.clone();
+        pileup_ref.pos_coverage = 25;
+        assert_eq!(
+            single_gt(&format_vcf_record(
+                &pileup_ref,
+                &region,
+                &s32_cfg,
+                &[],
+                1.0,
+                "1.0",
+                None
+            )),
+            "0/0"
+        );
+
+        // 2. Paired low-AF `StrongSomatic` (`af1 = 0.008 < 0.02, vd1 = 4, vd2 = 0`):
+        //    promotes tumor `0/0 -> 0/1` while keeping normal `0/0`.
+        let mut ss_t = clean_normal();
+        ss_t.total_pos_cov = 500;
+        ss_t.pos_coverage = 4;
+        ss_t.fwd = 2;
+        ss_t.rev = 2;
+        ss_t.frequency = 0.008;
+        let mut ss_n = clean_normal();
+        ss_n.total_pos_cov = 500;
+        ss_n.pos_coverage = 0;
+        ss_n.fwd = 0;
+        ss_n.rev = 0;
+        ss_n.frequency = 0.0;
+        let ss_sv = somatic_sv(ss_t, Some(ss_n), "StrongSomatic");
+        assert_eq!(
+            paired_gts(&format_paired_vcf_record(&ss_sv, "chr1", &vj_cfg)),
+            ("0/0".to_string(), "0/0".to_string())
+        );
+        assert_eq!(
+            paired_gts(&format_paired_vcf_record(&ss_sv, "chr1", &s32_cfg)),
+            ("0/1".to_string(), "0/0".to_string())
+        );
+
+        // 3. Paired `LikelySomatic` with tumor `1/1` (and `1/0 -> 0/1`) and normal `vd2 = 1` (`af2 = 0.005`):
+        //    normal `gtm` MUST stay `"0/0"` because tumor already carries `'1'`.
+        for (t_af, exp_vj_gt, exp_s32_gt) in [(0.90, "1/1", "1/1"), (0.65, "1/0", "0/1")] {
+            let mut ls_t = clean_normal();
+            ls_t.total_pos_cov = 100;
+            ls_t.pos_coverage = 65;
+            ls_t.frequency = t_af;
+            let mut ls_n = clean_normal();
+            ls_n.total_pos_cov = 200;
+            ls_n.pos_coverage = 1;
+            ls_n.fwd = 1;
+            ls_n.rev = 0;
+            ls_n.frequency = 0.005;
+            let ls_sv = somatic_sv(ls_t, Some(ls_n), "LikelySomatic");
+            assert_eq!(
+                paired_gts(&format_paired_vcf_record(&ls_sv, "chr1", &vj_cfg)),
+                (exp_vj_gt.to_string(), "0/0".to_string())
+            );
+            assert_eq!(
+                paired_gts(&format_paired_vcf_record(&ls_sv, "chr1", &s32_cfg)),
+                (exp_s32_gt.to_string(), "0/0".to_string())
+            );
+        }
+
+        // 4. Paired `StrongLOH` (`vd1 = 0, af1 = 0.0`, `vd2 = 25, dp2 = 50, af2 = 0.50`):
+        //    normal `1/0 -> 0/1` and tumor `gt` MUST stay `"0/0"` (normal already carries `'1'`).
+        let mut loh_t = clean_normal();
+        loh_t.total_pos_cov = 50;
+        loh_t.pos_coverage = 0;
+        loh_t.fwd = 0;
+        loh_t.rev = 0;
+        loh_t.frequency = 0.0;
+        let mut loh_n = clean_normal();
+        loh_n.total_pos_cov = 50;
+        loh_n.pos_coverage = 25;
+        loh_n.fwd = 12;
+        loh_n.rev = 13;
+        loh_n.frequency = 0.50;
+        let mut loh_sv = somatic_sv(loh_t.clone(), Some(loh_n), "StrongLOH");
+        loh_sv.end_is_variant2 = true;
+        assert_eq!(
+            paired_gts(&format_paired_vcf_record(&loh_sv, "chr1", &vj_cfg)),
+            ("0/0".to_string(), "1/0".to_string())
+        );
+        assert_eq!(
+            paired_gts(&format_paired_vcf_record(&loh_sv, "chr1", &s32_cfg)),
+            ("0/0".to_string(), "0/1".to_string())
+        );
+
+        // 5. Sub-threshold normal-only carrier (`vd1 = 0, af1 = 0.0`, `vd2 = 3, af2 = 0.0075 < 0.02`):
+        //    promotes normal `gtm = 0/1` while keeping tumor `gt = 0/0`.
+        let mut sub_n = clean_normal();
+        sub_n.total_pos_cov = 400;
+        sub_n.pos_coverage = 3;
+        sub_n.fwd = 2;
+        sub_n.rev = 1;
+        sub_n.frequency = 0.0075;
+        let sub_n_sv = somatic_sv(loh_t, Some(sub_n), "SampleSpecific");
+        assert_eq!(
+            paired_gts(&format_paired_vcf_record(&sub_n_sv, "chr1", &s32_cfg)),
+            ("0/0".to_string(), "0/1".to_string())
         );
     }
 }

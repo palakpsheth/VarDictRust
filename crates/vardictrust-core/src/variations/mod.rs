@@ -176,6 +176,27 @@ impl Variation {
             self.locnt = self.locnt.saturating_sub(1);
         }
     }
+
+    /// Reset accumulated count (`cnt = 0`), and when `clear_aux` is true
+    /// (`CompatProfile::reconcile_strand_and_hq_sums`, `AstraZeneca-NGS/VarDictJava#316`,
+    /// `clintval/vartovcf#120`, `clintval/vartovcf#142`), also clear all 9 auxiliary
+    /// strand/quality/sum accumulators (`fwd`, `rev`, `hicnt`, `locnt`, `extracnt`,
+    /// `pmean`, `qmean`, `mqmean`, `nm`).
+    #[inline]
+    pub fn reset_counts_compat(&mut self, clear_aux: bool) {
+        self.cnt = 0;
+        if clear_aux {
+            self.fwd = 0;
+            self.rev = 0;
+            self.hicnt = 0;
+            self.locnt = 0;
+            self.extracnt = 0;
+            self.pmean = 0.0;
+            self.qmean = 0.0;
+            self.mqmean = 0.0;
+            self.nm = 0.0;
+        }
+    }
 }
 
 impl Default for Variation {
@@ -620,6 +641,22 @@ impl Variant {
                 }
                 self.ref_allele.truncate(new_ref_len);
                 self.var_allele.truncate(new_var_len);
+            }
+        }
+    }
+
+    /// Adjust coordinates and alleles for a complex variant, and when `refresh_var_type`
+    /// is true (`CompatProfile::recompute_vartype_after_adj_complex`,
+    /// `clintval/vartovcf#109`, `clintval/vartovcf#147`), refresh `self.var_type`
+    /// from the trimmed alleles.
+    #[inline]
+    pub fn adj_complex_compat(&mut self, refresh_var_type: bool) {
+        self.adj_complex();
+        if refresh_var_type {
+            let vt = self.var_type_cow();
+            if self.var_type != vt.as_ref() {
+                self.var_type.clear();
+                self.var_type.push_str(&vt);
             }
         }
     }
@@ -1867,6 +1904,114 @@ mod tests {
         assert_eq!(vs.left_seq, "C");
         // In Java: rightSeq = substr("G", 0, -2) -> "", then "TA" + "" -> "TA"
         assert_eq!(vs.right_seq, "TA");
+    }
+
+    #[test]
+    fn variation_reset_counts_compat_and_variant_adj_complex_compat() {
+        // 1. Variation::reset_counts_compat(false) clears only cnt (VarDictJava v1.8.3 parity);
+        //    reset_counts_compat(true) clears all 10 count/sum fields while preserving metadata
+        //    (AstraZeneca-NGS/VarDictJava#316, clintval/vartovcf#120, clintval/vartovcf#142).
+        let populated = Variation {
+            cnt: 9,
+            fwd: 5,
+            rev: 4,
+            pmean: 140.0,
+            qmean: 315.0,
+            mqmean: 540.0,
+            nm: 4.0,
+            hicnt: 7,
+            locnt: 2,
+            pstd: true,
+            qstd: true,
+            pp: 18,
+            pq: 36.0,
+            extracnt: 3,
+            pre_anchored_dup: true,
+        };
+
+        let mut vj_var = populated.clone();
+        vj_var.reset_counts_compat(false);
+        assert_eq!(vj_var.cnt, 0);
+        assert_eq!(vj_var.fwd, 5);
+        assert_eq!(vj_var.rev, 4);
+        assert_eq!(vj_var.hicnt, 7);
+        assert_eq!(vj_var.locnt, 2);
+        assert_eq!(vj_var.extracnt, 3);
+        assert_eq!(vj_var.pmean, 140.0);
+        assert_eq!(vj_var.qmean, 315.0);
+        assert_eq!(vj_var.mqmean, 540.0);
+        assert_eq!(vj_var.nm, 4.0);
+        assert!(vj_var.pstd);
+        assert!(vj_var.qstd);
+        assert_eq!(vj_var.pp, 18);
+        assert_eq!(vj_var.pq, 36.0);
+        assert!(vj_var.pre_anchored_dup);
+
+        let mut compat_var = populated;
+        compat_var.reset_counts_compat(true);
+        assert_eq!(compat_var.cnt, 0);
+        assert_eq!(compat_var.fwd, 0);
+        assert_eq!(compat_var.rev, 0);
+        assert_eq!(compat_var.hicnt, 0);
+        assert_eq!(compat_var.locnt, 0);
+        assert_eq!(compat_var.extracnt, 0);
+        assert_eq!(compat_var.pmean, 0.0);
+        assert_eq!(compat_var.qmean, 0.0);
+        assert_eq!(compat_var.mqmean, 0.0);
+        assert_eq!(compat_var.nm, 0.0);
+        assert!(compat_var.pstd);
+        assert!(compat_var.qstd);
+        assert_eq!(compat_var.pp, 18);
+        assert_eq!(compat_var.pq, 36.0);
+        assert!(compat_var.pre_anchored_dup);
+
+        // 2. Variant::adj_complex_compat(false) preserves pre-trim var_type;
+        //    adj_complex_compat(true) refreshes var_type after trimming
+        //    (clintval/vartovcf#109, clintval/vartovcf#147).
+        for (ref_seq, var_seq, end_pos, exp_start, exp_end, exp_ref, exp_var, exp_type) in [
+            ("ACGTA", "ACCTA", 104, 102, 102, "G", "C", "SNV"),
+            ("CAATG", "CAA", 104, 102, 104, "ATG", "A", "Deletion"),
+            ("CAA", "CAATG", 102, 102, 102, "A", "ATG", "Insertion"),
+        ] {
+            let mut base = Variant::new();
+            base.start_pos = 100;
+            base.end_pos = end_pos;
+            base.ref_allele = ref_seq.to_string();
+            base.var_allele = var_seq.to_string();
+            base.left_seq = "TTGG".to_string();
+            base.right_seq = "CCAA".to_string();
+            base.var_type = base.var_type();
+            assert_eq!(base.var_type, "Complex");
+
+            let mut vj = base.clone();
+            vj.adj_complex_compat(false);
+            assert_eq!(vj.start_pos, exp_start);
+            assert_eq!(vj.end_pos, exp_end);
+            assert_eq!(vj.ref_allele, exp_ref);
+            assert_eq!(vj.var_allele, exp_var);
+            assert_eq!(vj.var_type, "Complex");
+
+            let mut refreshed = base;
+            refreshed.adj_complex_compat(true);
+            assert_eq!(refreshed.start_pos, exp_start);
+            assert_eq!(refreshed.end_pos, exp_end);
+            assert_eq!(refreshed.ref_allele, exp_ref);
+            assert_eq!(refreshed.var_allele, exp_var);
+            assert_eq!(refreshed.var_type, exp_type);
+        }
+
+        // Symbolic SVs remain unchanged under both false and true
+        let mut sv = Variant::new();
+        sv.start_pos = 200;
+        sv.end_pos = 1500;
+        sv.ref_allele = "A".to_string();
+        sv.var_allele = "<DEL>".to_string();
+        sv.var_type = "DEL".to_string();
+        sv.adj_complex_compat(true);
+        assert_eq!(sv.start_pos, 200);
+        assert_eq!(sv.end_pos, 1500);
+        assert_eq!(sv.var_allele, "<DEL>");
+        assert_eq!(sv.var_type, "DEL");
     }
 
     #[test]
