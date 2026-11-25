@@ -343,15 +343,59 @@ pub fn reorder_chromosomes_with_compat<S: AsRef<str>>(
     order
 }
 
-/// Ports `var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`:
-/// in Perl, `-f 0` (`"0"`) is falsy and falls back to `0.02`, whereas non-`"0"`
-/// zero strings like `-f 0.0` are truthy in Perl boolean context and keep `0.0`.
-#[inline]
-fn valid_freq_threshold(config: &Config) -> f64 {
-    if config.af_threshold == 0.0 && !config.af_threshold_truthy_zero {
-        0.02
-    } else {
-        config.af_threshold
+/// Effective VCF post-filter allele-frequency threshold and optional raw CLI token
+/// (`AstraZeneca-NGS/VarDict@009e017` `var2vcf_valid.pl:21,99,159`,
+/// `var2vcf_paired.pl:21,85,165`; `MHH-Bioinformatics-Hematology/vardictcpp#4`).
+///
+/// - Explicit `--vcf-af` (`config.vcf_af`) always overrides `-f` (`config.af_threshold` /
+///   `config.af_threshold_raw`), falling back to the `-f` threshold if `vcf_af.value` is
+///   negative or non-finite.
+/// - Single-sample (`is_paired == false`, `var2vcf_valid.pl:21` `my $Freq = $opt_f ? $opt_f : 0.02;`):
+///   bare `-f 0` (`af_threshold == 0.0 && !af_threshold_truthy_zero`) is falsy in Perl and
+///   maps to `0.02` (`"0.02"`), whereas truthy zero (`-f 0.0` / `-f -0`) or positive `-f`
+///   (`0.050`, `1e-5`, `.01`, or `-f 0.001 -p` pileup) preserves `config.af_threshold` and
+///   `config.af_threshold_raw`.
+/// - Paired (`is_paired == true`, `var2vcf_paired.pl:21` `my $FREQ = defined($opt_f) ? $opt_f : 0.02;`):
+///   `-f 0` (`raw == Some("0")`) keeps `0.0` and `"0"` (`f0`), and `-f 0.0` keeps `"0.0"` (`f0.0`).
+#[derive(Clone, Copy)]
+struct ResolvedAfThreshold<'a> {
+    value: f64,
+    raw: Option<&'a str>,
+    fallback: f64,
+}
+
+impl<'a> ResolvedAfThreshold<'a> {
+    #[inline]
+    fn from_config(config: &'a Config, is_paired: bool) -> Self {
+        let (base_val, base_raw) = if !config.af_threshold.is_finite()
+            || config.af_threshold < 0.0
+            || (!is_paired && config.af_threshold == 0.0 && !config.af_threshold_truthy_zero)
+        {
+            (0.02, None)
+        } else {
+            let v = if config.af_threshold == 0.0 {
+                0.0
+            } else {
+                config.af_threshold
+            };
+            (v, config.af_threshold_raw.as_deref())
+        };
+
+        if let Some(ref thr) = config.vcf_af {
+            if thr.value.is_finite() && thr.value >= 0.0 {
+                let v = if thr.value == 0.0 { 0.0 } else { thr.value };
+                return Self {
+                    value: v,
+                    raw: thr.raw.as_deref(),
+                    fallback: base_val,
+                };
+            }
+        }
+        Self {
+            value: base_val,
+            raw: base_raw,
+            fallback: base_val,
+        }
     }
 }
 
@@ -450,17 +494,18 @@ fn write_perl_num_str<W: std::fmt::Write>(out: &mut W, x: f64) {
     }
 }
 
-/// Writes a sanitized `VcfThreshold<f64>` label (`<= 64` ASCII bytes) into `out`:
-/// re-validates `thr.raw` via [`crate::config::validate_vcf_nonneg_float_token`] and
+/// Writes a sanitized float threshold label (`<= 64` ASCII bytes) into `out`:
+/// re-validates `raw` via [`crate::config::validate_vcf_nonneg_float_token`] and
 /// `to_bits()` agreement so direct library `&Config` callers cannot inject newlines,
 /// tabs, or unbounded strings into VCF headers/filters, falling back to `write_perl_num_str`.
-fn write_vcf_threshold_label<W: std::fmt::Write>(
+fn write_float_threshold_label_raw<W: std::fmt::Write>(
     out: &mut W,
-    thr: &crate::config::VcfThreshold<f64>,
+    value: f64,
+    raw: Option<&str>,
     fallback: f64,
 ) {
-    let val = sanitize_nonneg_f64(thr.value, fallback);
-    if let Some(raw) = thr.raw.as_deref() {
+    let val = sanitize_nonneg_f64(value, fallback);
+    if let Some(raw) = raw {
         if let Ok((norm_val, norm_raw)) = crate::config::validate_vcf_nonneg_float_token(raw) {
             if norm_val.to_bits() == val.to_bits() {
                 let _ = out.write_str(norm_raw);
@@ -469,6 +514,15 @@ fn write_vcf_threshold_label<W: std::fmt::Write>(
         }
     }
     write_perl_num_str(out, val);
+}
+
+#[inline]
+fn write_vcf_threshold_label<W: std::fmt::Write>(
+    out: &mut W,
+    thr: &crate::config::VcfThreshold<f64>,
+    fallback: f64,
+) {
+    write_float_threshold_label_raw(out, thr.value, thr.raw.as_deref(), fallback);
 }
 
 #[inline]
@@ -615,7 +669,7 @@ fn write_common_vcf_depth_af_filters<W: Write>(
     config: &Config,
     min_depth: &str,
     min_vd: &str,
-    default_af: f64,
+    is_paired: bool,
 ) -> io::Result<()> {
     writeln!(
         w,
@@ -625,21 +679,36 @@ fn write_common_vcf_depth_af_filters<W: Write>(
         w,
         r#"##FILTER=<ID=v{min_vd},Description="Var Depth < {min_vd}">"#
     )?;
-    if let Some(ref thr) = config.vcf_af {
-        let mut s_af = crate::types::StackBuf::<64>::new();
-        write_vcf_threshold_label(&mut s_af, thr, default_af);
-        let af_lbl = s_af.as_str();
-        writeln!(
-            w,
-            r#"##FILTER=<ID=f{af_lbl},Description="Allele frequency < {af_lbl}">"#
-        )
-    } else {
-        writeln!(
-            w,
-            r#"##FILTER=<ID=f{default_af},Description="Allele frequency < {default_af}">"#
-        )
-    }
+    let af_thr = ResolvedAfThreshold::from_config(config, is_paired);
+    let mut s_af = crate::types::StackBuf::<64>::new();
+    write_float_threshold_label_raw(&mut s_af, af_thr.value, af_thr.raw, af_thr.fallback);
+    let af_lbl = s_af.as_str();
+    writeln!(
+        w,
+        r#"##FILTER=<ID=f{af_lbl},Description="Allele frequency < {af_lbl}">"#
+    )
 }
+
+const AMPLICON_INFO_HEADERS: &[&str] = &[
+    r#"##INFO=<ID=GDAMP,Number=1,Type=Integer,Description="No. of amplicons supporting variant">"#,
+    r#"##INFO=<ID=TLAMP,Number=1,Type=Integer,Description="Total of amplicons covering variant">"#,
+    r#"##INFO=<ID=NCAMP,Number=1,Type=Integer,Description="No. of amplicons don't work">"#,
+    r#"##INFO=<ID=AMPFLAG,Number=1,Type=Integer,Description="Top variant in amplicons don't match">"#,
+];
+
+const AMPLICON_FILTER_HEADER: &str =
+    r#"##FILTER=<ID=AMPBIAS,Description="Indicate the variant has amplicon bias.">"#;
+
+const CANONICAL_SV_INFO_HEADERS: &[&str] = &[
+    r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="SV type: INV DUP DEL INS FUS">"#,
+    r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of SV in bp">"#,
+];
+
+const CANONICAL_SV_ALT_HEADERS: &[&str] = &[
+    r#"##ALT=<ID=DEL,Description="Deletion">"#,
+    r#"##ALT=<ID=DUP,Description="Duplication">"#,
+    r#"##ALT=<ID=INV,Description="Inversion">"#,
+];
 
 const COMMON_FORMAT_PREFIX_4: &[&str] = &[
     r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">"#,
@@ -653,7 +722,7 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
     config: &Config,
     contigs: &[(String, Option<u64>)],
 ) -> io::Result<()> {
-    const SINGLE_INFO_TAIL: &[&str] = &[
+    const SINGLE_INFO_PREFIX_TAIL: &[&str] = &[
         r#"##INFO=<ID=BIAS,Number=1,Type=String,Description="Strand Bias Info">"#,
         r#"##INFO=<ID=REFBIAS,Number=1,Type=String,Description="Reference depth by strand">"#,
         r#"##INFO=<ID=VARBIAS,Number=1,Type=String,Description="Variant depth by strand">"#,
@@ -673,17 +742,12 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
         r#"##INFO=<ID=NM,Number=1,Type=Float,Description="Mean mismatches in reads">"#,
         r#"##INFO=<ID=LSEQ,Number=1,Type=String,Description="5' flanking seq">"#,
         r#"##INFO=<ID=RSEQ,Number=1,Type=String,Description="3' flanking seq">"#,
-        r#"##INFO=<ID=GDAMP,Number=1,Type=Integer,Description="No. of amplicons supporting variant">"#,
-        r#"##INFO=<ID=TLAMP,Number=1,Type=Integer,Description="Total of amplicons covering variant">"#,
-        r#"##INFO=<ID=NCAMP,Number=1,Type=Integer,Description="No. of amplicons don't work">"#,
-        r#"##INFO=<ID=AMPFLAG,Number=1,Type=Integer,Description="Top variant in amplicons don't match">"#,
+    ];
+    const SINGLE_INFO_SV_TAIL: &[&str] = &[
         r#"##INFO=<ID=HICNT,Number=1,Type=Integer,Description="High quality variant reads">"#,
         r#"##INFO=<ID=HICOV,Number=1,Type=Integer,Description="High quality total reads">"#,
         r#"##INFO=<ID=SPLITREAD,Number=1,Type=Integer,Description="No. of split reads supporting SV">"#,
         r#"##INFO=<ID=SPANPAIR,Number=1,Type=Integer,Description="No. of pairs supporting SV">"#,
-        r#"##INFO=<ID=SVTYPE,Number=1,Type=String,Description="SV type: INV DUP DEL INS FUS">"#,
-        r#"##INFO=<ID=SVLEN,Number=1,Type=Integer,Description="The length of SV in bp">"#,
-        r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="Duplication rate in fraction">"#,
     ];
     const SINGLE_FORMAT_TAIL: &[&str] = &[
         r#"##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">"#,
@@ -692,9 +756,18 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
     ];
 
     write_common_vcf_header_prefix(w, config, contigs)?;
-    for line in SINGLE_INFO_TAIL {
+    for line in SINGLE_INFO_PREFIX_TAIL
+        .iter()
+        .chain(AMPLICON_INFO_HEADERS)
+        .chain(SINGLE_INFO_SV_TAIL)
+        .chain(CANONICAL_SV_INFO_HEADERS)
+    {
         writeln!(w, "{line}")?;
     }
+    writeln!(
+        w,
+        r#"##INFO=<ID=DUPRATE,Number=1,Type=Float,Description="Duplication rate in fraction">"#
+    )?;
 
     let mut s_q = crate::types::StackBuf::<64>::new();
     let mut s_mapq = crate::types::StackBuf::<64>::new();
@@ -717,13 +790,7 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
     let opt_c = header_int_label(config.vcf_cluster_dist.as_ref(), "0", 0, &mut s_c);
 
     write_common_vcf_filter_prefix(w, qmean, map_qual_val, pmean_val, sn_val)?;
-    write_common_vcf_depth_af_filters(
-        w,
-        config,
-        total_depth,
-        var_depth,
-        valid_freq_threshold(config),
-    )?;
+    write_common_vcf_depth_af_filters(w, config, total_depth, var_depth, false)?;
     writeln!(w, "##FILTER=<ID=MSI{},Description=\"Variant in MSI region with {} non-monomer MSI or 13 monomer MSI\">", opt_i, opt_i)?;
     writeln!(w, "##FILTER=<ID=NM{},Description=\"Mean mismatches in reads >= {}, thus likely false positive\">", opt_m, opt_m)?;
     writeln!(w, "##FILTER=<ID=InGap,Description=\"The variant is in the deletion gap, thus likely false positive\">")?;
@@ -740,13 +807,15 @@ pub(crate) fn print_vcf_header_with_contigs<W: Write>(
         w,
         "##FILTER=<ID=LongMSI,Description=\"The somatic variant is flanked by long A/T (>=14)\">"
     )?;
-    writeln!(
-        w,
-        "##FILTER=<ID=AMPBIAS,Description=\"Indicate the variant has amplicon bias.\">"
-    )?;
+    writeln!(w, "{AMPLICON_FILTER_HEADER}")?;
 
     for line in COMMON_FORMAT_PREFIX_4.iter().chain(SINGLE_FORMAT_TAIL) {
         writeln!(w, "{line}")?;
+    }
+    if config.compat.canonical_sv_vcf_anchoring {
+        for line in CANONICAL_SV_ALT_HEADERS {
+            writeln!(w, "{line}")?;
+        }
     }
 
     // Ports var2vcf_valid.pl:44, 116 — `#CHROM` prints `$sample` (preserving ASCII spaces),
@@ -776,7 +845,6 @@ pub fn perl_row_skipped(ref_allele: &str) -> bool {
 #[derive(Clone, Copy)]
 enum FilterTag<'a> {
     Text(&'a str),
-    MinAf(f64),
 }
 
 struct VcfFloatTagScratch {
@@ -804,6 +872,17 @@ fn format_float_filter_tag<'a>(
     *slot = crate::types::StackBuf::<80>::new();
     let _ = slot.write_str(prefix);
     write_vcf_threshold_label(slot, thr, fallback);
+    FilterTag::Text(slot.as_str())
+}
+
+#[inline]
+fn format_resolved_af_filter_tag<'a>(
+    slot: &'a mut crate::types::StackBuf<80>,
+    af_thr: ResolvedAfThreshold<'_>,
+) -> FilterTag<'a> {
+    *slot = crate::types::StackBuf::<80>::new();
+    let _ = slot.write_str("f");
+    write_float_threshold_label_raw(slot, af_thr.value, af_thr.raw, af_thr.fallback);
     FilterTag::Text(slot.as_str())
 }
 
@@ -864,12 +943,8 @@ impl<'a> StackFilterList<'a> {
             if i > 0 {
                 buf.push(';');
             }
-            match *tag {
-                FilterTag::Text(s) => buf.push_str(s),
-                FilterTag::MinAf(af) => {
-                    let _ = write!(buf, "f{af}");
-                }
-            }
+            let FilterTag::Text(s) = *tag;
+            buf.push_str(s);
         }
     }
 
@@ -877,12 +952,73 @@ impl<'a> StackFilterList<'a> {
         let slice = self.as_slice();
         let mut out = Vec::with_capacity(slice.len());
         for tag in slice {
-            match *tag {
-                FilterTag::Text(s) => out.push(s.to_string()),
-                FilterTag::MinAf(af) => out.push(format!("f{af}")),
-            }
+            let FilterTag::Text(s) = *tag;
+            out.push(s.to_string());
         }
         out
+    }
+}
+
+/// Extract `<INV{len}>` from `Variant.genotype` (`"{genotype1}/{genotype2}"`, where
+/// `ToVarsBuilder` formats `genotype2` as `"<INV{deletion_length}>"`).
+#[inline]
+fn parse_genotype_inv_len_str(genotype: &str) -> Option<i64> {
+    let candidate = genotype.rsplit_once('/').map_or(genotype, |(_, g2)| g2);
+    if let Some(rest) = candidate
+        .strip_prefix("<INV")
+        .or_else(|| candidate.strip_prefix("<inv"))
+    {
+        if let Some(digits) = rest.strip_suffix('>') {
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                return digits.parse::<i64>().ok();
+            }
+        }
+    }
+    None
+}
+
+/// Extract symbolic SV token `DEL` / `DUP` / `INV` from `<TYPE>` (excluding `<R,R>`).
+#[inline]
+fn symbolic_sv_type_token(alt: &str) -> Option<&str> {
+    let inner = alt.strip_prefix('<')?.strip_suffix('>')?;
+    if inner.is_empty() || inner == "R,R" {
+        return None;
+    }
+    inner
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        .then_some(inner)
+}
+
+/// Signed/canonical `SVLEN` under `CompatProfile::canonical_sv_vcf_anchoring`
+/// (`clintval/vartovcf#107`, `clintval/vartovcf#192`, `AstraZeneca-NGS/VarDictJava#398`, VCFv4.2 §5.4):
+/// - `<DEL>` with `end_pos > start_pos`: negative `-(end_pos - start_pos)`.
+/// - `<INV>`: omits `var2vcf_valid.pl`'s `+1` when `start_pos` was shifted (`end_pos - start_pos == inv_len`),
+///   preserving `inv_len` when unshifted at `POS = 1` or unloaded/`'N'` `bp - 1`.
+/// - `<DUP>` / other symbolic SVs: `end_pos - start_pos`.
+#[inline]
+fn compute_canonical_svlen(
+    start_pos: i32,
+    end_pos: i32,
+    var_allele: &str,
+    inv_len_hint: Option<i64>,
+) -> i64 {
+    let span = i64::from(end_pos) - i64::from(start_pos);
+    if var_allele == "<DEL>" {
+        if end_pos > start_pos {
+            -span
+        } else {
+            span
+        }
+    } else if var_allele.contains("INV") {
+        match inv_len_hint {
+            Some(inv_len) if span + 1 == inv_len => inv_len,
+            Some(_) => span,
+            None if start_pos == 1 && end_pos >= start_pos => span + 1,
+            None => span,
+        }
+    } else {
+        span
     }
 }
 
@@ -923,10 +1059,10 @@ fn sv_dropped_by_splitreads(
     }
 }
 
-struct ValidThresholds {
+struct ValidThresholds<'a> {
     min_depth: i32,
     min_vd: i32,
-    fallback_freq: f64,
+    af_thr: ResolvedAfThreshold<'a>,
     freq: f64,
     pmean: f64,
     qmean: f64,
@@ -938,13 +1074,10 @@ struct ValidThresholds {
     opt_c: i32,
 }
 
-impl ValidThresholds {
+impl<'a> ValidThresholds<'a> {
     #[inline]
-    fn from_config(config: &Config) -> Self {
-        let fallback_freq = valid_freq_threshold(config);
-        let freq = config.vcf_af.as_ref().map_or(fallback_freq, |t| {
-            sanitize_nonneg_f64(t.value, fallback_freq)
-        });
+    fn from_config(config: &'a Config) -> Self {
+        let af_thr = ResolvedAfThreshold::from_config(config, false);
         Self {
             min_depth: config
                 .vcf_min_depth
@@ -954,8 +1087,8 @@ impl ValidThresholds {
                 .vcf_min_vd
                 .as_ref()
                 .map_or(2, |t| sanitize_nonneg_i32(t.value, 2)),
-            fallback_freq,
-            freq,
+            af_thr,
+            freq: af_thr.value,
             pmean: config
                 .vcf_pmean
                 .as_ref()
@@ -990,7 +1123,7 @@ impl ValidThresholds {
 fn has_non_fisher_valid_filter(
     variant: &Variant,
     config: &Config,
-    thr: &ValidThresholds,
+    thr: &ValidThresholds<'_>,
     amp: Option<(i32, i32, i32, bool)>,
 ) -> bool {
     let exact_tie = config.compat.exact_binary_half_even;
@@ -1078,7 +1211,7 @@ fn collect_valid_filters_into<'a>(
     tag_scratch: &'a mut VcfFloatTagScratch,
     variant: &Variant,
     config: &Config,
-    thr: &ValidThresholds,
+    thr: &ValidThresholds<'_>,
     pvs: Option<i32>,
     amp: Option<(i32, i32, i32, bool)>,
     sbf: f64,
@@ -1117,11 +1250,7 @@ fn collect_valid_filters_into<'a>(
     }
 
     if af < thr.freq {
-        if let Some(ref af_thr) = config.vcf_af {
-            filters.push(format_float_filter_tag(s_f, "f", af_thr, thr.fallback_freq));
-        } else {
-            filters.push(FilterTag::MinAf(thr.freq));
-        }
+        filters.push(format_resolved_af_filter_tag(s_f, thr.af_thr));
     }
 
     if pmean < thr.pmean {
@@ -1510,13 +1639,28 @@ fn format_vcf_record_with_filter<F: FnOnce(&mut String)>(
         let (splitreads, spanpairs) = parse_sv_counts(&variant.sv);
 
         if !alt_is_dot && variant.var_allele.contains('<') {
-            // ports var2vcf_valid.pl:199,206-210 — `$alt =~ /</` (including `#342`
-            // mid-allele `<dup-N>` when `--min-splitreads 0`); SVLEN = end - start,
-            // incremented only when the ALT contains INV.
-            let mut svlen = i64::from(variant.end_pos) - i64::from(variant.start_pos);
-            if variant.var_allele.contains("INV") {
-                svlen += 1;
-            }
+            // ports var2vcf_valid.pl:199,206-210 — `$alt =~ /</` (including
+            // `AstraZeneca-NGS/VarDictJava#342` mid-allele `<dup-N>` when `--min-splitreads 0`);
+            // under `canonical_sv_vcf_anchoring` (`clintval/vartovcf#107`), `<DEL>` negates
+            // `SVLEN` and shifted `<INV>` omits `+1` (`SVLEN == END - POS`).
+            let svlen = if config.compat.canonical_sv_vcf_anchoring {
+                let inv_hint = variant
+                    .genotype
+                    .as_deref()
+                    .and_then(parse_genotype_inv_len_str);
+                compute_canonical_svlen(
+                    variant.start_pos,
+                    variant.end_pos,
+                    &variant.var_allele,
+                    inv_hint,
+                )
+            } else {
+                let mut len = i64::from(variant.end_pos) - i64::from(variant.start_pos);
+                if variant.var_allele.contains("INV") {
+                    len += 1;
+                }
+                len
+            };
             buf.push_str(";SVTYPE=");
             for c in variant.var_allele.chars() {
                 if c != '<' && c != '>' {
@@ -1577,10 +1721,7 @@ pub fn format_vcf_record_into(
     // Amplicon columns 37-40 (GDAMP, TLAMP, NCAMP, AMPFLAG); None = simple mode.
     amp: Option<(i32, i32, i32, bool)>,
 ) {
-    let fallback_freq = valid_freq_threshold(config);
-    let freq_threshold = config.vcf_af.as_ref().map_or(fallback_freq, |t| {
-        sanitize_nonneg_f64(t.value, fallback_freq)
-    });
+    let freq_threshold = ResolvedAfThreshold::from_config(config, false).value;
     let gt_freq = effective_gt_freq(config);
     let _ = format_vcf_record_with_filter(
         buf,
@@ -2284,9 +2425,24 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
         r#"##FORMAT=<ID=NM,Number=1,Type=Float,Description="Mean mismatches in reads">"#,
     ];
 
+    let paired_amp_hdr = config.compat.paired_somatic_amplicon
+        && config.amplicon.is_some()
+        && config.region.is_none();
+
     write_common_vcf_header_prefix(w, config, contigs)?;
     for line in PAIRED_INFO_TAIL {
         writeln!(w, "{line}")?;
+    }
+    if paired_amp_hdr {
+        for line in AMPLICON_INFO_HEADERS {
+            writeln!(w, "{line}")?;
+        }
+    }
+    if config.compat.canonical_sv_vcf_anchoring {
+        // Note: `##INFO=<ID=END,...>` is already emitted by `write_common_vcf_header_prefix`.
+        for line in CANONICAL_SV_INFO_HEADERS {
+            writeln!(w, "{line}")?;
+        }
     }
 
     // ports var2vcf_paired.pl:76-93 (zero heap String allocations)
@@ -2323,7 +2479,7 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
         w,
         r#"##FILTER=<ID=MAF0.05,Description="Matched sample has AF > 0.05, thus not somatic">"#
     )?;
-    write_common_vcf_depth_af_filters(w, config, min_depth, min_vd, config.af_threshold)?;
+    write_common_vcf_depth_af_filters(w, config, min_depth, min_vd, true)?;
     writeln!(
         w,
         r#"##FILTER=<ID=P{pval_lbl},Description="Not significant with p-value > {pval_lbl}">"#
@@ -2356,10 +2512,18 @@ pub(crate) fn print_paired_vcf_header_with_contigs<W: Write>(
         w,
         r#"##FILTER=<ID=LongAT,Description="The somatic variant is flanked by long A/T (>=14)">"#
     )?;
+    if paired_amp_hdr {
+        writeln!(w, "{AMPLICON_FILTER_HEADER}")?;
+    }
 
     // ports var2vcf_paired.pl:94-112
     for line in COMMON_FORMAT_PREFIX_4.iter().chain(PAIRED_FORMAT_TAIL) {
         writeln!(w, "{line}")?;
+    }
+    if config.compat.canonical_sv_vcf_anchoring {
+        for line in CANONICAL_SV_ALT_HEADERS {
+            writeln!(w, "{line}")?;
+        }
     }
 
     // ports var2vcf_paired.pl:43-49,115 — sample names
@@ -2701,15 +2865,25 @@ pub fn format_paired_vcf_record(
         v1
     };
 
+    let active_amp = if config.compat.paired_somatic_amplicon {
+        if sv.end_is_variant2 && sv.variant1.pos_coverage == 0 {
+            sv.normal_amplicon.or(sv.tumor_amplicon)
+        } else {
+            sv.tumor_amplicon.or(sv.normal_amplicon)
+        }
+    } else {
+        None
+    };
+    let amp_tuple = active_amp.map(|a| (a.gdamp, a.tlamp, a.ncamp, a.ampflag));
+
     let eff_min_depth = config.vcf_min_depth.as_ref().map_or(PAIRED_MIN_DEPTH, |t| {
         sanitize_nonneg_i32(t.value, PAIRED_MIN_DEPTH)
     });
     let eff_min_vd = config.vcf_min_vd.as_ref().map_or(PAIRED_VAR_DEPTH, |t| {
         sanitize_nonneg_i32(t.value, PAIRED_VAR_DEPTH)
     });
-    let eff_freq = config.vcf_af.as_ref().map_or(config.af_threshold, |t| {
-        sanitize_nonneg_f64(t.value, config.af_threshold)
-    });
+    let eff_af_thr = ResolvedAfThreshold::from_config(config, true);
+    let eff_freq = eff_af_thr.value;
     let eff_pmean = config
         .vcf_pmean
         .as_ref()
@@ -2745,7 +2919,7 @@ pub fn format_paired_vcf_record(
             || vd2 < eff_min_vd
             || af2 < eff_freq
             || crate::types::round_half_even_compat(v2.mean_position, 1, exact_tie) < eff_pmean
-            || (!v2.pstd && vd2 < eff_min_depth)
+            || (amp_tuple.is_none() && !v2.pstd && vd2 < eff_min_depth)
             || qual2 < eff_qmean
             || crate::types::round_half_even_compat(v2.mean_mapping_quality, 1, exact_tie)
                 < eff_mapq
@@ -2799,16 +2973,7 @@ pub fn format_paired_vcf_record(
 
         // Tumor quality filters (:165-175).
         if af1 < eff_freq {
-            if let Some(ref af_thr) = config.vcf_af {
-                filters.push(format_float_filter_tag(
-                    s_f,
-                    "f",
-                    af_thr,
-                    config.af_threshold,
-                ));
-            } else {
-                filters.push(FilterTag::MinAf(config.af_threshold));
-            }
+            filters.push(format_resolved_af_filter_tag(s_f, eff_af_thr));
         }
         if pmean1 < eff_pmean {
             if let Some(ref p_thr) = config.vcf_pmean {
@@ -2817,7 +2982,7 @@ pub fn format_paired_vcf_record(
                 filters.push(FilterTag::Text("p8"));
             }
         }
-        if !v1.pstd && vd1 < eff_min_depth {
+        if amp_tuple.is_none() && !v1.pstd && vd1 < eff_min_depth {
             filters.push(FilterTag::Text("pSTD"));
         }
         if qual1 < eff_qmean {
@@ -2926,6 +3091,12 @@ pub fn format_paired_vcf_record(
             }
         }
     }
+    // Paired somatic amplicon concordance (`AstraZeneca-NGS/VarDictJava#378`,
+    // `var2vcf_valid.pl:185`): evaluate `AMPBIAS` outside `if !normal_clean` so
+    // shared single-amplicon PCR artifacts are never promoted to `PASS`.
+    if compute_ampbias(amp_tuple) {
+        filters.push(FilterTag::Text("AMPBIAS"));
+    }
 
     let gt = paired_gt(af1, eff_freq, eff_gt_freq);
     let gtm = paired_gt(af2, eff_freq, eff_gt_freq);
@@ -2987,6 +3158,42 @@ pub fn format_paired_vcf_record(
         line.push('0');
     } else {
         line.push_str(&end_var.right_seq);
+    }
+    if let Some(amp) = active_amp {
+        line.push_str(";GDAMP=");
+        crate::util::push_i32(&mut line, amp.gdamp);
+        line.push_str(";TLAMP=");
+        crate::util::push_i32(&mut line, amp.tlamp);
+        line.push_str(";NCAMP=");
+        crate::util::push_i32(&mut line, amp.ncamp);
+        line.push_str(if amp.ampflag {
+            ";AMPFLAG=1"
+        } else {
+            ";AMPFLAG=0"
+        });
+    }
+    if config.compat.canonical_sv_vcf_anchoring {
+        if let Some(svtype) = symbolic_sv_type_token(&v1.var_allele) {
+            let inv_hint = v1
+                .genotype
+                .as_deref()
+                .and_then(parse_genotype_inv_len_str)
+                .or_else(|| {
+                    end_var
+                        .genotype
+                        .as_deref()
+                        .and_then(parse_genotype_inv_len_str)
+                });
+            let svlen = compute_canonical_svlen(v1.start_pos, v1.end_pos, &v1.var_allele, inv_hint);
+            if !config.omit_end_tag {
+                line.push_str(";END=");
+                crate::util::push_i32(&mut line, v1.end_pos);
+            }
+            line.push_str(";SVTYPE=");
+            line.push_str(svtype);
+            line.push_str(";SVLEN=");
+            crate::util::push_i64(&mut line, svlen);
+        }
     }
     if p_likely {
         line.push_str(";P0.01Likely");
@@ -6466,5 +6673,692 @@ mod tests {
                 "{tumor_sample_col}"
             );
         }
+    }
+
+    #[test]
+    fn test_wave4_af_threshold_raw_pileup_preservation_and_vcf_af_override() {
+        use crate::config::VcfThreshold;
+
+        let lengths = HashMap::new();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(500),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let render_single = |cfg: &Config| -> String {
+            let mut b = Vec::new();
+            print_vcf_header(&mut b, cfg, &lengths).unwrap();
+            String::from_utf8(b).unwrap()
+        };
+        let render_paired = |cfg: &Config| -> String {
+            let mut b = Vec::new();
+            print_paired_vcf_header(&mut b, cfg, &lengths).unwrap();
+            String::from_utf8(b).unwrap()
+        };
+
+        // 1. Single-sample (`AstraZeneca-NGS/VarDict@009e017` `var2vcf_valid.pl:21,99,159`,
+        //    `MHH-Bioinformatics-Hematology/vardictcpp#4`):
+        //    - `-f 0` (`af_threshold == 0.0 && !af_threshold_truthy_zero`, `raw == Some("0")`) -> `"0.02"` (`f0.02`)
+        //    - `-f 0.0` (`af_threshold_truthy_zero == true`, `raw == Some("0.0")`) -> `"0.0"` (`f0.0`)
+        //    - `-f -0` (`af_threshold_truthy_zero == true`, `raw == Some("0")`) -> `"0"` (`f0`)
+        //    - `-f 0.050` / `-f 1e-5` / `-f .01` -> verbatim `f0.050`, `f1e-5`, `f.01`
+        for (af_val, truthy_zero, raw_opt, exp_lbl, probe_af, exp_filtered, exp_gt) in [
+            (0.0, false, Some("0"), "0.02", 0.01, true, "0/0"),
+            (0.0, true, Some("0.0"), "0.0", 0.01, false, "0/1"),
+            (0.0, true, Some("0"), "0", 0.01, false, "0/1"),
+            (0.05, false, Some("0.050"), "0.050", 0.04, true, "0/0"),
+            (1e-5, false, Some("1e-5"), "1e-5", 0.0, true, "0/0"),
+            (0.01, false, Some(".01"), ".01", 0.005, true, "0/0"),
+        ] {
+            let mut cfg = Config::default();
+            cfg.af_threshold = af_val;
+            cfg.af_threshold_truthy_zero = truthy_zero;
+            cfg.af_threshold_raw = raw_opt.map(str::to_string);
+
+            let sh = render_single(&cfg);
+            let exp_hdr =
+                format!(r#"##FILTER=<ID=f{exp_lbl},Description="Allele frequency < {exp_lbl}">"#);
+            assert!(
+                sh.contains(&exp_hdr),
+                "single header mismatch for raw={raw_opt:?}: expected {exp_hdr:?} in:\n{sh}"
+            );
+
+            let mut var = amplicon_passing_variant();
+            var.frequency = probe_af;
+            let filters = filter_variant(&var, &cfg, 0, None, 1.0, "1.0");
+            let exp_tag = format!("f{exp_lbl}");
+            assert_eq!(
+                filters.contains(&exp_tag),
+                exp_filtered,
+                "single filter mismatch for raw={raw_opt:?}: got {filters:?}"
+            );
+
+            let mut scratch = String::new();
+            let SingleVcfEvent::Record(ev_rec) =
+                build_single_vcf_event(&mut scratch, &var, &region, &cfg, None)
+            else {
+                panic!("expected Record for raw={raw_opt:?}");
+            };
+            if exp_filtered {
+                assert_eq!(ev_rec.filter_str(), exp_tag, "raw={raw_opt:?}");
+            } else {
+                assert_eq!(ev_rec.filter_str(), "PASS", "raw={raw_opt:?}");
+            }
+            let sample_col = ev_rec.as_str().split('\t').nth(9).unwrap();
+            assert!(
+                sample_col.starts_with(&format!("{exp_gt}:")),
+                "single GT mismatch for raw={raw_opt:?}: expected {exp_gt}, got {sample_col}"
+            );
+        }
+
+        // 2. Paired mode (`var2vcf_paired.pl:21,85,165`): `defined($opt_f)` semantics so
+        //    `-f 0` (`raw == Some("0")`) emits `f0`, `-f 0.0` emits `f0.0`, and `-f 0.050`/`1e-5`/`.01` verbatim!
+        for (af_val, truthy_zero, raw_opt, exp_lbl, probe_af, exp_filtered, exp_gt) in [
+            (0.0, false, Some("0"), "0", 0.01, false, "0/1"),
+            (0.0, true, Some("0.0"), "0.0", 0.01, false, "0/1"),
+            (0.05, false, Some("0.050"), "0.050", 0.04, true, "0/0"),
+            (1e-5, false, Some("1e-5"), "1e-5", 0.0, true, "0/0"),
+            (0.01, false, Some(".01"), ".01", 0.005, true, "0/0"),
+        ] {
+            let mut pcfg = Config::default();
+            pcfg.af_threshold = af_val;
+            pcfg.af_threshold_truthy_zero = truthy_zero;
+            pcfg.af_threshold_raw = raw_opt.map(str::to_string);
+
+            let ph = render_paired(&pcfg);
+            let exp_hdr =
+                format!(r#"##FILTER=<ID=f{exp_lbl},Description="Allele frequency < {exp_lbl}">"#);
+            assert!(
+                ph.contains(&exp_hdr),
+                "paired header mismatch for raw={raw_opt:?}: expected {exp_hdr:?} in:\n{ph}"
+            );
+
+            let mut tumor = clean_normal();
+            tumor.var_type = "SNV".to_string();
+            tumor.frequency = probe_af;
+            let mut dirty_norm = clean_normal();
+            dirty_norm.pos_coverage = 0; // !normal_clean
+            dirty_norm.frequency = 0.0;
+            let prec = format_paired_vcf_record(
+                &somatic_sv(tumor, Some(dirty_norm), "LikelySomatic"),
+                "chr1",
+                &pcfg,
+            );
+            let exp_tag = format!("f{exp_lbl}");
+            if exp_filtered {
+                assert_eq!(prec.filter_str(), exp_tag, "paired raw={raw_opt:?}");
+            } else {
+                assert_eq!(prec.filter_str(), "PASS", "paired raw={raw_opt:?}");
+            }
+            let tumor_col = prec.as_str().split('\t').nth(9).unwrap();
+            assert!(
+                tumor_col.starts_with(&format!("{exp_gt}:")),
+                "paired GT mismatch for raw={raw_opt:?}: expected {exp_gt}, got {tumor_col}"
+            );
+        }
+
+        // 3. Pileup `-f 0.001 -p` (`pileup = true`, `freq = -1.0`, `af_threshold = 0.001`, `raw = Some("0.001")`)
+        //    preserves `0.001` (`f0.001`) instead of falling back to `0.02`, while `-p` without `-f` keeps `0.01`.
+        let mut pileup_custom = Config::default();
+        pileup_custom.pileup = true;
+        pileup_custom.af_threshold = 0.001;
+        pileup_custom.af_threshold_raw = Some("0.0010".to_string());
+        pileup_custom.apply_pileup_overrides();
+        assert_eq!(pileup_custom.freq, -1.0);
+        assert!(render_single(&pileup_custom)
+            .contains(r#"##FILTER=<ID=f0.0010,Description="Allele frequency < 0.0010">"#));
+        let mut v_pass = amplicon_passing_variant();
+        v_pass.frequency = 0.005; // >= 0.001 (would fail if fallen back to 0.02!)
+        assert!(filter_variant(&v_pass, &pileup_custom, 0, None, 1.0, "1.0").is_empty());
+        let rec_p_pass = format_vcf_record(&v_pass, &region, &pileup_custom, &[], 1.0, "1.0", None);
+        assert!(rec_p_pass.split('\t').nth(9).unwrap().starts_with("0/1:"));
+        let mut v_sub = amplicon_passing_variant();
+        v_sub.frequency = 0.0005; // < 0.001 -> f0.0010
+        assert_eq!(
+            filter_variant(&v_sub, &pileup_custom, 0, None, 1.0, "1.0"),
+            vec!["f0.0010"]
+        );
+
+        let mut pileup_default = Config::default();
+        pileup_default.pileup = true;
+        pileup_default.apply_pileup_overrides();
+        assert!(render_single(&pileup_default)
+            .contains(r#"##FILTER=<ID=f0.01,Description="Allele frequency < 0.01">"#));
+
+        // 4. Explicit `--vcf-af` (`config.vcf_af`) ALWAYS overrides `-f` (`af_threshold` / `af_threshold_raw`),
+        //    and programmatic `af_threshold_raw = None` / malicious `raw` sanitize via `write_vcf_threshold_label`.
+        let mut override_cfg = Config::default();
+        override_cfg.af_threshold = 0.0;
+        override_cfg.af_threshold_truthy_zero = false;
+        override_cfg.af_threshold_raw = Some("0".to_string());
+        override_cfg.vcf_af = Some(VcfThreshold::with_raw(0.08, "0.080".to_string()));
+        assert!(render_single(&override_cfg)
+            .contains(r#"##FILTER=<ID=f0.080,Description="Allele frequency < 0.080">"#));
+        assert!(render_paired(&override_cfg)
+            .contains(r#"##FILTER=<ID=f0.080,Description="Allele frequency < 0.080">"#));
+        let mut v_06 = amplicon_passing_variant();
+        v_06.frequency = 0.06;
+        assert_eq!(
+            filter_variant(&v_06, &override_cfg, 0, None, 1.0, "1.0"),
+            vec!["f0.080"]
+        );
+
+        let mut prog_sci = Config::default();
+        prog_sci.af_threshold = 1e-5;
+        prog_sci.af_threshold_raw = None;
+        assert!(render_single(&prog_sci)
+            .contains(r#"##FILTER=<ID=f1e-05,Description="Allele frequency < 1e-05">"#));
+        assert!(render_paired(&prog_sci)
+            .contains(r#"##FILTER=<ID=f1e-05,Description="Allele frequency < 1e-05">"#));
+
+        let mut evil_raw = Config::default();
+        evil_raw.af_threshold = 0.05;
+        evil_raw.af_threshold_raw = Some("0.05\n##evil".to_string());
+        for h in [render_single(&evil_raw), render_paired(&evil_raw)] {
+            assert!(!h.contains("##evil"));
+            assert!(h.contains(r#"##FILTER=<ID=f0.05,Description="Allele frequency < 0.05">"#));
+        }
+
+        // 5. Differential header check vs live upstream `perl var2vcf_valid.pl` & `var2vcf_paired.pl`
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let valid_pl = repo_root.join("VarDictJava/VarDict/var2vcf_valid.pl");
+        let paired_pl = repo_root.join("VarDictJava/VarDict/var2vcf_paired.pl");
+        if valid_pl.exists()
+            && paired_pl.exists()
+            && std::process::Command::new("perl")
+                .arg("-v")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        {
+            for (raw_f, af_val, truthy_zero) in [
+                ("0", 0.0, false),
+                ("0.0", 0.0, true),
+                ("0.050", 0.05, false),
+                ("1e-5", 1e-5, false),
+                (".01", 0.01, false),
+            ] {
+                let mut cfg = Config::default();
+                cfg.af_threshold = af_val;
+                cfg.af_threshold_truthy_zero = truthy_zero;
+                cfg.af_threshold_raw = Some(raw_f.to_string());
+
+                for (script, rust_hdr) in [
+                    (&valid_pl, render_single(&cfg)),
+                    (&paired_pl, render_paired(&cfg)),
+                ] {
+                    let mut child = std::process::Command::new("perl")
+                        .arg(script)
+                        .args(["-N", "SAMPLE", "-f", raw_f])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .spawn()
+                        .unwrap();
+                    drop(child.stdin.take());
+                    let out = child.wait_with_output().unwrap();
+                    assert!(out.status.success());
+                    let perl_hdr = String::from_utf8(out.stdout).unwrap();
+                    let perl_f_line = perl_hdr
+                        .lines()
+                        .find(|l| l.starts_with("##FILTER=<ID=f"))
+                        .expect("perl f filter header line");
+                    let rust_f_line = rust_hdr
+                        .lines()
+                        .find(|l| l.starts_with("##FILTER=<ID=f"))
+                        .expect("rust f filter header line");
+                    assert_eq!(
+                        rust_f_line,
+                        perl_f_line,
+                        "mismatch vs {:?} for -f {raw_f:?}",
+                        script.file_name()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_wave4_canonical_sv_vcf_anchoring_signed_svlen_and_paired_sv_info() {
+        let lengths = HashMap::new();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(5000),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mut vj_cfg = Config::default();
+        vj_cfg.omit_end_tag = false;
+        let mut anchor_only_cfg = vj_cfg.clone();
+        anchor_only_cfg.compat.canonical_sv_vcf_anchoring = true;
+
+        // 1. Single-sample `<DEL>` negative `SVLEN`, `<DUP>` positive `SVLEN`, and `<INV>` `SVLEN`
+        //    (`clintval/vartovcf#107`, `clintval/vartovcf#192`, `AstraZeneca-NGS/VarDictJava#398`).
+        let mut del_sv = amplicon_passing_variant();
+        del_sv.start_pos = 1000;
+        del_sv.end_pos = 1250;
+        del_sv.ref_allele = "A".to_string();
+        del_sv.var_allele = "<DEL>".to_string();
+        del_sv.var_type = "Deletion".to_string();
+        del_sv.sv = "6-4-1".to_string();
+
+        let del_vj = format_vcf_record(&del_sv, &region, &vj_cfg, &[], 1.0, "1.0", None);
+        assert!(del_vj.contains(";END=1250;") && del_vj.contains(";SVTYPE=DEL;SVLEN=250;"));
+        let del_off = format_vcf_record(&del_sv, &region, &anchor_only_cfg, &[], 1.0, "1.0", None);
+        assert!(
+            del_off.contains(";END=1250;") && del_off.contains(";SVTYPE=DEL;SVLEN=-250;"),
+            "canonical <DEL> must emit negative SVLEN=-250: {del_off}"
+        );
+
+        // Degenerate end_pos == start_pos keeps SVLEN=0
+        let mut del_zero = del_sv.clone();
+        del_zero.end_pos = 1000;
+        let del_zero_off =
+            format_vcf_record(&del_zero, &region, &anchor_only_cfg, &[], 1.0, "1.0", None);
+        assert!(del_zero_off.contains(";SVTYPE=DEL;SVLEN=0;"));
+
+        // Shifted `<INV>` (`POS = 1000, END = 1250`, both with `<INV250>` genotype and `None` genotype)
+        // omits `+1` so `SVLEN == END - POS == 250`.
+        let mut inv_shifted = del_sv.clone();
+        inv_shifted.var_allele = "<INV>".to_string();
+        inv_shifted.var_type = "INV".to_string();
+        inv_shifted.genotype = Some("A/<INV250>".to_string());
+        let inv_shifted_off = format_vcf_record(
+            &inv_shifted,
+            &region,
+            &anchor_only_cfg,
+            &[],
+            1.0,
+            "1.0",
+            None,
+        );
+        assert!(
+            inv_shifted_off.contains(";END=1250;")
+                && inv_shifted_off.contains(";SVTYPE=INV;SVLEN=250;"),
+            "shifted <INV> must emit SVLEN=250 == END - POS: {inv_shifted_off}"
+        );
+        inv_shifted.genotype = None;
+        let inv_shifted_none = format_vcf_record(
+            &inv_shifted,
+            &region,
+            &anchor_only_cfg,
+            &[],
+            1.0,
+            "1.0",
+            None,
+        );
+        assert!(inv_shifted_none.contains(";SVTYPE=INV;SVLEN=250;"));
+
+        // Unshifted `<INV>` at contig start `POS = 1, END = 250` or unloaded/`'N'` `POS = 500, END = 749`
+        // with `<INV250>` preserves true inversion length `SVLEN=250`.
+        let mut inv_pos1 = inv_shifted.clone();
+        inv_pos1.start_pos = 1;
+        inv_pos1.end_pos = 250;
+        inv_pos1.genotype = Some("A/<INV250>".to_string());
+        assert!(
+            format_vcf_record(&inv_pos1, &region, &anchor_only_cfg, &[], 1.0, "1.0", None)
+                .contains(";SVTYPE=INV;SVLEN=250;")
+        );
+        inv_pos1.genotype = None;
+        assert!(
+            format_vcf_record(&inv_pos1, &region, &anchor_only_cfg, &[], 1.0, "1.0", None)
+                .contains(";SVTYPE=INV;SVLEN=250;")
+        );
+        let mut inv_n_fallback = inv_shifted;
+        inv_n_fallback.start_pos = 500;
+        inv_n_fallback.end_pos = 749;
+        inv_n_fallback.genotype = Some("N/<INV250>".to_string());
+        assert!(format_vcf_record(
+            &inv_n_fallback,
+            &region,
+            &anchor_only_cfg,
+            &[],
+            1.0,
+            "1.0",
+            None
+        )
+        .contains(";SVTYPE=INV;SVLEN=250;"));
+
+        // 2. Paired header & records (`print_paired_vcf_header` & `format_paired_vcf_record`)
+        let mut ph_vj_buf = Vec::new();
+        print_paired_vcf_header(&mut ph_vj_buf, &vj_cfg, &lengths).unwrap();
+        let ph_vj = String::from_utf8(ph_vj_buf).unwrap();
+        assert_eq!(ph_vj.matches("##INFO=<ID=END,").count(), 1);
+        assert!(!ph_vj.contains("##INFO=<ID=SVTYPE,"));
+        assert!(!ph_vj.contains("##INFO=<ID=SVLEN,"));
+        assert!(!ph_vj.contains("##ALT=<ID="));
+
+        let mut ph_off_buf = Vec::new();
+        print_paired_vcf_header(&mut ph_off_buf, &anchor_only_cfg, &lengths).unwrap();
+        let ph_off = String::from_utf8(ph_off_buf).unwrap();
+        assert_eq!(
+            ph_off.matches("##INFO=<ID=END,").count(),
+            1,
+            "paired header must NEVER duplicate ##INFO=<ID=END,...>:\n{ph_off}"
+        );
+        assert_eq!(ph_off.matches("##INFO=<ID=SVTYPE,").count(), 1);
+        assert_eq!(ph_off.matches("##INFO=<ID=SVLEN,").count(), 1);
+        assert_eq!(
+            ph_off
+                .matches(r#"##ALT=<ID=DEL,Description="Deletion">"#)
+                .count(),
+            1
+        );
+        assert_eq!(
+            ph_off
+                .matches(r#"##ALT=<ID=DUP,Description="Duplication">"#)
+                .count(),
+            1
+        );
+        assert_eq!(
+            ph_off
+                .matches(r#"##ALT=<ID=INV,Description="Inversion">"#)
+                .count(),
+            1
+        );
+
+        // Paired `<DEL>`, `<DUP>`, and `<INV>` emit `;END=...;SVTYPE=...;SVLEN=...` under canonical_sv_vcf_anchoring,
+        // respect `--no-end` (`omit_end_tag = true`), and stay omitted under default compat or non-SVs / `<R,R>`.
+        let mut p_del = clean_normal();
+        p_del.start_pos = 1000;
+        p_del.end_pos = 1250;
+        p_del.ref_allele = "A".to_string();
+        p_del.var_allele = "<DEL>".to_string();
+        p_del.var_type = "Deletion".to_string();
+        let p_del_vj = format_paired_vcf_record(
+            &somatic_sv(p_del.clone(), None, "StrongSomatic"),
+            "chr1",
+            &vj_cfg,
+        );
+        assert!(!p_del_vj.as_str().contains(";END="));
+        assert!(!p_del_vj.as_str().contains(";SVTYPE="));
+        assert!(!p_del_vj.as_str().contains(";SVLEN="));
+
+        let p_del_off = format_paired_vcf_record(
+            &somatic_sv(p_del.clone(), None, "StrongSomatic"),
+            "chr1",
+            &anchor_only_cfg,
+        );
+        assert!(
+            p_del_off
+                .as_str()
+                .contains(";END=1250;SVTYPE=DEL;SVLEN=-250\tGT:"),
+            "paired <DEL> must emit ;END=1250;SVTYPE=DEL;SVLEN=-250: {}",
+            p_del_off.as_str()
+        );
+
+        let mut no_end_anchor_cfg = anchor_only_cfg.clone();
+        no_end_anchor_cfg.omit_end_tag = true;
+        let p_del_no_end = format_paired_vcf_record(
+            &somatic_sv(p_del, None, "StrongSomatic"),
+            "chr1",
+            &no_end_anchor_cfg,
+        );
+        assert!(!p_del_no_end.as_str().contains(";END="));
+        assert!(p_del_no_end
+            .as_str()
+            .contains(";SVTYPE=DEL;SVLEN=-250\tGT:"));
+
+        let mut p_dup = clean_normal();
+        p_dup.start_pos = 2000;
+        p_dup.end_pos = 2400;
+        p_dup.ref_allele = "C".to_string();
+        p_dup.var_allele = "<DUP>".to_string();
+        p_dup.var_type = "DUP".to_string();
+        let p_dup_off = format_paired_vcf_record(
+            &somatic_sv(p_dup, None, "StrongSomatic"),
+            "chr1",
+            &anchor_only_cfg,
+        );
+        assert!(p_dup_off
+            .as_str()
+            .contains(";END=2400;SVTYPE=DUP;SVLEN=400\tGT:"));
+
+        // Shifted & unshifted (`StrongLOH` via `end_var.genotype`) paired `<INV>`
+        let mut p_inv = clean_normal();
+        p_inv.start_pos = 3000;
+        p_inv.end_pos = 3300;
+        p_inv.ref_allele = "G".to_string();
+        p_inv.var_allele = "<INV>".to_string();
+        p_inv.var_type = "INV".to_string();
+        p_inv.genotype = Some("G/<INV300>".to_string());
+        let p_inv_off = format_paired_vcf_record(
+            &somatic_sv(p_inv.clone(), None, "StrongSomatic"),
+            "chr1",
+            &anchor_only_cfg,
+        );
+        assert!(p_inv_off
+            .as_str()
+            .contains(";END=3300;SVTYPE=INV;SVLEN=300\tGT:"));
+
+        let mut loh_t = Variant::new();
+        loh_t.start_pos = 1;
+        loh_t.end_pos = 300;
+        loh_t.ref_allele = "G".to_string();
+        loh_t.var_allele = "<INV>".to_string();
+        loh_t.var_type = "INV".to_string();
+        let mut loh_n = p_inv;
+        loh_n.start_pos = 1;
+        loh_n.end_pos = 300;
+        let mut loh_sv = somatic_sv(loh_t, Some(loh_n), "StrongLOH");
+        loh_sv.end_is_variant2 = true;
+        let p_inv_loh = format_paired_vcf_record(&loh_sv, "chr1", &anchor_only_cfg);
+        assert!(p_inv_loh
+            .as_str()
+            .contains(";END=300;SVTYPE=INV;SVLEN=300\tGT:"));
+
+        // Non-SV SNV and `<R,R>` never emit paired SV tags
+        let mut rr_var = clean_normal();
+        rr_var.var_allele = "<R,R>".to_string();
+        let rr_rec = format_paired_vcf_record(
+            &somatic_sv(rr_var, None, "StrongSomatic"),
+            "chr1",
+            &anchor_only_cfg,
+        );
+        assert!(!rr_rec.as_str().contains(";END=") && !rr_rec.as_str().contains(";SVTYPE="));
+    }
+
+    #[test]
+    fn test_wave4_paired_somatic_amplicon_header_ampbias_pstd_and_loh_concordance() {
+        use crate::config::AmpliconConcordance;
+
+        let lengths = HashMap::new();
+        let render_paired = |cfg: &Config| -> String {
+            let mut b = Vec::new();
+            print_paired_vcf_header(&mut b, cfg, &lengths).unwrap();
+            String::from_utf8(b).unwrap()
+        };
+
+        // 1. Paired amplicon header lines (`AstraZeneca-NGS/VarDictJava#378`) emitted iff
+        //    `config.compat.paired_somatic_amplicon && config.amplicon.is_some() && config.region.is_none()`
+        let mut amp_cfg = Config::default();
+        amp_cfg.compat.paired_somatic_amplicon = true;
+        amp_cfg.amplicon = Some("10:0.95".to_string());
+        amp_cfg.region = None;
+
+        let ph_amp = render_paired(&amp_cfg);
+        for req in [
+            r#"##INFO=<ID=GDAMP,Number=1,Type=Integer,Description="No. of amplicons supporting variant">"#,
+            r#"##INFO=<ID=TLAMP,Number=1,Type=Integer,Description="Total of amplicons covering variant">"#,
+            r#"##INFO=<ID=NCAMP,Number=1,Type=Integer,Description="No. of amplicons don't work">"#,
+            r#"##INFO=<ID=AMPFLAG,Number=1,Type=Integer,Description="Top variant in amplicons don't match">"#,
+            r#"##FILTER=<ID=AMPBIAS,Description="Indicate the variant has amplicon bias.">"#,
+        ] {
+            assert_eq!(
+                ph_amp.matches(req).count(),
+                1,
+                "expected exactly 1 occurrence of {req:?} in:\n{ph_amp}"
+            );
+        }
+
+        // Negative controls for header gating
+        let mut no_compat = amp_cfg.clone();
+        no_compat.compat.paired_somatic_amplicon = false;
+        let mut no_amp_flag = amp_cfg.clone();
+        no_amp_flag.amplicon = None;
+        let mut with_region = amp_cfg.clone();
+        with_region.region = Some("chr1:1-100".to_string());
+        for neg_cfg in [&no_compat, &no_amp_flag, &with_region] {
+            let h = render_paired(neg_cfg);
+            assert!(!h.contains("ID=GDAMP,") && !h.contains("ID=AMPBIAS,"));
+        }
+
+        // 2. `AMPBIAS` evaluated OUTSIDE `if !normal_clean`: shared single-amplicon PCR artifact
+        //    with clean normal (`normal_clean == true`) MUST still get `FILTER=AMPBIAS` (never `PASS`!)
+        let mut germ_t = clean_normal();
+        germ_t.var_type = "SNV".to_string();
+        germ_t.mean_quality = 15.0; // < q22.5 (rescued by clean normal when amplicons agree)
+        let mut germ_sv_biased = somatic_sv(germ_t.clone(), Some(clean_normal()), "Germline");
+        germ_sv_biased.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 1,
+            tlamp: 2,
+            ncamp: 0,
+            ampflag: false,
+        });
+        let rec_biased_germ = format_paired_vcf_record(&germ_sv_biased, "chr1", &amp_cfg);
+        assert_eq!(
+            rec_biased_germ.filter_str(),
+            "AMPBIAS",
+            "AMPBIAS must fire outside normal_clean so shared PCR artifacts never become PASS"
+        );
+        assert!(rec_biased_germ
+            .as_str()
+            .contains(";GDAMP=1;TLAMP=2;NCAMP=0;AMPFLAG=0\tGT:"));
+
+        // Same germline call with concordant amplicons (`gdamp=2, tlamp=2, ncamp=0, ampflag=false`) rescues to PASS
+        let mut germ_sv_clean_amp = somatic_sv(germ_t.clone(), Some(clean_normal()), "Germline");
+        germ_sv_clean_amp.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 2,
+            tlamp: 2,
+            ncamp: 0,
+            ampflag: false,
+        });
+        let rec_clean_germ = format_paired_vcf_record(&germ_sv_clean_amp, "chr1", &amp_cfg);
+        assert_eq!(rec_clean_germ.filter_str(), "PASS");
+        assert!(rec_clean_germ
+            .as_str()
+            .contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=0\tGT:"));
+
+        // `!normal_clean` + tumor `q22.5` + `ampflag = true` appends `;AMPBIAS` and `;AMPFLAG=1`
+        let mut dirty_n = clean_normal();
+        dirty_n.pos_coverage = 0;
+        let mut som_biased = somatic_sv(germ_t, Some(dirty_n.clone()), "StrongSomatic");
+        som_biased.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 2,
+            tlamp: 2,
+            ncamp: 0,
+            ampflag: true,
+        });
+        let rec_som_biased = format_paired_vcf_record(&som_biased, "chr1", &amp_cfg);
+        assert_eq!(rec_som_biased.filter_str(), "q22.5;AMPBIAS");
+        assert!(rec_som_biased
+            .as_str()
+            .contains(";GDAMP=2;TLAMP=2;NCAMP=0;AMPFLAG=1\tGT:"));
+
+        // 3. `pSTD` suppressed on BOTH `normal_clean` (`!v2.pstd && vd2 < 5`) and tumor (`!v1.pstd && vd1 < 5`)
+        let mut low_vd_tumor = clean_normal();
+        low_vd_tumor.var_type = "SNV".to_string();
+        low_vd_tumor.total_pos_cov = 4; // rescued by StrongSomatic exception
+        low_vd_tumor.pos_coverage = 4; // < 5 (`PAIRED_MIN_DEPTH`)
+        low_vd_tumor.ref_fwd_cov = 0;
+        low_vd_tumor.ref_rev_cov = 0;
+        low_vd_tumor.fwd = 4;
+        low_vd_tumor.rev = 0;
+        low_vd_tumor.frequency = 1.0;
+        low_vd_tumor.pstd = false; // would fire pSTD in non-amplicon mode!
+        let mut deep_zero_n = clean_normal();
+        deep_zero_n.total_pos_cov = 200;
+        deep_zero_n.pos_coverage = 0;
+        let mut ss_pstd_sv = somatic_sv(low_vd_tumor.clone(), Some(deep_zero_n), "StrongSomatic");
+        ss_pstd_sv.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 1,
+            tlamp: 1,
+            ncamp: 0,
+            ampflag: false,
+        });
+        assert_eq!(
+            format_paired_vcf_record(&ss_pstd_sv, "chr1", &no_compat).filter_str(),
+            "pSTD",
+            "when paired_somatic_amplicon=false, pSTD fires and tumor_amplicon is ignored"
+        );
+        assert!(
+            !format_paired_vcf_record(&ss_pstd_sv, "chr1", &no_compat)
+                .as_str()
+                .contains(";GDAMP="),
+            "paired_somatic_amplicon=false must not emit GDAMP"
+        );
+        assert_eq!(
+            format_paired_vcf_record(&ss_pstd_sv, "chr1", &amp_cfg).filter_str(),
+            "PASS",
+            "paired_somatic_amplicon=true must suppress tumor pSTD"
+        );
+
+        // Normal `!v2.pstd && vd2 < 5` also stays `normal_clean == true` when paired amplicon is active
+        let mut norm_pstd0 = clean_normal();
+        norm_pstd0.pos_coverage = 4; // >= v3 (3) and < d5 (5)
+        norm_pstd0.pstd = false;
+        let mut bad_q_t = clean_normal();
+        bad_q_t.mean_quality = 12.0; // q22.5 unless rescued by normal_clean
+        let mut germ_pstd0_sv = somatic_sv(bad_q_t, Some(norm_pstd0), "Germline");
+        germ_pstd0_sv.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 1,
+            tlamp: 1,
+            ncamp: 0,
+            ampflag: false,
+        });
+        assert_eq!(
+            format_paired_vcf_record(&germ_pstd0_sv, "chr1", &no_compat).filter_str(),
+            "q22.5"
+        );
+        assert_eq!(
+            format_paired_vcf_record(&germ_pstd0_sv, "chr1", &amp_cfg).filter_str(),
+            "PASS",
+            "paired_somatic_amplicon=true must suppress normal pSTD in normal_clean"
+        );
+
+        // 4. `StrongLOH` / `Deletion` (`sv.end_is_variant2 && sv.variant1.pos_coverage == 0`)
+        //    selects `normal_amplicon` over `tumor_amplicon`!
+        let mut loh_t = Variant::new();
+        loh_t.start_pos = 250;
+        loh_t.end_pos = 250;
+        loh_t.ref_allele = "A".to_string();
+        loh_t.var_allele = "G".to_string();
+        loh_t.var_type = "SNV".to_string();
+        loh_t.total_pos_cov = 60;
+        loh_t.pos_coverage = 0;
+        let mut loh_sv = somatic_sv(loh_t, Some(clean_normal()), "StrongLOH");
+        loh_sv.end_is_variant2 = true;
+        loh_sv.tumor_amplicon = Some(AmpliconConcordance {
+            gdamp: 0,
+            tlamp: 3,
+            ncamp: 0,
+            ampflag: false,
+        });
+        loh_sv.normal_amplicon = Some(AmpliconConcordance {
+            gdamp: 3,
+            tlamp: 3,
+            ncamp: 0,
+            ampflag: false,
+        });
+        let rec_loh_clean = format_paired_vcf_record(&loh_sv, "chr1", &amp_cfg);
+        assert_eq!(rec_loh_clean.filter_str(), "PASS");
+        assert!(rec_loh_clean
+            .as_str()
+            .contains(";GDAMP=3;TLAMP=3;NCAMP=0;AMPFLAG=0\tGT:"));
+
+        loh_sv.status = "Deletion".to_string();
+        loh_sv.normal_amplicon = Some(AmpliconConcordance {
+            gdamp: 1,
+            tlamp: 3,
+            ncamp: 0,
+            ampflag: true,
+        });
+        let rec_del_biased = format_paired_vcf_record(&loh_sv, "chr1", &amp_cfg);
+        assert_eq!(rec_del_biased.filter_str(), "AMPBIAS");
+        assert!(rec_del_biased
+            .as_str()
+            .contains(";GDAMP=1;TLAMP=3;NCAMP=0;AMPFLAG=1\tGT:"));
     }
 }
