@@ -1060,9 +1060,13 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
                         indexmap::map::Entry::Occupied(mut e) => {
                             let cur = e.get_mut();
                             let merged_good = cur.3 || is_good;
-                            let better = af_4dp
-                                .partial_cmp(&cur.1)
-                                .unwrap_or(std::cmp::Ordering::Equal)
+                            let better = is_good
+                                .cmp(&cur.3)
+                                .then_with(|| {
+                                    af_4dp
+                                        .partial_cmp(&cur.1)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                })
                                 .then_with(|| tv.total_pos_cov.cmp(&cur.2))
                                 == std::cmp::Ordering::Greater;
                             if better {
@@ -2798,5 +2802,182 @@ mod tests {
                 ampflag: false,
             }
         );
+    }
+
+    #[test]
+    fn test_aggregate_sample_amplicon_vars_good_rep_beats_higher_af_bad_rep_tumor_and_normal() {
+        let mut config = make_test_config();
+        config.compat = crate::config::COMPAT_OFF;
+        let splice = rustc_hash::FxHashSet::default();
+
+        let amp0 = make_amp_region("chr1", 100, 220);
+        let amp1 = make_amp_region("chr1", 140, 260);
+        let seg_fwd = vec![amp0.clone(), amp1.clone()];
+        let seg_rev = vec![amp1, amp0];
+
+        let mk_ref = |pos: i32, base: &str, cov: i32| -> Variant {
+            let mut rv = make_good_variant(pos, base, base, 1.0);
+            rv.total_pos_cov = cov;
+            rv.pos_coverage = cov;
+            rv.ref_fwd_cov = cov / 2;
+            rv.ref_rev_cov = cov - rv.ref_fwd_cov;
+            rv
+        };
+
+        // Good passing call on deep amplicon (35/200 = 0.1750, hicnt = 35 >= min_reads=2)
+        let mk_deep_good = |pos: i32, ref_a: &str, alt_a: &str, vd: i32, dp: i32| -> Variant {
+            let mut v = make_good_variant(pos, ref_a, alt_a, vd as f64 / dp as f64);
+            v.pos_coverage = vd;
+            v.total_pos_cov = dp;
+            v.hicnt = vd;
+            v.hicov = dp;
+            v.fwd = vd / 2;
+            v.rev = vd - v.fwd;
+            v.ref_fwd_cov = (dp - vd) / 2;
+            v.ref_rev_cov = (dp - vd) - v.ref_fwd_cov;
+            v.bias = "2;2".to_string();
+            v.pstd = true;
+            v.qstd = true;
+            v
+        };
+
+        // Failing 1/1 dropout call with higher raw AF = 1.0000 (`hicnt = 1 < min_reads = 2`, `is_good = false`)
+        let mk_dropout_bad = |pos: i32, ref_a: &str, alt_a: &str| -> Variant {
+            let mut v = make_good_variant(pos, ref_a, alt_a, 1.0);
+            v.pos_coverage = 1;
+            v.total_pos_cov = 1;
+            v.hicnt = 1;
+            v.hicov = 1;
+            v.fwd = 1;
+            v.rev = 0;
+            v.bias = "0;1".to_string();
+            v
+        };
+
+        // 1. Both `[amp0, amp1]` (good first, bad second) and `[amp1, amp0]` (bad first, good second)
+        //    must select the `is_good = true` representative (total_pos_cov = 200, hicnt = 35)!
+        for (seg, flip) in [(&seg_fwd, false), (&seg_rev, true)] {
+            let mut m_good = crate::javamap::JavaHashMap::new();
+            let mut vg = Vars::new();
+            vg.ref_variant = Some(mk_ref(160, "A", 200));
+            vg.variants.push(mk_deep_good(160, "A", "G", 35, 200));
+            m_good.insert(160, vg);
+
+            let mut m_bad = crate::javamap::JavaHashMap::new();
+            let mut vb = Vars::new();
+            vb.variants.push(mk_dropout_bad(160, "A", "G"));
+            m_bad.insert(160, vb);
+
+            let list = if flip {
+                vec![m_bad, m_good]
+            } else {
+                vec![m_good, m_bad]
+            };
+            let (aligned, conc) = aggregate_sample_amplicon_vars(&config, seg, list, &splice);
+            let rep = &aligned.get(&160).expect("pos 160 present").variants[0];
+            assert_eq!(
+                (rep.total_pos_cov, rep.hicnt),
+                (200, 35),
+                "passing 35/200 representative must beat failing 1/1 AF=1.0 representative (flip={flip})"
+            );
+            assert!(rep.is_good_var(
+                aligned.get(&160).unwrap().ref_variant.as_ref(),
+                &rep.var_type_cow(),
+                &splice,
+                &config
+            ));
+            assert_eq!(
+                conc.resolve(160, 160, "A", "G", seg),
+                crate::config::AmpliconConcordance {
+                    gdamp: 1,
+                    tlamp: 2,
+                    ncamp: 1,
+                    ampflag: false,
+                }
+            );
+        }
+
+        // 2. End-to-end somatic classification across Tumor (`StrongSomatic`) and Normal (`Germline` & `StrongLOH`)
+        //    when `amp0` is deep `is_good = true` and `amp1` has a `1/1` (`AF = 1.0, hicnt = 1`) failing read:
+        let mut t0 = crate::javamap::JavaHashMap::new();
+        let mut t1 = crate::javamap::JavaHashMap::new();
+        let mut n0 = crate::javamap::JavaHashMap::new();
+        let mut n1 = crate::javamap::JavaHashMap::new();
+
+        // Pos 160: StrongSomatic in Tumor (35/200 good + 1/1 bad), pure 200x ref in Normal
+        let mut t160_0 = Vars::new();
+        t160_0.ref_variant = Some(mk_ref(160, "A", 200));
+        t160_0.variants.push(mk_deep_good(160, "A", "G", 35, 200));
+        t0.insert(160, t160_0);
+        let mut t160_1 = Vars::new();
+        t160_1.variants.push(mk_dropout_bad(160, "A", "G"));
+        t1.insert(160, t160_1);
+        let mut n160_0 = Vars::new();
+        n160_0.ref_variant = Some(mk_ref(160, "A", 200));
+        n0.insert(160, n160_0);
+
+        // Pos 170: Germline in BOTH Tumor and Normal (70/200 good + 1/1 bad in both -> must stay Germline, NOT StrongSomatic!)
+        let mut t170_0 = Vars::new();
+        t170_0.ref_variant = Some(mk_ref(170, "C", 200));
+        t170_0.variants.push(mk_deep_good(170, "C", "T", 70, 200));
+        t0.insert(170, t170_0);
+        let mut t170_1 = Vars::new();
+        t170_1.variants.push(mk_dropout_bad(170, "C", "T"));
+        t1.insert(170, t170_1);
+        let mut n170_0 = Vars::new();
+        n170_0.ref_variant = Some(mk_ref(170, "C", 200));
+        n170_0.variants.push(mk_deep_good(170, "C", "T", 70, 200));
+        n0.insert(170, n170_0);
+        let mut n170_1 = Vars::new();
+        n170_1.variants.push(mk_dropout_bad(170, "C", "T"));
+        n1.insert(170, n170_1);
+
+        // Pos 180: StrongLOH in Normal (80/200 good + 1/1 bad), pure 200x ref in Tumor
+        let mut t180_0 = Vars::new();
+        t180_0.ref_variant = Some(mk_ref(180, "G", 200));
+        t0.insert(180, t180_0);
+        let mut n180_0 = Vars::new();
+        n180_0.ref_variant = Some(mk_ref(180, "G", 200));
+        n180_0.variants.push(mk_deep_good(180, "G", "A", 80, 200));
+        n0.insert(180, n180_0);
+        let mut n180_1 = Vars::new();
+        n180_1.variants.push(mk_dropout_bad(180, "G", "A"));
+        n1.insert(180, n180_1);
+
+        let (aligned_t, _) =
+            aggregate_sample_amplicon_vars(&config, &seg_fwd, vec![t0, t1], &splice);
+        let (aligned_n, _) =
+            aggregate_sample_amplicon_vars(&config, &seg_fwd, vec![n0, n1], &splice);
+        let seg_bounds = [(100i32, 260i32)];
+        let seg_reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(260),
+            gene: "G1".to_string(),
+            amplicon: None,
+        };
+        let svs = crate::postprocess::somatic::somatic_post_process_owned_with_bounds(
+            &config,
+            &seg_reg,
+            aligned_t,
+            aligned_n,
+            &splice,
+            None,
+            100,
+            Some(&seg_bounds),
+        );
+        let got_statuses: Vec<(i32, &str)> = svs
+            .iter()
+            .map(|sv| (sv.variant1.start_pos, sv.status.as_str()))
+            .collect();
+        assert_eq!(
+            got_statuses,
+            vec![
+                (160, "StrongSomatic"),
+                (170, "Germline"),
+                (180, "StrongLOH"),
+            ]
+        );
+        assert_eq!(svs[1].variant2.as_ref().unwrap().pos_coverage, 70);
     }
 }

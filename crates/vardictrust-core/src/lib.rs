@@ -4669,7 +4669,7 @@ fn resolve_effective_config(
         && !effective.emit_intermediate
     {
         return Err(VardictError::Unsupported(
-            "Paired BAM (-b tumor|normal) with amplicon mode (-a) is not supported in VCF mode (#378); use .var intermediate output or single-sample BAM; pass --compat=off to enable paired somatic amplicon calling"
+            "Paired BAM (-b tumor|normal) with amplicon mode (-a) is not supported in VCF mode (#378); use .var intermediate output or single-sample BAM"
                 .to_string(),
         ));
     }
@@ -6540,10 +6540,9 @@ pub(crate) fn amplicons_covering_position(
 std::thread_local! {
     static TEST_BAM1_LIVE_AT_BAM2_START: std::cell::Cell<Option<usize>> =
         const { std::cell::Cell::new(None) };
+    static TEST_CRAM_TH1_PROBE_SLOT: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
 }
-#[cfg(test)]
-static TEST_CRAM_TH1_ON_64MB_STACK: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 /// Amplicon mode: process each amplicon region separately, then combine via
 /// amplicon post-processing. Ports AmpliconMode.java.
@@ -7777,14 +7776,16 @@ fn compute_somatic_amplicon_segment_variants(
         crate::bam::pin_cram_contig_for_spec(&config.bam, &last_region.chr, config);
 
     #[cfg(test)]
-    static LIVE_BAM1_VARS_LISTS: std::sync::atomic::AtomicUsize =
-        std::sync::atomic::AtomicUsize::new(0);
+    std::thread_local! {
+        static LIVE_BAM1_VARS_LISTS: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
+    }
     #[cfg(test)]
     struct Bam1VarsGuard;
     #[cfg(test)]
     impl Drop for Bam1VarsGuard {
         fn drop(&mut self) {
-            LIVE_BAM1_VARS_LISTS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            LIVE_BAM1_VARS_LISTS.with(|c| c.set(c.get().saturating_sub(1)));
         }
     }
 
@@ -7795,7 +7796,7 @@ fn compute_somatic_amplicon_segment_variants(
     let (aligned1, tumor_concordance, splice1) = {
         #[cfg(test)]
         let _bam1_guard = {
-            LIVE_BAM1_VARS_LISTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            LIVE_BAM1_VARS_LISTS.with(|c| c.set(c.get().saturating_add(1)));
             Bam1VarsGuard
         };
         let mut vars_per_amplicon_bam1 = Vec::with_capacity(segment.len());
@@ -7827,11 +7828,7 @@ fn compute_somatic_amplicon_segment_variants(
 
     #[cfg(test)]
     if config.threads <= 1 {
-        TEST_BAM1_LIVE_AT_BAM2_START.with(|c| {
-            c.set(Some(
-                LIVE_BAM1_VARS_LISTS.load(std::sync::atomic::Ordering::SeqCst),
-            ))
-        });
+        TEST_BAM1_LIVE_AT_BAM2_START.with(|c| c.set(Some(LIVE_BAM1_VARS_LISTS.with(|l| l.get()))));
     }
 
     // 2. Run BAM2 (normal) per amplicon seeded with BAM1's `max_rl_per_amplicon[i]`
@@ -8108,6 +8105,8 @@ fn run_somatic_amplicon<W: EngineWriter>(
     let config_clone = config.clone();
     let chromosomes_lengths_clone = chromosomes_lengths.clone();
     let strict_chr_worker = strict_chr_intervals;
+    #[cfg(test)]
+    let cram_probe_slot = TEST_CRAM_TH1_PROBE_SLOT.with(|s| s.borrow().clone());
 
     crate::runner::run_parallel_for_bam_weighted(
         &config.bam,
@@ -8121,13 +8120,14 @@ fn run_somatic_amplicon<W: EngineWriter>(
                 #[cfg(test)]
                 if config_clone.threads <= 1 && crate::runner::bam_spec_has_cram(&config_clone.bam)
                 {
-                    let outer_tid = std::thread::current().id();
-                    let inner_tid =
-                        crate::runner::run_with_worker_stack_for_bam("probe.cram", || {
-                            Ok(std::thread::current().id())
-                        })?;
-                    TEST_CRAM_TH1_ON_64MB_STACK
-                        .store(outer_tid == inner_tid, std::sync::atomic::Ordering::SeqCst);
+                    if let Some(ref probe) = cram_probe_slot {
+                        let outer_tid = std::thread::current().id();
+                        let inner_tid =
+                            crate::runner::run_with_worker_stack_for_bam("probe.cram", || {
+                                Ok(std::thread::current().id())
+                            })?;
+                        probe.store(outer_tid == inner_tid, std::sync::atomic::Ordering::SeqCst);
+                    }
                 }
 
                 let chr_name = segment.last().map_or("", |r| r.chr.as_str());
@@ -13786,7 +13786,7 @@ mod tests {
         write_test_bam(&tumor_bam, "chr1", 480, &tumor_reads);
         write_test_bam(&normal_bam, "chr1", 480, &normal_reads);
 
-        // 1. Default COMPAT_VARDICTJAVA_1_8_3 rejects VCF with updated hint while preserving AstraZeneca-NGS/VarDictJava#378 substring!
+        // 1. Default COMPAT_VARDICTJAVA_1_8_3 rejects VCF (AstraZeneca-NGS/VarDictJava#378)!
         let base_paired_cfg = crate::config::Config {
             reference: fasta_path.to_string_lossy().into_owned(),
             bam: format!("{}|{}", tumor_bam.display(), normal_bam.display()),
@@ -13800,12 +13800,10 @@ mod tests {
         match vj_err {
             VardictError::Unsupported(msg) => {
                 assert!(
-                    msg.contains("Paired BAM (-b tumor|normal) with amplicon mode (-a) is not supported in VCF mode (#378)"),
-                    "must preserve #378 substring: {msg}"
-                );
-                assert!(
-                    msg.contains("; pass --compat=off to enable paired somatic amplicon calling"),
-                    "must append --compat=off hint: {msg}"
+                    msg.contains(
+                        "Paired BAM (-b tumor|normal) with amplicon mode (-a) is not supported in VCF mode"
+                    ),
+                    "must preserve AstraZeneca-NGS/VarDictJava#378 Unsupported message: {msg}"
                 );
             }
             other => panic!("expected Unsupported, got {other:?}"),
@@ -13995,13 +13993,16 @@ mod tests {
             compat: crate::config::COMPAT_OFF,
             ..Default::default()
         };
-        TEST_CRAM_TH1_ON_64MB_STACK.store(false, std::sync::atomic::Ordering::SeqCst);
         let cram_vcf = std::thread::Builder::new()
             .stack_size(2 * 1024 * 1024)
             .spawn(move || {
+                let probe = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                TEST_CRAM_TH1_PROBE_SLOT
+                    .with(|s| *s.borrow_mut() = Some(std::sync::Arc::clone(&probe)));
                 let mut out = Vec::new();
                 run_with_writer(&cram_cfg, &mut out).expect("cram -th 1 paired somatic amplicon");
-                let on_64mb = TEST_CRAM_TH1_ON_64MB_STACK.load(std::sync::atomic::Ordering::SeqCst);
+                TEST_CRAM_TH1_PROBE_SLOT.with(|s| *s.borrow_mut() = None);
+                let on_64mb = probe.load(std::sync::atomic::Ordering::SeqCst);
                 (String::from_utf8(out).unwrap(), on_64mb)
             })
             .unwrap()
