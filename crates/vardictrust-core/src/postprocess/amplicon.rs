@@ -432,6 +432,8 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
     splice: &rustc_hash::FxHashSet<String>,
     emit: &mut dyn FnMut(AmpliconVariant) -> Result<(), crate::types::VardictError>,
 ) -> Result<(), crate::types::VardictError> {
+    let skip_eq_non_pileup = !config.pileup && config.compat.sanitize_iupac_alt_alleles;
+    let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
     // Per-amplicon cached `chr:start-end` strings formatted at most once per segment.
     let mut region_tags: Vec<String> = vec![String::new(); vars_per_amplicon.len()];
     // Scratch collections reused across positions to avoid per-base allocations.
@@ -477,7 +479,14 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
             if let Some(variants) = variants_on_amplicon {
                 if !variants.is_empty() {
                     let mut good_vars: Vec<&Variant> = Vec::new();
+                    let mut any_kept = false;
+                    let mut skipped_eq_cov: i32 = 0;
                     for tv in variants {
+                        if skip_eq_non_pileup && tv.ref_allele == tv.var_allele {
+                            skipped_eq_cov = skipped_eq_cov.max(tv.total_pos_cov);
+                            continue;
+                        }
+                        any_kept = true;
                         vcovs.push(tv.total_pos_cov);
                         if tv.total_pos_cov > maxcov {
                             maxcov = tv.total_pos_cov;
@@ -499,6 +508,15 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                     }
                     if !good_vars.is_empty() {
                         good_variants_on_amp.insert(amplicon_number, good_vars);
+                    }
+                    if !any_kept {
+                        let fallback_cov = ref_amplicon
+                            .map_or(0, |r| r.total_pos_cov)
+                            .max(skipped_eq_cov);
+                        vcovs.push(fallback_cov);
+                        if fallback_cov > maxcov {
+                            maxcov = fallback_cov;
+                        }
                     }
                 } else if let Some(ref_var) = ref_amplicon {
                     vcovs.push(ref_var.total_pos_cov);
@@ -597,12 +615,14 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                             .and_then(|m| m.get(&position));
                         if let Some(vtmp) = vtmp {
                             if let Some(variant) = vtmp.variant_by_desc(gdnt) {
-                                if variant.is_good_var(
-                                    vtmp.ref_variant.as_ref(),
-                                    "",
-                                    splice,
-                                    config,
-                                ) {
+                                if (!skip_eq_non_pileup || variant.ref_allele != variant.var_allele)
+                                    && variant.is_good_var(
+                                        vtmp.ref_variant.as_ref(),
+                                        "",
+                                        splice,
+                                        config,
+                                    )
+                                {
                                     let _ =
                                         get_or_init_region_tag(&mut region_tags, amp_num, amp_reg);
                                     gcnt_buf.push((variant, amp_num));
@@ -693,7 +713,10 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
             let mut out_variant = max_var.clone();
             out_variant.var_type = out_variant.var_type();
             if out_variant.var_type == "Complex" {
-                out_variant.adj_complex();
+                out_variant.adj_complex_compat(refresh_vt);
+                if skip_eq_non_pileup && out_variant.ref_allele == out_variant.var_allele {
+                    continue;
+                }
             }
 
             let region_str = if let Some(&(_, amp_idx)) = good_variants.first() {
@@ -1099,6 +1122,8 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
 ) {
     let exact_tie = config.compat.exact_binary_half_even;
     let canonical_sv_anchoring = config.compat.canonical_sv_vcf_anchoring;
+    let skip_eq_non_pileup = !config.pileup && config.compat.sanitize_iupac_alt_alleles;
+    let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
     let mut aligned_vars = crate::javamap::JavaHashMap::new();
     let mut concordance = SampleAmpliconConcordance {
         canonical_sv_anchoring,
@@ -1126,6 +1151,7 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
 
         let mut maxcov: i32 = 0;
         let mut best_ref: Option<&Variant> = None;
+        let mut best_skipped_eq: Option<&Variant> = None;
         let mut fallback_sv: Option<&str> = None;
         let mut top_sv: Option<&str> = None;
 
@@ -1150,10 +1176,21 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
             }
 
             let mut any_in_insert = false;
+            let mut skipped_eq_cov: i32 = 0;
             if let Some(vt) = vtmp {
                 let mut good_vars: Vec<&Variant> = Vec::new();
                 for tv in &vt.variants {
                     if variant_overlaps_primer(tv, amp_reg, canonical_sv_anchoring) {
+                        continue;
+                    }
+                    if skip_eq_non_pileup && tv.ref_allele == tv.var_allele {
+                        skipped_eq_cov = skipped_eq_cov.max(tv.total_pos_cov);
+                        if tv.total_pos_cov > 0
+                            && best_skipped_eq
+                                .is_none_or(|cur| tv.total_pos_cov > cur.total_pos_cov)
+                        {
+                            best_skipped_eq = Some(tv);
+                        }
                         continue;
                     }
                     any_in_insert = true;
@@ -1203,11 +1240,8 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
                 }
             }
             if !any_in_insert {
-                if let Some(rv) = ref_amp {
-                    vcovs.push(rv.total_pos_cov);
-                } else {
-                    vcovs.push(0);
-                }
+                let cov = ref_amp.map_or(0, |rv| rv.total_pos_cov).max(skipped_eq_cov);
+                vcovs.push(cov);
             }
         }
 
@@ -1242,7 +1276,13 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
                         .and_then(|m| m.get(&position))
                     {
                         if let Some(variant) = vtmp.variant_by_desc(gdnt) {
-                            if !variant_overlaps_primer(variant, amp_reg, canonical_sv_anchoring) {
+                            if (!skip_eq_non_pileup || variant.ref_allele != variant.var_allele)
+                                && !variant_overlaps_primer(
+                                    variant,
+                                    amp_reg,
+                                    canonical_sv_anchoring,
+                                )
+                            {
                                 let ref_amp = vtmp.ref_variant.as_ref().filter(|rv| {
                                     !variant_overlaps_primer(rv, amp_reg, canonical_sv_anchoring)
                                 });
@@ -1295,7 +1335,10 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
             let tlamp = gdamp.saturating_add(bad_count);
             let (key_start, key_ref, key_var) = if rep_var.var_type_cow() == "Complex" {
                 let mut tmp = rep_var.clone();
-                tmp.adj_complex();
+                tmp.adj_complex_compat(refresh_vt);
+                if skip_eq_non_pileup && tmp.ref_allele == tmp.var_allele {
+                    continue;
+                }
                 (
                     tmp.start_pos,
                     std::borrow::Cow::Owned(tmp.ref_allele),
@@ -1335,9 +1378,25 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
                 .or_insert((nocov, current_flag));
         }
 
-        if best_ref.is_some() || !best_by_desc.is_empty() {
+        if best_ref.is_some() || best_skipped_eq.is_some() || !best_by_desc.is_empty() {
             let mut out_vars = Vars::new();
-            out_vars.ref_variant = best_ref.cloned();
+            out_vars.ref_variant = match best_ref {
+                Some(rv) if rv.total_pos_cov > 0 || best_skipped_eq.is_none() => Some(rv.clone()),
+                _ => best_skipped_eq.map(|eq| {
+                    let mut rv = Variant::new();
+                    rv.start_pos = position;
+                    rv.end_pos = position;
+                    rv.description.clone_from(&eq.var_allele);
+                    rv.ref_allele.clone_from(&eq.ref_allele);
+                    rv.var_allele.clone_from(&eq.var_allele);
+                    rv.total_pos_cov = eq.total_pos_cov;
+                    rv.fwd = eq.fwd;
+                    rv.rev = eq.rev;
+                    rv.ref_fwd_cov = eq.fwd;
+                    rv.ref_rev_cov = eq.rev;
+                    rv
+                }),
+            };
             if !best_by_desc.is_empty() {
                 let mut ordered: Vec<(&Variant, f64, i32, bool)> =
                     best_by_desc.values().copied().collect();
@@ -3251,5 +3310,214 @@ mod tests {
         assert_eq!(single_res.len(), 1);
         assert_eq!(single_res[0].variant.start_pos, 149);
         assert_eq!(single_res[0].variant.var_allele, "<DUP>");
+    }
+
+    #[test]
+    fn test_wave5_amplicon_adj_complex_vartype_and_upfront_iupac_eq_concordance_parity() {
+        let base_cfg = make_test_config();
+        let splice = rustc_hash::FxHashSet::default();
+        let amp0 = make_amp_region("chr1", 100, 220);
+        let amp1 = make_amp_region("chr1", 120, 240);
+        let segment = vec![amp0.clone(), amp1.clone()];
+
+        // 1. Switch 29 (`recompute_vartype_after_adj_complex`, `clintval/vartovcf#109`,
+        //    `clintval/vartovcf#147`) in `amplicon_post_process` (`:696`) and `aggregate_sample_amplicon_vars` (`:1298`):
+        let mk_complex = |pos: i32, desc: &str, ref_a: &str, var_a: &str| {
+            let mut v = make_good_variant(pos, ref_a, var_a, 0.35);
+            v.description = desc.to_string();
+            v.end_pos = pos + (ref_a.len() as i32) - 1;
+            v
+        };
+        let mut c0 = crate::javamap::JavaHashMap::new();
+        let mut c1 = crate::javamap::JavaHashMap::new();
+        for (pos, desc, r, a) in [
+            (130, "#GT", "GA", "GT"),
+            (140, "+TG#AA", "CAA", "CAATG"),
+            (150, "-2#AA", "CAATG", "CAA"),
+        ] {
+            let mut vs0 = Vars::new();
+            vs0.variants.push(mk_complex(pos, desc, r, a));
+            c0.insert(pos, vs0);
+            let mut vs1 = Vars::new();
+            vs1.variants.push(mk_complex(pos, desc, r, a));
+            c1.insert(pos, vs1);
+        }
+        let mut amps_on_pos = BTreeMap::new();
+        for pos in [130, 140, 150] {
+            amps_on_pos.insert(pos, vec![(0, amp0.clone()), (1, amp1.clone())]);
+        }
+        let vj_amp = amplicon_post_process(
+            &base_cfg,
+            &amp0,
+            &[c0.clone(), c1.clone()],
+            &amps_on_pos,
+            &splice,
+        )
+        .expect("vj amplicon_post_process");
+        assert!(vj_amp.iter().all(|av| av.variant.var_type == "Complex"));
+
+        let mut off_cfg = base_cfg.clone();
+        off_cfg.compat = crate::config::COMPAT_OFF;
+        let off_amp = amplicon_post_process(
+            &off_cfg,
+            &amp0,
+            &[c0.clone(), c1.clone()],
+            &amps_on_pos,
+            &splice,
+        )
+        .expect("off amplicon_post_process");
+        let got_vt: Vec<(i32, &str, &str, &str)> = off_amp
+            .iter()
+            .map(|av| {
+                (
+                    av.variant.start_pos,
+                    av.variant.ref_allele.as_str(),
+                    av.variant.var_allele.as_str(),
+                    av.variant.var_type.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got_vt,
+            vec![
+                (131, "A", "T", "SNV"),
+                (142, "A", "ATG", "Insertion"),
+                (152, "ATG", "A", "Deletion"),
+            ]
+        );
+
+        let (agg_c, conc_c) =
+            aggregate_sample_amplicon_vars(&off_cfg, &segment, vec![c0, c1], &splice);
+        assert_eq!(
+            conc_c.resolve(131, 131, "A", "T", &segment),
+            crate::config::AmpliconConcordance {
+                gdamp: 2,
+                tlamp: 2,
+                ncamp: 0,
+                ampflag: false,
+            }
+        );
+        let n_empty = crate::javamap::JavaHashMap::new();
+        let som_c = crate::postprocess::somatic::somatic_post_process_owned(
+            &off_cfg, &amp0, agg_c, n_empty, &splice, None, 100,
+        );
+        assert_eq!(
+            som_c
+                .iter()
+                .map(|s| (s.variant1.start_pos, s.variant1.var_type.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(131, "SNV"), (142, "Insertion"), (152, "Deletion")]
+        );
+
+        // 2. Switch 26 (`sanitize_iupac_alt_alleles`) upfront `REF == ALT` skip in BOTH
+        //    `amplicon_post_process` (`:480`) and `aggregate_sample_amplicon_vars` (`:1165`):
+        //    - Pos 160: `amp0` has sanitized `"A" -> "A"` (`AF = 0.75`, `DP = 200`) + `"A" -> "G"` (`AF = 0.25`, `DP = 200`);
+        //      `amp1` has `"A" -> "G"` (`AF = 0.25`, `DP = 200`).
+        //    - Pos 170: `amp0` has ONLY sanitized `"C" -> "C"` (`AF = 1.0`, `DP = 200`, `ref_variant = None`);
+        //      `amp1` has `"C" -> "T"` (`AF = 0.30`, `DP = 200`).
+        let build_iupac_amp_maps = || {
+            let mut m0 = crate::javamap::JavaHashMap::new();
+            let mut m1 = crate::javamap::JavaHashMap::new();
+
+            let mut v160_0 = Vars::new();
+            let mut eq_160 = make_good_variant(160, "A", "A", 0.75);
+            eq_160.total_pos_cov = 200;
+            v160_0.variants.push(eq_160);
+            let mut g160_0 = make_good_variant(160, "A", "G", 0.25);
+            g160_0.total_pos_cov = 200;
+            v160_0.variants.push(g160_0);
+            m0.insert(160, v160_0);
+
+            let mut v160_1 = Vars::new();
+            let mut g160_1 = make_good_variant(160, "A", "G", 0.25);
+            g160_1.total_pos_cov = 200;
+            v160_1.variants.push(g160_1);
+            m1.insert(160, v160_1);
+
+            let mut v170_0 = Vars::new();
+            let mut eq_170 = make_good_variant(170, "C", "C", 1.0);
+            eq_170.total_pos_cov = 200;
+            v170_0.variants.push(eq_170);
+            m0.insert(170, v170_0);
+
+            let mut v170_1 = Vars::new();
+            let mut t170_1 = make_good_variant(170, "C", "T", 0.30);
+            t170_1.total_pos_cov = 200;
+            v170_1.variants.push(t170_1);
+            m1.insert(170, v170_1);
+
+            (m0, m1)
+        };
+
+        let mut iupac_amps_on_pos = BTreeMap::new();
+        iupac_amps_on_pos.insert(160, vec![(0, amp0.clone()), (1, amp1.clone())]);
+        iupac_amps_on_pos.insert(170, vec![(0, amp0.clone()), (1, amp1.clone())]);
+
+        // Default parity: `"A" -> "A"` and `"C" -> "C"` leak into `gvs` and trigger false `AMPBIAS`!
+        let (m0_vj, m1_vj) = build_iupac_amp_maps();
+        let vj_iupac = amplicon_post_process(
+            &base_cfg,
+            &amp0,
+            &[m0_vj, m1_vj],
+            &iupac_amps_on_pos,
+            &splice,
+        )
+        .expect("vj_iupac");
+        assert!(vj_iupac.len() > 2);
+        assert!(vj_iupac.iter().any(|av| av.ampflag));
+
+        // With `sanitize_iupac_alt_alleles: true` (isolated and `COMPAT_OFF`):
+        let mut iso_iupac_cfg = base_cfg.clone();
+        iso_iupac_cfg.compat.sanitize_iupac_alt_alleles = true;
+        for cfg in [&iso_iupac_cfg, &off_cfg] {
+            let (m0_on, m1_on) = build_iupac_amp_maps();
+            let single_on = amplicon_post_process(
+                cfg,
+                &amp0,
+                &[m0_on.clone(), m1_on.clone()],
+                &iupac_amps_on_pos,
+                &splice,
+            )
+            .expect("single_on");
+            assert_eq!(single_on.len(), 2);
+            assert_eq!(single_on[0].variant.start_pos, 160);
+            assert_eq!(single_on[0].variant.var_allele, "G");
+            assert_eq!(single_on[0].gdamp, 2);
+            assert_eq!(single_on[0].tlamp, 2);
+            assert_eq!(single_on[0].ncamp, 0);
+            assert!(!single_on[0].ampflag);
+
+            assert_eq!(single_on[1].variant.start_pos, 170);
+            assert_eq!(single_on[1].variant.var_allele, "T");
+            assert_eq!(single_on[1].gdamp, 1);
+            assert_eq!(single_on[1].tlamp, 2);
+            assert_eq!(single_on[1].ncamp, 0);
+            assert!(!single_on[1].ampflag);
+
+            let (agg_on, conc_on) =
+                aggregate_sample_amplicon_vars(cfg, &segment, vec![m0_on, m1_on], &splice);
+            assert_eq!(agg_on.get(&160).expect("160").variants.len(), 1);
+            assert_eq!(agg_on.get(&160).expect("160").variants[0].var_allele, "G");
+            assert_eq!(
+                conc_on.resolve(160, 160, "A", "G", &segment),
+                crate::config::AmpliconConcordance {
+                    gdamp: 2,
+                    tlamp: 2,
+                    ncamp: 0,
+                    ampflag: false,
+                }
+            );
+            assert_eq!(agg_on.get(&170).expect("170").variants.len(), 1);
+            assert_eq!(agg_on.get(&170).expect("170").variants[0].var_allele, "T");
+            assert_eq!(
+                conc_on.resolve(170, 170, "C", "T", &segment),
+                crate::config::AmpliconConcordance {
+                    gdamp: 1,
+                    tlamp: 2,
+                    ncamp: 0,
+                    ampflag: false,
+                }
+            );
+        }
     }
 }
