@@ -136,6 +136,25 @@ fn single_somatic_region_bounds_i32(region: &Region) -> [(i32, i32); 1] {
     )]
 }
 
+/// Check whether `sv` falls inside `bounds` under `CompatProfile::strict_region_bounds`
+/// (`AstraZeneca-NGS/VarDictJava#369`), also retaining 1-bp-upstream-anchored symbolic SVs
+/// (`<DUP>`, `<INV>`, `<DEL>`) starting at `bp == region.start` (`start_pos == bp - 1`)
+/// when `CompatProfile::canonical_sv_vcf_anchoring` (`clintval/vartovcf#192`) is active.
+#[inline]
+fn somatic_variant_within_strict_bounds(
+    config: &Config,
+    bounds: &[(i32, i32)],
+    sv: &SomaticVariant,
+) -> bool {
+    let start_pos = sv.variant1.start_pos;
+    crate::interval_set_contains(bounds, start_pos)
+        || (config.compat.canonical_sv_vcf_anchoring
+            && start_pos >= 1
+            && sv.variant1.var_allele.starts_with('<')
+            && sv.variant1.end_pos > start_pos
+            && crate::interval_set_contains(bounds, start_pos.saturating_add(1)))
+}
+
 /// Performs somatic analysis of variants from both samples (BAM1 and BAM2)
 /// using a single-position combine callback [`PositionPipelineFn`].
 ///
@@ -182,7 +201,7 @@ pub fn somatic_post_process_at(
 
     if config.compat.strict_region_bounds {
         let single_bounds = single_somatic_region_bounds_i32(region);
-        results.retain(|sv| crate::interval_set_contains(&single_bounds, sv.variant1.start_pos));
+        results.retain(|sv| somatic_variant_within_strict_bounds(config, &single_bounds, sv));
     }
 
     results
@@ -258,7 +277,7 @@ pub(crate) fn somatic_post_process_owned_with_bounds(
     }
 
     if let Some(merged_bounds) = strict_bounds {
-        results.retain(|sv| crate::interval_set_contains(merged_bounds, sv.variant1.start_pos));
+        results.retain(|sv| somatic_variant_within_strict_bounds(config, merged_bounds, sv));
     } else if config.compat.strict_region_bounds {
         results.retain(|sv| sv.variant1.start_pos >= 1);
     }
@@ -454,10 +473,166 @@ fn calling_for_both_samples(
     }
 }
 
+#[inline]
+fn stamp_somatic_sv1(
+    results: &mut [SomaticVariant],
+    start_idx: usize,
+    sv1_cow: std::borrow::Cow<'_, str>,
+) {
+    if let Some((last, prior)) = results
+        .get_mut(start_idx..)
+        .and_then(|s| s.split_last_mut())
+    {
+        for r in prior {
+            r.sv1.clear();
+            r.sv1.push_str(&sv1_cow);
+        }
+        last.sv1 = sv1_cow.into_owned();
+    }
+}
+
+#[inline]
+fn stamp_somatic_sv2(
+    results: &mut [SomaticVariant],
+    start_idx: usize,
+    sv2_cow: std::borrow::Cow<'_, str>,
+) {
+    if let Some((last, prior)) = results
+        .get_mut(start_idx..)
+        .and_then(|s| s.split_last_mut())
+    {
+        for r in prior {
+            r.sv2.clear();
+            r.sv2.push_str(&sv2_cow);
+        }
+        last.sv2 = sv2_cow.into_owned();
+    }
+}
+
+/// Emit normal-sample LOH / Germline fallback rows from `v2.variants`
+/// (`SomaticPostProcessModule.java:221-274` and `joachimwolff/VarDictJava#4`),
+/// iterating `v2.variants` in slice order while skipping any description present in
+/// `called_from_first_sample`, and returning `v2`'s `sv` string for `sv2` stamping.
+fn emit_v2_loh_fallback<'a>(
+    config: &Config,
+    v1: &Vars,
+    v2: std::borrow::Cow<'a, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    called_from_first_sample: Option<&rustc_hash::FxHashSet<String>>,
+    results: &mut Vec<SomaticVariant>,
+) -> std::borrow::Cow<'a, str> {
+    let (v2_ref_cow, v2_iter, sv2_cow) = super::unpack_cow_vars(v2);
+    for v2var_cow in v2_iter {
+        if called_from_first_sample
+            .is_some_and(|called| called.contains(v2var_cow.description.as_str()))
+        {
+            continue;
+        }
+        let vtype = v2var_cow.var_type_cow();
+        if !v2var_cow.is_good_var(v2_ref_cow.as_deref(), &vtype, splice, config) {
+            continue;
+        }
+        let mut v2var = v2var_cow.into_owned();
+        if v2var.var_type != vtype.as_ref() {
+            v2var.var_type.clear();
+            v2var.var_type.push_str(&vtype);
+        }
+        // potential LOH
+        let v1nt = v1.variant_by_desc(&v2var.description);
+
+        if let Some(v1nt) = v1nt {
+            if v1nt.ref_allele == v1nt.var_allele {
+                continue;
+            }
+            let type_str = if v1nt.frequency < config.lofreq {
+                LIKELY_LOH
+            } else {
+                GERMLINE
+            };
+            let mut v1nt_out = v1nt.clone();
+            if v2var.var_type == COMPLEX {
+                v1nt_out.adj_complex();
+            }
+            v1nt_out.var_type = v1nt_out.var_type();
+            results.push(SomaticVariant {
+                variant1: v1nt_out,
+                variant2: Some(v2var),
+                status: type_str.to_string(),
+                sv1: v1.sv.clone(),
+                sv2: String::new(),
+                end_is_variant2: true,
+                tumor_amplicon: None,
+                normal_amplicon: None,
+            });
+        } else {
+            if v2var.ref_allele == v2var.var_allele {
+                continue;
+            }
+            // Build a placeholder variant1 from sample1's reference info
+            let mut var_for_print = build_var_for_print_from_v1(v1, config.compat.reconcile_vd_dp);
+            let mut v2var_out = v2var;
+            if v2var_out.var_type == COMPLEX {
+                v2var_out.adj_complex();
+            }
+            // Shared columns (ref/var alleles, type) come from normal variant
+            var_for_print.ref_allele = v2var_out.ref_allele.clone();
+            var_for_print.var_allele = v2var_out.var_allele.clone();
+            var_for_print.var_type = v2var_out.var_type.clone();
+            var_for_print.start_pos = v2var_out.start_pos;
+            var_for_print.end_pos = v2var_out.end_pos;
+            var_for_print.shift3 = v2var_out.shift3;
+            var_for_print.msi = v2var_out.msi;
+            var_for_print.msint = v2var_out.msint;
+            var_for_print.left_seq = v2var_out.left_seq.clone();
+            var_for_print.right_seq = v2var_out.right_seq.clone();
+            var_for_print.debug.clone_from(&v2var_out.debug);
+            results.push(SomaticVariant {
+                variant1: var_for_print,
+                variant2: Some(v2var_out),
+                status: STRONG_LOH.to_string(),
+                sv1: String::new(),
+                sv2: String::new(),
+                end_is_variant2: true,
+                tumor_amplicon: None,
+                normal_amplicon: None,
+            });
+        }
+    }
+    sv2_cow
+}
+
 /// Analyse and output variations from BAM1 based on variations from BAM2.
 ///
-/// Ports `SomaticPostProcessModule.printVariationsFromFirstSample()`.
+/// Ports `SomaticPostProcessModule.printVariationsFromFirstSample()` (`SomaticPostProcessModule.java:156-275`,
+/// plus opt-in `CompatProfile::somatic_continue_after_bad_var` from `joachimwolff/VarDictJava#4`,
+/// `clintval/vartovcf#139`, `clintval/vartovcf#149`).
 fn print_variations_from_first_sample(
+    config: &Config,
+    position: i32,
+    v1: std::borrow::Cow<'_, Vars>,
+    v2: std::borrow::Cow<'_, Vars>,
+    chr: &str,
+    splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
+    results: &mut Vec<SomaticVariant>,
+    pipeline: Option<&PositionPipelineFn<'_>>,
+    max_read_length: &mut i32,
+) {
+    let mut called_from_first_sample = rustc_hash::FxHashSet::default();
+    print_variations_from_first_sample_inner(
+        config,
+        position,
+        v1,
+        v2,
+        chr,
+        splice,
+        results,
+        pipeline,
+        max_read_length,
+        &mut called_from_first_sample,
+    );
+}
+
+fn print_variations_from_first_sample_inner(
     config: &Config,
     position: i32,
     v1: std::borrow::Cow<'_, Vars>,
@@ -467,108 +642,35 @@ fn print_variations_from_first_sample(
     results: &mut Vec<SomaticVariant>,
     pipeline: Option<&PositionPipelineFn<'_>>,
     max_read_length: &mut i32,
+    called_from_first_sample: &mut rustc_hash::FxHashSet<String>,
 ) {
-    // Keep `v1` unconsumed until `v1.variants.first()` passes `is_good_var` so the
-    // `number_of_processed_variation == 0` LOH fallback preserves `v1.variant_by_desc`,
-    // `v1.variants.first()`, `v1.ref_variant`, and `v1.sv`.
-    let first_passes = v1.variants.first().is_some_and(|first_v| {
-        let vt = first_v.var_type_cow();
-        first_v.is_good_var(v1.ref_variant.as_ref(), &vt, splice, config)
-    });
+    let continue_after_bad = config.compat.somatic_continue_after_bad_var;
+    // Keep `v1` unconsumed until `entry_passes` succeeds so the LOH-only early return
+    // preserves `v1.variant_by_desc`, `v1.variants.first()`, `v1.ref_variant`, and `v1.sv`.
+    // Under `somatic_continue_after_bad_var` (`joachimwolff/VarDictJava#4`), scan all
+    // candidates in `v1.variants` so `[bad_0, good_1]` enters the `v1` loop.
+    let entry_passes = if continue_after_bad {
+        v1.variants.iter().any(|cand| {
+            let vt = cand.var_type_cow();
+            cand.is_good_var(v1.ref_variant.as_ref(), &vt, splice, config)
+        })
+    } else {
+        v1.variants.first().is_some_and(|first_v| {
+            let vt = first_v.var_type_cow();
+            first_v.is_good_var(v1.ref_variant.as_ref(), &vt, splice, config)
+        })
+    };
 
-    if !first_passes {
+    if !entry_passes {
         if v2.variants.is_empty() {
             return;
         }
-        let (v2_ref_cow, v2_iter, sv2_cow) = super::unpack_cow_vars(v2);
         let start_idx = results.len();
-        for v2var_cow in v2_iter {
-            let vtype = v2var_cow.var_type_cow();
-            if !v2var_cow.is_good_var(v2_ref_cow.as_deref(), &vtype, splice, config) {
-                continue;
-            }
-            let mut v2var = v2var_cow.into_owned();
-            if v2var.var_type != vtype.as_ref() {
-                v2var.var_type.clear();
-                v2var.var_type.push_str(&vtype);
-            }
-            // potential LOH
-            let v1nt = v1.variant_by_desc(&v2var.description);
-
-            if let Some(v1nt) = v1nt {
-                if v1nt.ref_allele == v1nt.var_allele {
-                    continue;
-                }
-                let type_str = if v1nt.frequency < config.lofreq {
-                    LIKELY_LOH
-                } else {
-                    GERMLINE
-                };
-                let mut v1nt_out = v1nt.clone();
-                if v2var.var_type == COMPLEX {
-                    v1nt_out.adj_complex();
-                }
-                v1nt_out.var_type = v1nt_out.var_type();
-                results.push(SomaticVariant {
-                    variant1: v1nt_out,
-                    variant2: Some(v2var),
-                    status: type_str.to_string(),
-                    sv1: v1.sv.clone(),
-                    sv2: String::new(),
-                    end_is_variant2: true,
-                    tumor_amplicon: None,
-                    normal_amplicon: None,
-                });
-            } else {
-                if v2var.ref_allele == v2var.var_allele {
-                    continue;
-                }
-                // Build a placeholder variant1 from sample1's reference info
-                let mut var_for_print =
-                    build_var_for_print_from_v1(&v1, config.compat.reconcile_vd_dp);
-                let mut v2var_out = v2var;
-                if v2var_out.var_type == COMPLEX {
-                    v2var_out.adj_complex();
-                }
-                // Shared columns (ref/var alleles, type) come from normal variant
-                var_for_print.ref_allele = v2var_out.ref_allele.clone();
-                var_for_print.var_allele = v2var_out.var_allele.clone();
-                var_for_print.var_type = v2var_out.var_type.clone();
-                var_for_print.start_pos = v2var_out.start_pos;
-                var_for_print.end_pos = v2var_out.end_pos;
-                var_for_print.shift3 = v2var_out.shift3;
-                var_for_print.msi = v2var_out.msi;
-                var_for_print.msint = v2var_out.msint;
-                var_for_print.left_seq = v2var_out.left_seq.clone();
-                var_for_print.right_seq = v2var_out.right_seq.clone();
-                var_for_print.debug.clone_from(&v2var_out.debug);
-                results.push(SomaticVariant {
-                    variant1: var_for_print,
-                    variant2: Some(v2var_out),
-                    status: STRONG_LOH.to_string(),
-                    sv1: String::new(),
-                    sv2: String::new(),
-                    end_is_variant2: true,
-                    tumor_amplicon: None,
-                    normal_amplicon: None,
-                });
-            }
-        }
-        if let Some((last, prior)) = results
-            .get_mut(start_idx..)
-            .and_then(|s| s.split_last_mut())
-        {
-            for r in prior {
-                r.sv2.clear();
-                r.sv2.push_str(&sv2_cow);
-            }
-            last.sv2 = sv2_cow.into_owned();
-        }
+        let sv2_cow = emit_v2_loh_fallback(config, &v1, v2, splice, None, results);
+        stamp_somatic_sv2(results, start_idx, sv2_cow);
         return;
     }
 
-    // `first_passes` is true: `number_of_processed_variation` will reach >= 1, so the
-    // LOH fallback block never runs and `v1` can be unpacked directly.
     // Ports SomaticPostProcessModule.java:172-186 — in Java, `v2.variants` and
     // `v2.varDescriptionStringToVariants` hold references to the same `Variant`
     // objects. When `determinateType` calls `v2nt.isNoise()`, it mutates `v2nt`
@@ -576,180 +678,210 @@ fn print_variations_from_first_sample(
     // tumor variant at the same position that falls into the `v2nt == null`
     // branch reads the mutated `v2.variants.get(0).totalPosCoverage`.
     // Keep `v2` via `Cow` (`to_mut()` mutates in place on `Cow::Owned` and clones lazily
-    // on `Cow::Borrowed` only when a subsequent tumor variant exists at this locus, #45).
-    let (v1_ref_cow, v1_iter, sv1_cow) = super::unpack_cow_vars(v1);
-    let v1_len = v1_iter.len();
-
+    // on `Cow::Borrowed` only when a subsequent tumor variant exists at this locus,
+    // `palakpsheth/VarDictRust#45`).
+    // When `run_trailing_v2` is true (`joachimwolff/VarDictJava#4`), keep `v1` borrowed
+    // across the `v1` loop so `emit_v2_loh_fallback` still has `v1.variant_by_desc` and
+    // `v1.ref_variant` (`build_var_for_print_from_v1`).
+    let run_trailing_v2 = continue_after_bad && !v2.variants.is_empty();
+    let mut v1_slot = Some(v1);
     let start_idx = results.len();
-    for (idx, vref_cow) in v1_iter.enumerate() {
-        let vartype_check = vref_cow.var_type_cow();
-        if idx > 0 && !vref_cow.is_good_var(v1_ref_cow.as_deref(), &vartype_check, splice, config) {
-            break;
-        }
-        if vref_cow.ref_allele == vref_cow.var_allele {
-            continue;
-        }
-
-        let mut vref = vref_cow.into_owned();
-        if vref.var_type != vartype_check.as_ref() {
-            vref.var_type.clear();
-            vref.var_type.push_str(&vartype_check);
-        }
-        if vref.var_type == COMPLEX {
-            vref.adj_complex();
-        }
-        let has_more_v1 = idx + 1 < v1_len;
-        let nt = vref.description.as_str();
-
-        // Single-allele Cow::Owned fast-path on v2: when no further v1 variants follow,
-        // v2 is Owned, var_desc_to_variant is empty, and v2.variants holds solely `nt`,
-        // pop `v2`'s Variant directly without cloning.
-        let popped_v2nt = if !has_more_v1 {
-            match v2 {
-                std::borrow::Cow::Owned(ref mut v2_owned)
-                    if v2_owned.var_desc_to_variant.is_empty()
-                        && v2_owned.variants.len() == 1
-                        && v2_owned
-                            .variants
-                            .first()
-                            .is_some_and(|v| v.description == nt) =>
-                {
-                    v2_owned.variants.pop()
-                }
-                _ => None,
+    {
+        let (v1_ref_cow, v1_iter, sv1_cow) = if run_trailing_v2 {
+            match v1_slot.as_deref() {
+                Some(v1_keep) => super::unpack_cow_vars(std::borrow::Cow::Borrowed(v1_keep)),
+                None => return,
             }
         } else {
-            None
-        };
-
-        let v2nt = match popped_v2nt {
-            Some(v) => Some(v),
-            None => v2.variant_by_desc(nt).cloned(),
-        };
-
-        if let Some(mut v2nt_var) = v2nt {
-            let type_str = determinate_type(
-                config,
-                v2.ref_variant.as_ref(),
-                &vref,
-                &mut v2nt_var,
-                splice,
-            );
-            if has_more_v1 {
-                v2.to_mut().update_variant_by_desc(nt, v2nt_var.clone());
+            match v1_slot.take() {
+                Some(v1_move) => super::unpack_cow_vars(v1_move),
+                None => return,
             }
-            results.push(SomaticVariant {
-                variant1: vref,
-                variant2: Some(v2nt_var),
-                status: type_str,
-                sv1: String::new(),
-                sv2: String::new(),
-                end_is_variant2: true,
-                tumor_amplicon: None,
-                normal_amplicon: None,
-            });
-        } else {
-            // sample 1 only, should be strong somatic (SomaticPostProcessModule.java:177)
-            let mut type_str: &'static str = STRONG_SOMATIC;
-            let mut combined_v2nt: Option<Variant> = None;
+        };
+        let v1_len = v1_iter.len();
 
-            // combineAnalysis gate (:193-197): not SNV, description longer than 10
-            // or matching MINUS_NUM_NUM (-\d\d), low pos coverage, and not an SV
-            // ('<') → re-run the pipeline on both BAMs combined
-            if vref.var_type != SNV
-                && (nt.len() > 10 || minus_num_num_find(nt))
-                && i64::from(vref.pos_coverage) < i64::from(config.min_reads) + 3
-                && !nt.contains('<')
+        for (idx, vref_cow) in v1_iter.enumerate() {
+            let vartype_check = vref_cow.var_type_cow();
+            if (continue_after_bad || idx > 0)
+                && !vref_cow.is_good_var(v1_ref_cow.as_deref(), &vartype_check, splice, config)
             {
-                if let Some(pipeline_fn) = pipeline {
-                    match combine_analysis(
-                        config,
-                        pipeline_fn,
-                        &vref,
-                        chr,
-                        position,
-                        splice,
-                        max_read_length,
-                    ) {
-                        CombineVerdict::Skip => {
-                            // FALSE → skip this variant (:202-204)
-                            continue;
-                        }
-                        CombineVerdict::Germline(v) => {
-                            type_str = GERMLINE;
-                            combined_v2nt = Some(*v);
-                        }
-                        CombineVerdict::Keep => {} // "" keeps StrongSomatic
-                    }
+                if continue_after_bad {
+                    continue;
                 }
+                break;
+            }
+            if vref_cow.ref_allele == vref_cow.var_allele {
+                continue;
+            }
+            if continue_after_bad {
+                called_from_first_sample.insert(vref_cow.description.clone());
             }
 
-            if type_str == STRONG_SOMATIC {
-                let var_for_print = match v2 {
+            let mut vref = vref_cow.into_owned();
+            if vref.var_type != vartype_check.as_ref() {
+                vref.var_type.clear();
+                vref.var_type.push_str(&vartype_check);
+            }
+            if vref.var_type == COMPLEX {
+                vref.adj_complex();
+            }
+            let has_more_v1 = idx + 1 < v1_len;
+            let nt = vref.description.as_str();
+
+            // Single-allele Cow::Owned fast-path on v2: when no further v1 variants follow,
+            // `somatic_continue_after_bad_var` is off, v2 is Owned, var_desc_to_variant is
+            // empty, and v2.variants holds solely `nt`, pop `v2`'s Variant without cloning.
+            let popped_v2nt = if !has_more_v1 && !continue_after_bad {
+                match v2 {
                     std::borrow::Cow::Owned(ref mut v2_owned)
-                        if !has_more_v1 && v2_owned.variants.is_empty() =>
+                        if v2_owned.var_desc_to_variant.is_empty()
+                            && v2_owned.variants.len() == 1
+                            && v2_owned
+                                .variants
+                                .first()
+                                .is_some_and(|v| v.description == nt) =>
                     {
-                        let mut rv = v2_owned.ref_variant.take();
-                        if config.compat.reconcile_vd_dp {
-                            if let Some(ref mut vp) = rv {
-                                vp.ref_fwd_cov = vp.ref_fwd_cov.max(0);
-                                vp.ref_rev_cov = vp.ref_rev_cov.max(0);
-                                vp.total_pos_cov = vp
-                                    .total_pos_cov
-                                    .max(0)
-                                    .max(vp.ref_fwd_cov.saturating_add(vp.ref_rev_cov));
-                            }
-                        }
-                        rv
+                        v2_owned.variants.pop()
                     }
-                    _ => build_var_for_print_from_v2(&v2, config.compat.reconcile_vd_dp),
-                };
-                // SomaticOutputVariant(vref, vref, vref, varForPrint, …) (:212)
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            let v2nt = match popped_v2nt {
+                Some(v) => Some(v),
+                None => v2.variant_by_desc(nt).cloned(),
+            };
+
+            if let Some(mut v2nt_var) = v2nt {
+                let type_str = determinate_type(
+                    config,
+                    v2.ref_variant.as_ref(),
+                    &vref,
+                    &mut v2nt_var,
+                    splice,
+                );
+                if has_more_v1 {
+                    v2.to_mut().update_variant_by_desc(nt, v2nt_var.clone());
+                }
                 results.push(SomaticVariant {
                     variant1: vref,
-                    variant2: var_for_print,
-                    status: type_str.to_string(),
+                    variant2: Some(v2nt_var),
+                    status: type_str,
                     sv1: String::new(),
                     sv2: String::new(),
-                    end_is_variant2: false,
+                    end_is_variant2: true,
                     tumor_amplicon: None,
                     normal_amplicon: None,
                 });
             } else {
-                // SomaticOutputVariant(vref, vref, vref, v2nt, …) (:215): header and
-                // end fields stay with vref; the var2 columns carry the
-                // combine-adjusted placeholder.
-                results.push(SomaticVariant {
-                    variant1: vref,
-                    variant2: combined_v2nt,
-                    status: type_str.to_string(),
-                    sv1: String::new(),
-                    sv2: String::new(),
-                    end_is_variant2: false,
-                    tumor_amplicon: None,
-                    normal_amplicon: None,
-                });
+                // sample 1 only, should be strong somatic (SomaticPostProcessModule.java:177)
+                let mut type_str: &'static str = STRONG_SOMATIC;
+                let mut combined_v2nt: Option<Variant> = None;
+
+                // combineAnalysis gate (:193-197): not SNV, description longer than 10
+                // or matching MINUS_NUM_NUM (-\d\d), low pos coverage, and not an SV
+                // ('<') → re-run the pipeline on both BAMs combined
+                if vref.var_type != SNV
+                    && (nt.len() > 10 || minus_num_num_find(nt))
+                    && i64::from(vref.pos_coverage) < i64::from(config.min_reads) + 3
+                    && !nt.contains('<')
+                {
+                    if let Some(pipeline_fn) = pipeline {
+                        match combine_analysis(
+                            config,
+                            pipeline_fn,
+                            &vref,
+                            chr,
+                            position,
+                            splice,
+                            max_read_length,
+                        ) {
+                            CombineVerdict::Skip => {
+                                // FALSE → skip this variant (:202-204)
+                                continue;
+                            }
+                            CombineVerdict::Germline(v) => {
+                                type_str = GERMLINE;
+                                combined_v2nt = Some(*v);
+                            }
+                            CombineVerdict::Keep => {} // "" keeps StrongSomatic
+                        }
+                    }
+                }
+
+                if type_str == STRONG_SOMATIC {
+                    let var_for_print = match v2 {
+                        std::borrow::Cow::Owned(ref mut v2_owned)
+                            if !has_more_v1
+                                && !continue_after_bad
+                                && v2_owned.variants.is_empty() =>
+                        {
+                            let mut rv = v2_owned.ref_variant.take();
+                            if config.compat.reconcile_vd_dp {
+                                if let Some(ref mut vp) = rv {
+                                    vp.ref_fwd_cov = vp.ref_fwd_cov.max(0);
+                                    vp.ref_rev_cov = vp.ref_rev_cov.max(0);
+                                    vp.total_pos_cov = vp
+                                        .total_pos_cov
+                                        .max(0)
+                                        .max(vp.ref_fwd_cov.saturating_add(vp.ref_rev_cov));
+                                }
+                            }
+                            rv
+                        }
+                        _ => build_var_for_print_from_v2(&v2, config.compat.reconcile_vd_dp),
+                    };
+                    // SomaticOutputVariant(vref, vref, vref, varForPrint, …) (:212)
+                    results.push(SomaticVariant {
+                        variant1: vref,
+                        variant2: var_for_print,
+                        status: type_str.to_string(),
+                        sv1: String::new(),
+                        sv2: String::new(),
+                        end_is_variant2: false,
+                        tumor_amplicon: None,
+                        normal_amplicon: None,
+                    });
+                } else {
+                    // SomaticOutputVariant(vref, vref, vref, v2nt, …) (:215): header and
+                    // end fields stay with vref; the var2 columns carry the
+                    // combine-adjusted placeholder.
+                    results.push(SomaticVariant {
+                        variant1: vref,
+                        variant2: combined_v2nt,
+                        status: type_str.to_string(),
+                        sv1: String::new(),
+                        sv2: String::new(),
+                        end_is_variant2: false,
+                        tumor_amplicon: None,
+                        normal_amplicon: None,
+                    });
+                }
             }
         }
+
+        // Stamp `sv1` ONLY onto rows emitted by the `v1` loop so normal-only `StrongLOH`
+        // rows appended by `emit_v2_loh_fallback` preserve `sv1 == ""` (`SomaticPostProcessModule.java:270`).
+        stamp_somatic_sv1(results, start_idx, sv1_cow);
     }
 
-    let sv2_cow: std::borrow::Cow<'_, str> = match v2 {
-        std::borrow::Cow::Borrowed(vars) => std::borrow::Cow::Borrowed(vars.sv.as_str()),
-        std::borrow::Cow::Owned(vars) => std::borrow::Cow::Owned(vars.sv),
+    let sv2_cow: std::borrow::Cow<'_, str> = match (run_trailing_v2, v1_slot.as_deref()) {
+        (true, Some(v1_kept)) => emit_v2_loh_fallback(
+            config,
+            v1_kept,
+            v2,
+            splice,
+            Some(called_from_first_sample),
+            results,
+        ),
+        _ => match v2 {
+            std::borrow::Cow::Borrowed(vars) => std::borrow::Cow::Borrowed(vars.sv.as_str()),
+            std::borrow::Cow::Owned(vars) => std::borrow::Cow::Owned(vars.sv),
+        },
     };
-    if let Some((last, prior)) = results
-        .get_mut(start_idx..)
-        .and_then(|s| s.split_last_mut())
-    {
-        for r in prior {
-            r.sv1.clear();
-            r.sv1.push_str(&sv1_cow);
-            r.sv2.clear();
-            r.sv2.push_str(&sv2_cow);
-        }
-        last.sv1 = sv1_cow.into_owned();
-        last.sv2 = sv2_cow.into_owned();
-    }
+    stamp_somatic_sv2(results, start_idx, sv2_cow);
 }
 
 /// Analyse and output variations from BAM2 based on variations from BAM1.
@@ -3211,5 +3343,570 @@ mod tests {
         assert_eq!(vp2_off.ref_fwd_cov, 0);
         assert_eq!(vp2_off.ref_rev_cov, 9);
         assert_eq!(vp2_off.total_pos_cov, 9);
+    }
+
+    #[test]
+    fn test_good_variant_ranked_below_bad_one_in_first_sample() {
+        // Ports @clintval's `testGoodVariantRankedBelowABadOneInFirstSample` from
+        // `joachimwolff/VarDictJava#4` (`clintval/vartovcf#139`, `clintval/vartovcf#149`,
+        // `SomaticPostProcessModule.java:156-226`).
+        let base_cfg = test_config();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(10),
+            gene: "gene_name".to_string(),
+            amplicon: None,
+        };
+        let splice = rustc_hash::FxHashSet::default();
+
+        let make_inputs = || {
+            let mut ref_v = Variant::new();
+            ref_v.description = "T".to_string();
+            ref_v.ref_allele = "T".to_string();
+            ref_v.var_allele = "T".to_string();
+            ref_v.total_pos_cov = 20;
+            ref_v.fwd = 10;
+            ref_v.rev = 10;
+
+            // Ranked 1st in BAM1: high AF (0.50), but low mean base quality (2.6 < 22.5) -> fails is_good_var
+            let mut low_q = make_good_variant("C", "T", "C", 0.50);
+            low_q.start_pos = 5;
+            low_q.end_pos = 5;
+            low_q.mean_quality = 2.6;
+            low_q.mean_mapping_quality = 7.8;
+            low_q.hq_lq_ratio = 2.5;
+            low_q.hicnt = 44;
+
+            // Ranked 2nd in BAM1: passing SNV T->A (AF 0.40, qual 26.0)
+            let mut good_v = make_good_variant("A", "T", "A", 0.40);
+            good_v.start_pos = 5;
+            good_v.end_pos = 5;
+            good_v.pos_coverage = 8;
+            good_v.fwd = 3;
+            good_v.rev = 5;
+            good_v.mean_position = 9.0;
+            good_v.mean_quality = 26.0;
+            good_v.mean_mapping_quality = 7.8;
+            good_v.hq_lq_ratio = 2.5;
+            good_v.genotype = Some("T/A".to_string());
+
+            let mut vars1 = Vars::new();
+            vars1.variants.push(low_q);
+            vars1.variants.push(good_v);
+            vars1.ref_variant = Some(ref_v.clone());
+
+            // BAM2 carries only a failing variant
+            let mut bad_v2 = make_good_variant("G", "T", "G", 0.002);
+            bad_v2.start_pos = 5;
+            bad_v2.end_pos = 5;
+            let mut vars2 = Vars::new();
+            vars2.variants.push(bad_v2);
+            vars2.ref_variant = Some(ref_v);
+
+            let mut bam1 = JavaHashMap::new();
+            bam1.insert(5, vars1);
+            let mut bam2 = JavaHashMap::new();
+            bam2.insert(5, vars2);
+            (bam1, bam2)
+        };
+
+        // Default `--compat=vardictjava`: stops at `low_q` (`!first_passes`), emits 0 variants.
+        let (bam1_vj, bam2_vj) = make_inputs();
+        let vj_at =
+            somatic_post_process_at(&base_cfg, &region, &bam1_vj, &bam2_vj, &splice, None, 100);
+        assert!(vj_at.is_empty());
+        let vj_owned =
+            somatic_post_process_owned(&base_cfg, &region, bam1_vj, bam2_vj, &splice, None, 100);
+        assert!(vj_owned.is_empty());
+
+        // Single-switch `somatic_continue_after_bad_var: true` and full `COMPAT_OFF`:
+        // skips `low_q` at index 0 and calls `good_v` as `StrongSomatic`.
+        for compat in [
+            crate::config::CompatProfile {
+                somatic_continue_after_bad_var: true,
+                ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+            },
+            crate::config::COMPAT_OFF,
+        ] {
+            let mut cfg = base_cfg.clone();
+            cfg.compat = compat;
+            let (bam1, bam2) = make_inputs();
+            let out_at = somatic_post_process_at(&cfg, &region, &bam1, &bam2, &splice, None, 100);
+            let out_owned =
+                somatic_post_process_owned(&cfg, &region, bam1, bam2, &splice, None, 100);
+            assert_eq!(out_at.len(), 1);
+            assert_eq!(out_owned.len(), 1);
+            assert_eq!(out_at[0].status, STRONG_SOMATIC);
+            assert_eq!(out_at[0].variant1.ref_allele, "T");
+            assert_eq!(out_at[0].variant1.var_allele, "A");
+            assert_eq!(out_at[0].variant1.var_type, SNV);
+            assert_eq!(out_owned[0].status, out_at[0].status);
+            assert_eq!(
+                out_owned[0].variant1.var_allele,
+                out_at[0].variant1.var_allele
+            );
+            assert_eq!(
+                out_owned[0].variant2.as_ref().map(|v| v.total_pos_cov),
+                out_at[0].variant2.as_ref().map(|v| v.total_pos_cov)
+            );
+        }
+    }
+
+    #[test]
+    fn test_somatic_continue_after_bad_var_all_five_invariants_and_owned_borrowed_parity() {
+        // Exercises all 5 invariants of `CompatProfile::somatic_continue_after_bad_var`
+        // (`joachimwolff/VarDictJava#4`, `clintval/vartovcf#139`, `clintval/vartovcf#149`):
+        // (1) `any_passes` scan over `v1.variants`;
+        // (2) `v1` kept borrowed across both loops so `v1.variant_by_desc` and `v1.ref_variant`
+        //     remain available in the trailing `v2` LOH loop even on `Cow::Owned`;
+        // (3) `!has_more_v1` `v2.variants.pop()` and `v2_owned.ref_variant.take()` disabled;
+        // (4) `called_from_first_sample` records `nt` immediately after `is_good_var` passes
+        //     (including before `CombineVerdict::Skip`), while trailing `v2` loop still runs;
+        // (5) `sv1` stamped onto `v1`-loop rows before entering the trailing `v2` loop so
+        //     normal-only `StrongLOH` rows keep `sv1 == ""` and `sv2 == v2.sv`.
+        let base_cfg = test_config();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let splice = rustc_hash::FxHashSet::default();
+
+        let make_maps = || {
+            let mut bam1 = JavaHashMap::new();
+            let mut bam2 = JavaHashMap::new();
+
+            // Position 150: v1 = [good_A, bad_C, good_T], v2 = [good_A_norm, bad_mapq_M, good_C_norm, good_loh_G]
+            let mut v1_150 = Vars::new();
+            v1_150.sv = "150-300-4".to_string();
+            let mut v1_ref = Variant::new();
+            v1_ref.description = "R".to_string();
+            v1_ref.ref_allele = "R".to_string();
+            v1_ref.var_allele = "R".to_string();
+            v1_ref.fwd = 41;
+            v1_ref.rev = 43;
+            v1_ref.hicnt = 1; // keep <= min_reads so low-MQ check doesn't reject tumor SNVs
+            v1_150.ref_variant = Some(v1_ref);
+
+            let mut good_a = make_good_variant("A", "G", "A", 0.40);
+            good_a.start_pos = 150;
+            good_a.end_pos = 150;
+            good_a.total_pos_cov = 95;
+            good_a.genotype = Some("G/A".to_string());
+
+            // Fails `is_good_var` due to mean_quality (5.0 < 22.5), AF 0.02 < lofreq (0.05) -> LikelyLOH if paired from v2
+            let mut bad_c = make_good_variant("C", "G", "C", 0.02);
+            bad_c.start_pos = 150;
+            bad_c.end_pos = 150;
+            bad_c.mean_quality = 5.0;
+
+            let mut good_t = make_good_variant("T", "G", "T", 0.35);
+            good_t.start_pos = 150;
+            good_t.end_pos = 150;
+
+            v1_150.variants.push(good_a);
+            v1_150.variants.push(bad_c);
+            v1_150.variants.push(good_t);
+
+            let mut v2_150 = Vars::new();
+            v2_150.sv = "150-300-2".to_string();
+            let mut v2_ref = Variant::new();
+            v2_ref.description = "G".to_string();
+            v2_ref.ref_allele = "G".to_string();
+            v2_ref.var_allele = "G".to_string();
+            v2_ref.hicnt = 50;
+            v2_ref.mean_mapping_quality = 60.0;
+            v2_150.ref_variant = Some(v2_ref);
+
+            let mut good_a_norm = make_good_variant("A", "G", "A", 0.42);
+            good_a_norm.start_pos = 150;
+            good_a_norm.end_pos = 150;
+            good_a_norm.total_pos_cov = 88;
+            good_a_norm.ref_fwd_cov = 24;
+            good_a_norm.ref_rev_cov = 26;
+
+            // Passes without `v2.ref_variant`, but FAILS `is_good_var` when `v2.ref_variant` is preserved
+            // (`ref_var.hicnt > min_reads && freq < 0.25 && d - 2 < 5.0 && ref_var.mean_mapping_quality > 20.0`).
+            let mut bad_mapq_v2 = make_good_variant("+TT", "G", "GTT", 0.20);
+            bad_mapq_v2.start_pos = 150;
+            bad_mapq_v2.end_pos = 150;
+            bad_mapq_v2.mean_mapping_quality = 1.0;
+
+            let mut good_c_norm = make_good_variant("C", "G", "C", 0.45);
+            good_c_norm.start_pos = 150;
+            good_c_norm.end_pos = 150;
+
+            let mut good_loh_g = make_good_variant("+AA", "G", "GAA", 0.48);
+            good_loh_g.start_pos = 150;
+            good_loh_g.end_pos = 150;
+
+            v2_150.variants.push(good_a_norm);
+            v2_150.variants.push(bad_mapq_v2);
+            v2_150.variants.push(good_c_norm);
+            v2_150.variants.push(good_loh_g);
+
+            bam1.insert(150, v1_150);
+            bam2.insert(150, v2_150);
+
+            // Position 155: v1 = [bad_0, good_a], single-allele v2 = [low_af_g_norm] (`!has_more_v1` at `good_a`).
+            // Under default parity, `!first_passes` falls back to v2 where `low_af_g_norm` (`hicnt = 1`) fails
+            // `is_good_var` -> 0 rows; under `somatic_continue_after_bad_var`, `good_a` pairs with `low_af_g_norm`
+            // as `LikelySomatic` while keeping `v2.variants` unpopped.
+            let mut v1_155 = Vars::new();
+            let mut b155 = make_good_variant("C", "A", "C", 0.001);
+            b155.start_pos = 155;
+            b155.end_pos = 155;
+            let mut g155 = make_good_variant("G", "A", "G", 0.40);
+            g155.start_pos = 155;
+            g155.end_pos = 155;
+            v1_155.variants.push(b155);
+            v1_155.variants.push(g155);
+            let mut v2_155 = Vars::new();
+            let mut g155_norm = make_good_variant("G", "A", "G", 0.02);
+            g155_norm.start_pos = 155;
+            g155_norm.end_pos = 155;
+            g155_norm.hicnt = 1;
+            g155_norm.pos_coverage = 2;
+            v2_155.variants.push(g155_norm);
+            bam1.insert(155, v1_155);
+            bam2.insert(155, v2_155);
+
+            // Position 160: v1 = [good_0, bad_1, good_2], v2.variants = [] with `v2.ref_variant = Some(...)`
+            // Verifies `v2_owned.ref_variant` stays intact across multiple StrongSomatic tumor alleles.
+            let mut v1_160 = Vars::new();
+            let mut g160_a = make_good_variant("C", "A", "C", 0.35);
+            g160_a.start_pos = 160;
+            g160_a.end_pos = 160;
+            let mut b160 = make_good_variant("G", "A", "G", 0.001);
+            b160.start_pos = 160;
+            b160.end_pos = 160;
+            let mut g160_t = make_good_variant("T", "A", "T", 0.32);
+            g160_t.start_pos = 160;
+            g160_t.end_pos = 160;
+            v1_160.variants.push(g160_a);
+            v1_160.variants.push(b160);
+            v1_160.variants.push(g160_t);
+
+            let mut v2_160 = Vars::new();
+            let mut ref2_160 = Variant::new();
+            ref2_160.total_pos_cov = 77;
+            ref2_160.ref_fwd_cov = 37;
+            ref2_160.ref_rev_cov = 40;
+            v2_160.ref_variant = Some(ref2_160);
+
+            bam1.insert(160, v1_160);
+            bam2.insert(160, v2_160);
+
+            // Position 170: `CombineVerdict::Skip` on v1's passing insertion, while v2 carries `good_loh_170`.
+            // Under `somatic_continue_after_bad_var`, trailing v2 loop still runs and emits `StrongLOH` with `sv1 == ""`.
+            let mut v1_170 = Vars::new();
+            v1_170.sv = "170-400-3".to_string();
+            let mut ins_170 = make_insertion_variant();
+            ins_170.start_pos = 170;
+            ins_170.end_pos = 170;
+            v1_170.variants.push(ins_170);
+
+            let mut v2_170 = Vars::new();
+            v2_170.sv = "170-400-1".to_string();
+            let mut loh_170 = make_good_variant("G", "A", "G", 0.44);
+            loh_170.start_pos = 170;
+            loh_170.end_pos = 170;
+            v2_170.variants.push(loh_170);
+
+            bam1.insert(170, v1_170);
+            bam2.insert(170, v2_170);
+
+            (bam1, bam2)
+        };
+
+        let empty_combine = |_reg: &Region,
+                             _sp: &mut rustc_hash::FxHashSet<String>,
+                             _mrl: &mut i32,
+                             _pos: i32|
+         -> Result<Option<Vars>, VardictError> { Ok(None) };
+
+        // Default parity (`somatic_continue_after_bad_var == false`):
+        // - pos 150 emits only `A` (Germline), stopping at `bad_c`;
+        // - pos 160 emits only `C` (StrongSomatic), stopping at `b160`;
+        // - pos 170 skips `ins_170` via `CombineVerdict::Skip` and does NOT run v2 LOH loop -> 0 rows.
+        let (bam1_vj, bam2_vj) = make_maps();
+        let vj = somatic_post_process_at(
+            &base_cfg,
+            &region,
+            &bam1_vj,
+            &bam2_vj,
+            &splice,
+            Some(&empty_combine),
+            100,
+        );
+        assert_eq!(vj.len(), 2);
+        assert_eq!(vj[0].variant1.start_pos, 150);
+        assert_eq!(vj[0].variant1.var_allele, "A");
+        assert_eq!(vj[0].status, GERMLINE);
+        assert_eq!(vj[1].variant1.start_pos, 160);
+        assert_eq!(vj[1].variant1.var_allele, "C");
+        assert_eq!(vj[1].status, STRONG_SOMATIC);
+
+        // With `somatic_continue_after_bad_var == true`:
+        let mut cfg = base_cfg;
+        cfg.compat = crate::config::CompatProfile {
+            somatic_continue_after_bad_var: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        let (bam1_on, bam2_on) = make_maps();
+        let got_at = somatic_post_process_at(
+            &cfg,
+            &region,
+            &bam1_on,
+            &bam2_on,
+            &splice,
+            Some(&empty_combine),
+            100,
+        );
+        let got_owned = somatic_post_process_owned(
+            &cfg,
+            &region,
+            bam1_on,
+            bam2_on,
+            &splice,
+            Some(&empty_combine),
+            100,
+        );
+        assert_eq!(got_at.len(), 8);
+        assert_eq!(got_owned.len(), 8);
+
+        // Pos 150: [Germline(A), StrongSomatic(T), LikelyLOH(C), StrongLOH(GAA)]
+        // (`bad_mapq_v2` rejected because `v2.ref_variant` remained intact!)
+        assert_eq!(got_at[0].variant1.var_allele, "A");
+        assert_eq!(got_at[0].status, GERMLINE);
+        assert_eq!(got_at[0].sv1, "150-300-4");
+        assert_eq!(got_at[0].sv2, "150-300-2");
+
+        assert_eq!(got_at[1].variant1.var_allele, "T");
+        assert_eq!(got_at[1].status, STRONG_SOMATIC);
+        assert_eq!(got_at[1].sv1, "150-300-4");
+        assert_eq!(got_at[1].sv2, "150-300-2");
+
+        assert_eq!(got_at[2].variant1.var_allele, "C");
+        assert_eq!(got_at[2].status, LIKELY_LOH);
+        assert_eq!(got_at[2].sv1, "150-300-4");
+        assert_eq!(got_at[2].sv2, "150-300-2");
+
+        assert_eq!(got_at[3].variant1.var_allele, "GAA");
+        assert_eq!(got_at[3].status, STRONG_LOH);
+        assert_eq!(got_at[3].sv1, "");
+        assert_eq!(got_at[3].sv2, "150-300-2");
+        assert_eq!(got_at[3].variant1.total_pos_cov, 95);
+        assert_eq!(got_at[3].variant1.ref_fwd_cov, 41);
+        assert_eq!(got_at[3].variant1.ref_rev_cov, 43);
+        assert_eq!(got_at[3].variant1.genotype.as_deref(), Some("G/A"));
+
+        // Pos 155: `[bad_0, good_a]` paired with `v2 = [low_af_g_norm]` recovered as `LikelySomatic`!
+        assert_eq!(got_at[4].variant1.start_pos, 155);
+        assert_eq!(got_at[4].variant1.var_allele, "G");
+        assert_eq!(got_at[4].status, LIKELY_SOMATIC);
+
+        // Pos 160: both C and T emitted as StrongSomatic with `v2.ref_variant` depth 77 preserved
+        assert_eq!(got_at[5].variant1.var_allele, "C");
+        assert_eq!(got_at[5].status, STRONG_SOMATIC);
+        assert_eq!(
+            got_at[5].variant2.as_ref().map(|v| v.total_pos_cov),
+            Some(77)
+        );
+        assert_eq!(got_at[6].variant1.var_allele, "T");
+        assert_eq!(got_at[6].status, STRONG_SOMATIC);
+        assert_eq!(
+            got_at[6].variant2.as_ref().map(|v| v.total_pos_cov),
+            Some(77)
+        );
+
+        // Pos 170: `ins_170` skipped by `CombineVerdict::Skip`, `loh_170` emitted as `StrongLOH` with `sv1 == ""`
+        assert_eq!(got_at[7].variant1.var_allele, "G");
+        assert_eq!(got_at[7].status, STRONG_LOH);
+        assert_eq!(got_at[7].sv1, "");
+        assert_eq!(got_at[7].sv2, "170-400-1");
+
+        // Directly verify `called_from_first_sample` records `nt` BEFORE `CombineVerdict::Skip`
+        // (`joachimwolff/VarDictJava#4` `SomaticPostProcessModule.java:183`) and suppresses
+        // duplicate normal emission in `emit_v2_loh_fallback`.
+        let mut v1_skip = Vars::new();
+        let mut ins_skip = make_insertion_variant();
+        ins_skip.start_pos = 170;
+        ins_skip.end_pos = 170;
+        v1_skip.variants.push(ins_skip.clone());
+        let v2_empty = Vars::new();
+        let mut splice_cow = std::borrow::Cow::Borrowed(&splice);
+        let mut direct_out = Vec::new();
+        let mut mrl = 100;
+        let mut called_set = rustc_hash::FxHashSet::default();
+        print_variations_from_first_sample_inner(
+            &cfg,
+            170,
+            std::borrow::Cow::Owned(v1_skip.clone()),
+            std::borrow::Cow::Owned(v2_empty),
+            "chr1",
+            &mut splice_cow,
+            &mut direct_out,
+            Some(&empty_combine),
+            &mut mrl,
+            &mut called_set,
+        );
+        assert!(direct_out.is_empty());
+        assert!(
+            called_set.contains("+GAACCACTGAGACAGGA"),
+            "CombineVerdict::Skip must still record nt in called_from_first_sample"
+        );
+        let mut v2_with_same_ins = Vars::new();
+        v2_with_same_ins.variants.push(ins_skip);
+        let _ = emit_v2_loh_fallback(
+            &cfg,
+            &v1_skip,
+            std::borrow::Cow::Owned(v2_with_same_ins),
+            &splice,
+            Some(&called_set),
+            &mut direct_out,
+        );
+        assert!(
+            direct_out.is_empty(),
+            "emit_v2_loh_fallback must skip allele present in called_from_first_sample"
+        );
+
+        // Verify `somatic_post_process_owned` matches `somatic_post_process_at` on every emitted record
+        for (o, b) in got_owned.iter().zip(got_at.iter()) {
+            assert_eq!(o.status, b.status);
+            assert_eq!(o.sv1, b.sv1);
+            assert_eq!(o.sv2, b.sv2);
+            assert_eq!(o.end_is_variant2, b.end_is_variant2);
+            assert_eq!(o.variant1.var_allele, b.variant1.var_allele);
+            assert_eq!(o.variant1.total_pos_cov, b.variant1.total_pos_cov);
+            assert_eq!(o.variant1.ref_fwd_cov, b.variant1.ref_fwd_cov);
+            assert_eq!(o.variant1.ref_rev_cov, b.variant1.ref_rev_cov);
+            assert_eq!(o.variant1.genotype, b.variant1.genotype);
+            assert_eq!(
+                o.variant2.as_ref().map(|v| v.total_pos_cov),
+                b.variant2.as_ref().map(|v| v.total_pos_cov)
+            );
+        }
+    }
+
+    #[test]
+    fn test_somatic_strict_region_bounds_retains_1bp_upstream_symbolic_svs() {
+        // Under `AstraZeneca-NGS/VarDictJava#369` (`strict_region_bounds`) +
+        // `clintval/vartovcf#192` (`canonical_sv_vcf_anchoring`), symbolic `<DUP>`, `<INV>`,
+        // and `<DEL>` starting at `bp == region.start` (100) are anchored 1 bp upstream at
+        // `start_pos = 99` (`end_pos > start_pos`) and must be retained, whereas non-symbolic
+        // indels at `start_pos = 99` or symbolic SVs at `start_pos = 98` must be excluded.
+        let mut cfg = test_config();
+        cfg.compat = crate::config::COMPAT_OFF;
+        let reg = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let empty_splice = rustc_hash::FxHashSet::default();
+
+        let make_sv_inputs = || {
+            let mut bam1 = JavaHashMap::new();
+            let bam2 = JavaHashMap::new();
+
+            let mut vars_100 = Vars::new();
+            // 1-bp-upstream anchored `<DUP>`, `<INV>`, `<DEL>` at `start_pos = 99`, `end_pos = 250` -> RETAIN
+            for (desc, alt) in [("<DUP>", "<DUP>"), ("<INV>", "<INV>"), ("<DEL>", "<DEL>")] {
+                let mut sv = make_good_variant(desc, "C", alt, 0.35);
+                sv.start_pos = 99;
+                sv.end_pos = 250;
+                vars_100.variants.push(sv);
+            }
+            // Non-symbolic 1-bp deletion at `start_pos = 99`, `end_pos = 100` -> DROP
+            let mut non_sv_del = make_good_variant("-1", "CA", "C", 0.35);
+            non_sv_del.start_pos = 99;
+            non_sv_del.end_pos = 100;
+            vars_100.variants.push(non_sv_del);
+
+            // Symbolic SV at `start_pos = 98` (`bp = 99 < region.start`) -> DROP
+            let mut upstream_sv = make_good_variant("<DUP2>", "G", "<DUP>", 0.35);
+            upstream_sv.start_pos = 98;
+            upstream_sv.end_pos = 250;
+            vars_100.variants.push(upstream_sv);
+
+            // Degenerate symbolic SV with `end_pos == start_pos` (`99 == 99`) -> DROP
+            let mut zero_span_sv = make_good_variant("<DUP0>", "C", "<DUP>", 0.35);
+            zero_span_sv.start_pos = 99;
+            zero_span_sv.end_pos = 99;
+            vars_100.variants.push(zero_span_sv);
+
+            // Invalid `start_pos = 0` symbolic SV even when `0 + 1 == 1` -> DROP (`start_pos >= 1` guard)
+            let mut pos_zero_sv = make_good_variant("<DUPZ>", "N", "<DUP>", 0.35);
+            pos_zero_sv.start_pos = 0;
+            pos_zero_sv.end_pos = 150;
+            vars_100.variants.push(pos_zero_sv);
+
+            bam1.insert(100, vars_100);
+            (bam1, bam2)
+        };
+
+        let (bam1_off, bam2_off) = make_sv_inputs();
+        let retained_at =
+            somatic_post_process_at(&cfg, &reg, &bam1_off, &bam2_off, &empty_splice, None, 100);
+        assert_eq!(retained_at.len(), 3);
+        assert_eq!(
+            retained_at
+                .iter()
+                .map(|s| s.variant1.var_allele.as_str())
+                .collect::<Vec<_>>(),
+            vec!["<DUP>", "<INV>", "<DEL>"]
+        );
+
+        let retained_owned =
+            somatic_post_process_owned(&cfg, &reg, bam1_off, bam2_off, &empty_splice, None, 100);
+        assert_eq!(retained_owned.len(), 3);
+
+        // Also verify `start_pos = 0` is rejected even when `bounds` starts at `1`.
+        let (bam1_z, bam2_z) = make_sv_inputs();
+        let z_out = somatic_post_process_owned_with_bounds(
+            &cfg,
+            &reg,
+            bam1_z,
+            bam2_z,
+            &empty_splice,
+            None,
+            100,
+            Some(&[(1, 50), (100, 200)]),
+        );
+        assert_eq!(z_out.len(), 3);
+
+        // When `canonical_sv_vcf_anchoring` is false (only `strict_region_bounds` active),
+        // `start_pos = 99` is NOT canonical-shifted, so all `start_pos = 99` records are excluded.
+        let mut strict_only_cfg = test_config();
+        strict_only_cfg.compat = crate::config::CompatProfile {
+            strict_region_bounds: true,
+            ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        let (bam1_strict, bam2_strict) = make_sv_inputs();
+        let strict_only_at = somatic_post_process_at(
+            &strict_only_cfg,
+            &reg,
+            &bam1_strict,
+            &bam2_strict,
+            &empty_splice,
+            None,
+            100,
+        );
+        assert!(strict_only_at.is_empty());
+        let strict_only_owned = somatic_post_process_owned(
+            &strict_only_cfg,
+            &reg,
+            bam1_strict,
+            bam2_strict,
+            &empty_splice,
+            None,
+            100,
+        );
+        assert!(strict_only_owned.is_empty());
     }
 }
