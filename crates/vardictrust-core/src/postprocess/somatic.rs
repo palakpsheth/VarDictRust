@@ -514,7 +514,8 @@ fn print_variations_from_first_sample(
                     continue;
                 }
                 // Build a placeholder variant1 from sample1's reference info
-                let mut var_for_print = build_var_for_print_from_v1(&v1);
+                let mut var_for_print =
+                    build_var_for_print_from_v1(&v1, config.compat.reconcile_vd_dp);
                 let mut v2var_out = v2var;
                 if v2var_out.var_type == COMPLEX {
                     v2var_out.adj_complex();
@@ -674,9 +675,20 @@ fn print_variations_from_first_sample(
                     std::borrow::Cow::Owned(ref mut v2_owned)
                         if !has_more_v1 && v2_owned.variants.is_empty() =>
                     {
-                        v2_owned.ref_variant.take()
+                        let mut rv = v2_owned.ref_variant.take();
+                        if config.compat.reconcile_vd_dp {
+                            if let Some(ref mut vp) = rv {
+                                vp.ref_fwd_cov = vp.ref_fwd_cov.max(0);
+                                vp.ref_rev_cov = vp.ref_rev_cov.max(0);
+                                vp.total_pos_cov = vp
+                                    .total_pos_cov
+                                    .max(0)
+                                    .max(vp.ref_fwd_cov.saturating_add(vp.ref_rev_cov));
+                            }
+                        }
+                        rv
                     }
-                    _ => build_var_for_print_from_v2(&v2),
+                    _ => build_var_for_print_from_v2(&v2, config.compat.reconcile_vd_dp),
                 };
                 // SomaticOutputVariant(vref, vref, vref, varForPrint, …) (:212)
                 results.push(SomaticVariant {
@@ -831,6 +843,15 @@ fn print_variations_from_second_sample(
                         None => Variant::new(),
                     }
                 };
+                if config.compat.reconcile_vd_dp {
+                    var_for_print.ref_fwd_cov = var_for_print.ref_fwd_cov.max(0);
+                    var_for_print.ref_rev_cov = var_for_print.ref_rev_cov.max(0);
+                    var_for_print.total_pos_cov = var_for_print.total_pos_cov.max(0).max(
+                        var_for_print
+                            .ref_fwd_cov
+                            .saturating_add(var_for_print.ref_rev_cov),
+                    );
+                }
                 var_for_print.ref_allele = v2var.ref_allele.clone();
                 var_for_print.var_allele = v2var.var_allele.clone();
                 var_for_print.var_type = v2var.var_type.clone();
@@ -997,12 +1018,35 @@ fn combine_analysis(
         var2.pstd = true; // :453 isAtLeastAt2Positions
         var2.qstd = true; // :454 hasAtLeast2DiffQualities
 
+        if config.compat.reconcile_vd_dp {
+            var2.total_pos_cov = var2.total_pos_cov.max(var2.pos_coverage);
+            var2.hicnt = combined_var.hicnt.saturating_sub(variant1.hicnt).max(0);
+            var2.hicov = combined_var
+                .hicov
+                .saturating_sub(variant1.hicov)
+                .max(var2.hicnt);
+            var2.hi_freq = if var2.hi_freq.is_finite() {
+                var2.hi_freq.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            var2.extra_freq = if var2.extra_freq.is_finite() {
+                var2.extra_freq.clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+        }
+
         if var2.total_pos_cov <= 0 {
             return CombineVerdict::Skip; // :456-458
         }
 
-        var2.frequency = var2.pos_coverage as f64 / var2.total_pos_cov as f64; // :460
-                                                                               // Can't back-calculate; copy from variant1 (:461)
+        var2.frequency = if config.compat.reconcile_vd_dp {
+            (var2.pos_coverage as f64 / var2.total_pos_cov as f64).clamp(0.0, 1.0)
+        } else {
+            var2.pos_coverage as f64 / var2.total_pos_cov as f64
+        }; // :460
+           // Can't back-calculate; copy from variant1 (:461)
         var2.hq_lq_ratio = variant1.hq_lq_ratio;
         var2.genotype = combined_var.genotype.clone(); // :462
                                                        // Recalculate strand bias from subtracted counts (:463-464); Java strandBias
@@ -1082,8 +1126,8 @@ fn determinate_type(
 ///
 /// Ports the `varForPrint` construction in `printVariationsFromFirstSample` when
 /// the variant is not found in sample2.
-fn build_var_for_print_from_v2(v2: &Vars) -> Option<Variant> {
-    if let Some(v2r) = v2.variants.first() {
+fn build_var_for_print_from_v2(v2: &Vars, reconcile_vd_dp: bool) -> Option<Variant> {
+    let mut out = if let Some(v2r) = v2.variants.first() {
         let mut var_for_print = Variant::new();
         var_for_print.total_pos_cov = if v2r.total_pos_cov != 0 {
             v2r.total_pos_cov
@@ -1103,14 +1147,25 @@ fn build_var_for_print_from_v2(v2: &Vars) -> Option<Variant> {
         Some(var_for_print)
     } else {
         v2.ref_variant.clone()
+    };
+    if reconcile_vd_dp {
+        if let Some(ref mut vp) = out {
+            vp.ref_fwd_cov = vp.ref_fwd_cov.max(0);
+            vp.ref_rev_cov = vp.ref_rev_cov.max(0);
+            vp.total_pos_cov = vp
+                .total_pos_cov
+                .max(0)
+                .max(vp.ref_fwd_cov.saturating_add(vp.ref_rev_cov));
+        }
     }
+    out
 }
 
 /// Build a placeholder Variant from v1's first variant or reference for StrongLOH output.
 ///
 /// Ports the `varForPrint` construction in `printVariationsFromFirstSample` when
 /// numberOfProcessedVariation == 0 and variant is not found in sample1.
-fn build_var_for_print_from_v1(v1: &Vars) -> Variant {
+fn build_var_for_print_from_v1(v1: &Vars, reconcile_vd_dp: bool) -> Variant {
     let v1_first = v1.variants.first();
     let tcov = match v1_first {
         Some(v1var) if v1var.total_pos_cov != 0 => v1var.total_pos_cov,
@@ -1143,6 +1198,15 @@ fn build_var_for_print_from_v1(v1: &Vars) -> Variant {
     var_for_print.total_pos_cov = tcov;
     var_for_print.ref_fwd_cov = fwd;
     var_for_print.ref_rev_cov = rev;
+    if reconcile_vd_dp {
+        var_for_print.ref_fwd_cov = var_for_print.ref_fwd_cov.max(0);
+        var_for_print.ref_rev_cov = var_for_print.ref_rev_cov.max(0);
+        var_for_print.total_pos_cov = var_for_print.total_pos_cov.max(0).max(
+            var_for_print
+                .ref_fwd_cov
+                .saturating_add(var_for_print.ref_rev_cov),
+        );
+    }
     var_for_print.genotype = genotype;
     var_for_print
 }
@@ -2959,5 +3023,169 @@ mod tests {
             somatic_post_process_owned(&strict_cfg, &reg, bam1, bam2, &empty_splice, None, 100);
         assert_eq!(strict_owned.len(), 1);
         assert_eq!(strict_owned[0].variant1.start_pos, 150);
+
+        // Verify paired somatic `reconcile_vd_dp` (`COMPAT_VARDICTJAVA_1_8_3` vs `COMPAT_OFF`):
+        // 1) `combine_analysis` DP == 0 rescue + HIAF < 0 / ADJAF < 0 clamping + HICNT <= HICOV:
+        let mut base_rescue = make_good_variant("-12", "ACGTACGTACGTN", "A", 0.15);
+        base_rescue.var_type = "Deletion".to_string();
+        base_rescue.pos_coverage = 3;
+        base_rescue.total_pos_cov = 20;
+        base_rescue.hicnt = 3;
+        base_rescue.hicov = 20;
+        base_rescue.hi_freq = 0.9;
+        base_rescue.extra_freq = 0.8;
+
+        let rescue_pipe = |_r: &Region,
+                           _sp: &mut rustc_hash::FxHashSet<String>,
+                           _mrl: &mut i32,
+                           _p: i32|
+         -> Result<Option<Vars>, VardictError> {
+            let mut pv = Vars::new();
+            let mut comb = base_rescue.clone();
+            comb.pos_coverage = 6; // delta = 3 >= min_reads (2)
+            comb.total_pos_cov = 20; // combined.DP == variant1.DP -> subtracted DP == 0
+            comb.hicnt = 5;
+            comb.hicov = 10;
+            comb.hi_freq = 0.1; // weighted diff (0.6 - 2.7)/3 = -0.7 < 0
+            comb.extra_freq = 0.1; // weighted diff (0.6 - 2.4)/3 = -0.6 < 0
+            pv.variants.push(comb);
+            Ok(Some(pv))
+        };
+        let mut sp_cow = std::borrow::Cow::Borrowed(&empty_splice);
+        let mut mrl = 100;
+        let vj_verdict = combine_analysis(
+            &cfg,
+            &rescue_pipe,
+            &base_rescue,
+            "chr1",
+            150,
+            &mut sp_cow,
+            &mut mrl,
+        );
+        assert!(matches!(vj_verdict, CombineVerdict::Skip));
+        let off_verdict = combine_analysis(
+            &strict_cfg,
+            &rescue_pipe,
+            &base_rescue,
+            "chr1",
+            150,
+            &mut sp_cow,
+            &mut mrl,
+        );
+        match off_verdict {
+            CombineVerdict::Germline(var2) => {
+                assert_eq!(var2.pos_coverage, 3);
+                assert_eq!(var2.total_pos_cov, 3);
+                assert_eq!(var2.frequency, 1.0);
+                assert_eq!(var2.hicnt, 2);
+                assert_eq!(var2.hicov, 2);
+                assert_eq!(var2.hi_freq, 0.0);
+                assert_eq!(var2.extra_freq, 0.0);
+            }
+            _ => panic!("expected Germline rescue under COMPAT_OFF"),
+        }
+
+        // 2) `combine_analysis` VD > DP + HIAF > 1.0 / ADJAF > 1.0 clamping:
+        let mut base_over = make_good_variant("-12", "ACGTACGTACGTN", "A", 0.10);
+        base_over.var_type = "Deletion".to_string();
+        base_over.pos_coverage = 2;
+        base_over.total_pos_cov = 18;
+        base_over.hicnt = 0;
+        base_over.hicov = 18;
+        base_over.hi_freq = 0.0;
+        base_over.extra_freq = 0.0;
+
+        let over_pipe = |_r: &Region,
+                         _sp: &mut rustc_hash::FxHashSet<String>,
+                         _mrl: &mut i32,
+                         _p: i32|
+         -> Result<Option<Vars>, VardictError> {
+            let mut pv = Vars::new();
+            let mut comb = base_over.clone();
+            comb.pos_coverage = 6; // var2.pos_coverage = 4
+            comb.total_pos_cov = 20; // var2.total_pos_cov = 2 < 4 (VD > DP)
+            comb.hicnt = 6;
+            comb.hicov = 20; // 20 - 18 = 2 < 6
+            comb.hi_freq = 1.0; // (6.0 - 0.0)/4.0 = 1.5 > 1.0
+            comb.extra_freq = 1.0; // 1.5 > 1.0
+            pv.variants.push(comb);
+            Ok(Some(pv))
+        };
+        match combine_analysis(
+            &cfg,
+            &over_pipe,
+            &base_over,
+            "chr1",
+            150,
+            &mut sp_cow,
+            &mut mrl,
+        ) {
+            CombineVerdict::Germline(vj_v2) => {
+                assert_eq!(vj_v2.pos_coverage, 4);
+                assert_eq!(vj_v2.total_pos_cov, 2);
+                assert!(vj_v2.frequency > 1.0);
+                assert!(vj_v2.hi_freq > 1.0);
+                assert!(vj_v2.extra_freq > 1.0);
+            }
+            _ => panic!("expected Germline under COMPAT_VARDICTJAVA_1_8_3"),
+        }
+        match combine_analysis(
+            &strict_cfg,
+            &over_pipe,
+            &base_over,
+            "chr1",
+            150,
+            &mut sp_cow,
+            &mut mrl,
+        ) {
+            CombineVerdict::Germline(off_v2) => {
+                assert_eq!(off_v2.pos_coverage, 4);
+                assert_eq!(off_v2.total_pos_cov, 4);
+                assert_eq!(off_v2.frequency, 1.0);
+                assert_eq!(off_v2.hicnt, 6);
+                assert_eq!(off_v2.hicov, 6);
+                assert_eq!(off_v2.hi_freq, 1.0);
+                assert_eq!(off_v2.extra_freq, 1.0);
+            }
+            _ => panic!("expected Germline under COMPAT_OFF"),
+        }
+
+        // 3) `build_var_for_print_from_v1` & `build_var_for_print_from_v2` negative ref_fwd clamping:
+        let mut neg_v1 = Vars::new();
+        let mut bad_first = Variant::new();
+        bad_first.total_pos_cov = 5;
+        neg_v1.variants.push(bad_first);
+        let mut v1ref = Variant::new();
+        v1ref.description = "A".to_string();
+        v1ref.fwd = -4;
+        v1ref.rev = 12;
+        neg_v1.ref_variant = Some(v1ref);
+
+        let vp1_vj = build_var_for_print_from_v1(&neg_v1, false);
+        assert_eq!(vp1_vj.ref_fwd_cov, -4);
+        assert_eq!(vp1_vj.ref_rev_cov, 12);
+        assert_eq!(vp1_vj.total_pos_cov, 5);
+
+        let vp1_off = build_var_for_print_from_v1(&neg_v1, true);
+        assert_eq!(vp1_off.ref_fwd_cov, 0);
+        assert_eq!(vp1_off.ref_rev_cov, 12);
+        assert_eq!(vp1_off.total_pos_cov, 12);
+
+        let mut neg_v2 = Vars::new();
+        let mut v2_first = Variant::new();
+        v2_first.total_pos_cov = 4;
+        v2_first.ref_fwd_cov = -3;
+        v2_first.ref_rev_cov = 9;
+        neg_v2.variants.push(v2_first);
+
+        let vp2_vj = build_var_for_print_from_v2(&neg_v2, false).expect("vp2_vj");
+        assert_eq!(vp2_vj.ref_fwd_cov, -3);
+        assert_eq!(vp2_vj.ref_rev_cov, 9);
+        assert_eq!(vp2_vj.total_pos_cov, 4);
+
+        let vp2_off = build_var_for_print_from_v2(&neg_v2, true).expect("vp2_off");
+        assert_eq!(vp2_off.ref_fwd_cov, 0);
+        assert_eq!(vp2_off.ref_rev_cov, 9);
+        assert_eq!(vp2_off.total_pos_cov, 9);
     }
 }

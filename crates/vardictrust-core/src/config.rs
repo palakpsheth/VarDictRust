@@ -100,7 +100,7 @@ pub struct CompatProfile {
     pub reconcile_vd_dp: bool,
     /// UB-3 (#282) / #34 PB-1: Iterate variant and post-processing position maps in ascending genomic coordinate order instead of JavaHashMap bucket order.
     pub coordinate_sorted_vars: bool,
-    /// #34 PB-2 (VariationRealigner.java:1853-1855): Omit Java's out-of-bounds while-loop sentinel +1 mismatch and +1 length increment when rem5 < rem3 in find_35_match.
+    /// #34 PB-2 (VariationRealigner.java:2006-2042, :2016-2024): Omit Java's out-of-bounds while-loop sentinel +1 mismatch and +1 length increment when rem5 < rem3 in find_35_match.
     pub exact_35_overlap: bool,
     /// #34 PB-4 (VariationRealigner.java:2056-2065): Match exact deletion CIGAR operator length (len == dlen) in no_passing_reads instead of Java's getCigarString().contains(dlen + "D") suffix match.
     pub exact_cigar_dlen_match: bool,
@@ -1104,24 +1104,6 @@ mod tests {
             exact_cigar_dlen_match,
         ];
         assert!(vj_switches.iter().all(|&flag| !flag));
-        assert_eq!(vj.target, CompatTarget::VardictJava183);
-        assert!(!vj.sanitize_sample_info);
-        assert!(!vj.standard_dup_symbolic_alt);
-        assert!(!vj.shift3_3prime_alleles);
-        assert!(!vj.strict_region_bounds);
-        assert!(!vj.suppress_pileup_sentinels);
-        assert!(!vj.live_duprate);
-        assert!(!vj.preserve_mixed_sex_contigs);
-        assert!(!vj.cigar_homopolymer_merge);
-        assert!(!vj.eqx_cigar_read_length);
-        assert!(!vj.preserve_discordant_svs);
-        assert!(!vj.mark_dup_sv_inclusive_end);
-        assert!(!vj.sv_lazy_mate_pileup);
-        assert!(!vj.exact_binary_half_even);
-        assert!(!vj.reconcile_vd_dp);
-        assert!(!vj.coordinate_sorted_vars);
-        assert!(!vj.exact_35_overlap);
-        assert!(!vj.exact_cigar_dlen_match);
 
         let off = std::hint::black_box(COMPAT_OFF);
         let CompatProfile {
@@ -1165,24 +1147,6 @@ mod tests {
             exact_cigar_dlen_match,
         ];
         assert!(off_switches.iter().all(|&flag| flag));
-        assert_eq!(off.target, CompatTarget::Off);
-        assert!(off.sanitize_sample_info);
-        assert!(off.standard_dup_symbolic_alt);
-        assert!(off.shift3_3prime_alleles);
-        assert!(off.strict_region_bounds);
-        assert!(off.suppress_pileup_sentinels);
-        assert!(off.live_duprate);
-        assert!(off.preserve_mixed_sex_contigs);
-        assert!(off.cigar_homopolymer_merge);
-        assert!(off.eqx_cigar_read_length);
-        assert!(off.preserve_discordant_svs);
-        assert!(off.mark_dup_sv_inclusive_end);
-        assert!(off.sv_lazy_mate_pileup);
-        assert!(off.exact_binary_half_even);
-        assert!(off.reconcile_vd_dp);
-        assert!(off.coordinate_sorted_vars);
-        assert!(off.exact_35_overlap);
-        assert!(off.exact_cigar_dlen_match);
 
         for valid_vj in [
             "vardictjava",

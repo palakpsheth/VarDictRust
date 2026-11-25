@@ -679,8 +679,7 @@ def check_pre_tag_surfaces(
         "Cargo.toml",
         "crates/vardictrust/src/cli.rs",
         "deny.toml",
-        "packaging/bioconda/recipes/vardictrust/meta.yaml",
-        "packaging/nf-core/modules/vardictrust/meta.yml",
+        "CITATION.cff",
         "README.md",
     ):
         forbid_regex(
@@ -690,6 +689,61 @@ def check_pre_tag_surfaces(
             f"{lic_rel} must remain pure MIT without copyleft dual-licensing",
             errors,
         )
+    if version == "1.0.10":
+        require_regex(
+            repo_root,
+            "packaging/bioconda/recipes/vardictrust/meta.yaml",
+            r"^\s*license:\s*MIT AND GPL-2\.0-or-later\s*$",
+            "Bioconda meta.yaml license == MIT AND GPL-2.0-or-later while pinned to 1.0.10",
+            errors,
+        )
+        require_regex(
+            repo_root,
+            "packaging/bioconda/recipes/vardictrust/meta.yaml",
+            r"^\s*license_family:\s*GPL2\s*$",
+            "Bioconda meta.yaml license_family == GPL2 while pinned to 1.0.10",
+            errors,
+        )
+        require_regex(
+            repo_root,
+            "packaging/nf-core/modules/vardictrust/meta.yml",
+            r'licence:\s*\n\s*-\s*"MIT"\s*\n\s*-\s*"GPL-2\.0-or-later"',
+            "nf-core meta.yml licence == [MIT, GPL-2.0-or-later] while pinned to 1.0.10",
+            errors,
+        )
+    else:
+        require_regex(
+            repo_root,
+            "packaging/bioconda/recipes/vardictrust/meta.yaml",
+            r"^\s*license:\s*MIT\s*$",
+            "Bioconda meta.yaml license == MIT for 1.1.0+",
+            errors,
+        )
+        require_regex(
+            repo_root,
+            "packaging/bioconda/recipes/vardictrust/meta.yaml",
+            r"^\s*license_family:\s*MIT\s*$",
+            "Bioconda meta.yaml license_family == MIT for 1.1.0+",
+            errors,
+        )
+        require_regex(
+            repo_root,
+            "packaging/nf-core/modules/vardictrust/meta.yml",
+            r'licence:\s*\n\s*-\s*"MIT"',
+            "nf-core meta.yml licence == [MIT] for 1.1.0+",
+            errors,
+        )
+        for pkg_lic_rel in (
+            "packaging/bioconda/recipes/vardictrust/meta.yaml",
+            "packaging/nf-core/modules/vardictrust/meta.yml",
+        ):
+            forbid_regex(
+                repo_root,
+                pkg_lic_rel,
+                r"GPL-2\.0|GPL-2\.0-or-later|GPL2",
+                f"{pkg_lic_rel} must be pure MIT without copyleft dual-licensing for 1.1.0+",
+                errors,
+            )
 
     cargo_toml_text = read_text(repo_root, "Cargo.toml", errors)
     if cargo_toml_text:

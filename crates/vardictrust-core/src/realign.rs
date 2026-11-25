@@ -5387,6 +5387,9 @@ pub fn find_35_match_compat(
     }
 }
 
+/// Finds overlap between 5' and 3' soft-clip consensus sequences under default VarDictJava v1.8.3 parity.
+///
+/// Delegates to [`find_35_match_compat`] with `exact_35_overlap = false`.
 #[inline]
 pub fn find_35_match(seq5: &[u8], seq3: &[u8], verbose: bool) -> Match35 {
     find_35_match_compat(seq5, seq3, verbose, false)

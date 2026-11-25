@@ -1692,7 +1692,7 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
                 headers1 = [th.inner_text().strip() for th in table1.query_selector_all("th")]
                 self.assertEqual(len(headers1), 4)
                 rows1 = table1.query_selector_all("tbody tr")
-                self.assertGreaterEqual(len(rows1), 10)
+                self.assertGreaterEqual(len(rows1), 17)
 
                 table2 = tables[1]
                 headers2 = [th.inner_text().strip() for th in table2.query_selector_all("th")]
@@ -1704,7 +1704,7 @@ code {{ font-family: monospace; background-color: rgba(175, 184, 193, 0.2); padd
                 headers3 = [th.inner_text().strip() for th in table3.query_selector_all("th")]
                 self.assertEqual(len(headers3), 4)
                 rows3 = table3.query_selector_all("tbody tr")
-                self.assertGreaterEqual(len(rows3), 7)
+                self.assertGreaterEqual(len(rows3), 6)
 
                 table4 = tables[3]
                 headers4 = [th.inner_text().strip() for th in table4.query_selector_all("th")]

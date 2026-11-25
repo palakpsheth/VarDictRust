@@ -33,6 +33,6 @@ literature:
    - Euler-Maclaurin asymptotic expansion with Bernoulli numbers for the logarithmic
      factorial Stirling remainder series.
    - Milton Abramowitz and Irene A. Stegun (1964), "Handbook of Mathematical Functions",
-     National Bureau of Standards, §26.3.29 (hypergeometric recurrence tail bounds).
+     National Bureau of Standards, §26.1.21 (hypergeometric recurrence tail bounds).
    - Richard P. Brent (1973), "Algorithms for Minimization without Derivatives",
      Prentice-Hall, Chapter 4 (`zeroin` bracketed secant-bisection root-finding).

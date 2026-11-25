@@ -9,11 +9,14 @@
 //!   using Bernoulli numbers $B_{2m}$ ($c_m = \frac{B_{2m}}{2m(2m - 1)}$) and the exact
 //!   Gamma functional equation $\Gamma(z + 1) = z \Gamma(z)$.
 //! - Milton Abramowitz & Irene A. Stegun (1964), *Handbook of Mathematical Functions*,
-//!   `§26.3.29` hypergeometric probability ratio recurrence.
+//!   `§26.1.21` hypergeometric probability ratio recurrence.
 
 /// Exact IEEE-754 `f64` nearest value of $\ln(2\pi) = 1.83787706640934548356\dots$
 /// (avoiding the 1-ULP double-rounding loss of `std::f64::consts::TAU.ln()`).
 const LN_2PI: f64 = 1.8378770664093456;
+
+/// Largest contiguous exact integer representable in IEEE-754 `f64` ($2^{53}$).
+const MAX_EXACT_F64_INT: f64 = 9_007_199_254_740_992.0;
 
 /// Exact IEEE-754 `f64` values of $\delta(k / 2)$ for $k = 0..=30$ ($n \in \{0, 0.5, 1.0, \dots, 15.0\}$),
 /// where $\delta(z) = \ln \Gamma(z + 1) - (z + \tfrac{1}{2})\ln z + z - \tfrac{1}{2}\ln(2\pi)$ and $\delta(0) = 0$.
@@ -169,7 +172,7 @@ pub fn binomial_deviance(x: f64, mu: f64) -> f64 {
         return s;
     }
     let ratio = x / mu;
-    let lg = if ratio.is_finite() && x > 0.0 {
+    let lg = if ratio.is_normal() {
         ratio.ln()
     } else {
         x.ln() - mu.ln()
@@ -333,6 +336,7 @@ pub fn hypergeom_pmf(x: f64, r: f64, b: f64, n: f64, log_p: bool) -> f64 {
         || (b - b_int).abs() > 1e-7
         || (n - n_int).abs() > 1e-7
         || n_int > r_int + b_int
+        || r_int + b_int > MAX_EXACT_F64_INT
     {
         return f64::NAN;
     }
@@ -361,28 +365,40 @@ pub fn hypergeom_pmf(x: f64, r: f64, b: f64, n: f64, log_p: bool) -> f64 {
     let b1 = binomial_pmf(x_int, r_int, p, q, false);
     let b2 = binomial_pmf(n_int - x_int, b_int, p, q, false);
     let b3 = binomial_pmf(n_int, total, p, q, false);
-    if b3 <= 0.0 || b1 == 0.0 || b2 == 0.0 {
+    let prod = b1 * b2;
+    if b3 <= 0.0 || !prod.is_normal() {
         let lp = log_binomial_pmf(x_int, r_int, p, q)
             + log_binomial_pmf(n_int - x_int, b_int, p, q)
             - log_binomial_pmf(n_int, total, p, q);
         return lp.exp().clamp(0.0, 1.0);
     }
-    ((b1 * b2) / b3).clamp(0.0, 1.0)
+    (prod / b3).clamp(0.0, 1.0)
 }
 
 /// Evaluates the hypergeometric CDF ($P(X \le x)$ when `lower_tail` is `true`, $P(X > x)$ otherwise)
-/// via upper-tail reflection and Abramowitz & Stegun (`§26.3.29`) downward ratio summation.
+/// via upper-tail reflection and Abramowitz & Stegun (`§26.1.21`) downward ratio summation.
 pub fn hypergeom_cdf(x: f64, nr: f64, nb: f64, n: f64, mut lower_tail: bool) -> f64 {
     if x.is_nan() || nr.is_nan() || nb.is_nan() || n.is_nan() {
         return f64::NAN;
     }
-    let mut x = (x + 1e-7).floor();
-    let mut nr = nr.round();
-    let mut nb = nb.round();
-    let n = n.round();
-    if nr < 0.0 || nb < 0.0 || !(nr + nb).is_finite() || n < 0.0 || n > nr + nb {
+    if nr < 0.0 || nb < 0.0 || n < 0.0 || !(nr + nb).is_finite() || !n.is_finite() {
         return f64::NAN;
     }
+    let nr_int = nr.round();
+    let nb_int = nb.round();
+    let n_int = n.round();
+    if (nr - nr_int).abs() > 1e-7
+        || (nb - nb_int).abs() > 1e-7
+        || (n - n_int).abs() > 1e-7
+        || n_int > nr_int + nb_int
+        || nr_int + nb_int > MAX_EXACT_F64_INT
+    {
+        return f64::NAN;
+    }
+    let mut x = (x + 1e-7).floor();
+    let mut nr = nr_int;
+    let mut nb = nb_int;
+    let n = n_int;
     if x < 0.0 || x < n - nb {
         return if lower_tail { 0.0 } else { 1.0 };
     }
@@ -563,6 +579,7 @@ mod tests {
         let sub_a = f64::from_bits(4);
         let sub_b = f64::from_bits(5);
         assert!(binomial_deviance(sub_a, sub_b).is_finite());
+        assert_eq!(binomial_deviance(1e-200, 1e200), 1e200);
     }
 
     #[test]
@@ -589,6 +606,7 @@ mod tests {
         assert_eq!(binomial_pmf(-1.0, 10.0, 0.3, 0.7, false), 0.0);
         assert_eq!(binomial_pmf(11.0, 10.0, 0.3, 0.7, true), f64::NEG_INFINITY);
         assert_eq!(binomial_pmf(0.0, 0.0, 0.3, 0.7, false), 1.0);
+        assert_eq!(binomial_pmf(1e-25, 1e305, 0.5, 0.5, false), 0.0);
 
         for &(n, p) in &[(10, 0.01), (25, 0.25), (50, 0.5), (100, 0.9)] {
             let q = 1.0 - p;
@@ -619,6 +637,17 @@ mod tests {
         assert!(hypergeom_cdf(2.0, 5.0, 5.0, -1.0, true).is_nan());
         assert!(hypergeom_cdf(2.0, 5.0, 5.0, 11.0, true).is_nan());
         assert!(hypergeom_cdf(2.0, f64::INFINITY, 5.0, 3.0, true).is_nan());
+        assert!(hypergeom_cdf(2.0, 4.5, 6.0, 5.0, true).is_nan());
+        assert!(hypergeom_cdf(2.0, 4.0, 6.5, 5.0, true).is_nan());
+        assert!(hypergeom_cdf(2.0, 4.0, 6.0, 5.5, true).is_nan());
+        assert!(hypergeom_pmf(
+            2.0_f64.powi(54),
+            2.0_f64.powi(55),
+            2.0_f64.powi(55),
+            2.0_f64.powi(55),
+            false
+        )
+        .is_nan());
 
         assert_eq!(hypergeom_cdf(f64::INFINITY, 0.0, 0.0, 0.0, true), 1.0);
         assert_eq!(hypergeom_cdf(f64::INFINITY, 0.0, 0.0, 0.0, false), 0.0);
@@ -660,8 +689,8 @@ mod tests {
             2.0_f64.powi(55),
             true,
         );
-        assert!(c1.is_finite() && (0.0..=1.0).contains(&c1));
-        assert!(c2.is_finite() && (0.0..=1.0).contains(&c2));
+        assert!(c1.is_nan());
+        assert!(c2.is_nan());
         assert!(
             t0.elapsed() < std::time::Duration::from_millis(200),
             "x >= 2^53 termination took too long: {:?}",

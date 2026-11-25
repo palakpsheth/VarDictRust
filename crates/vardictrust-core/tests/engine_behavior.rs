@@ -6170,18 +6170,19 @@ mod vcf_all_alleles_and_compat_off {
 
         // =========================================================================
         // (a) `reconcile_vd_dp` (`VarDictJava #92`, `#386`, `#400`):
-        //     200-bp `<DUP>` across `chr1:200..=399` (`sv_min_len = 150`):
+        //     `w3_rec` exercises `#92` (`DP < VD` / `AF > 1.0`) E2E on a 200-bp `<DUP>`
+        //     across `chr1:200..=399` (`sv_min_len = 150`), while `#386` (`ADJAF > 1.0`)
+        //     and `#400` (`HICNT > HICOV`) are verified directly in
+        //     `tovars::tests::compat_off_reconcile_vd_dp_clamps_dp_af_adjaf_and_hicov`:
         //     - 2 wild-type reads covering `399` (`HICOV = 2` since `<dup>` in
         //       `non_insertion_variants` starts with `'+'` and is skipped by `calc_hicov`)
         //     - 2 forward split reads `60M20S` at `340..=399` (`DP = 2 + 2 = 4` at `399`)
         //     - 8 reverse split reads `20S60M` at `200..=259` paired with 8 forward
-        //       discordant mates `60M` at `330..=389` (ending before `399`, adding
-        //       `extracnt >= 8 > DP = 4` and discordant pair counts so `cnt - DP >= extracnt`):
-        //     Under `COMPAT_VARDICTJAVA_1_8_3`, this simultaneously triggers `#92`
-        //     (`VD > DP`, `AF > 1.0`), `#386` (`cnt - DP >= extracnt`, `ADJAF > 1.0`),
-        //     and `#400` (`HICNT > HICOV`, `HIAF > 1.0`). Under `COMPAT_OFF`,
-        //     `reconcile_vd_dp` enforces `0 <= VD <= DP`, `0.0 <= AF <= 1.0`,
-        //     `0.0 <= ADJAF <= 1.0`, `0 <= HICNT <= HICOV`, and `0.0 <= HIAF <= 1.0`.
+        //       discordant mates `60M` at `330..=389` (ending before `399`).
+        //     Under `COMPAT_VARDICTJAVA_1_8_3`, this triggers `#92` (`VD > DP`, `AF > 1.0`);
+        //     under `COMPAT_OFF`, `reconcile_vd_dp` enforces `0 <= VD <= DP`,
+        //     `0.0 <= AF <= 1.0`, `0.0 <= ADJAF <= 1.0`, `0 <= HICNT <= HICOV`, and
+        //     `0.0 <= HIAF <= 1.0`.
         // =========================================================================
         let mut rec_ref = lcg_ref_bytes(0x9238_6400_CAFE_BABE, 600);
         // Pin junction bases around 200 and 399 so `modify_cigar` preserves 20S soft-clips
@@ -6518,6 +6519,9 @@ mod vcf_all_alleles_and_compat_off {
             "COMPAT_OFF coordinate-sorted .vcf must be byte-identical across tiled and untiled runs"
         );
 
+        let native_vars = extract_variants(&sort_off_vcf_u);
+        assert_eq!(native_vars.len(), 4);
+
         // Pipe `COMPAT_OFF` `.var` into `perl VarDictJava/VarDict/var2vcf_valid.pl`
         if Command::new("perl")
             .arg("-v")
@@ -6529,7 +6533,6 @@ mod vcf_all_alleles_and_compat_off {
                 &["-N", "SORT_SMPL", "-E", "-f", "0.01"],
                 &sort_off_var_u,
             );
-            let native_vars = extract_variants(&sort_off_vcf_u);
             assert_eq!(
                 native_vars, perl_vars,
                 "native COMPAT_OFF VCF must match perl var2vcf_valid.pl on coordinate-sorted .var"

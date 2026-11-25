@@ -45,12 +45,19 @@ pub fn simple_post_process(
         .strict_region_bounds
         .then_some(single_bounds.as_slice());
     if config.compat.coordinate_sorted_vars {
-        let mut sorted: Vec<(i32, std::borrow::Cow<'_, Vars>)> = aligned_variants
-            .iter()
-            .map(|(&pos, vars)| (pos, std::borrow::Cow::Borrowed(vars)))
-            .collect();
-        sorted.sort_unstable_by_key(|&(pos, _)| pos);
-        simple_post_process_core(config, region, sorted, splice, strict_bounds)
+        let mut keys: Vec<i32> = aligned_variants.keys().copied().collect();
+        keys.sort_unstable();
+        simple_post_process_core(
+            config,
+            region,
+            keys.into_iter().filter_map(|pos| {
+                aligned_variants
+                    .get(&pos)
+                    .map(|vars| (pos, std::borrow::Cow::Borrowed(vars)))
+            }),
+            splice,
+            strict_bounds,
+        )
     } else {
         simple_post_process_core(
             config,
@@ -91,17 +98,24 @@ pub(crate) fn simple_post_process_owned(
 pub(crate) fn simple_post_process_owned_with_bounds(
     config: &Config,
     region: &Region,
-    aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
+    mut aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
     strict_bounds: Option<&[(i32, i32)]>,
 ) -> Vec<Variant> {
     if config.compat.coordinate_sorted_vars {
-        let mut sorted: Vec<(i32, std::borrow::Cow<'_, Vars>)> = aligned_variants
-            .into_entries()
-            .map(|(pos, vars)| (pos, std::borrow::Cow::Owned(vars)))
-            .collect();
-        sorted.sort_unstable_by_key(|&(pos, _)| pos);
-        simple_post_process_core(config, region, sorted, splice, strict_bounds)
+        let mut keys: Vec<i32> = aligned_variants.keys().copied().collect();
+        keys.sort_unstable();
+        simple_post_process_core(
+            config,
+            region,
+            keys.into_iter().filter_map(|pos| {
+                aligned_variants
+                    .get_mut(&pos)
+                    .map(|vars| (pos, std::borrow::Cow::Owned(std::mem::take(vars))))
+            }),
+            splice,
+            strict_bounds,
+        )
     } else {
         simple_post_process_core(
             config,

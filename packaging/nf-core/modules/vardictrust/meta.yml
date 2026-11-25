@@ -15,6 +15,7 @@ tools:
       doi: "10.1093/nar/gkw227"
       licence:
         - "MIT"
+        - "GPL-2.0-or-later"
       args_id: "$args"
       identifier: biotools:vardictrust
   - "htslib":

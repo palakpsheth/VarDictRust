@@ -475,9 +475,24 @@ class TestBiocondaRecipe(unittest.TestCase):
     def test_meta_yaml_metadata(self):
         meta = META_PATH.read_text(encoding="utf-8")
         self.assertIn('{% set name = "vardictrust" %}', meta, "Package name must be 'vardictrust'")
-        self.assertIn("license: MIT\n", meta, "License must be MIT")
-        self.assertIn("license_family: MIT", meta, "License family must be MIT")
-        self.assertNotIn("GPL", meta, "meta.yaml must not contain GPL")
+        ver_m = re.search(r'\{%\s*set\s+version\s*=\s*"([^"]+)"\s*%\}', meta)
+        self.assertIsNotNone(ver_m, 'meta.yaml must define {% set version = "..." %}')
+        recipe_version = ver_m.group(1)
+        if recipe_version == "1.0.10":
+            self.assertIn(
+                "license: MIT AND GPL-2.0-or-later\n",
+                meta,
+                "Pinned 1.0.10 recipe must match v1.0.10 tarball license MIT AND GPL-2.0-or-later",
+            )
+            self.assertIn(
+                "license_family: GPL2",
+                meta,
+                "Pinned 1.0.10 recipe must declare license_family: GPL2",
+            )
+        else:
+            self.assertIn("license: MIT\n", meta, "License must be MIT")
+            self.assertIn("license_family: MIT", meta, "License family must be MIT")
+            self.assertNotIn("GPL", meta, "meta.yaml must not contain GPL")
         self.assertIn("LICENSE-3RD-PARTY", meta, "license_file must include LICENSE-3RD-PARTY")
         self.assertIn("THIRDPARTY.yml", meta, "license_file must include THIRDPARTY.yml")
         self.assertIn("recipe-maintainers:", meta, "extra must list recipe-maintainers")

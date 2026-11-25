@@ -29,7 +29,7 @@ module = "crates/vardictrust-core/src/stats/hypergeom.rs"
 citations = [
     "Catherine Loader (2000), Fast and Accurate Computation of Binomial Probabilities, HP Laboratories",
     "Euler-Maclaurin Bernoulli Stirling remainder series",
-    "Abramowitz & Stegun (1964) §26.3.29 hypergeometric tail recurrence",
+    "Abramowitz & Stegun (1964) §26.1.21 hypergeometric tail recurrence",
     "Richard Brent (1973) zeroin root-finding",
 ]
 

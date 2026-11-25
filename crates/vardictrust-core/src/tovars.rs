@@ -105,15 +105,13 @@ fn fill_common_fields(
     hicov: i32,
     duprate: f64,
     exact_binary_half_even: bool,
+    reconcile_vd_dp: bool,
 ) {
     tvref.description = description.to_string();
-    tvref.pos_coverage = cnt.cnt;
     tvref.fwd = fwd;
     tvref.rev = rev;
     tvref.bias.clear();
     let _ = std::fmt::Write::write_fmt(&mut tvref.bias, format_args!("{}", bias));
-    tvref.frequency =
-        round_half_even_compat(cnt.cnt as f64 / ttcov as f64, 4, exact_binary_half_even);
     tvref.mean_position =
         round_half_even_compat(cnt.pmean / cnt.cnt as f64, 1, exact_binary_half_even);
     tvref.pstd = cnt.pstd;
@@ -121,22 +119,51 @@ fn fill_common_fields(
     tvref.qstd = cnt.qstd;
     tvref.mean_mapping_quality = mapping_quality;
     tvref.hq_lq_ratio = hicnt as f64 / if locnt != 0 { locnt as f64 } else { 0.5 };
-    tvref.hi_freq = if hicov > 0 {
-        hicnt as f64 / hicov as f64
-    } else {
-        0.0
-    };
-    tvref.extra_freq = if cnt.extracnt != 0 {
-        cnt.extracnt as f64 / ttcov as f64
-    } else {
-        0.0
-    };
     tvref.shift3 = 0;
     tvref.msi = 0.0;
     tvref.nm = round_half_even_compat(cnt.nm / cnt.cnt as f64, 1, exact_binary_half_even);
     tvref.hicnt = hicnt;
     tvref.hicov = hicov;
     tvref.duprate = duprate;
+    if reconcile_vd_dp {
+        let pos_cov_eff = cnt.cnt.max(0);
+        let ttcov_eff = ttcov.max(pos_cov_eff).max(0);
+        tvref.pos_coverage = pos_cov_eff;
+        tvref.frequency = if ttcov_eff > 0 && pos_cov_eff > 0 {
+            round_half_even_compat(
+                pos_cov_eff as f64 / ttcov_eff as f64,
+                4,
+                exact_binary_half_even,
+            )
+        } else {
+            0.0
+        };
+        tvref.hi_freq = if hicov > 0 && hicnt > 0 {
+            hicnt as f64 / hicov as f64
+        } else {
+            0.0
+        };
+        tvref.extra_freq = if cnt.extracnt > 0 && ttcov_eff > 0 {
+            (cnt.extracnt.min(ttcov_eff) as f64) / (ttcov_eff as f64)
+        } else {
+            0.0
+        };
+        tvref.total_pos_cov = ttcov_eff;
+    } else {
+        tvref.pos_coverage = cnt.cnt;
+        tvref.frequency =
+            round_half_even_compat(cnt.cnt as f64 / ttcov as f64, 4, exact_binary_half_even);
+        tvref.hi_freq = if hicov > 0 {
+            hicnt as f64 / hicov as f64
+        } else {
+            0.0
+        };
+        tvref.extra_freq = if cnt.extracnt != 0 {
+            cnt.extracnt as f64 / ttcov as f64
+        } else {
+            0.0
+        };
+    }
 }
 
 enum SortedKeySlice<'a> {
@@ -296,7 +323,8 @@ impl<'a> ToVarsBuilder<'a> {
     ///
     /// Matches `self.build_aligned_variants_with_ref_mode(var_data, ref_mode).get(&target_pos).cloned()`
     /// while evaluating only `target_pos` (and `target_pos - 1`'s `overlay[target_pos]` insertion
-    /// contribution when `target_pos - 1` precedes `target_pos` in `JavaHashMap` iteration order).
+    /// contribution when `target_pos - 1` precedes `target_pos` in `JavaHashMap` iteration order under
+    /// default `--compat=vardictjava`, or ascending coordinate order under `--compat=off`).
     pub(crate) fn build_vars_at_position_with_ref_mode(
         &self,
         var_data: &VariationData,
@@ -460,7 +488,8 @@ impl<'a> ToVarsBuilder<'a> {
             rustc_hash::FxHashMap::default();
 
         let num_positions = var_data.non_insertion_variants.len();
-        // Do not sort positions, use the JavaHashMap iteration order!
+        // Default --compat=vardictjava uses JavaHashMap iteration order; --compat=off
+        // (CompatProfile::coordinate_sorted_vars) iterates positions in ascending coordinate order.
         match ref_mode {
             RefSiteMode::KeepAll => {
                 aligned_variants.reserve_nodes(num_positions);
@@ -986,15 +1015,10 @@ impl<'a> ToVarsBuilder<'a> {
         let locnt = cnt.locnt;
 
         let reconcile_vd_dp = self.config.compat.reconcile_vd_dp;
-        let (pos_cov_eff, hicnt_eff, ttcov, hicov_eff) = if reconcile_vd_dp {
+        let (hicnt_eff, ttcov, hicov_eff) = if reconcile_vd_dp {
             let pc = cnt.cnt.max(0);
             let hc = hicnt.max(0);
-            (
-                pc,
-                hc,
-                total_pos_coverage.max(pc).max(0),
-                hicov.max(hc).max(0),
-            )
+            (hc, total_pos_coverage.max(pc).max(0), hicov.max(hc).max(0))
         } else {
             let mut ttcov = total_pos_coverage;
             if cnt.cnt > total_pos_coverage
@@ -1003,7 +1027,7 @@ impl<'a> ToVarsBuilder<'a> {
             {
                 ttcov = cnt.cnt;
             }
-            (cnt.cnt, hicnt, ttcov, hicov)
+            (hicnt, ttcov, hicov)
         };
 
         let mut tvref = Variant::empty_internal();
@@ -1022,24 +1046,8 @@ impl<'a> ToVarsBuilder<'a> {
             hicov_eff,
             duprate,
             exact_binary_half_even,
+            reconcile_vd_dp,
         );
-        if reconcile_vd_dp {
-            tvref.pos_coverage = pos_cov_eff;
-            tvref.frequency = if ttcov > 0 && pos_cov_eff > 0 {
-                round_half_even_compat(pos_cov_eff as f64 / ttcov as f64, 4, exact_binary_half_even)
-            } else {
-                0.0
-            };
-            tvref.extra_freq = if cnt.extracnt > 0 && ttcov > 0 {
-                (cnt.extracnt.min(ttcov) as f64) / (ttcov as f64)
-            } else {
-                0.0
-            };
-            if hicov_eff <= 0 || hicnt_eff <= 0 {
-                tvref.hi_freq = 0.0;
-            }
-            tvref.total_pos_cov = ttcov;
-        }
         tvref
     }
 
@@ -1342,30 +1350,8 @@ impl<'a> ToVarsBuilder<'a> {
                         hicov,
                         duprate,
                         exact_binary_half_even,
+                        reconcile_vd_dp,
                     );
-                    if reconcile_vd_dp {
-                        let pos_cov_eff = cnt.cnt.max(0);
-                        let ttcov_eff = ttcov.max(pos_cov_eff).max(0);
-                        tvref.pos_coverage = pos_cov_eff;
-                        tvref.frequency = if ttcov_eff > 0 && pos_cov_eff > 0 {
-                            round_half_even_compat(
-                                pos_cov_eff as f64 / ttcov_eff as f64,
-                                4,
-                                exact_binary_half_even,
-                            )
-                        } else {
-                            0.0
-                        };
-                        tvref.extra_freq = if cnt.extracnt > 0 && ttcov_eff > 0 {
-                            (cnt.extracnt.min(ttcov_eff) as f64) / (ttcov_eff as f64)
-                        } else {
-                            0.0
-                        };
-                        if hicov <= 0 || hicnt <= 0 {
-                            tvref.hi_freq = 0.0;
-                        }
-                        tvref.total_pos_cov = ttcov_eff;
-                    }
 
                     if self.config.debug {
                         // ports Variant.debugVariantsContentInsertion (Variant.java:261-266)
