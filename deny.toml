@@ -32,7 +32,6 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "bzip2-1.0.6",
-    "GPL-2.0-or-later",
 ]
 confidence-threshold = 0.8
 # profiling-only: optional dep of vardictrust feature profile-cpu/profile-heap; never in the release graph

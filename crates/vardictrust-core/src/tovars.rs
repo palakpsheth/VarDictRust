@@ -105,15 +105,13 @@ fn fill_common_fields(
     hicov: i32,
     duprate: f64,
     exact_binary_half_even: bool,
+    reconcile_vd_dp: bool,
 ) {
     tvref.description = description.to_string();
-    tvref.pos_coverage = cnt.cnt;
     tvref.fwd = fwd;
     tvref.rev = rev;
     tvref.bias.clear();
     let _ = std::fmt::Write::write_fmt(&mut tvref.bias, format_args!("{}", bias));
-    tvref.frequency =
-        round_half_even_compat(cnt.cnt as f64 / ttcov as f64, 4, exact_binary_half_even);
     tvref.mean_position =
         round_half_even_compat(cnt.pmean / cnt.cnt as f64, 1, exact_binary_half_even);
     tvref.pstd = cnt.pstd;
@@ -121,22 +119,51 @@ fn fill_common_fields(
     tvref.qstd = cnt.qstd;
     tvref.mean_mapping_quality = mapping_quality;
     tvref.hq_lq_ratio = hicnt as f64 / if locnt != 0 { locnt as f64 } else { 0.5 };
-    tvref.hi_freq = if hicov > 0 {
-        hicnt as f64 / hicov as f64
-    } else {
-        0.0
-    };
-    tvref.extra_freq = if cnt.extracnt != 0 {
-        cnt.extracnt as f64 / ttcov as f64
-    } else {
-        0.0
-    };
     tvref.shift3 = 0;
     tvref.msi = 0.0;
     tvref.nm = round_half_even_compat(cnt.nm / cnt.cnt as f64, 1, exact_binary_half_even);
     tvref.hicnt = hicnt;
     tvref.hicov = hicov;
     tvref.duprate = duprate;
+    if reconcile_vd_dp {
+        let pos_cov_eff = cnt.cnt.max(0);
+        let ttcov_eff = ttcov.max(pos_cov_eff).max(0);
+        tvref.pos_coverage = pos_cov_eff;
+        tvref.frequency = if ttcov_eff > 0 && pos_cov_eff > 0 {
+            round_half_even_compat(
+                pos_cov_eff as f64 / ttcov_eff as f64,
+                4,
+                exact_binary_half_even,
+            )
+        } else {
+            0.0
+        };
+        tvref.hi_freq = if hicov > 0 && hicnt > 0 {
+            hicnt as f64 / hicov as f64
+        } else {
+            0.0
+        };
+        tvref.extra_freq = if cnt.extracnt > 0 && ttcov_eff > 0 {
+            (cnt.extracnt.min(ttcov_eff) as f64) / (ttcov_eff as f64)
+        } else {
+            0.0
+        };
+        tvref.total_pos_cov = ttcov_eff;
+    } else {
+        tvref.pos_coverage = cnt.cnt;
+        tvref.frequency =
+            round_half_even_compat(cnt.cnt as f64 / ttcov as f64, 4, exact_binary_half_even);
+        tvref.hi_freq = if hicov > 0 {
+            hicnt as f64 / hicov as f64
+        } else {
+            0.0
+        };
+        tvref.extra_freq = if cnt.extracnt != 0 {
+            cnt.extracnt as f64 / ttcov as f64
+        } else {
+            0.0
+        };
+    }
 }
 
 enum SortedKeySlice<'a> {
@@ -181,6 +208,50 @@ impl<'a> SortedKeySlice<'a> {
             Self::Heap(v) => v.as_slice(),
         }
     }
+}
+
+enum PositionIter<I> {
+    Bucket(I),
+    Sorted(std::vec::IntoIter<i32>),
+}
+
+impl<'m, I: Iterator<Item = &'m i32>> Iterator for PositionIter<I> {
+    type Item = i32;
+
+    #[inline]
+    fn next(&mut self) -> Option<i32> {
+        match self {
+            Self::Bucket(it) => it.next().copied(),
+            Self::Sorted(it) => it.next(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RefSiteCounts {
+    fwd: i32,
+    rev: i32,
+    extracnt: i32,
+}
+
+#[inline]
+fn lookup_raw_extracnt(
+    position: i32,
+    desc: &str,
+    insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    orig_non_ins: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    overlay: &rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
+) -> i32 {
+    insertion_variants
+        .get(&position)
+        .and_then(|m| m.map.get(desc))
+        .or_else(|| {
+            overlay
+                .get(&position)
+                .or_else(|| orig_non_ins.get(&position))
+                .and_then(|m| m.map.get(desc))
+        })
+        .map_or(0, |c| c.extracnt)
 }
 
 impl<'a> ToVarsBuilder<'a> {
@@ -252,7 +323,8 @@ impl<'a> ToVarsBuilder<'a> {
     ///
     /// Matches `self.build_aligned_variants_with_ref_mode(var_data, ref_mode).get(&target_pos).cloned()`
     /// while evaluating only `target_pos` (and `target_pos - 1`'s `overlay[target_pos]` insertion
-    /// contribution when `target_pos - 1` precedes `target_pos` in `JavaHashMap` iteration order).
+    /// contribution when `target_pos - 1` precedes `target_pos` in `JavaHashMap` iteration order under
+    /// default `--compat=vardictjava`, or ascending coordinate order under `--compat=off`).
     pub(crate) fn build_vars_at_position_with_ref_mode(
         &self,
         var_data: &VariationData,
@@ -267,11 +339,14 @@ impl<'a> ToVarsBuilder<'a> {
             rustc_hash::FxHashMap::default();
 
         if let Some(prev_pos) = target_pos.checked_sub(1) {
-            if prev_pos >= 1
-                && var_data.insertion_variants.contains_key(&prev_pos)
-                && var_data
+            let prev_precedes = if self.config.compat.coordinate_sorted_vars {
+                var_data.non_insertion_variants.contains_key(&prev_pos)
+            } else {
+                var_data
                     .non_insertion_variants
                     .contains_both_and_first_precedes(&prev_pos, &target_pos)
+            };
+            if prev_pos >= 1 && var_data.insertion_variants.contains_key(&prev_pos) && prev_precedes
             {
                 if let Some((_, prev_total_cov)) =
                     self.check_position_guards(var_data, &overlay, prev_pos, &mut ref_mode)
@@ -350,6 +425,7 @@ impl<'a> ToVarsBuilder<'a> {
             current_total_cov,
             &mut target_vars,
             &var_data.ref_coverage,
+            &var_data.insertion_variants,
             &var_data.non_insertion_variants,
             &overlay,
             duprate,
@@ -412,7 +488,8 @@ impl<'a> ToVarsBuilder<'a> {
             rustc_hash::FxHashMap::default();
 
         let num_positions = var_data.non_insertion_variants.len();
-        // Do not sort positions, use the JavaHashMap iteration order!
+        // Default --compat=vardictjava uses JavaHashMap iteration order; --compat=off
+        // (CompatProfile::coordinate_sorted_vars) iterates positions in ascending coordinate order.
         match ref_mode {
             RefSiteMode::KeepAll => {
                 aligned_variants.reserve_nodes(num_positions);
@@ -436,8 +513,16 @@ impl<'a> ToVarsBuilder<'a> {
         let mut scratch1 = String::new();
         let mut scratch2 = String::new();
 
-        // Process non-insertion variants
-        for &position in var_data.non_insertion_variants.keys() {
+        // Process non-insertion variants (JavaHashMap bucket order by default; ascending
+        // coordinate order under `CompatProfile::coordinate_sorted_vars`).
+        let positions = if self.config.compat.coordinate_sorted_vars {
+            let mut sorted: Vec<i32> = var_data.non_insertion_variants.keys().copied().collect();
+            sorted.sort_unstable();
+            PositionIter::Sorted(sorted.into_iter())
+        } else {
+            PositionIter::Bucket(var_data.non_insertion_variants.keys())
+        };
+        for position in positions {
             // `var_map`'s shared NLL borrow of `overlay` and `var_data.non_insertion_variants`
             // ends at `create_variant` below, before `&mut overlay` is passed to `create_insertion`.
             let Some((var_map, total_cov)) =
@@ -540,6 +625,7 @@ impl<'a> ToVarsBuilder<'a> {
                 current_total_cov,
                 entry,
                 &var_data.ref_coverage,
+                &var_data.insertion_variants,
                 &var_data.non_insertion_variants,
                 &overlay,
                 duprate,
@@ -739,12 +825,18 @@ impl<'a> ToVarsBuilder<'a> {
         _insertion_variations: Option<&crate::variations::VariationMap>,
         non_insertion_variations: &crate::variations::VariationMap,
     ) -> i32 {
+        let clamp_nonneg = self.config.compat.reconcile_vd_dp;
         let mut hicov: i32 = 0;
         for (key, val) in &non_insertion_variations.map {
             if key == "SV" || key.starts_with('+') {
                 continue;
             }
-            hicov = hicov.saturating_add(val.hicnt);
+            let h = if clamp_nonneg {
+                val.hicnt.max(0)
+            } else {
+                val.hicnt
+            };
+            hicov = hicov.saturating_add(h);
         }
         hicov
     }
@@ -922,13 +1014,21 @@ impl<'a> ToVarsBuilder<'a> {
         let hicnt = cnt.hicnt;
         let locnt = cnt.locnt;
 
-        let mut ttcov = total_pos_coverage;
-        if cnt.cnt > total_pos_coverage
-            && cnt.extracnt > 0
-            && i64::from(cnt.cnt) - i64::from(total_pos_coverage) < i64::from(cnt.extracnt)
-        {
-            ttcov = cnt.cnt;
-        }
+        let reconcile_vd_dp = self.config.compat.reconcile_vd_dp;
+        let (hicnt_eff, ttcov, hicov_eff) = if reconcile_vd_dp {
+            let pc = cnt.cnt.max(0);
+            let hc = hicnt.max(0);
+            (hc, total_pos_coverage.max(pc).max(0), hicov.max(hc).max(0))
+        } else {
+            let mut ttcov = total_pos_coverage;
+            if cnt.cnt > total_pos_coverage
+                && cnt.extracnt > 0
+                && i64::from(cnt.cnt) - i64::from(total_pos_coverage) < i64::from(cnt.extracnt)
+            {
+                ttcov = cnt.cnt;
+            }
+            (hicnt, ttcov, hicov)
+        };
 
         let mut tvref = Variant::empty_internal();
         fill_common_fields(
@@ -941,11 +1041,12 @@ impl<'a> ToVarsBuilder<'a> {
             ttcov,
             base_quality,
             mapping_quality,
-            hicnt,
+            hicnt_eff,
             locnt,
-            hicov,
+            hicov_eff,
             duprate,
             exact_binary_half_even,
+            reconcile_vd_dp,
         );
         tvref
     }
@@ -961,6 +1062,8 @@ impl<'a> ToVarsBuilder<'a> {
     ) -> Variant {
         let hicov = if sole_key == "SV" || sole_key.starts_with('+') {
             0
+        } else if self.config.compat.reconcile_vd_dp {
+            cnt.hicnt.max(0)
         } else {
             cnt.hicnt
         };
@@ -969,8 +1072,11 @@ impl<'a> ToVarsBuilder<'a> {
             position,
             total_cov,
             &mut tvref,
-            cnt.fwd,
-            cnt.rev,
+            RefSiteCounts {
+                fwd: cnt.fwd,
+                rev: cnt.rev,
+                extracnt: cnt.extracnt,
+            },
             duprate,
             debug_lines,
         );
@@ -1203,7 +1309,12 @@ impl<'a> ToVarsBuilder<'a> {
                         1,
                         exact_binary_half_even,
                     );
-                    let hicnt = cnt.hicnt;
+                    let reconcile_vd_dp = self.config.compat.reconcile_vd_dp;
+                    let hicnt = if reconcile_vd_dp {
+                        cnt.hicnt.max(0)
+                    } else {
+                        cnt.hicnt
+                    };
                     let locnt = cnt.locnt;
 
                     ttcov = self.adjust_insertion_coverage_and_next_ref(
@@ -1218,6 +1329,9 @@ impl<'a> ToVarsBuilder<'a> {
 
                     if hicov < hicnt {
                         hicov = hicnt;
+                    }
+                    if reconcile_vd_dp {
+                        hicov = hicov.max(0);
                     }
 
                     let mut tvref = Variant::empty_internal();
@@ -1236,6 +1350,7 @@ impl<'a> ToVarsBuilder<'a> {
                         hicov,
                         duprate,
                         exact_binary_half_even,
+                        reconcile_vd_dp,
                     );
 
                     if self.config.debug {
@@ -1332,6 +1447,7 @@ impl<'a> ToVarsBuilder<'a> {
         total_pos_coverage: i32,
         variations_at_pos: &mut crate::variations::Vars,
         ref_coverage: &rustc_hash::FxHashMap<i32, i32>,
+        insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
         orig_non_ins: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
         overlay: &rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
         duprate: f64,
@@ -1904,10 +2020,69 @@ impl<'a> ToVarsBuilder<'a> {
                 drop(genotype2);
 
                 let exact_binary_half_even = self.config.compat.exact_binary_half_even;
-                vref.extra_freq =
-                    round_half_even_compat(vref.extra_freq, 4, exact_binary_half_even);
-                vref.frequency = round_half_even_compat(vref.frequency, 4, exact_binary_half_even);
-                vref.hi_freq = round_half_even_compat(vref.hi_freq, 4, exact_binary_half_even);
+                if self.config.compat.reconcile_vd_dp {
+                    if vref.pos_coverage < 0 {
+                        vref.pos_coverage = 0;
+                    }
+                    if vref.hicnt < 0 {
+                        vref.hicnt = 0;
+                    }
+                    let final_dp = total_pos_coverage_adj
+                        .max(vref.total_pos_cov)
+                        .max(vref.pos_coverage);
+                    if final_dp > vref.total_pos_cov && final_dp > 0 {
+                        let raw_extracnt = lookup_raw_extracnt(
+                            position,
+                            vref.description.as_str(),
+                            insertion_variants,
+                            orig_non_ins,
+                            overlay,
+                        );
+                        vref.frequency = round_half_even_compat(
+                            vref.pos_coverage as f64 / final_dp as f64,
+                            4,
+                            exact_binary_half_even,
+                        );
+                        vref.extra_freq = if raw_extracnt > 0 {
+                            round_half_even_compat(
+                                raw_extracnt.min(final_dp) as f64 / final_dp as f64,
+                                4,
+                                exact_binary_half_even,
+                            )
+                        } else {
+                            0.0
+                        };
+                    } else if final_dp > 0 {
+                        vref.frequency = round_half_even_compat(
+                            vref.pos_coverage as f64 / final_dp as f64,
+                            4,
+                            exact_binary_half_even,
+                        );
+                        vref.extra_freq =
+                            round_half_even_compat(vref.extra_freq, 4, exact_binary_half_even);
+                    } else {
+                        vref.frequency = 0.0;
+                        vref.extra_freq = 0.0;
+                    }
+                    vref.hicov = vref.hicov.max(vref.hicnt);
+                    vref.hi_freq = if vref.hicov > 0 {
+                        round_half_even_compat(
+                            vref.hicnt as f64 / vref.hicov as f64,
+                            4,
+                            exact_binary_half_even,
+                        )
+                    } else {
+                        0.0
+                    };
+                    vref.total_pos_cov = final_dp;
+                } else {
+                    vref.extra_freq =
+                        round_half_even_compat(vref.extra_freq, 4, exact_binary_half_even);
+                    vref.frequency =
+                        round_half_even_compat(vref.frequency, 4, exact_binary_half_even);
+                    vref.hi_freq = round_half_even_compat(vref.hi_freq, 4, exact_binary_half_even);
+                    vref.total_pos_cov = total_pos_coverage_adj;
+                }
                 vref.msi = round_half_even_compat(msi, 3, exact_binary_half_even);
                 vref.msint = msint_len;
                 vref.shift3 = shift3;
@@ -1917,7 +2092,6 @@ impl<'a> ToVarsBuilder<'a> {
                 vref.ref_allele = refallele;
                 vref.var_allele = varallele;
                 vref.genotype = Some(genotype);
-                vref.total_pos_cov = total_pos_coverage_adj;
                 vref.ref_fwd_cov = reference_forward_coverage_adj;
                 vref.ref_rev_cov = reference_reverse_coverage_adj;
 
@@ -1960,12 +2134,26 @@ impl<'a> ToVarsBuilder<'a> {
                     .retain(|vref| !matches_any_sv(&vref.var_allele));
             }
         } else if let Some(ref mut vref) = variations_at_pos.ref_variant {
+            let raw_extracnt = if self.config.compat.reconcile_vd_dp {
+                lookup_raw_extracnt(
+                    position,
+                    vref.description.as_str(),
+                    insertion_variants,
+                    orig_non_ins,
+                    overlay,
+                )
+            } else {
+                0
+            };
             self.update_ref_variant(
                 position,
                 total_pos_coverage_adj,
                 vref,
-                reference_forward_coverage_adj,
-                reference_reverse_coverage_adj,
+                RefSiteCounts {
+                    fwd: reference_forward_coverage_adj,
+                    rev: reference_reverse_coverage_adj,
+                    extracnt: raw_extracnt,
+                },
                 duprate,
                 debug_lines,
             );
@@ -1978,12 +2166,26 @@ impl<'a> ToVarsBuilder<'a> {
             && (changed_ref_variant_at_pos || self.config.amplicon.is_some())
         {
             if let Some(ref mut vref) = variations_at_pos.ref_variant {
+                let raw_extracnt = if self.config.compat.reconcile_vd_dp {
+                    lookup_raw_extracnt(
+                        position,
+                        vref.description.as_str(),
+                        insertion_variants,
+                        orig_non_ins,
+                        overlay,
+                    )
+                } else {
+                    0
+                };
                 self.update_ref_variant(
                     position,
                     total_pos_coverage_adj,
                     vref,
-                    reference_forward_coverage_adj,
-                    reference_reverse_coverage_adj,
+                    RefSiteCounts {
+                        fwd: reference_forward_coverage_adj,
+                        rev: reference_reverse_coverage_adj,
+                        extracnt: raw_extracnt,
+                    },
                     duprate,
                     debug_lines,
                 );
@@ -1996,16 +2198,49 @@ impl<'a> ToVarsBuilder<'a> {
         position: i32,
         total_pos_coverage: i32,
         vref: &mut Variant,
-        reference_forward_coverage: i32,
-        reference_reverse_coverage: i32,
+        ref_counts: RefSiteCounts,
         duprate: f64,
         debug_lines: &[String],
     ) {
-        vref.total_pos_cov = total_pos_coverage;
-        vref.pos_coverage = 0;
-        vref.frequency = 0.0;
-        vref.ref_fwd_cov = reference_forward_coverage;
-        vref.ref_rev_cov = reference_reverse_coverage;
+        let exact_binary_half_even = self.config.compat.exact_binary_half_even;
+        if self.config.compat.reconcile_vd_dp {
+            let fwd = ref_counts.fwd.max(0);
+            let rev = ref_counts.rev.max(0);
+            let ref_cov_eff = fwd.saturating_add(rev);
+            let final_dp = total_pos_coverage.max(vref.total_pos_cov).max(ref_cov_eff);
+            vref.total_pos_cov = final_dp;
+            vref.pos_coverage = 0;
+            vref.frequency = 0.0;
+            vref.ref_fwd_cov = fwd;
+            vref.ref_rev_cov = rev;
+            vref.extra_freq = if ref_counts.extracnt > 0 && final_dp > 0 {
+                round_half_even_compat(
+                    ref_counts.extracnt.min(final_dp) as f64 / final_dp as f64,
+                    4,
+                    exact_binary_half_even,
+                )
+            } else {
+                0.0
+            };
+            vref.hicnt = vref.hicnt.max(0);
+            vref.hicov = vref.hicov.max(vref.hicnt);
+            vref.hi_freq = if vref.hicov > 0 {
+                round_half_even_compat(
+                    vref.hicnt as f64 / vref.hicov as f64,
+                    4,
+                    exact_binary_half_even,
+                )
+            } else {
+                0.0
+            };
+        } else {
+            vref.total_pos_cov = total_pos_coverage;
+            vref.pos_coverage = 0;
+            vref.frequency = 0.0;
+            vref.ref_fwd_cov = ref_counts.fwd;
+            vref.ref_rev_cov = ref_counts.rev;
+            vref.hi_freq = round_half_even_compat(vref.hi_freq, 4, exact_binary_half_even);
+        }
         vref.fwd = 0;
         vref.rev = 0;
         vref.msi = 0.0;
@@ -2016,8 +2251,6 @@ impl<'a> ToVarsBuilder<'a> {
         vref.shift3 = 0;
         vref.start_pos = position;
         vref.end_pos = position;
-        vref.hi_freq =
-            round_half_even_compat(vref.hi_freq, 4, self.config.compat.exact_binary_half_even);
 
         let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
         let valid_base = match ref_base {
@@ -5787,5 +6020,459 @@ mod tests {
                 .hi_freq,
             0.0001
         );
+    }
+
+    #[test]
+    fn compat_off_reconcile_vd_dp_clamps_dp_af_adjaf_and_hicov() {
+        let seq = vec![b'A'; 100];
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 100,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+
+        let chr_lengths = HashMap::from([("chr1".to_string(), 100)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(100),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32, hicnt: i32, extracnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = hicnt;
+            v.extracnt = extracnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - (cnt / 2);
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 20.0 * f64::from(cnt);
+            v
+        };
+
+        let mut vd = VariationData::new();
+
+        // (a) #92: cnt.cnt (15) > total_pos_coverage (10) with extracnt == 0
+        vd.ref_coverage.insert(10, 10);
+        let mut vm10 = VariationMap::new();
+        vm10.map.insert("G".to_string(), mk_var(15, 15, 0));
+        vd.non_insertion_variants.insert(10, vm10);
+
+        // (b) #386 case 1: DP = 2, VD = 4, extracnt = 2 (4 - 2 < 2 is false in Java)
+        vd.ref_coverage.insert(20, 2);
+        let mut vm20 = VariationMap::new();
+        vm20.map.insert("T".to_string(), mk_var(4, 4, 2));
+        vd.non_insertion_variants.insert(20, vm20);
+
+        // (c) #386 case 2: DP = 2, VD = 204, extracnt = 5 (204 - 2 < 5 is false -> AF=102, ADJAF=2.5)
+        vd.ref_coverage.insert(30, 2);
+        let mut vm30 = VariationMap::new();
+        vm30.map.insert("C".to_string(), mk_var(204, 204, 5));
+        vd.non_insertion_variants.insert(30, vm30);
+
+        // (c2) extracnt > ttcov on both SNV and insertion (ADJAF > 1.0 in legacy)
+        vd.ref_coverage.insert(35, 8);
+        let mut vm35 = VariationMap::new();
+        vm35.map.insert("G".to_string(), mk_var(6, 6, 12));
+        vd.non_insertion_variants.insert(35, vm35);
+        let mut ins35 = VariationMap::new();
+        ins35.map.insert("+AA".to_string(), mk_var(5, 5, 15));
+        vd.insertion_variants.insert(35, ins35);
+
+        // (d) #400 / VarDict #113: '+' key in non_insertion_variants skipped by calc_hicov -> hicnt (10) > hicov (4)
+        vd.ref_coverage.insert(40, 14);
+        let mut vm40 = VariationMap::new();
+        vm40.map.insert("A".to_string(), mk_var(4, 4, 0));
+        vm40.map.insert("+AC#GT^2".to_string(), mk_var(10, 10, 0));
+        vd.non_insertion_variants.insert(40, vm40);
+
+        // (e) Co-occurring insertion raising total_pos_coverage_adj (final_dp = 20 > vref.total_pos_cov = 6)
+        //     with raw_extracnt = 8 > 6 (Binding Ruling 1 integer-lossless lookup on both non-ins and ins).
+        vd.ref_coverage.insert(50, 5);
+        vd.ref_coverage.insert(51, 20);
+        let mut vm50 = VariationMap::new();
+        vm50.map.insert("G".to_string(), mk_var(6, 6, 8));
+        vd.non_insertion_variants.insert(50, vm50);
+        let mut ins50 = VariationMap::new();
+        ins50.map.insert("+AT".to_string(), mk_var(7, 7, 1));
+        vd.insertion_variants.insert(50, ins50);
+
+        vd.ref_coverage.insert(60, 5);
+        vd.ref_coverage.insert(61, 20);
+        let mut vm60 = VariationMap::new();
+        vm60.map.insert("A".to_string(), mk_var(5, 5, 0));
+        vd.non_insertion_variants.insert(60, vm60);
+        let mut ins60 = VariationMap::new();
+        // "+CG" is sorted before "+TT": 6 - 5 < 8 sets ttcov = 6 without raising total_pos_coverage = 5;
+        // then "+TT" (cnt = 7, extracnt = 0) raises total_pos_coverage to cov_next = 20!
+        ins60.map.insert("+CG".to_string(), mk_var(6, 6, 8));
+        ins60.map.insert("+TT".to_string(), mk_var(7, 7, 0));
+        vd.insertion_variants.insert(60, ins60);
+
+        let mut cfg_leg = Config::default();
+        cfg_leg.debug = true;
+        let leg_builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg);
+        let aligned_leg = leg_builder.build_aligned_variants(&vd);
+
+        let leg10 = &aligned_leg.get(&10).unwrap().variants[0];
+        assert_eq!(leg10.pos_coverage, 15);
+        assert_eq!(leg10.total_pos_cov, 10);
+        assert_eq!(leg10.frequency, 1.5);
+
+        let leg20 = &aligned_leg.get(&20).unwrap().variants[0];
+        assert_eq!(leg20.pos_coverage, 4);
+        assert_eq!(leg20.total_pos_cov, 2);
+        assert_eq!(leg20.frequency, 2.0);
+        assert_eq!(leg20.extra_freq, 1.0);
+
+        let leg30 = &aligned_leg.get(&30).unwrap().variants[0];
+        assert_eq!(leg30.pos_coverage, 204);
+        assert_eq!(leg30.total_pos_cov, 2);
+        assert_eq!(leg30.frequency, 102.0);
+        assert_eq!(leg30.extra_freq, 2.5);
+
+        let leg40 = &aligned_leg.get(&40).unwrap().variants[0];
+        assert_eq!(leg40.hicnt, 10);
+        assert_eq!(leg40.hicov, 4);
+        assert_eq!(leg40.hi_freq, 2.5);
+
+        let mut cfg_off = cfg_leg.clone();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+        let off_builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off);
+        let aligned_off = off_builder.build_aligned_variants(&vd);
+
+        let off10 = &aligned_off.get(&10).unwrap().variants[0];
+        assert_eq!(off10.pos_coverage, 15);
+        assert_eq!(off10.total_pos_cov, 15);
+        assert_eq!(off10.frequency, 1.0);
+        assert_eq!(off10.extra_freq, 0.0);
+
+        let off20 = &aligned_off.get(&20).unwrap().variants[0];
+        assert_eq!(off20.pos_coverage, 4);
+        assert_eq!(off20.total_pos_cov, 4);
+        assert_eq!(off20.frequency, 1.0);
+        assert_eq!(off20.extra_freq, 0.5);
+
+        let off30 = &aligned_off.get(&30).unwrap().variants[0];
+        assert_eq!(off30.pos_coverage, 204);
+        assert_eq!(off30.total_pos_cov, 204);
+        assert_eq!(off30.frequency, 1.0);
+        assert_eq!(off30.extra_freq, 0.0245);
+
+        let off35_vars = &aligned_off.get(&35).unwrap().variants;
+        let off35_snv = off35_vars.iter().find(|v| v.description == "G").unwrap();
+        let off35_ins = off35_vars.iter().find(|v| v.description == "+AA").unwrap();
+        assert_eq!(off35_snv.total_pos_cov, 8);
+        assert_eq!(off35_snv.extra_freq, 1.0);
+        assert_eq!(off35_ins.total_pos_cov, 8);
+        assert_eq!(off35_ins.extra_freq, 1.0);
+
+        let off40 = &aligned_off.get(&40).unwrap().variants[0];
+        assert_eq!(off40.hicnt, 10);
+        assert_eq!(off40.hicov, 10);
+        assert_eq!(off40.hi_freq, 1.0);
+        assert!(off40.debug.contains(":1.0000:"));
+
+        let off50_vars = &aligned_off.get(&50).unwrap().variants;
+        let off50_snv = off50_vars.iter().find(|v| v.description == "G").unwrap();
+        let off50_ins = off50_vars.iter().find(|v| v.description == "+AT").unwrap();
+        assert_eq!(off50_snv.total_pos_cov, 20);
+        assert_eq!(off50_snv.frequency, 0.3);
+        assert_eq!(off50_snv.extra_freq, 0.4);
+        assert_eq!(off50_ins.total_pos_cov, 20);
+        assert_eq!(off50_ins.frequency, 0.35);
+        assert_eq!(off50_ins.extra_freq, 0.05);
+
+        let off60_vars = &aligned_off.get(&60).unwrap().variants;
+        let off60_cg = off60_vars.iter().find(|v| v.description == "+CG").unwrap();
+        assert_eq!(off60_cg.total_pos_cov, 20);
+        assert_eq!(off60_cg.frequency, 0.3);
+        assert_eq!(off60_cg.extra_freq, 0.4);
+
+        for &pos in aligned_off.keys() {
+            let vars = aligned_off.get(&pos).unwrap();
+            let single = off_builder
+                .build_vars_at_position_with_ref_mode(&vd, pos, RefSiteMode::DropAll)
+                .unwrap();
+            assert_eq!(single.variants.len(), vars.variants.len());
+            for (v, sv) in vars.variants.iter().zip(single.variants.iter()) {
+                assert!(0 <= v.pos_coverage && v.pos_coverage <= v.total_pos_cov);
+                assert!(0.0 <= v.frequency && v.frequency <= 1.0);
+                assert!(0.0 <= v.extra_freq && v.extra_freq <= 1.0);
+                assert!(0 <= v.hicnt && v.hicnt <= v.hicov);
+                assert!(0.0 <= v.hi_freq && v.hi_freq <= 1.0);
+                assert_eq!(sv.total_pos_cov, v.total_pos_cov);
+                assert_eq!(sv.frequency.to_bits(), v.frequency.to_bits());
+                assert_eq!(sv.extra_freq.to_bits(), v.extra_freq.to_bits());
+                assert_eq!(sv.hicov, v.hicov);
+                assert_eq!(sv.hi_freq.to_bits(), v.hi_freq.to_bits());
+            }
+            if let Some(ref rv) = vars.ref_variant {
+                assert!(0 <= rv.pos_coverage && rv.pos_coverage <= rv.total_pos_cov);
+                assert!(0 <= rv.hicnt && rv.hicnt <= rv.hicov);
+                assert!(0.0 <= rv.hi_freq && rv.hi_freq <= 1.0);
+                assert!(0.0 <= rv.extra_freq && rv.extra_freq <= 1.0);
+            }
+        }
+
+        // (f) Finalized reference variants (`Vars.ref_variant` via `hydrate_compact_ref_site` /
+        //     `build_ref_variant_from_cnt` and `collect_reference_variants` -> `update_ref_variant`):
+        //     - pos 70: pure-reference site with `RD = 15 > ref_coverage = 10`, `cnt.hicnt = -1`
+        //       (from `CigarParser` `Variation::sub_cnt`), and `cnt.extracnt = 5`.
+        //     - pos 75: variant + co-occurring insertion raising `total_pos_coverage_adj` from 10
+        //       to `ref_coverage[76] = 25` above ref's initial `ttcov = 12`, with ref `hicnt = -1`
+        //       and `extracnt = 15` (> 12, testing lossless `raw_extracnt` in `update_ref_variant`).
+        let mut ref_vd = VariationData::new();
+        ref_vd.ref_coverage.insert(70, 10);
+        let mut vm70 = VariationMap::new();
+        let mut r70 = mk_var(15, -1, 7);
+        r70.fwd = 8;
+        r70.rev = 7;
+        r70.locnt = 2;
+        vm70.map.insert("A".to_string(), r70);
+        ref_vd.non_insertion_variants.insert(70, vm70);
+
+        ref_vd.ref_coverage.insert(75, 10);
+        ref_vd.ref_coverage.insert(76, 25);
+        let mut vm75 = VariationMap::new();
+        let mut r75 = mk_var(12, -1, 15);
+        r75.fwd = 6;
+        r75.rev = 6;
+        r75.locnt = 2;
+        vm75.map.insert("A".to_string(), r75);
+        vm75.map.insert("G".to_string(), mk_var(4, 4, 0));
+        ref_vd.non_insertion_variants.insert(75, vm75);
+        let mut ins75 = VariationMap::new();
+        ins75.map.insert("+AT".to_string(), mk_var(11, 11, 0));
+        ref_vd.insertion_variants.insert(75, ins75);
+
+        let mut vm76 = VariationMap::new();
+        vm76.map.insert("A".to_string(), mk_var(25, 25, 0));
+        ref_vd.non_insertion_variants.insert(76, vm76);
+
+        // Legacy preserves negative hicnt/hicov (-1), clobbered DP=10 (< RD=15), and unrounded extra_freq (7/15)
+        let mut leg_som_cfg = Config::default();
+        leg_som_cfg.bam = "tumor.bam|normal.bam".to_string();
+        let leg_som_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &leg_som_cfg);
+        let leg_keep =
+            leg_som_b.build_aligned_variants_with_ref_mode(&ref_vd, RefSiteMode::KeepAll);
+        let leg_rv70 = leg_keep.get(&70).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(leg_rv70.total_pos_cov, 10);
+        assert_eq!(leg_rv70.hicnt, -1);
+        assert_eq!(leg_rv70.hicov, -1);
+        assert_eq!(
+            leg_rv70.extra_freq.to_bits(),
+            (7.0_f64 / 15.0_f64).to_bits()
+        );
+
+        // COMPAT_OFF somatic CompactOut + hydrate_compact_ref_site vs KeepAll
+        let mut off_som_cfg = leg_som_cfg.clone();
+        off_som_cfg.compat = crate::config::COMPAT_OFF;
+        let off_som_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &off_som_cfg);
+        let off_keep =
+            off_som_b.build_aligned_variants_with_ref_mode(&ref_vd, RefSiteMode::KeepAll);
+        let mut compact_sites = rustc_hash::FxHashMap::default();
+        let _ = off_som_b.build_aligned_variants_with_ref_mode(
+            &ref_vd,
+            RefSiteMode::CompactOut(&mut compact_sites),
+        );
+        let hydrated_70 = off_som_b
+            .hydrate_compact_ref_site(70, compact_sites.get(&70).expect("pos 70 compact site"));
+        let hyd_rv70 = hydrated_70.ref_variant.as_ref().unwrap();
+        let keep_rv70 = off_keep.get(&70).unwrap().ref_variant.as_ref().unwrap();
+
+        for rv in [hyd_rv70, keep_rv70] {
+            assert_eq!(rv.total_pos_cov, 15);
+            assert_eq!(rv.pos_coverage, 0);
+            assert_eq!(rv.frequency, 0.0);
+            assert_eq!(rv.ref_fwd_cov, 8);
+            assert_eq!(rv.ref_rev_cov, 7);
+            assert_eq!(rv.hicnt, 0);
+            assert_eq!(rv.hicov, 0);
+            assert_eq!(rv.hi_freq, 0.0);
+            assert_eq!(rv.extra_freq, 0.4667);
+        }
+
+        // Un-updated ref_variant on pos 75 (when !pileup) also clamps hicnt >= 0 and hicov >= hicnt,
+        // and negative ref hicnt (-1) does not deflate SNV "G"'s hicov below 4!
+        let off_rv75_unupdated = off_keep.get(&75).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(off_rv75_unupdated.hicnt, 0);
+        assert_eq!(off_rv75_unupdated.hicov, 4);
+        assert_eq!(off_rv75_unupdated.hi_freq, 0.0);
+        let off_snv75 = off_keep
+            .get(&75)
+            .unwrap()
+            .variants
+            .iter()
+            .find(|v| v.description == "G")
+            .unwrap();
+        assert_eq!(off_snv75.hicnt, 4);
+        assert_eq!(off_snv75.hicov, 4);
+        assert_eq!(off_snv75.hi_freq, 1.0);
+
+        // -p pileup + Amplicon (`collect_reference_variants:2107`) reconciles ref_variant DP to 25
+        // and recomputes extra_freq losslessly from raw_extracnt = 15 -> 15 / 25 = 0.6!
+        let mut off_pileup_amp_cfg = Config::default();
+        off_pileup_amp_cfg.pileup = true;
+        off_pileup_amp_cfg.amplicon = Some("10:0.95".to_string());
+        off_pileup_amp_cfg.compat = crate::config::COMPAT_OFF;
+        let off_pa_b = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &off_pileup_amp_cfg);
+        let off_pa = off_pa_b.build_aligned_variants(&ref_vd);
+        let pa_rv75 = off_pa.get(&75).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(pa_rv75.total_pos_cov, 25);
+        assert_eq!(pa_rv75.pos_coverage, 0);
+        assert_eq!(pa_rv75.frequency, 0.0);
+        assert_eq!(pa_rv75.ref_fwd_cov, 7);
+        assert_eq!(pa_rv75.ref_rev_cov, 7);
+        assert_eq!(pa_rv75.hicnt, 0);
+        assert_eq!(pa_rv75.hicov, 4);
+        assert_eq!(pa_rv75.hi_freq, 0.0);
+        assert_eq!(pa_rv75.extra_freq, 0.6);
+    }
+
+    #[test]
+    fn compat_off_coordinate_sorted_vars_tovars_and_single_pos_agree() {
+        let seq: Vec<u8> = (0..80).map(|i| b"ACGT"[i % 4]).collect();
+        let ref_base_str = |pos: i32| -> String { (seq[(pos - 1) as usize] as char).to_string() };
+
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 80,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq.clone());
+        let chr_lengths = HashMap::from([("chr1".to_string(), 80)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(80),
+            gene: "SOM".to_string(),
+            amplicon: None,
+        };
+
+        let mk_cnt = |cnt: i32, fwd: i32, rev: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.fwd = fwd;
+            v.rev = rev;
+            v.hicnt = cnt;
+            v.qmean = 32.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 24.0 * f64::from(cnt);
+            v
+        };
+
+        let mut vd = VariationData::new();
+        // Populate >= 13 keys (<= 24) so JavaHashMap capacity is 32, placing pos 32 (bucket 0)
+        // BEFORE pos 31 (bucket 31) in JavaHashMap iteration order!
+        for p in [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24] {
+            vd.ref_coverage.insert(p, 20);
+            let mut vm = VariationMap::new();
+            vm.map.insert(ref_base_str(p), mk_cnt(20, 10, 10));
+            vd.non_insertion_variants.insert(p, vm);
+        }
+
+        vd.ref_coverage.insert(31, 8);
+        let mut vm31 = VariationMap::new();
+        vm31.map.insert(ref_base_str(31), mk_cnt(8, 4, 4));
+        vd.non_insertion_variants.insert(31, vm31);
+        let mut ins31 = VariationMap::new();
+        ins31.map.insert("+TTAA".to_string(), mk_cnt(12, 7, 5));
+        vd.insertion_variants.insert(31, ins31);
+
+        vd.ref_coverage.insert(32, 40);
+        let mut vm32 = VariationMap::new();
+        vm32.map.insert(ref_base_str(32), mk_cnt(30, 17, 13));
+        vm32.map.insert("-2".to_string(), mk_cnt(10, 5, 5));
+        vd.non_insertion_variants.insert(32, vm32);
+
+        assert_eq!(vd.non_insertion_variants.capacity(), 32);
+        assert!(
+            !vd.non_insertion_variants
+                .contains_both_and_first_precedes(&31, &32),
+            "pos 32 (bucket 0) must precede pos 31 (bucket 31) in cap-32 JavaHashMap"
+        );
+
+        // 1. Legacy COMPAT_VARDICTJAVA_1_8_3: pos 32 visited before pos 31 -> un-decremented ref fwd/rev (17, 13)
+        let mut cfg_leg = Config::default();
+        cfg_leg.bam = "tumor.bam|normal.bam".to_string();
+        let leg_builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg);
+        let leg_full = leg_builder.build_aligned_variants_with_ref_mode(&vd, RefSiteMode::KeepAll);
+        let leg_32 = &leg_full.get(&32).unwrap().variants[0];
+        assert_eq!((leg_32.ref_fwd_cov, leg_32.ref_rev_cov), (17, 13));
+        let leg_single_32 = leg_builder.build_vars_at_position(&vd, 32).unwrap();
+        assert_eq!(
+            (
+                leg_single_32.variants[0].ref_fwd_cov,
+                leg_single_32.variants[0].ref_rev_cov
+            ),
+            (17, 13)
+        );
+
+        // 2. COMPAT_OFF: ascending coordinate order visits pos 31 before pos 32 -> decrements overlay[32] to (10, 8),
+        //    and single-position build_vars_at_position_with_ref_mode agrees 100% across all positions!
+        let mut cfg_off = cfg_leg.clone();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+        let off_builder = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off);
+        let off_full_keep =
+            off_builder.build_aligned_variants_with_ref_mode(&vd, RefSiteMode::KeepAll);
+        let off_full_drop =
+            off_builder.build_aligned_variants_with_ref_mode(&vd, RefSiteMode::DropAll);
+
+        let off_32 = &off_full_keep.get(&32).unwrap().variants[0];
+        assert_eq!((off_32.ref_fwd_cov, off_32.ref_rev_cov), (10, 8));
+
+        for pos in 1..=40 {
+            let single_keep = off_builder.build_vars_at_position(&vd, pos);
+            let exp_keep = off_full_keep.get(&pos).cloned();
+            assert_eq!(
+                single_keep.as_ref().map(|v| v.variants.len()),
+                exp_keep.as_ref().map(|v| v.variants.len()),
+                "KeepAll variants len at pos={pos}"
+            );
+            if let (Some(sk), Some(ek)) = (&single_keep, &exp_keep) {
+                for (sv, ev) in sk.variants.iter().zip(ek.variants.iter()) {
+                    assert_eq!(
+                        (sv.ref_fwd_cov, sv.ref_rev_cov, sv.total_pos_cov),
+                        (ev.ref_fwd_cov, ev.ref_rev_cov, ev.total_pos_cov),
+                        "KeepAll variant cov at pos={pos}"
+                    );
+                }
+            }
+
+            let single_drop =
+                off_builder.build_vars_at_position_with_ref_mode(&vd, pos, RefSiteMode::DropAll);
+            let exp_drop = off_full_drop.get(&pos).cloned();
+            assert_eq!(
+                single_drop.as_ref().map(|v| v.variants.len()),
+                exp_drop.as_ref().map(|v| v.variants.len()),
+                "DropAll variants len at pos={pos}"
+            );
+            if let (Some(sd), Some(ed)) = (&single_drop, &exp_drop) {
+                for (sv, ev) in sd.variants.iter().zip(ed.variants.iter()) {
+                    assert_eq!(
+                        (sv.ref_fwd_cov, sv.ref_rev_cov, sv.total_pos_cov),
+                        (ev.ref_fwd_cov, ev.ref_rev_cov, ev.total_pos_cov),
+                        "DropAll variant cov at pos={pos}"
+                    );
+                }
+            }
+        }
     }
 }

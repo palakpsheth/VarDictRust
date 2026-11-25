@@ -2,7 +2,7 @@
 
 | Engineering & Security Dimension | VarDictJava v1.8.3 [1] (0886261) | vardictcpp [11] (ae93fe39dc) | VarDictRust v1.0.6 (5865a2a0b24a8c17)<sup>e</sup> |
 | :--- | :--- | :--- | :--- |
-| Upstream Repository Maintenance Status | Archived Read-Only (EOL)<sup>a</sup> | Preprint Prototype (12 Divergences)<sup>b</sup> | Actively Maintained (MIT AND GPL-2.0-or-later, v1.0.6)<sup>a,e</sup> |
+| Upstream Repository Maintenance Status | Archived Read-Only (EOL)<sup>a</sup> | Preprint Prototype (12 Divergences)<sup>b</sup> | Actively Maintained (MIT, v1.0.6)<sup>a,e</sup> |
 | Runtime Dependency & Binary Footprint | JVM + R + Perl (102 Conda packages)<sup>c</sup> | C++17 + HTSlib [26] dynamic libraries | 4.46 MiB GNU / 4.56 MiB Static musl (statically linked)<sup>d</sup> |
 | Supply-Chain Attestation & Vulnerability Audit | Unpinned ecosystem dependencies<sup>c</sup> | No SLSA provenance | SLSA Level 3 + 0 RustSec CVEs<sup>d</sup> |
 | 13-Mode Functional Coverage & CRAM Support | 12/13 (CRAM fails without htsjdk classpath)<sup>c</sup> | 12/13 .var (simple_fisher FP=1, FN=1; Amplicon VCF & Splice -i unsupported)<sup>b</sup> | 13/13 Modes (100% Exact Match)<sup>d</sup> |

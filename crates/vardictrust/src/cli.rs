@@ -756,7 +756,7 @@ pub fn check_unsupported(args: &[String]) -> Result<(), vardictrust_core::types:
         "Please cite: Lai Z, et al. VarDict: a novel and versatile variant caller for next-generation\n",
         "  sequencing in cancer research. Nucleic Acids Res. 2016;44(11):e108. doi:10.1093/nar/gkw227\n",
         "AI disclosure: written with AI coding assistants under human direction; see README \"AI Disclosure\".\n",
-        "License: MIT AND GPL-2.0-or-later (see LICENSE-3RD-PARTY)"
+        "License: MIT"
     ),
     about,
     long_about = "VarDictRust consolidates the VarDictJava v1.8.3 + R (teststrandbias.R / testsomatic.R) + Perl (var2vcf_valid.pl / var2vcf_paired.pl) variant-calling pipeline into a single memory-safe binary with bounded-memory WGS tiling, native BAM/CRAM and BGZF FASTA/BED support, direct BGZF + Tabix (.tbi) / CSI (.csi) VCF 4.2 (VCFv4.2) emission, 18/18 var2vcf post-filters (including --vcf-all-alleles), and dual-mode compatibility (--compat=vardictjava default 100% parity; --compat=off opt-in accuracy, scale, and --eqx fixes).",
@@ -892,7 +892,7 @@ pub struct Cli {
     #[arg(long = "parity", help_heading = "Core Inputs & Outputs")]
     pub parity: bool,
 
-    /// Compatibility profile: 'vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] for 100% v1.8.3 parity, or 'off' to enable 13 CompatProfile accuracy/scale/--eqx fixes (stamps ##VarDictRustCompat=off). [default: vardictjava]
+    /// Compatibility profile: 'vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] for 100% v1.8.3 parity, or 'off' to enable 17 CompatProfile accuracy/scale/--eqx fixes (stamps ##VarDictRustCompat=off). [default: vardictjava]
     #[arg(
         long = "compat",
         value_name = "TARGET",
@@ -2075,16 +2075,36 @@ mod tests {
             .to_string();
         assert_eq!(short_about, env!("CARGO_PKG_DESCRIPTION"));
 
+        let long_version = cmd.render_long_version();
+        assert!(
+            long_version.contains("License: MIT"),
+            "expected 'License: MIT' in render_long_version():\n{long_version}"
+        );
+        assert!(
+            !long_version.contains("GPL"),
+            "render_long_version() must not contain 'GPL':\n{long_version}"
+        );
+
         let rendered_help = cmd.render_help().to_string();
         assert!(
             rendered_help.contains("--compat=off"),
             "expected --compat=off in short help:\n{rendered_help}"
         );
         assert!(
+            rendered_help.contains("17 CompatProfile")
+                && !rendered_help.contains("13 CompatProfile"),
+            "expected 17 CompatProfile switches in short help:\n{rendered_help}"
+        );
+        assert!(
             rendered_help.contains("-h / --header"),
             "expected -h / --header in short help:\n{rendered_help}"
         );
         let rendered_long_help = cmd.render_long_help().to_string();
+        assert!(
+            rendered_long_help.contains("17 CompatProfile")
+                && !rendered_long_help.contains("13 CompatProfile"),
+            "expected 17 CompatProfile switches in long help:\n{rendered_long_help}"
+        );
         assert!(
             rendered_long_help.contains("18/18 var2vcf"),
             "expected 18/18 var2vcf in long help:\n{rendered_long_help}"
@@ -2215,6 +2235,7 @@ mod tests {
             r"\-\-vcf\-all\-alleles",
             r"\-\-all\-alleles",
             r"\-\-compat=off",
+            "17 CompatProfile",
             r"\-\-completions",
             r"\-H",
             r"\-h",
@@ -2231,7 +2252,14 @@ mod tests {
                 "manpage missing escaped '{needle}'"
             );
         }
-        for forbidden in ["VCF 4.3", "usize::MAX", "task P1", r"\-z[=", r"\-k[="] {
+        for forbidden in [
+            "VCF 4.3",
+            "usize::MAX",
+            "task P1",
+            r"\-z[=",
+            r"\-k[=",
+            "13 CompatProfile",
+        ] {
             assert!(
                 !man_text.contains(forbidden),
                 "manpage must not contain '{forbidden}'"
@@ -3976,6 +4004,70 @@ mod tests {
             assert_eq!(cfg.compat, COMPAT_OFF, "flags={off_flags:?}");
             assert_eq!(cfg.compat.target, CompatTarget::Off);
         }
+
+        let vj_cli_cfg = parse_cfg(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "--compat=vardictjava",
+        ])
+        .expect("--compat=vardictjava must succeed");
+        assert_eq!(vj_cli_cfg.compat, COMPAT_VARDICTJAVA_1_8_3);
+        let vj_all_17 = [
+            vj_cli_cfg.compat.sanitize_sample_info,
+            vj_cli_cfg.compat.standard_dup_symbolic_alt,
+            vj_cli_cfg.compat.shift3_3prime_alleles,
+            vj_cli_cfg.compat.strict_region_bounds,
+            vj_cli_cfg.compat.suppress_pileup_sentinels,
+            vj_cli_cfg.compat.live_duprate,
+            vj_cli_cfg.compat.preserve_mixed_sex_contigs,
+            vj_cli_cfg.compat.cigar_homopolymer_merge,
+            vj_cli_cfg.compat.eqx_cigar_read_length,
+            vj_cli_cfg.compat.preserve_discordant_svs,
+            vj_cli_cfg.compat.mark_dup_sv_inclusive_end,
+            vj_cli_cfg.compat.sv_lazy_mate_pileup,
+            vj_cli_cfg.compat.exact_binary_half_even,
+            vj_cli_cfg.compat.reconcile_vd_dp,
+            vj_cli_cfg.compat.coordinate_sorted_vars,
+            vj_cli_cfg.compat.exact_35_overlap,
+            vj_cli_cfg.compat.exact_cigar_dlen_match,
+        ];
+        assert_eq!(vj_all_17, [false; 17]);
+
+        let off_cli_cfg = parse_cfg(&[
+            "-G",
+            "ref.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "--compat=off",
+        ])
+        .expect("--compat=off must succeed");
+        assert_eq!(off_cli_cfg.compat, COMPAT_OFF);
+        let off_all_17 = [
+            off_cli_cfg.compat.sanitize_sample_info,
+            off_cli_cfg.compat.standard_dup_symbolic_alt,
+            off_cli_cfg.compat.shift3_3prime_alleles,
+            off_cli_cfg.compat.strict_region_bounds,
+            off_cli_cfg.compat.suppress_pileup_sentinels,
+            off_cli_cfg.compat.live_duprate,
+            off_cli_cfg.compat.preserve_mixed_sex_contigs,
+            off_cli_cfg.compat.cigar_homopolymer_merge,
+            off_cli_cfg.compat.eqx_cigar_read_length,
+            off_cli_cfg.compat.preserve_discordant_svs,
+            off_cli_cfg.compat.mark_dup_sv_inclusive_end,
+            off_cli_cfg.compat.sv_lazy_mate_pileup,
+            off_cli_cfg.compat.exact_binary_half_even,
+            off_cli_cfg.compat.reconcile_vd_dp,
+            off_cli_cfg.compat.coordinate_sorted_vars,
+            off_cli_cfg.compat.exact_35_overlap,
+            off_cli_cfg.compat.exact_cigar_dlen_match,
+        ];
+        assert_eq!(off_all_17, [true; 17]);
 
         // Positional BED alongside `--compat off` must not miscount `"off"` as a positional BED
         let bed_off_cfg = parse_cfg(&[

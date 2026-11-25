@@ -13,10 +13,11 @@ use vardictrust_core::output::vcf::{
     SingleVcfRecord,
 };
 use vardictrust_core::postprocess::amplicon::AmpliconVariant;
+use vardictrust_core::postprocess::simple::simple_post_process;
 use vardictrust_core::postprocess::somatic::SomaticVariant;
 use vardictrust_core::regions::Region;
 use vardictrust_core::types::Pos1;
-use vardictrust_core::variations::Variant;
+use vardictrust_core::variations::{Variant, Vars};
 
 /// Maximum accepted libFuzzer input payload (`8 KiB`) to bound per-iteration runtime.
 const MAX_FUZZ_INPUT_BYTES: usize = 8192;
@@ -563,10 +564,20 @@ fuzz_target!(|data: &[u8]| {
         vcf_max_nm: cur.opt_float_threshold(12.0),
         vcf_msi: cur.opt_float_threshold(20.0),
         vcf_cluster_dist: cur.opt_int_threshold(50),
-        compat: if cur.bool() {
-            vardictrust_core::config::COMPAT_OFF
-        } else {
-            vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3
+        compat: {
+            let mut compat = if cur.bool() {
+                vardictrust_core::config::COMPAT_OFF
+            } else {
+                vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3
+            };
+            let w3_bits = cur.u8();
+            if (w3_bits & 1) != 0 {
+                compat.reconcile_vd_dp = (w3_bits & 2) != 0;
+                compat.coordinate_sorted_vars = (w3_bits & 4) != 0;
+                compat.exact_35_overlap = (w3_bits & 8) != 0;
+                compat.exact_cigar_dlen_match = (w3_bits & 16) != 0;
+            }
+            compat
         },
         vcf_all_alleles: cur.bool(),
         ..Default::default()
@@ -940,5 +951,157 @@ fuzz_target!(|data: &[u8]| {
     .is_ok()
     {
         assert_vcf_header("paired_vcf_header", &hdr_buf, 11, compat_off);
+    }
+
+    // 6. Wave-3 `CompatProfile` (`reconcile_vd_dp` & `coordinate_sorted_vars`) end-to-end
+    //    `ToVarsBuilder` -> `simple_post_process` -> `simple_row_into_compat` invariants.
+    {
+        let span_u32 = reg_end.saturating_sub(reg_start).clamp(16, 512);
+        let eff_end = reg_start.saturating_add(span_u32);
+        let w3_region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(reg_start),
+            end: Pos1(eff_end),
+            gene: "W3_FUZZ".to_string(),
+            amplicon: None,
+        };
+        let ref_len = (span_u32 as usize).saturating_add(1);
+        let ref_seq: Vec<u8> = (0..ref_len)
+            .map(|i| b"ACGT"[(usize::from(cur.u8()) + i) % 4])
+            .collect();
+        let mut reference = vardictrust_core::reference::Reference::new();
+        reference
+            .loaded_regions
+            .push(vardictrust_core::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: reg_start,
+                sequence_end: eff_end,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        let mut w3_chr_lengths = HashMap::with_capacity(1);
+        w3_chr_lengths.insert("chr1".to_string(), eff_end as usize);
+
+        let mut vd = vardictrust_core::variations::VariationData::new();
+        let n_sites = ((usize::from(cur.u8()) % 8) + 2).min(8);
+        for _ in 0..n_sites {
+            let off = u32::from(cur.u16()) % (span_u32.max(1));
+            let pos_i32 = i32::try_from(reg_start.saturating_add(off)).unwrap_or(1);
+            let raw_dp = i32::from(cur.u8() % 32);
+            vd.ref_coverage.insert(pos_i32, raw_dp);
+
+            let ref_ch = ref_seq.get(off as usize).copied().unwrap_or(b'A') as char;
+            let alt_ch = match ref_ch {
+                'A' => 'G',
+                'G' => 'C',
+                'C' => 'T',
+                _ => 'A',
+            };
+            let mut vmap = vardictrust_core::variations::VariationMap::new();
+            let mut ref_var = vardictrust_core::variations::Variation::new();
+            let rfwd = i32::from(cur.u8() % 16);
+            let rrev = i32::from(cur.u8() % 16);
+            ref_var.cnt = rfwd + rrev;
+            ref_var.fwd = rfwd;
+            ref_var.rev = rrev;
+            ref_var.hicnt = i32::from(cur.u8() % 20) - 2; // includes -1/-2 underflow edge cases
+            ref_var.locnt = i32::from(cur.u8() % 4);
+            ref_var.extracnt = i32::from(cur.u8() % 20);
+            ref_var.pmean = f64::from(ref_var.cnt.max(1) * 15);
+            ref_var.qmean = f64::from(ref_var.cnt.max(1) * 35);
+            ref_var.mqmean = f64::from(ref_var.cnt.max(1) * 60);
+            vmap.map.insert(ref_ch.to_string(), ref_var);
+
+            let mut alt_var = vardictrust_core::variations::Variation::new();
+            let afwd = i32::from(cur.u8() % 20) + 2;
+            let arev = i32::from(cur.u8() % 20) + 1;
+            alt_var.cnt = afwd + arev;
+            alt_var.fwd = afwd;
+            alt_var.rev = arev;
+            alt_var.hicnt = alt_var.cnt;
+            alt_var.extracnt = i32::from(cur.u8() % (alt_var.cnt as u8).max(1));
+            alt_var.pmean = f64::from(alt_var.cnt * 20);
+            alt_var.qmean = f64::from(alt_var.cnt * 36);
+            alt_var.mqmean = f64::from(alt_var.cnt * 60);
+            alt_var.pstd = true;
+            alt_var.qstd = true;
+            vmap.map.insert(alt_ch.to_string(), alt_var);
+            vd.non_insertion_variants.insert(pos_i32, vmap);
+        }
+
+        let mut w3_cfg = config.clone();
+        w3_cfg.emit_intermediate = true;
+        w3_cfg.pileup = cur.bool();
+        if w3_cfg.compat.coordinate_sorted_vars {
+            w3_cfg.compat.suppress_pileup_sentinels = true;
+        }
+        let builder =
+            vardictrust_core::tovars::ToVarsBuilder::new(&reference, &w3_region, &w3_chr_lengths, &w3_cfg);
+        let aligned: vardictrust_core::javamap::JavaHashMap<i32, Vars> =
+            builder.build_aligned_variants(&vd);
+
+        let check_reconciled = |v: &Variant, is_ref: bool| {
+            assert!(
+                0 <= v.pos_coverage && v.pos_coverage <= v.total_pos_cov,
+                "VD out of [0, DP]: vd={}, dp={}, is_ref={is_ref}",
+                v.pos_coverage,
+                v.total_pos_cov
+            );
+            if is_ref {
+                assert!(
+                    0 <= v.ref_fwd_cov
+                        && 0 <= v.ref_rev_cov
+                        && v.ref_fwd_cov.saturating_add(v.ref_rev_cov) <= v.total_pos_cov,
+                    "ref_variant RD out of [0, DP]: rf={}, rr={}, dp={}",
+                    v.ref_fwd_cov,
+                    v.ref_rev_cov,
+                    v.total_pos_cov
+                );
+            }
+            assert!(0.0 <= v.frequency && v.frequency <= 1.0);
+            assert!(0.0 <= v.extra_freq && v.extra_freq <= 1.0);
+            assert!(0 <= v.hicnt && v.hicnt <= v.hicov);
+            assert!(0.0 <= v.hi_freq && v.hi_freq <= 1.0);
+        };
+
+        if w3_cfg.compat.reconcile_vd_dp {
+            for (_, vars) in aligned.iter() {
+                for v in &vars.variants {
+                    check_reconciled(v, false);
+                }
+                if let Some(ref rv) = vars.ref_variant {
+                    check_reconciled(rv, true);
+                }
+            }
+        }
+
+        let emitted = simple_post_process(&w3_cfg, &w3_region, &aligned, &vd.splice);
+        let mut prev_pos = i32::MIN;
+        for v in &emitted {
+            if w3_cfg.compat.reconcile_vd_dp {
+                check_reconciled(v, v.var_type.is_empty());
+            }
+            simple_row_into_compat(
+                &mut table_buf,
+                v,
+                &w3_region,
+                "W3_SMPL",
+                &v.sv,
+                false,
+                w3_cfg.compat.exact_binary_half_even,
+            );
+            assert_tsv_cols("w3_simple_36", &table_buf, 36);
+            if w3_cfg.compat.coordinate_sorted_vars {
+                let col_pos: i32 = table_buf
+                    .split('\t')
+                    .nth(3)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(v.start_pos);
+                assert!(
+                    col_pos >= prev_pos,
+                    "coordinate_sorted_vars .var Start regressed: {col_pos} < {prev_pos}"
+                );
+                prev_pos = col_pos;
+            }
+        }
     }
 });

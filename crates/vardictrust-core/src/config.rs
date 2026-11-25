@@ -41,7 +41,7 @@ pub enum CompatTarget {
     /// Exact VarDictJava v1.8.3 (`0886261`) + `var2vcf_*.pl` (`009e017`) output parity (`--compat=vardictjava`).
     #[default]
     VardictJava183,
-    /// Compatibility off (`--compat=off`): enables all 13 [`CompatProfile`] accuracy, scale, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
+    /// Compatibility off (`--compat=off`): enables all 17 [`CompatProfile`] accuracy, scale, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
     Off,
 }
 
@@ -65,7 +65,7 @@ impl CompatTarget {
     }
 }
 
-/// Resolved compatibility behavior switches (13 independent correctness, scale, and `--eqx` flags) derived from [`CompatTarget`].
+/// Resolved compatibility behavior switches (17 independent correctness, scale, and `--eqx` flags) derived from [`CompatTarget`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CompatProfile {
@@ -96,9 +96,17 @@ pub struct CompatProfile {
     pub sv_lazy_mate_pileup: bool,
     /// `rounding-underflow-tie`: Bypass OpenJDK `DecimalFormat` `DigitList` underflow truncation (`±5e-{4,5,6,9}`) so exact binary IEEE-754 `f64` values round to `±10^-d`.
     pub exact_binary_half_even: bool,
+    /// #92 / #386 / #400 / VarDict #113: Enforce VD <= DP, AF <= 1.0, ADJAF <= 1.0, and HICNT <= HICOV (HIAF <= 1.0) across all variant types.
+    pub reconcile_vd_dp: bool,
+    /// UB-3 (#282) / #34 PB-1: Iterate variant and post-processing position maps in ascending genomic coordinate order instead of JavaHashMap bucket order.
+    pub coordinate_sorted_vars: bool,
+    /// #34 PB-2 (VariationRealigner.java:2006-2042, :2016-2024): Omit Java's out-of-bounds while-loop sentinel +1 mismatch and +1 length increment when rem5 < rem3 in find_35_match.
+    pub exact_35_overlap: bool,
+    /// #34 PB-4 (VariationRealigner.java:2056-2065): Match exact deletion CIGAR operator length (len == dlen) in no_passing_reads instead of Java's getCigarString().contains(dlen + "D") suffix match.
+    pub exact_cigar_dlen_match: bool,
 }
 
-/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 13 [`CompatProfile`] fixes disabled).
+/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 17 [`CompatProfile`] fixes disabled).
 pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     target: CompatTarget::VardictJava183,
     sanitize_sample_info: false,
@@ -114,9 +122,13 @@ pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     mark_dup_sv_inclusive_end: false,
     sv_lazy_mate_pileup: false,
     exact_binary_half_even: false,
+    reconcile_vd_dp: false,
+    coordinate_sorted_vars: false,
+    exact_35_overlap: false,
+    exact_cigar_dlen_match: false,
 };
 
-/// Compatibility-off profile (`--compat=off`) enabling all 13 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `--eqx` fixes.
+/// Compatibility-off profile (`--compat=off`) enabling all 17 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `--eqx` fixes.
 pub const COMPAT_OFF: CompatProfile = CompatProfile {
     target: CompatTarget::Off,
     sanitize_sample_info: true,
@@ -132,6 +144,10 @@ pub const COMPAT_OFF: CompatProfile = CompatProfile {
     mark_dup_sv_inclusive_end: true,
     sv_lazy_mate_pileup: true,
     exact_binary_half_even: true,
+    reconcile_vd_dp: true,
+    coordinate_sorted_vars: true,
+    exact_35_overlap: true,
+    exact_cigar_dlen_match: true,
 };
 
 impl Default for CompatProfile {
@@ -1047,36 +1063,90 @@ mod tests {
         assert_eq!(CompatProfile::default(), COMPAT_VARDICTJAVA_1_8_3);
 
         let vj = std::hint::black_box(COMPAT_VARDICTJAVA_1_8_3);
-        assert_eq!(vj.target, CompatTarget::VardictJava183);
-        assert!(!vj.sanitize_sample_info);
-        assert!(!vj.standard_dup_symbolic_alt);
-        assert!(!vj.shift3_3prime_alleles);
-        assert!(!vj.strict_region_bounds);
-        assert!(!vj.suppress_pileup_sentinels);
-        assert!(!vj.live_duprate);
-        assert!(!vj.preserve_mixed_sex_contigs);
-        assert!(!vj.cigar_homopolymer_merge);
-        assert!(!vj.eqx_cigar_read_length);
-        assert!(!vj.preserve_discordant_svs);
-        assert!(!vj.mark_dup_sv_inclusive_end);
-        assert!(!vj.sv_lazy_mate_pileup);
-        assert!(!vj.exact_binary_half_even);
+        let CompatProfile {
+            target: vj_target,
+            sanitize_sample_info,
+            standard_dup_symbolic_alt,
+            shift3_3prime_alleles,
+            strict_region_bounds,
+            suppress_pileup_sentinels,
+            live_duprate,
+            preserve_mixed_sex_contigs,
+            cigar_homopolymer_merge,
+            eqx_cigar_read_length,
+            preserve_discordant_svs,
+            mark_dup_sv_inclusive_end,
+            sv_lazy_mate_pileup,
+            exact_binary_half_even,
+            reconcile_vd_dp,
+            coordinate_sorted_vars,
+            exact_35_overlap,
+            exact_cigar_dlen_match,
+        } = vj;
+        assert_eq!(vj_target, CompatTarget::VardictJava183);
+        let vj_switches: [bool; 17] = [
+            sanitize_sample_info,
+            standard_dup_symbolic_alt,
+            shift3_3prime_alleles,
+            strict_region_bounds,
+            suppress_pileup_sentinels,
+            live_duprate,
+            preserve_mixed_sex_contigs,
+            cigar_homopolymer_merge,
+            eqx_cigar_read_length,
+            preserve_discordant_svs,
+            mark_dup_sv_inclusive_end,
+            sv_lazy_mate_pileup,
+            exact_binary_half_even,
+            reconcile_vd_dp,
+            coordinate_sorted_vars,
+            exact_35_overlap,
+            exact_cigar_dlen_match,
+        ];
+        assert!(vj_switches.iter().all(|&flag| !flag));
 
         let off = std::hint::black_box(COMPAT_OFF);
-        assert_eq!(off.target, CompatTarget::Off);
-        assert!(off.sanitize_sample_info);
-        assert!(off.standard_dup_symbolic_alt);
-        assert!(off.shift3_3prime_alleles);
-        assert!(off.strict_region_bounds);
-        assert!(off.suppress_pileup_sentinels);
-        assert!(off.live_duprate);
-        assert!(off.preserve_mixed_sex_contigs);
-        assert!(off.cigar_homopolymer_merge);
-        assert!(off.eqx_cigar_read_length);
-        assert!(off.preserve_discordant_svs);
-        assert!(off.mark_dup_sv_inclusive_end);
-        assert!(off.sv_lazy_mate_pileup);
-        assert!(off.exact_binary_half_even);
+        let CompatProfile {
+            target: off_target,
+            sanitize_sample_info,
+            standard_dup_symbolic_alt,
+            shift3_3prime_alleles,
+            strict_region_bounds,
+            suppress_pileup_sentinels,
+            live_duprate,
+            preserve_mixed_sex_contigs,
+            cigar_homopolymer_merge,
+            eqx_cigar_read_length,
+            preserve_discordant_svs,
+            mark_dup_sv_inclusive_end,
+            sv_lazy_mate_pileup,
+            exact_binary_half_even,
+            reconcile_vd_dp,
+            coordinate_sorted_vars,
+            exact_35_overlap,
+            exact_cigar_dlen_match,
+        } = off;
+        assert_eq!(off_target, CompatTarget::Off);
+        let off_switches: [bool; 17] = [
+            sanitize_sample_info,
+            standard_dup_symbolic_alt,
+            shift3_3prime_alleles,
+            strict_region_bounds,
+            suppress_pileup_sentinels,
+            live_duprate,
+            preserve_mixed_sex_contigs,
+            cigar_homopolymer_merge,
+            eqx_cigar_read_length,
+            preserve_discordant_svs,
+            mark_dup_sv_inclusive_end,
+            sv_lazy_mate_pileup,
+            exact_binary_half_even,
+            reconcile_vd_dp,
+            coordinate_sorted_vars,
+            exact_35_overlap,
+            exact_cigar_dlen_match,
+        ];
+        assert!(off_switches.iter().all(|&flag| flag));
 
         for valid_vj in [
             "vardictjava",

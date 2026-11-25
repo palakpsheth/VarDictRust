@@ -15,13 +15,17 @@ fn version_credits_original_and_discloses_ai() {
         "gkw227",
         "AstraZeneca-NGS",
         "AI disclosure",
-        "MIT",
+        "License: MIT",
     ] {
         assert!(
             stdout.contains(needle),
             "--version lacks {needle:?}:\n{stdout}"
         );
     }
+    assert!(
+        !stdout.contains("GPL"),
+        "--version must report pure MIT license without GPL:\n{stdout}"
+    );
     assert!(
         stdout.contains("--compat=off"),
         "expected --compat=off in --version: {stdout}"

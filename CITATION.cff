@@ -12,9 +12,7 @@ abstract: >-
   fixes alongside --vcf-all-alleles multi-allelic VCF emission.
 version: 1.0.10
 date-released: "2026-11-18"
-license:
-  - MIT
-  - GPL-2.0-or-later
+license: MIT
 repository-code: "https://github.com/palakpsheth/VarDictRust"
 keywords:
   - "bioinformatics"

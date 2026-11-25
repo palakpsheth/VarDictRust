@@ -2605,7 +2605,7 @@ def build_all_tables(
             "Upstream Repository Maintenance Status",
             "Archived Read-Only (EOL)<sup>a</sup>",
             f"Preprint Prototype ({cpp_divergence_count} Divergences)<sup>b</sup>",
-            "Actively Maintained (MIT AND GPL-2.0-or-later, v1.0.6)<sup>a,e</sup>",
+            "Actively Maintained (MIT, v1.0.6)<sup>a,e</sup>",
         ],
         [
             "Runtime Dependency & Binary Footprint",

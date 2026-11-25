@@ -40,18 +40,35 @@ pub fn simple_post_process(
     splice: &rustc_hash::FxHashSet<String>,
 ) -> Vec<Variant> {
     let single_bounds = single_region_bounds_i32(region);
-    simple_post_process_core(
-        config,
-        region,
-        aligned_variants
-            .iter()
-            .map(|(&pos, vars)| (pos, std::borrow::Cow::Borrowed(vars))),
-        splice,
-        config
-            .compat
-            .strict_region_bounds
-            .then_some(single_bounds.as_slice()),
-    )
+    let strict_bounds = config
+        .compat
+        .strict_region_bounds
+        .then_some(single_bounds.as_slice());
+    if config.compat.coordinate_sorted_vars {
+        let mut keys: Vec<i32> = aligned_variants.keys().copied().collect();
+        keys.sort_unstable();
+        simple_post_process_core(
+            config,
+            region,
+            keys.into_iter().filter_map(|pos| {
+                aligned_variants
+                    .get(&pos)
+                    .map(|vars| (pos, std::borrow::Cow::Borrowed(vars)))
+            }),
+            splice,
+            strict_bounds,
+        )
+    } else {
+        simple_post_process_core(
+            config,
+            region,
+            aligned_variants
+                .iter()
+                .map(|(&pos, vars)| (pos, std::borrow::Cow::Borrowed(vars))),
+            splice,
+            strict_bounds,
+        )
+    }
 }
 
 /// Owned fast-path counterpart of [`simple_post_process`], moving finalized [`Variant`]
@@ -81,19 +98,35 @@ pub(crate) fn simple_post_process_owned(
 pub(crate) fn simple_post_process_owned_with_bounds(
     config: &Config,
     region: &Region,
-    aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
+    mut aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
     strict_bounds: Option<&[(i32, i32)]>,
 ) -> Vec<Variant> {
-    simple_post_process_core(
-        config,
-        region,
-        aligned_variants
-            .into_entries()
-            .map(|(pos, vars)| (pos, std::borrow::Cow::Owned(vars))),
-        splice,
-        strict_bounds,
-    )
+    if config.compat.coordinate_sorted_vars {
+        let mut keys: Vec<i32> = aligned_variants.keys().copied().collect();
+        keys.sort_unstable();
+        simple_post_process_core(
+            config,
+            region,
+            keys.into_iter().filter_map(|pos| {
+                aligned_variants
+                    .get_mut(&pos)
+                    .map(|vars| (pos, std::borrow::Cow::Owned(std::mem::take(vars))))
+            }),
+            splice,
+            strict_bounds,
+        )
+    } else {
+        simple_post_process_core(
+            config,
+            region,
+            aligned_variants
+                .into_entries()
+                .map(|(pos, vars)| (pos, std::borrow::Cow::Owned(vars))),
+            splice,
+            strict_bounds,
+        )
+    }
 }
 
 fn simple_post_process_core<'a>(
@@ -105,8 +138,9 @@ fn simple_post_process_core<'a>(
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
-    // Iterate entries in JavaHashMap table-bucket iteration order
-    // (ports SimplePostProcessModule.java:35; see DIVERGENCES.md UB-3).
+    // Iterate entries in JavaHashMap table-bucket iteration order under default parity
+    // (ports SimplePostProcessModule.java:35; see DIVERGENCES.md UB-3), or ascending
+    // genomic coordinate order when `CompatProfile::coordinate_sorted_vars` is active.
     for (position, variants_on_position) in entries {
         if variants_on_position.sv.is_empty()
             && (position < region.start.0 as i32 || position > region.end.0 as i32)
@@ -884,5 +918,176 @@ mod tests {
         let off_winner = simple_post_process(&off_tie_cfg, &region, &tie_map, &splice);
         assert_eq!(off_winner.len(), 1);
         assert_eq!(off_winner[0].var_allele, "T");
+    }
+
+    #[test]
+    fn compat_off_coordinate_sorted_vars_orders_var_rows_and_vcf_ties() {
+        let mut base_cfg = Config::default();
+        base_cfg.freq = 0.01;
+        base_cfg.min_reads = 2;
+        base_cfg.read_pos = 5.0;
+        base_cfg.base_qual = 22.5;
+        base_cfg.qratio = 1.5;
+
+        let region = Region {
+            chr: "20".to_string(),
+            start: Pos1(20_202_800),
+            end: Pos1(20_203_000),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let splice = rustc_hash::FxHashSet::default();
+        let strict_bounds = single_region_bounds_i32(&region);
+
+        // OpenJDK HashMap spread `(h ^ (h >>> 16)) & 15` at default capacity 16:
+        // - 20_202_900 (0x0134_4594) -> bucket 0
+        // - 20_202_850 (0x0134_4562) -> bucket 6
+        // - 20_202_876 (0x0134_457c, k_hi) -> bucket 8
+        // - 20_202_910 (0x0134_459e) -> bucket 10
+        // - 20_202_875 (0x0134_457b, k_lo) -> bucket 15
+        let k_lo = 20_202_875;
+        let k_hi = k_lo + 1;
+
+        let mut map = crate::javamap::JavaHashMap::new();
+        let mut vars_lo = Vars::new();
+        vars_lo
+            .variants
+            .push(mk_variant(k_lo, k_lo, "T", "A", 0.05));
+        map.insert(k_lo, vars_lo);
+
+        let mut vars_hi = Vars::new();
+        vars_hi
+            .variants
+            .push(mk_variant(k_lo, k_hi, "TA", "T", 0.05));
+        map.insert(k_hi, vars_hi);
+
+        for (pos, r, a, af) in [
+            (20_202_900, "C", "G", 0.20),
+            (20_202_850, "G", "T", 0.15),
+            (20_202_910, "A", "C", 0.30),
+        ] {
+            let mut vars = Vars::new();
+            vars.variants.push(mk_variant(pos, pos, r, a, af));
+            map.insert(pos, vars);
+        }
+
+        let bucket_keys: Vec<i32> = map.keys().copied().collect();
+        assert_eq!(
+            bucket_keys,
+            vec![20_202_900, 20_202_850, k_hi, 20_202_910, k_lo]
+        );
+        assert!(map.contains_both_and_first_precedes(&k_hi, &k_lo));
+        assert!(!bucket_keys.windows(2).all(|w| w[0] <= w[1]));
+
+        let summarize = |rows: &[Variant]| -> Vec<(i32, String, String)> {
+            rows.iter()
+                .map(|v| (v.start_pos, v.ref_allele.clone(), v.var_allele.clone()))
+                .collect()
+        };
+
+        // 1. Default parity (`COMPAT_VARDICTJAVA_1_8_3`): JavaHashMap bucket order.
+        let mut vj_var_cfg = base_cfg.clone();
+        vj_var_cfg.compat = crate::config::COMPAT_VARDICTJAVA_1_8_3;
+        vj_var_cfg.emit_intermediate = true;
+        let expected_vj_var = vec![
+            (20_202_900, "C".to_string(), "G".to_string()),
+            (20_202_850, "G".to_string(), "T".to_string()),
+            (k_lo, "TA".to_string(), "T".to_string()),
+            (20_202_910, "A".to_string(), "C".to_string()),
+            (k_lo, "T".to_string(), "A".to_string()),
+        ];
+        assert_eq!(
+            summarize(&simple_post_process(&vj_var_cfg, &region, &map, &splice)),
+            expected_vj_var
+        );
+        assert_eq!(
+            summarize(&simple_post_process_owned_with_bounds(
+                &vj_var_cfg,
+                &region,
+                map.clone(),
+                &splice,
+                None,
+            )),
+            expected_vj_var
+        );
+
+        let mut vj_vcf_cfg = base_cfg.clone();
+        vj_vcf_cfg.compat = crate::config::COMPAT_VARDICTJAVA_1_8_3;
+        vj_vcf_cfg.emit_intermediate = false;
+        let expected_vj_vcf = vec![
+            (20_202_850, "G".to_string(), "T".to_string()),
+            (k_lo, "TA".to_string(), "T".to_string()),
+            (20_202_900, "C".to_string(), "G".to_string()),
+            (20_202_910, "A".to_string(), "C".to_string()),
+        ];
+        assert_eq!(
+            summarize(&simple_post_process(&vj_vcf_cfg, &region, &map, &splice)),
+            expected_vj_vcf
+        );
+        assert_eq!(
+            summarize(&simple_post_process_owned_with_bounds(
+                &vj_vcf_cfg,
+                &region,
+                map.clone(),
+                &splice,
+                None,
+            )),
+            expected_vj_vcf
+        );
+
+        // 2. Opt-in `coordinate_sorted_vars = true` (isolated switch and full `COMPAT_OFF`):
+        //    ascending map-key order in `.var` and deterministic lowest-key (`k_lo` SNV) winner in VCF.
+        let mut isolated_compat = crate::config::COMPAT_VARDICTJAVA_1_8_3;
+        isolated_compat.coordinate_sorted_vars = true;
+        let expected_sorted_var = vec![
+            (20_202_850, "G".to_string(), "T".to_string()),
+            (k_lo, "T".to_string(), "A".to_string()),
+            (k_lo, "TA".to_string(), "T".to_string()),
+            (20_202_900, "C".to_string(), "G".to_string()),
+            (20_202_910, "A".to_string(), "C".to_string()),
+        ];
+        let expected_sorted_vcf = vec![
+            (20_202_850, "G".to_string(), "T".to_string()),
+            (k_lo, "T".to_string(), "A".to_string()),
+            (20_202_900, "C".to_string(), "G".to_string()),
+            (20_202_910, "A".to_string(), "C".to_string()),
+        ];
+
+        for compat in [isolated_compat, crate::config::COMPAT_OFF] {
+            let bounds = compat
+                .strict_region_bounds
+                .then_some(strict_bounds.as_slice());
+
+            let mut sorted_var_cfg = base_cfg.clone();
+            sorted_var_cfg.compat = compat;
+            sorted_var_cfg.emit_intermediate = true;
+            let got_var_borrowed = simple_post_process(&sorted_var_cfg, &region, &map, &splice);
+            let got_var_owned = simple_post_process_owned_with_bounds(
+                &sorted_var_cfg,
+                &region,
+                map.clone(),
+                &splice,
+                bounds,
+            );
+            assert!(got_var_borrowed
+                .windows(2)
+                .all(|w| w[0].start_pos <= w[1].start_pos));
+            assert_eq!(summarize(&got_var_borrowed), expected_sorted_var);
+            assert_eq!(summarize(&got_var_owned), expected_sorted_var);
+
+            let mut sorted_vcf_cfg = base_cfg.clone();
+            sorted_vcf_cfg.compat = compat;
+            sorted_vcf_cfg.emit_intermediate = false;
+            let got_vcf_borrowed = simple_post_process(&sorted_vcf_cfg, &region, &map, &splice);
+            let got_vcf_owned = simple_post_process_owned_with_bounds(
+                &sorted_vcf_cfg,
+                &region,
+                map.clone(),
+                &splice,
+                bounds,
+            );
+            assert_eq!(summarize(&got_vcf_borrowed), expected_sorted_vcf);
+            assert_eq!(summarize(&got_vcf_owned), expected_sorted_vcf);
+        }
     }
 }

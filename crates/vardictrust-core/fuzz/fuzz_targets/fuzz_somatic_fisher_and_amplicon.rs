@@ -160,7 +160,7 @@ fn fuzz_fisher_exact(cur: &mut ByteCursor<'_>) {
     }
 }
 
-fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32) -> Variant {
+fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, reconcile_vd_dp: bool) -> Variant {
     let mut v = Variant::new();
     let kind_sel = cur.u8() % 10;
     let shift = i32::from(cur.u8() % 5) - 1;
@@ -289,13 +289,40 @@ fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32) -> Variant {
     v.right_seq = cur.dna_string(8);
     v.crispr = i32::from(cur.u8() as i8);
     v.var_type = v.var_type();
+    if reconcile_vd_dp {
+        v.pos_coverage = v.pos_coverage.max(0);
+        v.ref_fwd_cov = v.ref_fwd_cov.max(0);
+        v.ref_rev_cov = v.ref_rev_cov.max(0);
+        v.total_pos_cov = v
+            .total_pos_cov
+            .max(v.pos_coverage)
+            .max(v.ref_fwd_cov.saturating_add(v.ref_rev_cov))
+            .max(0);
+        v.hicnt = v.hicnt.max(0);
+        v.hicov = v.hicov.max(v.hicnt).max(0);
+        v.frequency = if v.total_pos_cov > 0 {
+            (v.pos_coverage as f64 / v.total_pos_cov as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        v.hi_freq = if v.hicov > 0 {
+            (v.hicnt as f64 / v.hicov as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        v.extra_freq = if v.extra_freq.is_finite() {
+            v.extra_freq.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
     v
 }
 
-fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32) -> Vars {
+fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32, reconcile_vd_dp: bool) -> Vars {
     let mut vars = Vars::new();
     if cur.bool() {
-        let mut rv = synth_variant_at(cur, pos);
+        let mut rv = synth_variant_at(cur, pos, reconcile_vd_dp);
         rv.ref_allele = "A".to_string();
         rv.var_allele = "A".to_string();
         rv.description = "A".to_string();
@@ -308,7 +335,7 @@ fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32) -> Vars {
     let n_alts = usize::from(cur.u8() % 4); // 0..=3 variants per position
     let populate_desc_map = cur.bool();
     for _ in 0..n_alts {
-        let v = synth_variant_at(cur, pos);
+        let v = synth_variant_at(cur, pos, reconcile_vd_dp);
         if populate_desc_map {
             vars.var_desc_to_variant
                 .insert(v.description.clone(), v.clone());
@@ -322,6 +349,7 @@ fn synth_vars_map(
     cur: &mut ByteCursor<'_>,
     reg_start: u32,
     reg_span: u32,
+    reconcile_vd_dp: bool,
 ) -> JavaHashMap<i32, Vars> {
     let mut map = JavaHashMap::new();
     let count = (usize::from(cur.u8()) % MAX_POSITIONS).saturating_add(1);
@@ -333,7 +361,7 @@ fn synth_vars_map(
         }
         let off = u32::from(cur.u16()) % span_with_halo;
         let pos = origin.saturating_add(off).min(i32::MAX as u32) as i32;
-        let entry = synth_vars_at(cur, pos);
+        let entry = synth_vars_at(cur, pos, reconcile_vd_dp);
         map.insert(pos, entry);
     }
     map
@@ -402,8 +430,9 @@ fuzz_target!(|data: &[u8]| {
         COMPAT_VARDICTJAVA_1_8_3
     };
 
-    let aligned_bam1 = synth_vars_map(&mut cur, reg_start, reg_span);
-    let aligned_bam2 = synth_vars_map(&mut cur, reg_start, reg_span);
+    let reconcile_vd_dp = base_cfg.compat.reconcile_vd_dp;
+    let aligned_bam1 = synth_vars_map(&mut cur, reg_start, reg_span, reconcile_vd_dp);
+    let aligned_bam2 = synth_vars_map(&mut cur, reg_start, reg_span, reconcile_vd_dp);
 
     // Populate optional splice junction strings matching synthesized deletions.
     let mut splice = HashSet::default();
@@ -443,7 +472,7 @@ fuzz_target!(|data: &[u8]| {
     let use_pipeline = cur.bool();
     let pipe_seed = cur.u8();
     let call_counter = Cell::new(0u8);
-    let comb_template = synth_vars_at(&mut cur, reg_start as i32);
+    let comb_template = synth_vars_at(&mut cur, reg_start as i32, reconcile_vd_dp);
     let mock_pipe = |comb_reg: &Region,
                      splice_set: &mut HashSet<String, _>,
                      rl: &mut i32,
@@ -487,6 +516,38 @@ fuzz_target!(|data: &[u8]| {
     );
     for sv in &somatic_rows {
         assert!(!sv.status.is_empty());
+        if reconcile_vd_dp {
+            for v in std::iter::once(&sv.variant1).chain(sv.variant2.as_ref()) {
+                assert!(
+                    0 <= v.pos_coverage && v.pos_coverage <= v.total_pos_cov,
+                    "somatic reconcile_vd_dp violated 0 <= VD ({}) <= DP ({}) on status={}",
+                    v.pos_coverage,
+                    v.total_pos_cov,
+                    sv.status
+                );
+                assert!(
+                    v.frequency.is_finite() && (0.0..=1.0).contains(&v.frequency),
+                    "somatic reconcile_vd_dp violated AF in [0, 1]: {}",
+                    v.frequency
+                );
+                assert!(
+                    v.hi_freq.is_finite() && (0.0..=1.0).contains(&v.hi_freq),
+                    "somatic reconcile_vd_dp violated HIAF in [0, 1]: {}",
+                    v.hi_freq
+                );
+                assert!(
+                    v.extra_freq.is_finite() && (0.0..=1.0).contains(&v.extra_freq),
+                    "somatic reconcile_vd_dp violated ADJAF in [0, 1]: {}",
+                    v.extra_freq
+                );
+                assert!(
+                    0 <= v.hicnt && v.hicnt <= v.hicov,
+                    "somatic reconcile_vd_dp violated 0 <= HICNT ({}) <= HICOV ({})",
+                    v.hicnt,
+                    v.hicov
+                );
+            }
+        }
     }
 
     // Part D: amplicon_post_process + amplicon_post_process_streaming + amplicon_select_vcf_rows
@@ -530,7 +591,7 @@ fuzz_target!(|data: &[u8]| {
         });
 
         let amp_span = a_end.saturating_sub(a_start).saturating_add(1);
-        let amp_map = synth_vars_map(&mut cur, a_start, amp_span);
+        let amp_map = synth_vars_map(&mut cur, a_start, amp_span, reconcile_vd_dp);
         for &p in amp_map.keys() {
             if candidate_positions.len() < MAX_POSITIONS {
                 candidate_positions.insert(p);
