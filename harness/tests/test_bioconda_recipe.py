@@ -581,17 +581,68 @@ class TestBiocondaRecipe(unittest.TestCase):
             check=True,
         ).stdout
 
+        legacy_1010_meta_fixture = (
+            '{% set name = "vardictrust" %}\n'
+            '{% set version = "1.0.10" %}\n\n'
+            "package:\n"
+            "  name: {{ name|lower }}\n"
+            "  version: {{ version }}\n\n"
+            "source:\n"
+            "  url: https://github.com/palakpsheth/VarDictRust/archive/refs/tags/v{{ version }}.tar.gz\n"
+            "  sha256: e7c0daf0c7df4c540296252fabce792f5ca5c72b9bc0517c4d7874a737c81b94\n\n"
+            "build:\n"
+            "  number: 3\n"
+            "  binary_relocation: false\n"
+            "  run_exports:\n"
+            '    - {{ pin_subpackage(name, max_pin="x") }}\n\n'
+            "requirements:\n"
+            "  build:\n"
+            "    - {{ compiler('c') }}\n"
+            "    - {{ stdlib('c') }}\n"
+            "    - {{ compiler('rust') }}\n"
+            "    - make\n"
+            "    - cargo-bundle-licenses\n\n"
+            "test:\n"
+            "  commands:\n"
+            "    - vardictrust --version\n"
+            "    - vardictrust --help\n\n"
+            "about:\n"
+            "  home: https://github.com/palakpsheth/VarDictRust\n"
+            "  license: MIT AND GPL-2.0-or-later\n"
+            "  license_family: GPL2\n"
+            "  license_file:\n"
+            "    - LICENSE\n"
+            "    - LICENSE-3RD-PARTY\n"
+            "    - THIRDPARTY.yml\n"
+            '  summary: "Fast Rust somatic & germline variant caller - drop-in VarDictJava with fixes"\n'
+            "  description: |\n"
+            "    VarDictRust is a fast, memory-safe Rust somatic and germline variant caller\n"
+            "    that consolidates the VarDictJava v1.8.3 + R + Perl pipeline into a single\n"
+            "    binary with bounded-memory WGS tiling, default byte-identical VarDictJava\n"
+            "    v1.8.3 parity on valid inputs (v1.0.10 default; --compat=vardictjava in\n"
+            "    v1.1.0+), native multithreaded BGZF and Tabix/CSI VCF output, and (in\n"
+            "    v1.1.0+) opt-in --compat=off correctness, SV, and SAM =/X (--eqx) alignment\n"
+            "    fixes (17 switches) plus 18/18 var2vcf post-filtering including\n"
+            "    --vcf-all-alleles multi-allelic VCF output.\n"
+            "  doc_url: https://vardictrust.readthedocs.io/\n"
+            "  dev_url: https://github.com/palakpsheth/VarDictRust\n\n"
+            "extra:\n"
+            "  additional-platforms:\n"
+            "    - linux-aarch64\n"
+            "    - osx-arm64\n"
+            "  recipe-maintainers:\n"
+            "    - palakpsheth\n"
+            "  identifiers:\n"
+            "    - doi:10.1093/nar/gkw227\n"
+            "    - biotools:vardictrust\n"
+        )
+
         sha_1010 = "a1" * 32
         sha_110 = "B2" * 32  # mixed case exercises lowercase normalization
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = pathlib.Path(tmp_dir)
             tmp_meta = tmp_path / "meta.yaml"
-            shutil.copyfile(META_PATH, tmp_meta)
-            # Perturb build number to verify reset to 0
-            tmp_meta.write_text(
-                re.sub(r"(?m)^(\s*number:\s*)\d+", r"\g<1>3", tmp_meta.read_text(encoding="utf-8")),
-                encoding="utf-8",
-            )
+            tmp_meta.write_text(legacy_1010_meta_fixture, encoding="utf-8")
 
             # 1) 1.0.10 keeps legacy MIT AND GPL-2.0-or-later / GPL2 metadata
             r10 = subprocess.run(
@@ -899,14 +950,98 @@ class TestNfCoreModulePackaging(unittest.TestCase):
             "fe/feedfacecafebeef0123456789abcdef0123456789abcdef0123456789abcdef/data"
         )
 
+        legacy_sing_https = (
+            "https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/"
+            "33/33ba32a84ffa98e9001a1079218cc9deb09a41939afe85fa189a090665aad393/data"
+        )
+        legacy_containers_yaml = (
+            "containers:\n"
+            "  docker:\n"
+            "    linux/amd64:\n"
+            "      name: community.wave.seqera.io/library/htslib_vardictrust:8e6fd2fa9924d063\n"
+            "      build_id: bd-8e6fd2fa9924d063_1\n"
+            "      scan_id: sc-6661aaf185680122_1\n"
+            "    linux/arm64:\n"
+            "      name: community.wave.seqera.io/library/htslib_vardictrust:ad558d83a9c24379\n"
+            "      build_id: bd-ad558d83a9c24379_1\n"
+            "      scan_id: sc-7e2f609f25d38bf9_1\n"
+            "  singularity:\n"
+            "    linux/arm64:\n"
+            "      name: oras://community.wave.seqera.io/library/htslib_vardictrust:dcf7214823b2eb9c\n"
+            "      build_id: bd-dcf7214823b2eb9c_1\n"
+            "      https: https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/ce/ce467182e178a8f56468fc04d8748dd2447f9ecdef4bd7d3951f5549c45f31b8/data\n"
+            "    linux/amd64:\n"
+            "      name: oras://community.wave.seqera.io/library/htslib_vardictrust:b603893bd98569d2\n"
+            "      build_id: bd-b603893bd98569d2_1\n"
+            f"      https: {legacy_sing_https}\n"
+            "  conda:\n"
+            "    linux/amd64:\n"
+            "      lock_file: modules/nf-core/vardictrust/.conda-lock/linux_amd64-bd-8e6fd2fa9924d063_1.txt\n"
+            "    linux/arm64:\n"
+            "      lock_file: modules/nf-core/vardictrust/.conda-lock/linux_arm64-bd-ad558d83a9c24379_1.txt\n"
+        )
+        legacy_readme_snippet = (
+            "### 3. Containerized Execution (Docker, Podman, Apptainer via Seqera Wave)\n\n"
+            "```bash\n"
+            "# Docker / Podman (linux/amd64: 8e6fd2fa9924d063 | linux/arm64: ad558d83a9c24379)\n"
+            "docker run --rm -v $(pwd):/data community.wave.seqera.io/library/htslib_vardictrust:8e6fd2fa9924d063 \\\n"
+            "  vardictrust -G /data/ref.fa -b /data/sample.bam -R chr1:1000-2000 > output.vcf\n\n"
+            "# Apptainer / Singularity ORAS (linux/amd64: b603893bd98569d2 | linux/arm64: dcf7214823b2eb9c)\n"
+            "apptainer exec oras://community.wave.seqera.io/library/htslib_vardictrust:b603893bd98569d2 vardictrust --help\n"
+            "```\n"
+        )
+
+        def seed_legacy_1010_nfcore_fixture(mod_dest: pathlib.Path, readme_dest: pathlib.Path) -> None:
+            shutil.copytree(NFCORE_MOD_DIR, mod_dest)
+            env_p = mod_dest / "environment.yml"
+            env_p.write_text(
+                re.sub(
+                    r"bioconda::vardictrust=[^\s\"']+",
+                    "bioconda::vardictrust=1.0.10",
+                    env_p.read_text(encoding="utf-8"),
+                ),
+                encoding="utf-8",
+            )
+            meta_p = mod_dest / "meta.yml"
+            meta_txt = meta_p.read_text(encoding="utf-8")
+            meta_txt = re.sub(
+                r'(-\s*"vardictrust":[\s\S]*?licence:\s*\n)(?:\s*-\s*"[^"]+"\s*\n)+',
+                r'\g<1>        - "MIT"\n        - "GPL-2.0-or-later"\n',
+                meta_txt,
+                count=1,
+            )
+            meta_txt = re.sub(r"(?m)^containers:\n[\s\S]*\Z", legacy_containers_yaml, meta_txt, count=1)
+            meta_p.write_text(meta_txt, encoding="utf-8")
+
+            mnf_p = mod_dest / "main.nf"
+            mnf_txt = mnf_p.read_text(encoding="utf-8")
+            mnf_txt = re.sub(
+                r"https://community-cr-prod\.seqera\.io/docker/registry/v2/blobs/sha256/[0-9a-f]{2}/[0-9a-f]{64}/data",
+                legacy_sing_https,
+                mnf_txt,
+            )
+            mnf_txt = re.sub(
+                r"community\.wave\.seqera\.io/library/htslib_vardictrust:[0-9a-f]{16}",
+                "community.wave.seqera.io/library/htslib_vardictrust:8e6fd2fa9924d063",
+                mnf_txt,
+            )
+            mnf_p.write_text(mnf_txt, encoding="utf-8")
+
+            lock_dir = mod_dest / ".conda-lock"
+            shutil.rmtree(lock_dir, ignore_errors=True)
+            lock_dir.mkdir(parents=True)
+            (lock_dir / "linux_amd64-bd-8e6fd2fa9924d063_1.txt").write_text("# lock\n", encoding="utf-8")
+            (lock_dir / "linux_arm64-bd-ad558d83a9c24379_1.txt").write_text("# lock\n", encoding="utf-8")
+            readme_dest.write_text(legacy_readme_snippet, encoding="utf-8")
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = pathlib.Path(tmp_dir)
 
             # A) Test --hermetic-sync on 1.0.10 (retains GPL-2.0-or-later) vs 1.1.0 (pure MIT + README Wave sync)
             herm_dir = tmp_path / "hermetic"
-            shutil.copytree(NFCORE_MOD_DIR, herm_dir / "mod")
+            herm_dir.mkdir(parents=True)
             herm_readme = herm_dir / "README.md"
-            shutil.copyfile(ROOT_DIR / "README.md", herm_readme)
+            seed_legacy_1010_nfcore_fixture(herm_dir / "mod", herm_readme)
 
             r10 = subprocess.run(
                 [
@@ -948,18 +1083,14 @@ class TestNfCoreModulePackaging(unittest.TestCase):
                 .replace("ad558d83a9c24379", new_dock_arm64)
                 .replace("b603893bd98569d2", new_sing_amd64)
                 .replace("dcf7214823b2eb9c", new_sing_arm64)
-                .replace(
-                    "https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/33/33ba32a84ffa98e9001a1079218cc9deb09a41939afe85fa189a090665aad393/data",
-                    new_sing_https,
-                )
+                .replace(legacy_sing_https, new_sing_https)
             )
             meta_yml_p.write_text(upd_meta, encoding="utf-8")
 
             # B) Full end-to-end mocked prepare_nfcore_pr.sh 1.1.0 execution (including Wave container + README sync)
             in_tree_copy = tmp_path / "in_tree_mod"
-            shutil.copytree(NFCORE_MOD_DIR, in_tree_copy)
             e2e_readme = tmp_path / "README_e2e.md"
-            shutil.copyfile(ROOT_DIR / "README.md", e2e_readme)
+            seed_legacy_1010_nfcore_fixture(in_tree_copy, e2e_readme)
 
             nfcore_repo = tmp_path / "nf-core-modules"
             nfcore_repo.mkdir(parents=True)
