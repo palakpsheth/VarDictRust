@@ -13,7 +13,6 @@ Modes:
 from __future__ import annotations
 
 import argparse
-import bisect
 import csv
 import gzip
 import hashlib
@@ -525,20 +524,26 @@ def verify_engine_and_binary_guards(root_dir: Path) -> Path:
 
 
 def sanitize_text(raw: str, tmpdir: str, data_root: Path, root_dir: Path) -> str:
-    out = raw
+    replacements: dict[str, str] = {}
     if tmpdir:
-        out = out.replace(tmpdir, "$WORK_TMP")
+        replacements[tmpdir] = "$WORK_TMP"
     for tool_name in ("vardictrust", "bcftools", "rtg", "tabix", "bgzip", "samtools"):
         which_p = shutil.which(tool_name)
         if which_p:
-            out = out.replace(which_p, tool_name)
+            replacements[which_p] = tool_name
     vdr_rel = str(root_dir / "target" / "release" / "vardictrust")
-    out = out.replace(vdr_rel, "vardictrust")
-    out = out.replace(str(data_root), "$REPO_ROOT")
-    out = out.replace(str(root_dir), "$REPO_ROOT")
+    replacements[vdr_rel] = "vardictrust"
+    if str(data_root):
+        replacements[str(data_root)] = "$REPO_ROOT"
+    if str(root_dir):
+        replacements[str(root_dir)] = "$REPO_ROOT"
     home = os.environ.get("HOME", "")
     if home:
-        out = out.replace(home, "$HOME_REDACTED")
+        replacements[home] = "$HOME_REDACTED"
+
+    out = raw
+    for prefix, token in sorted(replacements.items(), key=lambda kv: -len(kv[0])):
+        out = out.replace(prefix, token)
     return out
 
 
@@ -863,7 +868,7 @@ def run_collection(out_dir: Path) -> None:
                 "SEQC2_HCC1395_TN",
                 scoped_fa,
                 f"{seqc2_t}|{seqc2_n}",
-                ["-N", "TUMOR|NORMAL", "-c", "1", "-S", "2", "-E", "3", "-g", "4", "-f", "0.05", "--vcf-af", "0.30", "--fisher", "-th", "4", str(slices_bed)],
+                ["-N", "TUMOR|NORMAL", "-z", "-c", "1", "-S", "2", "-E", "3", "-g", "4", "-f", "0.05", "--vcf-af", "0.30", "--fisher", "-th", "4", str(slices_bed)],
             ),
             # 2. GIAB HG002 chr20 60 kbp
             (
@@ -877,7 +882,7 @@ def run_collection(out_dir: Path) -> None:
                 "GIAB_HG008_TN_test5",
                 giab_ref,
                 f"{hg008_t}|{hg008_n}",
-                ["-N", "HG008_T|HG008_N", "-c", "1", "-S", "2", "-E", "3", "-f", "0.01", "--fisher", "-th", "4", str(hg008_dir / "test5.bed")],
+                ["-N", "HG008_T|HG008_N", "-z", "-c", "1", "-S", "2", "-E", "3", "-f", "0.01", "--fisher", "-th", "4", str(hg008_dir / "test5.bed")],
             ),
             # 4..14. 11 symbolic SV callsets across 10 distinct BAM inputs
             ("Colo829_DELDiscReverse", fa_hg19, str(vj_bams / "Colo829.chr10.DELDiscReverse.bam"), ["-R", "chr10:89700380-89713976", "-f", "0.001"]),
@@ -893,9 +898,9 @@ def run_collection(out_dir: Path) -> None:
                 f"{vj_bams / 'Zero_in_DUPSV_TUMOUR.bam'}|{vj_bams / 'Zero_in_DUPSV_NORMAL.bam'}",
                 ["-R", "chr19:290742-291636", "-f", "0.001", "-X", "3", "-L", "50", "--fisher"],
             ),
-            ("HG008_v06_single", giab_ref, str(hg008_t), ["-c", "1", "-S", "2", "-E", "3", "-f", "0.01", "-L", "100", "--fisher", str(hg008_sv_bed)]),
-            ("HG008_v06_paired", giab_ref, f"{hg008_t}|{hg008_n}", ["-c", "1", "-S", "2", "-E", "3", "-f", "0.01", "-L", "100", "--fisher", str(hg008_sv_bed)]),
-            ("vartovcf_sv_contig1", v2v_ref, str(v2v_dir / "vartovcf_sv_contig1.bam"), ["-c", "1", "-S", "2", "-E", "3", "-g", "4", "-P", "0", "-f", "0.01", "-r", "2", str(v2v_dir / "vartovcf_sv_contig1.bed")]),
+            ("HG008_v06_single", giab_ref, str(hg008_t), ["-z", "-c", "1", "-S", "2", "-E", "3", "-f", "0.01", "-L", "100", "--fisher", str(hg008_sv_bed)]),
+            ("HG008_v06_paired", giab_ref, f"{hg008_t}|{hg008_n}", ["-z", "-c", "1", "-S", "2", "-E", "3", "-f", "0.01", "-L", "100", "--fisher", str(hg008_sv_bed)]),
+            ("vartovcf_sv_contig1", v2v_ref, str(v2v_dir / "vartovcf_sv_contig1.bam"), ["-z", "-c", "1", "-S", "2", "-E", "3", "-g", "4", "-P", "0", "-f", "0.01", "-r", "2", str(v2v_dir / "vartovcf_sv_contig1.bed")]),
             # 15..16. 2 -p pileup runs
             ("N13532_pileup", fa_b37, str(vj_bams / "N13532.TwoDels1InsStringBoundError.bam"), ["-R", "11:1280138-1280341", "-p"]),
             ("HG002_CMRG_Pileup", giab_ref, str(w4_dir / "hg002_cmrg_mosaic" / "HG002.cmrg_mosaic.slice.bam"), ["-R", "chr1:1019800-1021200", "-p", "-th", "4"]),
@@ -1242,6 +1247,7 @@ def run_collection(out_dir: Path) -> None:
                 str(muc_dir / "hg19_chr12_muc19.fa"),
                 "-b",
                 f"{muc_dir / 'MUC19_vaf1.bam'}|{muc_dir / 'MUC19_vaf1_dz.bam'}",
+                "-z",
                 "-c",
                 "1",
                 "-S",
@@ -1290,6 +1296,7 @@ def run_collection(out_dir: Path) -> None:
                     str(ref_fa),
                     "-b",
                     bam_pair,
+                    "-z",
                     "-c",
                     "1",
                     "-S",
@@ -1765,7 +1772,7 @@ def run_collection(out_dir: Path) -> None:
         ctdna_bed3 = tmp / "ctdna_locus_3col.bed"
         ctdna_bed3.write_text("chr12\t120999118\t120999522\n", encoding="utf-8")
         off_default_ctdna = subprocess.check_output(
-            [str(vdr_bin), "--compat=off", "-G", str(grch38_ref), "-b", str(titration_bam), "-c", "1", "-S", "2", "-E", "3", "-z", str(ctdna_bed3)],
+            [str(vdr_bin), "--compat=off", "-G", str(grch38_ref), "-b", str(titration_bam), "-z", "-c", "1", "-S", "2", "-E", "3", str(ctdna_bed3)],
             text=True,
         )
         off_ctdna_hits = [
@@ -1991,6 +1998,7 @@ def run_collection(out_dir: Path) -> None:
                 str(giab_ref),
                 "-b",
                 f"{hg008_t}|{hg008_n}",
+                "-z",
                 "-c",
                 "1",
                 "-S",
@@ -2101,13 +2109,13 @@ def run_collection(out_dir: Path) -> None:
             {
                 "arm_id": "Arm 1",
                 "arm_title": "Strict VCFv4.2/v4.3 Schema & FASTA Reference Concordance",
-                "cohort_scope": f"{arm1_data['total_callsets']} callsets across {arm1_data['distinct_bams']} BAMs (SEQC2, GIAB HG002/HG008, Colo829 SVs, pileup, IUPAC, -3)",
-                "provenance_type": "Wet-lab clinical slices + IUPAC reference stress",
+                "cohort_scope": f"{arm1_data['total_callsets']} callsets across {arm1_data['distinct_bams']} BAMs (17 wet-lab public BAM slices + 1 synthetic contig-start SV BAM vartovcf_sv_contig1 + synthetic 17-bp periodic IUPAC chr20 FASTA fixture)",
+                "provenance_type": "17 wet-lab public BAM slices + 1 synthetic contig-start SV BAM (vartovcf_sv_contig1) + synthetic 17-bp periodic IUPAC chr20 FASTA fixture",
                 "vardictjava_result": f"{arm1_data['total_defects_vj']} schema defects; {arm1_data['bcftools_norm_check_ref_vj_passed']}/{arm1_data['total_callsets']} bcftools norm --check-ref e",
                 "compat_off_result": f"{arm1_data['total_defects_off']} schema defects; {arm1_data['bcftools_norm_check_ref_off_passed']}/{arm1_data['bcftools_norm_check_ref_off_total']} bcftools norm --check-ref e",
                 "verdict": "PASS",
                 "sanitized_cmd": sanitize_text(
-                    "vardictrust --compat=off -G $REPO_ROOT/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -b $TUMOR_BAM|$NORMAL_BAM --output $WORK_TMP/out.vcf",
+                    "vardictrust --compat=off -G $REPO_ROOT/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -b $TUMOR_BAM|$NORMAL_BAM -z -c 1 -S 2 -E 3 -g 4 --output $WORK_TMP/out.vcf",
                     tmpdir,
                     data_root,
                     ROOT,
@@ -2118,9 +2126,23 @@ def run_collection(out_dir: Path) -> None:
                 "arm_title": "Diploid SEQC2 HCC1395 Subclonal Somatic rtg vcfeval",
                 "cohort_scope": f"SEQC2 HCC1395/HCC1395BL across 6 contigs ({arm2_data['evaluated_intervals']} HC intervals, {arm2_data['evaluated_bp']} bp)",
                 "provenance_type": "Wet-lab tumor-normal WES truth (Fang et al. 2021)",
-                "vardictjava_result": f"TP={vj_vcfeval['tp_baseline']}, FP={vj_vcfeval['fp']}, FN={vj_vcfeval['fn']}, F1={vj_vcfeval['f_measure']:.4f}, GT=0/0 carriers={vj_vcfeval['gt00_carrier_somatic']}",
-                "compat_off_result": f"TP={off_vcfeval['tp_baseline']} (+{arm2_data['tp_baseline_gain']}), FP={off_vcfeval['fp']}, FN={off_vcfeval['fn']}, F1={off_vcfeval['f_measure']:.4f} (+{arm2_data['f_measure_gain']:.4f}), GT=0/0 carriers={off_vcfeval['gt00_carrier_somatic']}",
-                "verdict": "PASS",
+                "vardictjava_result": (
+                    f"Unthresholded: TP={vj_vcfeval['tp_baseline']}, FP={vj_vcfeval['fp']}, FN={vj_vcfeval['fn']}, "
+                    f"P={vj_vcfeval['precision']:.4f}, R={vj_vcfeval['sensitivity']:.4f}, F1={vj_vcfeval['f_measure']:.4f}; "
+                    f"Opt QUAL>={vj_vcfeval['best_qual_threshold']:.0f}: TP={vj_vcfeval['best_tp_baseline']}, FP={vj_vcfeval['best_fp']}, "
+                    f"FN={vj_vcfeval['best_fn']}, P={vj_vcfeval['best_precision']:.4f}, R={vj_vcfeval['best_sensitivity']:.4f}, "
+                    f"F1={vj_vcfeval['best_f_measure']:.4f}; GT=0/0 carriers={vj_vcfeval['gt00_carrier_somatic']}"
+                ),
+                "compat_off_result": (
+                    f"Unthresholded: TP={off_vcfeval['tp_baseline']} (+{arm2_data['tp_baseline_gain']}), FP={off_vcfeval['fp']}, FN={off_vcfeval['fn']}, "
+                    f"P={off_vcfeval['precision']:.4f}, R={off_vcfeval['sensitivity']:.4f} (+{arm2_data['sensitivity_gain'] * 100.0:.1f} pp), "
+                    f"F1={off_vcfeval['f_measure']:.4f} (+{arm2_data['f_measure_gain']:.4f}); "
+                    f"Opt QUAL>={off_vcfeval['best_qual_threshold']:.0f}: TP={off_vcfeval['best_tp_baseline']} (+{arm2_data['best_tp_baseline_gain']}), "
+                    f"FP={off_vcfeval['best_fp']}, FN={off_vcfeval['best_fn']}, P={off_vcfeval['best_precision']:.4f}, "
+                    f"R={off_vcfeval['best_sensitivity']:.4f} (+{arm2_data['best_sensitivity_gain'] * 100.0:.1f} pp), "
+                    f"F1={off_vcfeval['best_f_measure']:.4f} (+{arm2_data['best_f_measure_gain']:.4f}); GT=0/0 carriers={off_vcfeval['gt00_carrier_somatic']}"
+                ),
+                "verdict": f"PASS (+{arm2_data['tp_baseline_gain']}/{arm2_data['truth_total']} subclonal TPs; +{arm2_data['sensitivity_gain'] * 100.0:.1f} pp recall; +{arm2_data['best_f_measure_gain']:.4f} optimal F1)",
                 "sanitized_cmd": sanitize_text(
                     "rtg RTG_MEM=4G RTG_JAVA_OPTS=-Dtalkback=false vcfeval -T 4 -b $WORK_TMP/truth.vcf.gz -c $WORK_TMP/somatic.vcf.gz -e $WORK_TMP/eval.bed -t $WORK_TMP/ref.sdf --all-records --vcf-score-field=QUAL --sample=TUMOR,TUMOR -o $WORK_TMP/eval",
                     tmpdir,
@@ -2133,8 +2155,8 @@ def run_collection(out_dir: Path) -> None:
                 "arm_title": "Multi-Allelic Somatic Continuation, MUC19 Paralog, & Normalized Truth",
                 "cohort_scope": f"{arm3_data['distinct_bam_pairs']} multi-allelic T/N pairs ({arm3_data['total_runs']} runs) + MUC19 paralog + SEQC2/HG008 v0.4",
                 "provenance_type": "Wet-lab somatic tumor-normal benchmarks",
-                "vardictjava_result": f"{arm3_data['vj_recovered_pairs']}/{arm3_data['distinct_bam_pairs']} pairs ({arm3_data['vj_recovered_runs']}/{arm3_data['total_runs']} runs) secondary alleles; SEQC2 TP={seqc2_hc_vj['tp']}; HG008 TP={hg008_v04_vj['tp']}",
-                "compat_off_result": f"{arm3_data['off_recovered_pairs']}/{arm3_data['distinct_bam_pairs']} pairs ({arm3_data['off_recovered_runs']}/{arm3_data['total_runs']} runs) secondary alleles; MUC19={arm3_data['muc19_variants']} calls (0 VD>DP); SEQC2 TP={seqc2_hc_off['tp']}; HG008 TP={hg008_v04_off['tp']}",
+                "vardictjava_result": f"{arm3_data['vj_recovered_pairs']}/{arm3_data['distinct_bam_pairs']} pairs ({arm3_data['vj_recovered_runs']}/{arm3_data['total_runs']} runs) secondary alleles; SEQC2 TP={seqc2_hc_vj['tp']}/{seqc2_hc_vj['truth_total']} (FP={seqc2_hc_vj['fp']}); HG008 TP={hg008_v04_vj['tp']}/{hg008_v04_vj['truth_total']} (FP={hg008_v04_vj['fp']})",
+                "compat_off_result": f"{arm3_data['off_recovered_pairs']}/{arm3_data['distinct_bam_pairs']} pairs ({arm3_data['off_recovered_runs']}/{arm3_data['total_runs']} runs) secondary alleles; MUC19={arm3_data['muc19_variants']} calls (0 VD>DP); SEQC2 TP={seqc2_hc_off['tp']}/{seqc2_hc_off['truth_total']} (FP={seqc2_hc_off['fp']}); HG008 TP={hg008_v04_off['tp']}/{hg008_v04_off['truth_total']} (FP={hg008_v04_off['fp']})",
                 "verdict": "PASS",
                 "sanitized_cmd": sanitize_text(
                     "vardictrust --compat=off --vcf-all-alleles -G $REPO_ROOT/VarDictJava/testdata/fastas/hg19.fa -b $TUMOR_BAM|$NORMAL_BAM -v",
@@ -2163,8 +2185,8 @@ def run_collection(out_dir: Path) -> None:
                 "arm_title": "Clinical Workflow Presets (wgs, wes, amplicon, ctdna) & QIAseq -sp",
                 "cohort_scope": "GIAB HG002/HG008 WGS, SEQC2 WES (264 kbp + BED8), Illumina PE & QIAseq V3 SPE panels, 0.5% VAF ctDNA admixture",
                 "provenance_type": "Wet-lab cohorts + semi-synthetic real-read 0.5% VAF ctDNA spike-in",
-                "vardictjava_result": f"Paired amplicon unsupported; QIAseq without -sp PASS KnownPositives={qgn_nosp_kp_tp} ({qgn_nosp_dp50_kp_tp}/{len(kp_callable_50x)} at >=50x); default -f 0.01 misses 0.5% ctDNA",
-                "compat_off_result": f"4/4 presets valid; paired amplicon={arm5_data['paired_somatic_amplicon_off_records']} calls; QIAseq -sp PASS KnownPositives={qgn_sp_kp_tp} ({qgn_sp_dp50_kp_tp}/{len(kp_callable_50x)} at >=50x); ctdna 0.5% PASS (DP={arm5_data['spikein_observed_dp']}, VD={arm5_data['spikein_observed_vd']})",
+                "vardictjava_result": f"Paired amplicon unsupported; QIAseq without -sp PASS KnownPositives={qgn_nosp_kp_tp}/{len(kp_in_inserts)} ({qgn_nosp_dp50_kp_tp}/{len(kp_callable_50x)} at >=50x); default -f 0.01 misses 0.5% ctDNA",
+                "compat_off_result": f"4/4 presets valid; paired amplicon={arm5_data['paired_somatic_amplicon_off_records']} calls; QIAseq -sp PASS KnownPositives={qgn_sp_kp_tp}/{len(kp_in_inserts)} ({qgn_sp_dp50_kp_tp}/{len(kp_callable_50x)} at >=50x); ctdna 0.5% PASS (DP={arm5_data['spikein_observed_dp']}, VD={arm5_data['spikein_observed_vd']})",
                 "verdict": "PASS",
                 "sanitized_cmd": sanitize_text(
                     "vardictrust --preset ctdna -G $REPO_ROOT/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -b $WORK_TMP/ctdna_1000x_0p5pct.bam --output $WORK_TMP/ctdna.vcf.gz --tbi $WORK_TMP/ctdna_locus_3col.bed",
@@ -2370,7 +2392,7 @@ def verify_bundle(out_dir: Path) -> None:
     if len(t_rows) != EXPECTED_TOTAL_ARMS:
         raise ValueError(f"Expected {EXPECTED_TOTAL_ARMS} rows in v110_compat_arms.tsv, got {len(t_rows)}")
     for r in t_rows:
-        if r["verdict"] != "PASS":
+        if not r["verdict"].startswith("PASS"):
             raise ValueError(f"Non-PASS row in v110_compat_arms.tsv: {r}")
 
 

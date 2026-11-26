@@ -40,6 +40,10 @@ FORBIDDEN_TEMPLATE_EMPIRICAL_STRINGS = {
     "10,195,118",
     "309,569",
     "213.70",
+    "218.83",
+    "219.25",
+    "5.05",
+    "12.43",
     "106.47",
     "228.90",
     "760.96",
@@ -324,6 +328,13 @@ class TestPaperReproducibility(unittest.TestCase):
             "rewrites.bio) initiative",
             "Lukas Wolff",
             "10.1038/s41597-022-01359-2",
+            "Landscape",
+            "Clinical AML AML",
+            "Scratch OCI",
+            "matching `--preset wes`'s",
+            "matching --preset wes's",
+            "We thank",
+            "Table 9,&",
         ]
         for phrase in banned_ai_phrases:
             self.assertNotIn(
@@ -426,6 +437,102 @@ class TestPaperReproducibility(unittest.TestCase):
             raw = pdf_path.read_bytes()
             self.assertTrue(raw.startswith(b"%PDF-"), f"Invalid PDF header in {pdf_path}")
             self.assertIn(b"%%EOF", raw[-1024:], f"Missing %%EOF trailer in {pdf_path}")
+
+    def test_paper_readme_cover_letter_matches_certified_macros(self) -> None:
+        import json as _json
+
+        sys.path.insert(0, str(ROOT / "paper"))
+        import build_manuscript as bm  # type: ignore[import-not-found]
+
+        gcp_doc = _json.loads(
+            (ROOT / "benchmarks" / "gcp-study-v106" / "master_gcp_metrics.json").read_text(encoding="utf-8")
+        )
+        v110_doc = _json.loads(
+            (ROOT / "benchmarks" / "v110-compat-study" / "v110_compat_metrics.json").read_text(encoding="utf-8")
+        )
+        macros = bm.build_macro_context(gcp_doc, v110_doc)
+        readme_txt = (ROOT / "paper" / "README.md").read_text(encoding="utf-8")
+
+        for macro_key in (
+            "s5_h4_conda_pkgs",
+            "s5_h4_musl_mb",
+            "s2_rchr1_speedup_vs_java",
+            "s2_rchr1_rss_ratio_vs_java",
+            "s6_v50q_snv_r_gain_pct",
+            "s6_v50q_indel_r_gain_pct",
+            "s6_cmrg_snv_r_gain_pct",
+            "s6_cmrg_indel_r_gain_pct",
+            "v110_schema_defects_vj",
+            "v110_arm2_f1_gain",
+        ):
+            self.assertIn(macro_key, macros, f"Missing macro {macro_key} in build_macro_context()")
+            self.assertIn(
+                macros[macro_key],
+                readme_txt,
+                f"paper/README.md missing certified macro {macro_key}={macros[macro_key]!r}",
+            )
+
+        self.assertIn("--reaggregate-gcp", readme_txt)
+        self.assertIn("+31.7 pp", readme_txt)
+        for stale_str in ("Landscape", "ecosystem", "121` Conda", "3.46 MB", "38.2×", "110.2×"):
+            self.assertNotIn(stale_str, readme_txt, f"Stale/banned string {stale_str!r} in paper/README.md")
+
+    def test_stage5_rss_sync_aggregate_verify_fail_closed_and_pdf_zwsp(self) -> None:
+        import tempfile as _tempfile
+
+        ms_text = MANUSCRIPT.read_text(encoding="utf-8")
+        sup_text = SUPPLEMENT.read_text(encoding="utf-8")
+        ms_plain = ms_text.replace("`", "")
+        sup_plain = sup_text.replace("`", "")
+
+        for expected_mem in ("5.05 GB", "12.43 GB", "218.83 GB", "32.68 GB", "94.06 GB"):
+            self.assertIn(expected_mem, ms_plain, f"Expected Stage-5 RSS {expected_mem!r} in manuscript.md")
+            self.assertIn(expected_mem, sup_plain, f"Expected Stage-5 RSS {expected_mem!r} in supplement.md")
+        for stale_mem in ("4.93 GB", "12.14 GB", "213.7 GB", "214.1 GB"):
+            self.assertNotIn(stale_mem, ms_plain, f"Stale GiB-labeled-as-GB {stale_mem!r} in manuscript.md")
+            self.assertNotIn(stale_mem, sup_plain, f"Stale GiB-labeled-as-GB {stale_mem!r} in supplement.md")
+
+        self.assertIn("29.4×", ms_plain)
+        self.assertNotIn("29.3×", ms_plain)
+        self.assertNotIn("29.3x", ms_plain)
+        self.assertIn("0.00049", ms_plain)
+        self.assertIn("0.00049", sup_plain)
+
+        # aggregate_gcp_study.py --verify must fail closed when master_gcp_metrics.json is missing
+        with _tempfile.TemporaryDirectory() as tmpdir:
+            tmp_out = Path(tmpdir) / "out"
+            tmp_raw = Path(tmpdir) / "raw"
+            tmp_out.mkdir()
+            tmp_raw.mkdir()
+            res = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "paper" / "aggregate_gcp_study.py"),
+                    "--verify",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--raw-dir",
+                    str(tmp_raw),
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse((tmp_out / "master_gcp_metrics.json").exists())
+
+        # render_pdf.py must not split 0/1 or 34/41 with &#8203; and must protect short code hyphens
+        sys.path.insert(0, str(ROOT / "paper"))
+        import render_pdf as rp  # type: ignore[import-not-found]
+
+        rendered = rp._postprocess_body_html(
+            "<td>0/1 and 1/0 and N/N and 34/41 and path_one/path_two</td><p><code>--compat=off</code></p>"
+        )
+        self.assertIn("0/1", rendered)
+        self.assertIn("34/41", rendered)
+        self.assertIn("path_&#8203;one/&#8203;path_&#8203;two", rendered)
+        self.assertIn("&#8209;&#8209;compat=off", rendered)
 
 
 if __name__ == "__main__":

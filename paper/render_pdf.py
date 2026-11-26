@@ -501,21 +501,45 @@ def _postprocess_body_html(body_html: str) -> str:
 
     s = re.sub(r"<pre>[\s\S]*?</pre>", _save_pre, body_html)
 
-    # 3. Insert zero-width space (&#8203;) after '_' and '/' inside text nodes of <td> and inline <code>
+    # 3. Insert zero-width space (&#8203;) after '_' and multi-character non-numeric '/' inside <td> and inline <code>,
+    #    and convert ASCII '-' inside short inline <code> tokens into non-breaking hyphens (&#8209;) so CLI flags never split.
     def _add_zwsp_in_tags(html_fragment: str) -> str:
         parts = re.split(r"(<[^>]+>)", html_fragment)
         for i in range(0, len(parts), 2):
-            parts[i] = re.sub(r"([_/])([A-Za-z0-9])", r"\1&#8203;\2", parts[i])
+            parts[i] = re.sub(r"_([A-Za-z0-9])", r"_&#8203;\1", parts[i])
+            parts[i] = re.sub(
+                r"([A-Za-z0-9]{2,})/([A-Za-z0-9]{2,})",
+                lambda m: (
+                    m.group(0)
+                    if (m.group(1).isdigit() and m.group(2).isdigit())
+                    else f"{m.group(1)}/&#8203;{m.group(2)}"
+                ),
+                parts[i],
+            )
         return "".join(parts)
+
+    def _format_inline_code(inner: str) -> str:
+        plain = html.unescape(re.sub(r"<[^>]+>", "", inner))
+        if len(plain) <= 28 and "/" not in plain and " " not in plain:
+            inner = inner.replace("-", "&#8209;")
+        return f"<code>{_add_zwsp_in_tags(inner)}</code>"
 
     s = re.sub(
         r"<td>([\s\S]*?)</td>", lambda m: f"<td>{_add_zwsp_in_tags(m.group(1))}</td>", s
     )
     s = re.sub(
         r"<code>([\s\S]*?)</code>",
-        lambda m: f"<code>{_add_zwsp_in_tags(m.group(1))}</code>",
+        lambda m: _format_inline_code(m.group(1)),
         s,
     )
+    text_parts = re.split(r"(<[^>]+>)", s)
+    for i in range(0, len(text_parts), 2):
+        text_parts[i] = re.sub(
+            r"(?<![A-Za-z0-9&#;/])(--?[A-Za-z0-9][A-Za-z0-9-]{0,24})(?![A-Za-z0-9-])",
+            lambda m: m.group(0).replace("-", "&#8209;"),
+            text_parts[i],
+        )
+    s = "".join(text_parts)
 
     for idx, block in enumerate(pre_blocks):
         s = s.replace(f"@@PREBLOCK{idx}@@", block)

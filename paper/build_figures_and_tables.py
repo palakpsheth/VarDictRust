@@ -1126,7 +1126,8 @@ def build_fig4(doc: dict[str, Any], fig_dir: Path) -> None:
         PALETTE["vardictcpp"],
     ]
     bars_e = ax_e.bar(labels_e, vals_e, color=cols_e, edgecolor="#1E293B")
-    ax_e.tick_params(axis="x", rotation=18)
+    ax_e.set_xticks(np.arange(len(labels_e)))
+    ax_e.set_xticklabels(labels_e, rotation=18, ha="right", fontsize=7.1)
     ax_e.axvline(2.5, color="#475569", linestyle="--", linewidth=1.2)
     ax_e.set_ylabel("Peak RSS (GiB)")
     ax_e.set_ylim(0, max(vals_e) * 1.25)
@@ -1230,6 +1231,27 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
                 color=PALETTE["alert"],
                 fontweight="bold",
             )
+    for idx_b, rc_c in enumerate(
+        [
+            h2_a["cpp"]["exit_code"],
+            h2_b["cpp"]["exit_code"],
+            h8_a["cpp"]["exit_code"],
+            h8_b["cpp"]["exit_code"],
+        ]
+    ):
+        if rc_c != 0:
+            bars_c[idx_b].set_hatch("//")
+            bars_c[idx_b].set_alpha(0.55)
+            ax_a.text(
+                bars_c[idx_b].get_x() + w / 2.0,
+                cpp_rss[idx_b] + 4,
+                "Timeout\n(>3 h)",
+                ha="center",
+                va="bottom",
+                fontsize=7.0,
+                color=PALETTE["alert"],
+                fontweight="bold",
+            )
     for b, rv in zip(bars_r, rust_rss):
         ax_a.text(
             b.get_x() + w / 2.0,
@@ -1243,6 +1265,7 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
         )
     ax_a.set_xticks(x)
     ax_a.set_xticklabels(groups_a, fontsize=7.0)
+    ax_a.set_xlim(-0.56, len(groups_a) - 1 + 0.56)
     ax_a.set_ylabel("Peak RSS at 32 Threads (GB)")
     ax_a.set_ylim(0, max(java_rss) * 1.25)
     ax_a.set_title(
@@ -1352,7 +1375,9 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_ylim(0, 1.12)
     ax_c.set_ylabel("Full-Genome rtg vcfeval Metric")
     ax_c.set_title(
-        "C. Full-Genome WGS Truth Accuracy (Java==Rust)", loc="left", fontsize=9.0
+        "C. Full-Genome WGS Truth Accuracy (HG002 Java==Rust; HG008 Rust Only)",
+        loc="left",
+        fontsize=8.3,
     )
     ax_c.legend(loc="lower right", frameon=True, fontsize=7.5)
 
@@ -1396,18 +1421,17 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_a.set_xticklabels(arms_a, rotation=30, ha="right", fontsize=7.2)
     rust_part_a = [r for r in part_a if r["engine"] == "rust"]
     rust_done_a = sum(1 for r in rust_part_a if r["rc"] == 0)
-    ax_a.set_ylim(0.5, 1.05)
+    ax_a.set_ylim(0.5, 1.13)
     ax_a.set_ylabel("Chr20 SNV F1 Score")
     ax_a.set_title(
         f"A. 10-Platform Sequencing Chemistry Chr20 SNV F1 ({rust_done_a}/{len(rust_part_a)} Rust Runs Complete)",
         loc="left",
     )
     ax_a.legend(
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.42),
+        loc="upper left",
         ncol=2,
         frameon=True,
-        fontsize=7.2,
+        fontsize=7.0,
     )
 
     # Panel B: Part B 18/18 Exact Match Somatic Candidate Scaling Across Minimum VAF/Read Thresholds
@@ -1488,8 +1512,19 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
         annot_kws={"size": 7.5},
     )
     ax_c.tick_params(axis="x", rotation=28)
+    paired_java_n = sum(1 for r in part_a if r["engine"] == "java" and r["rc"] == 0)
+    paired_ok = int(
+        cp.get(
+            "part_a_strict_match_count",
+            sum(
+                1
+                for r in part_a
+                if r["engine"] == "rust" and r["parity_vs_java"] == "STRICT_MATCH"
+            ),
+        )
+    )
     ax_c.set_title(
-        f"C. {len(ga_rows)}-Cell GA4GH v3.5 Genomic Stratification Matrix Across 10 Sequencing Chemistries (100% Java==Rust)",
+        f"C. {len(ga_rows)}-Cell GA4GH v3.5 Stratification Matrix Across 10 Chemistries ({len(ga_rows)}/{len(ga_rows)} Truth Eval; {paired_ok}/{paired_java_n} Paired Java==Rust)",
         loc="left",
     )
 
@@ -1497,7 +1532,7 @@ def build_fig6(doc: dict[str, Any], fig_dir: Path) -> None:
 
 
 def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
-    """Figure 7: Next-Generation Truth Benchmarks (T2T-Q100 v5.0q, CMRG, Mosaic) & HG008 v0.4 Caller Landscape."""
+    """Figure 7: Next-Generation Truth Benchmarks (T2T-Q100 v5.0q, CMRG, Mosaic) & HG008 v0.4 Caller Benchmark."""
     fig = plt.figure(figsize=(16.5, 9.5))
     gs = fig.add_gridspec(2, 2, width_ratios=[1.0, 1.15], hspace=0.38, wspace=0.46)
 
@@ -1603,7 +1638,7 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
         )
     ax_b.legend(loc="lower right", frameon=True)
 
-    # Panel C: HG008 v0.4 11-Caller Modern ML & Commercial Somatic Landscape
+    # Panel C: HG008 v0.4 11-Caller Modern ML & Commercial Somatic Benchmark
     ax_c = fig.add_subplot(gs[:, 1])
     h8_rows = doc["stage6"]["hg008_modern_ml_and_commercial_callers"]
     full_all = [r for r in h8_rows if r["scope"] == "HG008_FullWGS_v0.4_All"]
@@ -1658,7 +1693,7 @@ def build_fig7(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_xlim(0, 1.08)
     ax_c.set_xlabel("HG008 GIAB v0.4 F1 Score")
     ax_c.set_title(
-        "C. HG008 GIAB v0.4 Somatic Landscape Across 11 Callers",
+        "C. HG008 GIAB v0.4 Somatic Benchmark Across 11 Callers",
         loc="left",
         fontsize=9.2,
     )
@@ -1674,21 +1709,20 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
 
     h4 = doc["stage5"]["h4_maintenance_security_matrix"]
 
-    # Panel A: Binary & Container Footprint (MiB) + Supply-Chain Annotation
+    # Panel A: Certified Binary Footprint (MiB) + Supply-Chain Annotation
     ax_a = axes[0]
     gnu_mb = h4["gnu_binary_bytes"] / (1024.0 * 1024.0)
     musl_mb = h4["musl_binary_bytes"] / (1024.0 * 1024.0)
     conda_cnt = h4["oracle_conda_package_count"]
     labels_a = [
-        "VarDictRust\nGNU Binary",
+        "VarDictRust\nglibc Binary",
         "VarDictRust\nStatic musl",
-        "VarDictRust\nScratch OCI",
     ]
-    vals_a = [gnu_mb, musl_mb, 20.0]
-    cols_a = [PALETTE["VarDictRust"], PALETTE["VarDictRust"], "#56B4E9"]
-    bars_a = ax_a.bar(labels_a, vals_a, width=0.5, color=cols_a, edgecolor="#1E293B")
+    vals_a = [gnu_mb, musl_mb]
+    cols_a = [PALETTE["VarDictRust"], "#009E73"]
+    bars_a = ax_a.bar(labels_a, vals_a, width=0.44, color=cols_a, edgecolor="#1E293B")
     ax_a.set_ylabel("Artifact Footprint (MiB)")
-    ax_a.set_ylim(0, max(vals_a) * 1.45)
+    ax_a.set_ylim(0, max(vals_a) * 1.55)
     ax_a.set_title(
         f"A. Binary Footprint & Supply Chain (SLSA L{h4['slsa_level']}, {h4['rustsec_cves']} CVEs)",
         loc="left",
@@ -1697,7 +1731,7 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     for b, v in zip(bars_a, vals_a):
         ax_a.text(
             b.get_x() + b.get_width() / 2.0,
-            v + 0.5,
+            v + 0.14,
             f"{v:.2f} MiB",
             ha="center",
             va="bottom",
@@ -1735,7 +1769,7 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
         color=PALETTE["VarDictRust"],
         edgecolor="#1E293B",
     )
-    ax_b.set_ylabel("Emitted Somatic Variants (SEQC2 Exome)")
+    ax_b.set_ylabel("Emitted Variants (SEQC2 Single-Sample Exome)")
     ax_b.set_ylim(0, max(var_counts) * 1.30)
     ax_b.set_title(
         "B. Multi-Thread Determinism (1–32c = 0 Diffs)", loc="left", fontsize=8.8
@@ -1802,7 +1836,7 @@ def build_fig8(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_yticks(y_c)
     ax_c.set_yticklabels(div_labels, fontsize=7.2)
     ax_c.set_xlabel("Discrepant Variant Count vs. Oracle (log scale)")
-    ax_c.set_xlim(0.5, max(div_vals) * 8.0)
+    ax_c.set_xlim(0.5, max(div_vals) * 20.0)
     ax_c.set_title(
         "C. Empirical vardictcpp Variant Discrepancies", loc="left", fontsize=8.8
     )
@@ -1964,14 +1998,14 @@ def build_fig9(v110_doc: dict[str, Any], fig_dir: Path) -> None:
     ]
     b_vj_txt = [
         f"{a2_vj['sensitivity']:.2f}",
-        f"{a2_vj['f_measure']:.2f}",
+        f"{a2_vj['f_measure']:.3f}",
         f"{a2_vj['best_f_measure']:.2f}",
         f"{vj_valid_gt:.2f}",
         f"{a3['vj_recovered_pairs']}/{a3['distinct_bam_pairs']}",
     ]
     b_off_txt = [
         f"{a2_off['sensitivity']:.2f}",
-        f"{a2_off['f_measure']:.2f}",
+        f"{a2_off['f_measure']:.3f}",
         f"{a2_off['best_f_measure']:.2f}",
         f"{off_valid_gt:.2f}",
         f"{a3['off_recovered_pairs']}/{a3['distinct_bam_pairs']}",
@@ -2032,16 +2066,15 @@ def build_fig9(v110_doc: dict[str, Any], fig_dir: Path) -> None:
     ma_pct_int = int(round(off_ma_rate * 100.0))
     ax_b.text(
         0.5,
-        0.96,
-        f"No --squash-ploidy: +{a2['tp_baseline_gain']} subclonal TPs | "
-        f"GT=0/0: {a2_vj['gt00_carrier_somatic']}->{a2_off['gt00_carrier_somatic']} | "
-        f"Pairs: {a3['off_recovered_pairs']}/{a3['distinct_bam_pairs']} ({ma_pct_int}%)",
+        0.97,
+        f"No --squash-ploidy: +{a2['tp_baseline_gain']}/{a2['truth_total']} TPs (+{a2['sensitivity_gain'] * 100.0:.1f} pp)\n"
+        f"GT=0/0: {a2_vj['gt00_carrier_somatic']}->{a2_off['gt00_carrier_somatic']} | Multi-allelic pairs: {a3['off_recovered_pairs']}/{a3['distinct_bam_pairs']} ({ma_pct_int}%)",
         transform=ax_b.transAxes,
         ha="center",
         va="top",
-        fontsize=6.7,
+        fontsize=6.1,
         bbox={
-            "boxstyle": "round,pad=0.25",
+            "boxstyle": "round,pad=0.22",
             "facecolor": "#F8FAFC",
             "edgecolor": "#CBD5E1",
         },
@@ -2051,6 +2084,7 @@ def build_fig9(v110_doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c = fig.add_subplot(gs[0, 2])
     wgs_tot = int(a5["wgs_hg002_60kbp_records"]) + int(a5["wgs_hg008_paired_records"])
     wes_tot = int(a5["wes_seqc2_264kbp_records"])
+    wes_kbp_fig9 = round(int(a5["wes_seqc2_evaluated_bp"]) / 1000)
     amp_off = int(a5["paired_somatic_amplicon_off_records"])
     qia_vj = int(a5["qiaseq_spe_no_sp_known_pos_tp"])
     qia_off = int(a5["qiaseq_spe_known_pos_tp"])
@@ -2060,7 +2094,7 @@ def build_fig9(v110_doc: dict[str, Any], fig_dir: Path) -> None:
     brca_off = int(a4["off_chimeric_insertions"])
 
     c_rows = [
-        ("--preset wes\n(SEQC2 264 kbp)", None, wes_tot, f"{wes_tot} calls (BED8)"),
+        (f"--preset wes\n(SEQC2 {wes_kbp_fig9} kbp)", None, wes_tot, f"{wes_tot} calls (BED8)"),
         ("--preset wgs\n(HG002 + HG008)", None, wgs_tot, f"{wgs_tot} calls (.tbi/.csi)"),
         (
             "QIAseq V3 -sp\n(KnownPositives)",
@@ -2399,7 +2433,8 @@ def build_all_tables(
             )
     mwu_w = stats.mannwhitneyu(r_walls_12, j_walls_12, alternative="two-sided")
     mwu_m = stats.mannwhitneyu(r_rss_12, j_rss_12, alternative="two-sided")
-    sign_p = 2.0 ** (-len(r_walls_12))
+    sign_p_one = 2.0 ** (-len(r_walls_12))
+    sign_p_two = 2.0 * sign_p_one
     rchr1 = s2["table3_R_chr1"]
     rchr1_mbp = int(rchr1["region"].split("-")[1]) / 1000000.0
     t2_rows.append(
@@ -2454,7 +2489,7 @@ def build_all_tables(
         "<sup>a</sup>Timed runs report technical replicate mean (min–max) across n=3 runs on identical GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake) silicon. "
         "<sup>b</sup>VarDictJava v1.8.3 [1] timings measure the full three-process pipeline (vardict-java | teststrandbias.R/testsomatic.R | var2vcf_valid.pl/var2vcf_paired.pl). "
         f"<sup>c</sup>vardictcpp (commit ae93fe39dc) [11] timings measure its default --chunk {50000:,} binary execution, which omits R Fisher exact strand/somatic p-value scripts and Perl VCF formatting. "
-        f"<sup>d</sup>Across the 12 paired AML panel conditions, VarDictRust reduces wall time (two-sided Mann-Whitney U={mwu_w.statistic:.1f}, p={mwu_w.pvalue:.4g}; paired sign-permutation p={sign_p:.5f}) and peak RSS (U={mwu_m.statistic:.1f}, p={mwu_m.pvalue:.4g}) relative to VarDictJava. "
+        f"<sup>d</sup>Across the 12 paired AML panel conditions (pairing 6 AML cohorts across 1 and 8 threads), VarDictRust reduces wall time (two-sided Mann-Whitney U={mwu_w.statistic:.1f}, p={mwu_w.pvalue:.4g}; two-sided exact paired sign-flip permutation p={sign_p_two:.5f}, 2^-{len(r_walls_12) - 1}, one-sided p={sign_p_one:.5f}) and peak RSS (U={mwu_m.statistic:.1f}, p={mwu_m.pvalue:.4g}) relative to VarDictJava. "
         f"<sup>e</sup>On unchunked -R chr1:1-{int(rchr1['region'].split('-')[1])} ({rchr1_mbp:.2f} Mbp), VarDictJava crashes with OutOfMemoryError (rc=3) at {rchr1['java_xmx4g_oom']['wall_s']:.2f} s under the 4 GiB heap cap (-Xmx4g) used by Wolff [11], but completes in {fmt_mean_range(rchr1['java_xmx200g'], 'wall_s')} s at {rchr1['java_xmx200g']['max_rss_gib_mean']:.2f} GiB RSS when provisioned with -Xmx200g. "
         f"<sup>f</sup>Row 15 summarizes the 16-run field-caller benchmark comparing VarDictRust, VarDictJava [1], vardictcpp [11], FreeBayes [3], Strelka2 [4], Octopus [5], LoFreq [7], and Mutect2 [8]; the 4-caller somatic Venn intersection (VarDict, Mutect2, Strelka2, LoFreq) identifies {fc_info['somatic_snv_venn']['somatic_filtered']['totals']['VarDict']} concordant VarDict somatic SNVs with 100% identity between VarDictRust and VarDictJava.",
     )
@@ -2743,7 +2778,7 @@ def build_all_tables(
         "Table 5. Full-Genome Chromosomes 1–22 Germline (GIAB HG002 130.8 GB [13, 18]) & 364x Somatic (GIAB HG008 329.0 GB [19]) WGS Scaling Across Unchunked and Callable BED Geometries",
         t5_headers,
         t5_rows,
-        f"<sup>a</sup>Full-genome WGS benchmarks were executed on a 32-vCPU, 256 GiB RAM Intel Ice Lake instance across two BED geometries: 22 unchunked autosomal contigs (chr1..chr22, 2.88 Gbp) and NIST GIAB high-confidence callable BED intervals (<={50000 // 1000} kbp per interval; 2.51 Gbp on HG002 v4.2.1 [13, 18] and 2.37 Gbp on HG008 v0.4 [19]). "
+        f"<sup>a</sup>Full-genome WGS benchmarks ran on identical Intel Xeon Platinum 8373C Ice Lake 32-vCPU silicon across two BED geometries—22 unchunked autosomal contigs (chr1..chr22, 2.88 Gbp) and NIST GIAB high-confidence callable BED intervals (<={50000 // 1000} kbp per interval; 2.51 Gbp on HG002 v4.2.1 [13, 18] and 2.37 Gbp on HG008 v0.4 [19])—with VarDictRust executing well within n2-standard-32 (32 vCPUs, 128 GiB RAM) memory bounds while -Xmx200g comparator baselines were provisioned on n2-highmem-32 (32 vCPUs, 256 GiB RAM). "
         f"<sup>b</sup>VarDictJava v1.8.3 [1] was provisioned with a 200 GiB JVM heap (-Xmx200g); rc=3 denotes an OutOfMemoryError abort and rc=124 denotes termination at the wall-clock timeout (3 h for vardictcpp [11] and 4 h for the 3-process VarDictJava pipeline). "
         f"<sup>c</sup>On unchunked HG002 contigs, vardictcpp --chunk {50000:,} [11] splits chromosomes without cross-window deduplication (CPP-5), emitting +{h2_a['cpp']['boundary_excess_variants']:,} duplicate boundary calls; on <={50000 // 1000} kbp callable intervals, vardictcpp still differs from the VarDictJava oracle on {abs(h2_b['cpp']['variant_count'] - h2_b['rust']['variant_count']):,} calls due to MNP/tie-break divergences (CPP-9). "
         "<sup>d</sup>HG008 364x tumor-normal full-WGS runs target small-variant somatic calling without structural-variant realignment overhead: VarDictRust enables -U (--nosv); the VarDictJava and vardictcpp invocations in harness/gcp_paper_runner.sh omit -U. Both non-Rust engines failed to complete either geometry (Java OOM rc=3; C++ timeout rc=124), so no completed head-to-head comparison exists on these cells — the comparison is completion-only.",
@@ -2929,7 +2964,7 @@ def build_all_tables(
     write_dual_table(
         tab_dir,
         "table7",
-        "Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100 [14, 16], CMRG v1.00 [15], Mosaic SNV v1.10 [20]) & HG008 GIAB v0.4 [19] Somatic Caller Landscape",
+        "Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100 [14, 16], CMRG v1.00 [15], Mosaic SNV v1.10 [20]) & HG008 GIAB v0.4 [19] Somatic Caller Benchmark",
         t7_headers,
         t7_rows,
         "<sup>a</sup>Evaluates full-genome GIAB HG002 [13, 18] 2x250 bp WGS callsets across the legacy v4.2.1 benchmark (2.51 Gbp) [13], the T2T-Q100 assembly-backed v5.0q benchmark (2.74 Gbp) [14, 16], and the 273-gene Challenging Medically Relevant Genes (CMRG v1.00) benchmark [15]. "
@@ -2943,29 +2978,30 @@ def build_all_tables(
     # Table 8: Supply-Chain Security, Static musl Equivalence & Divergence Summary
     # ------------------------------------------------------------------
     h4 = s5["h4_maintenance_security_matrix"]
+    v_meta = v110_doc["meta"]
     cpp_divergence_count = 12
     t8_headers = [
         "Engineering & Security Dimension",
         "VarDictJava v1.8.3 [1] (0886261)",
         "vardictcpp [11] (ae93fe39dc)",
-        "VarDictRust v1.0.6 (5865a2a0b24a8c17)<sup>e</sup>",
+        f"VarDictRust v{doc['meta']['version']} (5865a2a0b24a8c17) / v{v_meta['study_version']}<sup>e</sup>",
     ]
     t8_rows: list[list[Any]] = [
         [
             "Upstream Repository Maintenance Status",
             "Archived Read-Only (EOL)<sup>a</sup>",
-            f"Preprint Prototype ({cpp_divergence_count} Divergences)<sup>b</sup>",
-            "Actively Maintained (MIT, v1.0.6)<sup>a,e</sup>",
+            f"Published C++ Port [11] (Pinned ae93fe39dc; {cpp_divergence_count} Divergences)<sup>b</sup>",
+            f"Actively Maintained (MIT, v{v_meta['study_version']}; MIT/GPL-2.0+ in v{doc['meta']['version']})<sup>a,e</sup>",
         ],
         [
             "Runtime Dependency & Binary Footprint",
             f"JVM + R + Perl ({h4['oracle_conda_package_count']} Conda packages)<sup>c</sup>",
             "C++17 + HTSlib [26] dynamic libraries",
-            f"{h4['gnu_binary_bytes'] / (1024 * 1024):.2f} MiB GNU / {h4['musl_binary_bytes'] / (1024 * 1024):.2f} MiB Static musl ({h4['musl_ldd']})<sup>d</sup>",
+            f"{h4['gnu_binary_bytes'] / (1024 * 1024):.2f} MiB glibc / {h4['musl_binary_bytes'] / (1024 * 1024):.2f} MiB Static musl<sup>d</sup>",
         ],
         [
             "Supply-Chain Attestation & Vulnerability Audit",
-            "Unpinned ecosystem dependencies<sup>c</sup>",
+            "Unpinned runtime dependencies<sup>c</sup>",
             "No SLSA provenance",
             f"SLSA Level {h4['slsa_level']} + {h4['rustsec_cves']} RustSec CVEs<sup>d</sup>",
         ],
@@ -2988,11 +3024,11 @@ def build_all_tables(
         "Table 8. Supply-Chain Security, Static musl Binary Equivalence, Functional Coverage & Divergence Summary",
         t8_headers,
         t8_rows,
-        "<sup>a</sup>VarDictJava v1.8.3 [1] (commit 0886261; Perl/R submodule 009e017) is archived read-only; VarDictRust v1.0.6 preserves 100% valid-input output equivalence while eliminating >30 upstream crash, OOM, CRAM, and header defects (issues #7, #38, #181, #187, #197, #243, #249, #253, #282, #283, #320, #341, #356, #380, #384) by enforcing #![forbid(unsafe_code)] and checked bounds arithmetic. "
+        f"<sup>a</sup>VarDictJava v1.8.3 [1] (commit 0886261; Perl/R submodule 009e017) is archived read-only; VarDictRust preserves 100% valid-input output equivalence while eliminating >30 upstream crash, OOM, CRAM, and header defects (AstraZeneca-NGS/VarDictJava#7, AstraZeneca-NGS/VarDictJava#38, AstraZeneca-NGS/VarDictJava#181, AstraZeneca-NGS/VarDictJava#187, AstraZeneca-NGS/VarDictJava#197, AstraZeneca-NGS/VarDictJava#243, AstraZeneca-NGS/VarDictJava#249, AstraZeneca-NGS/VarDictJava#253, AstraZeneca-NGS/VarDictJava#282, AstraZeneca-NGS/VarDictJava#283, AstraZeneca-NGS/VarDictJava#320, AstraZeneca-NGS/VarDictJava#341, AstraZeneca-NGS/VarDictJava#356, AstraZeneca-NGS/VarDictJava#380, AstraZeneca-NGS/VarDictJava#384) by enforcing #![forbid(unsafe_code)] and checked bounds arithmetic. "
         f"<sup>b</sup>On the 13-mode .var functional suite, vardictcpp [11] matches VarDictJava on {s2['tierp_mode_parity_sweep']['cpp_exact_count']}/13 modes (diverging on simple_fisher with FP=1, FN=1) and additionally lacks amplicon VCF formatting (CPP-3) and RNA-seq -i splice support (CPP-12), while emitting +{h2_a['cpp']['boundary_excess_variants']:,} chunk-boundary duplicates on unchunked HG002 WGS (CPP-5; full CPP-1 to CPP-12 taxonomy in Supplementary Table S6). "
         f"<sup>c</sup>The pinned Bioconda VarDictJava environment requires {h4['oracle_conda_package_count']} runtime packages across OpenJDK, R, and Perl and fails with NoClassDefFoundError on CRAM inputs unless external htsjdk jars are injected. "
-        f"<sup>d</sup>VarDictRust compiles to a single {h4['musl_binary_bytes'] / (1024 * 1024):.2f} MiB statically linked x86_64-unknown-linux-musl binary ({h4['musl_ldd']}) with native pure-Rust BAM/CRAM decoding (noodles), {h4['rustsec_cves']} RustSec advisories, and automated SLSA Level {h4['slsa_level']} build provenance. "
-        "<sup>e</sup>Hash 5865a2a0b24a8c17 denotes the certified VarDictRust v1.0.6 engine source fingerprint; under the project release governance, default invocations (--compat=vardictjava / --parity) guarantee exact valid-input parity with VarDictJava v1.8.3 across v1.x, while opt-in biological output corrections ship behind --compat=off (CompatProfile) in v1.1+.",
+        f"<sup>d</sup>VarDictRust compiles to a single {h4['musl_binary_bytes'] / (1024 * 1024):.2f} MiB statically linked x86_64-unknown-linux-musl binary with native pure-Rust BAM/CRAM decoding (noodles), {h4['rustsec_cves']} RustSec advisories, and automated SLSA Level {h4['slsa_level']} build provenance. "
+        f"<sup>e</sup>Hash 5865a2a0b24a8c17 denotes the certified VarDictRust v{doc['meta']['version']} cloud-study source fingerprint, and v{v_meta['study_version']} ({v_meta['study_fingerprint']}) transitions the workspace to pure permissive MIT licensing via cleanroom saddlepoint hypergeometric summation (stats/hypergeom.rs, replacing v{doc['meta']['version']} MIT AND GPL-2.0-or-later) while shipping {v_meta['compat_switch_count']} opt-in biological/schema corrections behind --compat=off (Table 9, Supplementary Table S7) without altering default --compat=vardictjava parity.",
     )
 
     # ------------------------------------------------------------------
@@ -3085,7 +3121,9 @@ def build_all_tables(
     def _clean_s1_desc(raw_d: str) -> str:
         d = (
             raw_d.replace("Option C ", "Full-core multi-regime ")
+            .replace("Tier-P AML ", "Clinical AML ")
             .replace("Tier-P ", "Clinical AML ")
+            .replace("H4 supply-chain", "Supply-chain")
             .replace("H4 ", "")
             .replace("Arm A (22 un-chunked chromosomes)", "(22 unchunked chromosomes)")
             .replace(
@@ -3714,9 +3752,9 @@ def build_all_tables(
                 f"Mosaic Recall={mosaic_snv_r_pct:.2f}% (see Table 7)",
             ],
             [
-                "HG008 v0.4 Somatic Landscape",
+                "HG008 v0.4 Somatic Benchmark",
                 "GIAB HG008 v0.4 Somatic Benchmark [19]",
-                f"{len({r['caller'] for r in s6['hg008_modern_ml_and_commercial_callers']})}-Caller Modern ML & Commercial Landscape",
+                f"{len({r['caller'] for r in s6['hg008_modern_ml_and_commercial_callers']})}-Caller Modern ML & Commercial Benchmark",
                 "VarDictRust v1.0.6 Full WGS & Slice",
                 f"Full WGS SNV F1={s6['hg008_modern_ml_and_commercial_callers'][0]['snv_f1']:.4f}",
                 f"Full WGS InDel F1={s6['hg008_modern_ml_and_commercial_callers'][0]['indel_f1']:.4f}",
@@ -3916,9 +3954,9 @@ def build_all_tables(
         (
             "CPP-10",
             "-DP/--DP Parsed but Ignored (Printer Stays stdout)",
-            "Honours -DP (M17 gate arm MATCH)",
-            "Honours -DP (M17 gate arm MATCH)",
-            "Ignores -DP/--DP ERR (M17 CPP-MISMATCH, printer redirect differs)",
+            "Honors -DP (stderr redirect verified)",
+            "Honors -DP (stderr redirect verified)",
+            "Ignores -DP/--DP ERR (printer stays on stdout)",
             "Accepted under 'Accepted (parsed)' in vardictcpp --help; output unchanged",
         ),
         (
@@ -3994,10 +4032,47 @@ def build_all_tables(
     qia_dp50_gain = int(a5["qiaseq_spe_dp50_known_pos_tp"]) - int(
         a5["qiaseq_spe_dp50_no_sp_known_pos_tp"]
     )
+    wt_bg_dp = int(a5["spikein_observed_dp"]) - int(a5["spikein_observed_vd"])
+    cp_a2_vj_u = fmt_clopper_pearson_ci(
+        int(a2_vj["tp_baseline"]), int(a2["truth_total"])
+    )
+    cp_a2_off_u = fmt_clopper_pearson_ci(
+        int(a2_off["tp_baseline"]), int(a2["truth_total"])
+    )
+    cp_a2_vj_b = fmt_clopper_pearson_ci(
+        int(a2_vj["best_tp_baseline"]), int(a2["truth_total"])
+    )
+    cp_a2_off_b = fmt_clopper_pearson_ci(
+        int(a2_off["best_tp_baseline"]), int(a2["truth_total"])
+    )
+    cp_a3_seq = fmt_clopper_pearson_ci(
+        int(a3["seqc2_hc"]["compat_off"]["tp"]),
+        int(a3["seqc2_hc"]["compat_off"]["truth_total"]),
+    )
+    cp_a3_h8 = fmt_clopper_pearson_ci(
+        int(a3["hg008_v04"]["compat_off"]["tp"]),
+        int(a3["hg008_v04"]["compat_off"]["truth_total"]),
+    )
+    cp_q_d50_vj = fmt_clopper_pearson_ci(
+        int(a5["qiaseq_spe_dp50_no_sp_known_pos_tp"]),
+        int(a5["qiaseq_spe_known_pos_total"]),
+    )
+    cp_q_d50_sp = fmt_clopper_pearson_ci(
+        int(a5["qiaseq_spe_dp50_known_pos_tp"]),
+        int(a5["qiaseq_spe_known_pos_total"]),
+    )
+    cp_q_p_vj = fmt_clopper_pearson_ci(
+        int(a5["qiaseq_spe_no_sp_known_pos_tp"]),
+        int(a5["qiaseq_spe_panel_known_pos_unmasked"]),
+    )
+    cp_q_p_sp = fmt_clopper_pearson_ci(
+        int(a5["qiaseq_spe_known_pos_tp"]),
+        int(a5["qiaseq_spe_panel_known_pos_unmasked"]),
+    )
     t9_rows: list[list[Any]] = [
         [
             "1. Strict VCFv4.2/v4.3 Schema & FASTA Reference Concordance [1, 10, 13, 19]<sup>a,b</sup>",
-            f"{a1['total_callsets']} callsets across {a1['distinct_bams']} BAMs (SEQC2, GIAB HG002 / HG008, COLO829 SVs, -p pileup, IUPAC, -3)",
+            f"{a1['total_callsets']} callsets across {a1['distinct_bams']} BAMs (17 wet-lab public BAM slices + 1 synthetic contig-start SV BAM + synthetic 17-bp periodic IUPAC chr20 FASTA fixture)",
             f"{a1['total_defects_vj']:,} schema defects across {a1['total_records_vj']:,} records (INFO/END={d_vj['nonsv_info_end']:,}, GT={d_vj['noncanonical_gt']:,}, DP/AF/TYPE/IUPAC/-3={d_vj['accounting_type_iupac_shift3']}, SV={d_vj['noncanonical_sv']}, AD={d_vj['ad_number_r_mismatch']}); {a1['bcftools_norm_check_ref_vj_passed']}/{a1['total_callsets']} bcftools norm --check-ref e",
             f"{a1['total_defects_off']} schema defects across {a1['total_records_off']:,} records (0 across all 5 defect classes); {a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']} bcftools norm --check-ref e",
             f"100% strict VCFv4.2/v4.3 schema & bcftools norm [26] compliance ({a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']})<sup>b</sup>",
@@ -4005,15 +4080,15 @@ def build_all_tables(
         [
             "2. Diploid SEQC2 Subclonal Somatic rtg vcfeval [10, 12]<sup>a,c</sup>",
             f"SEQC2 HCC1395 / HCC1395BL across {len(a2['target_contigs'])} contigs ({a2['evaluated_intervals']:,} intervals, {a2['evaluated_bp']:,} bp; {a2['truth_total']} truth somatic, {a2['subclonal_truth_lt_030']} with TVAF < {a2['vcf_af']:.2f})",
-            f"Unthresholded TP={a2_vj['tp_baseline']}, FP={a2_vj['fp']}, FN={a2_vj['fn']}, R={a2_vj['sensitivity']:.4f}, F1={a2_vj['f_measure']:.4f} (Optimal QUAL >= {a2_vj['best_qual_threshold']:.0f}: F1={a2_vj['best_f_measure']:.4f}); {a2_vj['gt00_carrier_somatic']} GT=0/0 somatic carriers",
-            f"Unthresholded TP={a2_off['tp_baseline']} (+{a2['tp_baseline_gain']}), FP={a2_off['fp']}, FN={a2_off['fn']}, R={a2_off['sensitivity']:.4f}, F1={a2_off['f_measure']:.4f} (Optimal QUAL >= {a2_off['best_qual_threshold']:.0f}: F1={a2_off['best_f_measure']:.4f}); {a2_off['gt00_carrier_somatic']} GT=0/0 carriers",
-            f"+{a2['tp_baseline_gain']} subclonal TPs (+{a2['sensitivity_gain'] * 100.0:.1f}% recall; +{a2['best_f_measure_gain']:.4f} optimal F1) without --squash-ploidy [12]<sup>c</sup>",
+            f"Unthresholded: TP={a2_vj['tp_baseline']}, FP={a2_vj['fp']}, FN={a2_vj['fn']}, P={a2_vj['precision']:.4f}, R={a2_vj['sensitivity']:.4f}, F1={a2_vj['f_measure']:.4f}; Optimal QUAL >= {a2_vj['best_qual_threshold']:.0f}: TP={a2_vj['best_tp_baseline']}, FP={a2_vj['best_fp']}, FN={a2_vj['best_fn']}, P={a2_vj['best_precision']:.4f}, R={a2_vj['best_sensitivity']:.4f}, F1={a2_vj['best_f_measure']:.4f}; {a2_vj['gt00_carrier_somatic']} GT=0/0 somatic carriers",
+            f"Unthresholded: TP={a2_off['tp_baseline']} (+{a2['tp_baseline_gain']}), FP={a2_off['fp']}, FN={a2_off['fn']}, P={a2_off['precision']:.4f}, R={a2_off['sensitivity']:.4f}, F1={a2_off['f_measure']:.4f}; Optimal QUAL >= {a2_off['best_qual_threshold']:.0f}: TP={a2_off['best_tp_baseline']} (+{a2['best_tp_baseline_gain']}), FP={a2_off['best_fp']}, FN={a2_off['best_fn']}, P={a2_off['best_precision']:.4f}, R={a2_off['best_sensitivity']:.4f}, F1={a2_off['best_f_measure']:.4f}; {a2_off['gt00_carrier_somatic']} GT=0/0 carriers",
+            f"+{a2['tp_baseline_gain']}/{a2['truth_total']} GT=0/0-masked subclonal TPs (+{a2['sensitivity_gain'] * 100.0:.1f} pp recall; +{a2['best_f_measure_gain']:.4f} optimal-QUAL F1) without --squash-ploidy [12]<sup>c</sup>",
         ],
         [
             "3. Multi-Allelic Somatic Continuation, MUC19 Paralog & Truth Slices [1, 10, 19]<sup>d</sup>",
-            f"{a3['distinct_bam_pairs']} multi-allelic T/N BAM pairs ({a3['total_runs']} runs), MUC19 paralog pileup, SEQC2 ({a3['seqc2_hc']['evaluated_bp']:,} bp) & GIAB HG008 v0.4 ({a3['hg008_v04']['evaluated_bp']:,} bp)",
-            f"{a3['vj_recovered_pairs']}/{a3['distinct_bam_pairs']} pairs ({a3['vj_recovered_runs']}/{a3['total_runs']} runs, {a3['vj_secondary_alleles']} secondary alleles); SEQC2 TP={a3['seqc2_hc']['vardictjava']['tp']}, F1={a3['seqc2_hc']['vardictjava']['f1']:.4f}; HG008 TP={a3['hg008_v04']['vardictjava']['tp']}, F1={a3['hg008_v04']['vardictjava']['f1']:.4f}",
-            f"{a3['off_recovered_pairs']}/{a3['distinct_bam_pairs']} pairs ({a3['off_recovered_runs']}/{a3['total_runs']} runs, {a3['off_secondary_alleles']} secondary alleles with --vcf-all-alleles); MUC19={a3['muc19_variants']} calls ({a3['muc19_vd_gt_dp_violations']} VD > DP); SEQC2 TP={a3['seqc2_hc']['compat_off']['tp']}, F1={a3['seqc2_hc']['compat_off']['f1']:.4f}; HG008 TP={a3['hg008_v04']['compat_off']['tp']}, F1={a3['hg008_v04']['compat_off']['f1']:.4f}",
+            f"{a3['distinct_bam_pairs']} multi-allelic T/N BAM pairs ({a3['total_runs']} runs with --vcf-all-alleles), MUC19 paralog pileup, SEQC2 ({a3['seqc2_hc']['evaluated_bp']:,} bp) & GIAB HG008 v0.4 ({a3['hg008_v04']['evaluated_bp']:,} bp)",
+            f"{a3['vj_recovered_pairs']}/{a3['distinct_bam_pairs']} pairs ({a3['vj_recovered_runs']}/{a3['total_runs']} runs, {a3['vj_secondary_alleles']} secondary alleles with --vcf-all-alleles); SEQC2 TP={a3['seqc2_hc']['vardictjava']['tp']}/{a3['seqc2_hc']['vardictjava']['truth_total']} (FP={a3['seqc2_hc']['vardictjava']['fp']}, F1={a3['seqc2_hc']['vardictjava']['f1']:.4f}); HG008 TP={a3['hg008_v04']['vardictjava']['tp']}/{a3['hg008_v04']['vardictjava']['truth_total']} (FP={a3['hg008_v04']['vardictjava']['fp']}, F1={a3['hg008_v04']['vardictjava']['f1']:.4f})",
+            f"{a3['off_recovered_pairs']}/{a3['distinct_bam_pairs']} pairs ({a3['off_recovered_runs']}/{a3['total_runs']} runs, {a3['off_secondary_alleles']} secondary alleles with --vcf-all-alleles); MUC19={a3['muc19_variants']} calls ({a3['muc19_vd_gt_dp_violations']} VD > DP); SEQC2 TP={a3['seqc2_hc']['compat_off']['tp']}/{a3['seqc2_hc']['compat_off']['truth_total']} (FP={a3['seqc2_hc']['compat_off']['fp']}, F1={a3['seqc2_hc']['compat_off']['f1']:.4f}); HG008 TP={a3['hg008_v04']['compat_off']['tp']}/{a3['hg008_v04']['compat_off']['truth_total']} (FP={a3['hg008_v04']['compat_off']['fp']}, F1={a3['hg008_v04']['compat_off']['f1']:.4f})",
             f"100% ({a3['off_recovered_pairs']}/{a3['distinct_bam_pairs']}) multi-allelic T/N recovery; 0 VD > DP violations; truth TP preserved [12]<sup>d</sup>",
         ],
         [
@@ -4025,14 +4100,14 @@ def build_all_tables(
         ],
         [
             "5. Clinical Workflow Presets (`wgs`, `wes`, `amplicon`, `ctdna`) & QIAseq V3 `-sp` [10, 13, 19, 27]<sup>e</sup>",
-            f"GIAB HG002 ({60} kbp) & HG008 WGS, SEQC2 WES ({wes_kbp_approx} kbp + BED8), paired T/N amplicon, QIAseq V3 SPE, {a5['spikein_target_vaf_pct']:.1f}% VAF ctDNA spike-in",
-            f"Paired -a VCF unsupported; QIAseq without -sp: {a5['qiaseq_spe_no_sp_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']} panel KnownPositives ({a5['qiaseq_spe_dp50_no_sp_known_pos_tp']}/{a5['qiaseq_spe_known_pos_total']} at DP >= 50); default -f 0.01 misses {a5['spikein_target_vaf_pct']:.1f}% ctDNA",
+            f"GIAB HG002 (60 kbp) & HG008 WGS, SEQC2 WES ({wes_kbp_approx} kbp + BED8), paired T/N amplicon, QIAseq V3 SPE, {a5['spikein_target_vaf_pct']:.1f}% VAF ctDNA spike-in",
+            f"Paired -a VCF unsupported; QIAseq (--preset amplicon -UN without -sp): {a5['qiaseq_spe_no_sp_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']} panel KnownPositives ({a5['qiaseq_spe_dp50_no_sp_known_pos_tp']}/{a5['qiaseq_spe_known_pos_total']} at DP >= 50); default -f 0.01 misses {a5['spikein_target_vaf_pct']:.1f}% ctDNA",
             f"`wgs`={a5['wgs_hg002_60kbp_records']}+{a5['wgs_hg008_paired_records']} calls (.tbi/.csi); `wes`={a5['wes_seqc2_264kbp_records']} calls (BED8 safe); paired -a={a5['paired_somatic_amplicon_off_records']} calls; QIAseq -sp: {a5['qiaseq_spe_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']} panel ({a5['qiaseq_spe_dp50_known_pos_tp']}/{a5['qiaseq_spe_known_pos_total']} at DP >= 50); `ctdna` PASS (VD={a5['spikein_observed_vd']}/{a5['spikein_observed_dp']:,}, AF={a5['spikein_observed_af']:.4f})",
-            f"All {v_meta['preset_count']}/{v_meta['preset_count']} presets verified; +{qia_panel_gain} panel (+{qia_dp50_gain} at DP >= 50) SPE TPs [27]<sup>e</sup>",
+            f"All {v_meta['preset_count']}/{v_meta['preset_count']} presets verified; +{qia_panel_gain} ({a5['qiaseq_spe_no_sp_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']} -> {a5['qiaseq_spe_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']}) panel (+{qia_dp50_gain} at DP >= 50) SPE TPs [27]<sup>e</sup>",
         ],
         [
             "6. Multi-Block `--csi` Spanning-SV Indexing & `-p` Homopolymer Pileup Tiling [1, 19, 26]<sup>f</sup>",
-            f"Spanning <DEL>/<DUP>/<INV> >{35} kbp ({a6['multi_block_bgzf_blocks']} BGZF blocks), COLO829 ({a6['colo829_bgzf_blocks']} blocks), GIAB HG008 ({a6['hg008_bgzf_blocks']} blocks), 3 -p homopolymer slices",
+            f"Synthetic spanning <DEL>/<DUP>/<INV> >35 kbp ({a6['multi_block_bgzf_blocks']} BGZF blocks), COLO829 ({a6['colo829_bgzf_blocks']} blocks), GIAB HG008 ({a6['hg008_bgzf_blocks']} blocks), 3 -p homopolymer slices",
             "Legacy -p drops multi-deletion shifted reference rows (AstraZeneca-NGS/VarDictJava#330) and emits position-0 sentinel records",
             f"{a6['interior_bin_queries_passed']}/{a6['interior_bin_queries_total']} interior {a6['csi_leaf_bin_bp']:,}-bp --csi queries returned spanning SVs (explicit alleles <= {a6['max_explicit_sv_seq_bp']:,} bp); {a6['pileup_covered_bases_retained']:,}/{a6['pileup_covered_bases_total']:,} ({a6['pileup_covered_bases_retained_pct']:.1f}%) covered -p bases retained; {a6['pos0_sentinel_rows']} sentinel rows",
             f"100% ({a6['interior_bin_queries_passed']}/{a6['interior_bin_queries_total']}) tabix [26] --csi spanning-SV retrieval & {a6['pileup_covered_bases_retained_pct']:.1f}% -p locus retention<sup>f</sup>",
@@ -4045,11 +4120,11 @@ def build_all_tables(
         t9_headers,
         t9_rows,
         f"<sup>a</sup>Host-independent deterministic callset, validator, and rtg vcfeval [12] (v{v_meta['rtg_version']}) evaluation pinned to VarDictRust v{v_meta['study_version']} ({v_meta['study_fingerprint']}); all runtime and peak RSS benchmarks remain locked to the 60-experiment GCP n2-standard-32 study (Tables 1–8). "
-        f"<sup>b</sup>Distinguishes strict VCFv4.2/v4.3 schema-validator rules (FORMAT/AD Number=R, non-SV INFO/END omission, canonical GT, 1-bp SV anchoring + signed SVLEN) from bcftools norm --check-ref e [26] (v{v_meta['bcftools_version']}) FASTA reference-base concordance ({a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']} callsets pass). "
-        f"<sup>c</sup>Domain 2 evaluates SEQC2 HCC1395 / HCC1395BL [10] across {len(a2['target_contigs'])} target contigs (slices.bed intersected with eval.bed) under split discovery -f {a2['discovery_af']:.2f} --vcf-af {a2['vcf_af']:.2f} (StrongSomatic/LikelySomatic with FILTER in PASS or f{a2['vcf_af']:.2f}) against diploid truth genotypes projected from INFO/TVAF (0/1 below {a2['gt_proj_tvaf_threshold']:.2f}, 1/1 at or above {a2['gt_proj_tvaf_threshold']:.2f}) using rtg vcfeval --all-records [12] without --squash-ploidy (summary.txt unthresholded row alongside the optimal QUAL operating point). "
-        f"<sup>d</sup>Multi-allelic somatic continuation evaluates {a3['total_runs']} runs across {a3['distinct_bam_pairs']} distinct tumor-normal BAM pairs alongside high-confidence SEQC2 [10] and GIAB HG008 v0.4 [19] slices. "
-        f"<sup>e</sup>Clinical presets evaluate GIAB HG002 [13, 18] ({60} kbp chr20), GIAB HG008 [19], SEQC2 [10] ({wes_kbp_approx} kbp), paired 2-primer somatic amplicon, wet-lab QIAseq V3 -sp (SampleA_QGN1 & SampleAC5_QGN1) [27], and a semi-synthetic in silico {a5['spikein_target_vaf_pct']:.1f}% VAF ctDNA spike-in (SampleB_QGN1 wild-type background + SampleA_QGN1 {a5['spikein_chrom']} variant reads) [27]. "
-        f"<sup>f</sup>Spanning-SV --csi retrieval [26] (tabix v{v_meta['tabix_version']}) tests wet-lab (COLO829, GIAB HG008 [19]) and synthetic multi-BGZF-block SVs; -p homopolymer tiling confirms byte identity across {a6['pileup_untiled_eq_tiled_cases']} untiled-vs-tiled cases when tile_size > read_len and {a6['pileup_covered_bases_retained_pct']:.1f}% covered-coordinate retention under sub-read tiling.",
+        f"<sup>b</sup>Evaluates 17 wet-lab public BAM slices alongside 1 synthetic contig-start SV BAM (clintval/vartovcf) and a synthetic 17-bp periodic IUPAC chr20 FASTA fixture, distinguishing strict VCFv4.2/v4.3 schema-validator rules (FORMAT/AD Number=R, non-SV INFO/END omission, canonical GT, 1-bp SV anchoring + signed SVLEN; note var2vcf_valid.pl -E / --no-end suppresses INFO/END globally at the cost of stripping mandatory INFO/END from symbolic SVs per clintval/vartovcf#105) from bcftools norm --check-ref e [26] (v{v_meta['bcftools_version']}) FASTA reference-base concordance ({a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']} callsets pass). "
+        f"<sup>c</sup>Domain 2 evaluates SEQC2 HCC1395 / HCC1395BL [10] across {len(a2['target_contigs'])} target contigs (slices.bed intersected with eval.bed) under split discovery -f {a2['discovery_af']:.2f} --vcf-af {a2['vcf_af']:.2f} (StrongSomatic/LikelySomatic with FILTER in PASS or f{a2['vcf_af']:.2f}) against diploid truth genotypes projected from INFO/TVAF (0/1 below {a2['gt_proj_tvaf_threshold']:.2f}, 1/1 at or above {a2['gt_proj_tvaf_threshold']:.2f}) using rtg vcfeval --all-records [12] without --squash-ploidy; exact 95% Clopper-Pearson recall CIs span {a2_vj['tp_baseline']}/{a2['truth_total']} ({cp_a2_vj_u}) -> {a2_off['tp_baseline']}/{a2['truth_total']} ({cp_a2_off_u}) unthresholded and {a2_vj['best_tp_baseline']}/{a2['truth_total']} ({cp_a2_vj_b}) -> {a2_off['best_tp_baseline']}/{a2['truth_total']} ({cp_a2_off_b}) at optimal QUAL. "
+        f"<sup>d</sup>Multi-allelic somatic continuation evaluates {a3['total_runs']} runs across {a3['distinct_bam_pairs']} distinct tumor-normal BAM pairs (both arms invoked with --vcf-all-alleles, matching var2vcf_paired.pl -A) alongside normalized high-confidence slices on SEQC2 [10] ({a3['seqc2_hc']['compat_off']['tp']}/{a3['seqc2_hc']['compat_off']['truth_total']}, 95% Clopper-Pearson recall CI {cp_a3_seq}) and GIAB HG008 v0.4 [19] ({a3['hg008_v04']['compat_off']['tp']}/{a3['hg008_v04']['compat_off']['truth_total']}, 95% CI {cp_a3_h8}; FP={a3['hg008_v04']['compat_off']['fp']} vs. {a3['hg008_v04']['vardictjava']['fp']}). "
+        f"<sup>e</sup>Clinical presets evaluate GIAB HG002 [13, 18] (60 kbp chr20), GIAB HG008 [19], SEQC2 [10] ({wes_kbp_approx} kbp), paired 2-primer somatic amplicon, wet-lab QIAseq V3 SPE (--preset amplicon -UN with vs. without -sp on SampleA_QGN1 & SampleAC5_QGN1 [27]; 95% Clopper-Pearson recall CIs: DP >= 50 {a5['qiaseq_spe_dp50_no_sp_known_pos_tp']}/{a5['qiaseq_spe_known_pos_total']} [{cp_q_d50_vj}] -> {a5['qiaseq_spe_dp50_known_pos_tp']}/{a5['qiaseq_spe_known_pos_total']} [{cp_q_d50_sp}], full panel {a5['qiaseq_spe_no_sp_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']} [{cp_q_p_vj}] -> {a5['qiaseq_spe_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']} [{cp_q_p_sp}]), and a semi-synthetic in silico {a5['spikein_target_vaf_pct']:.1f}% VAF ctDNA spike-in ({a5['admixture_wt_copies']} read-replicated copies of SampleB_QGN1 yielding ~{wt_bg_dp:,}x WT background + {a5['admixture_alt_reads']} SampleA_QGN1 {a5['spikein_chrom']} variant reads) [27]. "
+        f"<sup>f</sup>Spanning-SV --csi retrieval [26] (tabix v{v_meta['tabix_version']}) tests {a6['interior_bin_queries_passed']}/{a6['interior_bin_queries_total']} interior {a6['csi_leaf_bin_bp']:,}-bp queries across wet-lab COLO829 (1 bin, {a6['colo829_bgzf_blocks']} blocks) and synthetic >35 kbp `<DEL>`/`<DUP>`/`<INV>` SVs ({a6['interior_bin_queries_total'] - 1} bins, {a6['multi_block_bgzf_blocks']} blocks), alongside {a6['hg008_bgzf_blocks']}-block somatic --csi index generation on GIAB HG008 [19]; -p homopolymer tiling confirms byte identity across {a6['pileup_untiled_eq_tiled_cases']} untiled-vs-tiled cases when tile_size > read_len and {a6['pileup_covered_bases_retained_pct']:.1f}% covered-coordinate retention under sub-read tiling.",
     )
 
     # ------------------------------------------------------------------
@@ -4087,8 +4162,8 @@ def build_all_tables(
         f"Supplementary Table S7. Complete {len(catalog)}-Entry VarDictRust v{v_meta['study_version']} CompatProfile ({v_meta['compat_switch_count']} Switches) and Opt-In CLI Capability Empirical Verification Catalog",
         s7_headers,
         s7_rows,
-        f"<sup>a</sup>Entries 1–{v_meta['compat_switch_count']} correspond in exact declaration order to the {v_meta['compat_switch_count']} boolean fields of CompatProfile in crates/vardictrust-core/src/config.rs, activated together by --compat=off (stamping ##VarDictRustCompat=off in VCF headers) while remaining disabled under default --compat=vardictjava (--parity) to preserve 100% valid-input parity with VarDictJava v1.8.3 [1]. "
-        f"<sup>b</sup>Entries {v_meta['compat_switch_count'] + 1}–{len(catalog)} document explicit opt-in v{v_meta['study_version']} CLI capabilities (--vcf-all-alleles, --amplicon-single-primer / -sp [27], and --preset across `wgs`, `wes`, `amplicon`, and `ctdna` alongside {v_meta['var2vcf_flag_count']} consolidated native var2vcf flags). "
+        f"<sup>a</sup>Entries 1–{v_meta['compat_switch_count']} correspond in exact declaration order to the {v_meta['compat_switch_count']} boolean fields of CompatProfile in crates/vardictrust-core/src/config.rs, activated together by --compat=off (stamping ##VarDictRustCompat=off in VCF headers) while remaining disabled under default --compat=vardictjava (--parity) to preserve 100% valid-input parity with VarDictJava v1.8.3 [1]; `UB-1`..`UB-7` denote cataloged upstream VarDictJava v1.8.3 parity behaviors (`docs/upstream-bugs.md`). "
+        f"<sup>b</sup>Entries {v_meta['compat_switch_count'] + 1}–{len(catalog)} document explicit opt-in v{v_meta['study_version']} CLI capabilities (`--vcf-all-alleles`, `--amplicon-single-primer` / `-sp` [27], and `--preset` across `wgs`, `wes`, `amplicon`, and `ctdna` alongside {v_meta['var2vcf_flag_count']} consolidated native `var2vcf` flags). "
         f"<sup>c</sup>Every entry is verified against deterministic benchmark callsets across Empirical Domains 1–{v_meta['total_arms']} (Table 9) using strict VCFv4.2/v4.3 schema auditing, bcftools norm --check-ref e [26], tabix --csi [26], SEQC2 [10] and QIAseq V3 [27] truth cohorts, and diploid rtg vcfeval [12] (benchmarks/v110-compat-study/v110_compat_metrics.json, source fingerprint {v_meta['study_fingerprint']}).",
     )
 

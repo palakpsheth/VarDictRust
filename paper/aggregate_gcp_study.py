@@ -2616,11 +2616,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.verify:
-        if (
-            not (args.out_dir / "master_gcp_metrics.json").is_file()
-            and args.raw_dir.is_dir()
-        ):
-            run_aggregation(args.raw_dir, args.out_dir)
+        master_path = args.out_dir / "master_gcp_metrics.json"
+        if not master_path.is_file():
+            print(
+                f"ERROR: --verify failed: missing {master_path} (refusing to auto-aggregate in --verify mode)",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         run_verify(args.out_dir)
         print(f"OK verified 60 GCP study cells in {args.out_dir}")
         return 0

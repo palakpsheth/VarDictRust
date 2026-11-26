@@ -638,7 +638,7 @@ L 717.503828 23.714578
     <text style="font-weight: 700; font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #d55e00" x="464.868307" y="152.061517" transform="rotate(-0 464.868307 152.061517)">0.56</text>
    </g>
    <g id="text_41">
-    <text style="font-weight: 700; font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #d55e00" x="517.765192" y="138.362448" transform="rotate(-0 517.765192 138.362448)">0.64</text>
+    <text style="font-weight: 700; font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #d55e00" x="517.765192" y="138.362448" transform="rotate(-0 517.765192 138.362448)">0.639</text>
    </g>
    <g id="text_42">
     <text style="font-weight: 700; font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #d55e00" x="570.662076" y="137.07871" transform="rotate(-0 570.662076 137.07871)">0.65</text>
@@ -653,7 +653,7 @@ L 717.503828 23.714578
     <text style="font-weight: 700; font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0072b2" x="483.911186" y="96.315626" transform="rotate(-0 483.911186 96.315626)">0.88</text>
    </g>
    <g id="text_46">
-    <text style="font-weight: 700; font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0072b2" x="536.80807" y="137.65903" transform="rotate(-0 536.80807 137.65903)">0.64</text>
+    <text style="font-weight: 700; font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0072b2" x="536.80807" y="137.65903" transform="rotate(-0 536.80807 137.65903)">0.643</text>
    </g>
    <g id="text_47">
     <text style="font-weight: 700; font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #0072b2" x="589.704955" y="110.032281" transform="rotate(-0 589.704955 110.032281)">0.80</text>
@@ -666,19 +666,20 @@ L 717.503828 23.714578
    </g>
    <g id="text_50">
     <g id="patch_36">
-     <path d="M 455.391828 41.404534 
-L 704.975203 41.404534 
-Q 706.650203 41.404534 706.650203 39.729534 
-L 706.650203 32.999698 
-Q 706.650203 31.324698 704.975203 31.324698 
-L 455.391828 31.324698 
-Q 453.716828 31.324698 453.716828 32.999698 
-L 453.716828 39.729534 
-Q 453.716828 41.404534 455.391828 41.404534 
+     <path d="M 509.354414 46.690442 
+L 651.012617 46.690442 
+Q 652.354617 46.690442 652.354617 45.348442 
+L 652.354617 30.678418 
+Q 652.354617 29.336418 651.012617 29.336418 
+L 509.354414 29.336418 
+Q 508.012414 29.336418 508.012414 30.678418 
+L 508.012414 45.348442 
+Q 508.012414 46.690442 509.354414 46.690442 
 z
 " style="fill: #f8fafc; stroke: #cbd5e1; stroke-linejoin: miter"/>
     </g>
-    <text style="font-size: 6.7px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #262626" x="580.183516" y="38.119964" transform="rotate(-0 580.183516 38.119964)">No --squash-ploidy: +13 subclonal TPs | GT=0/0: 64-&gt;0 | Pairs: 5/5 (100%)</text>
+    <text style="font-size: 6.1px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(514.812484 35.924061)">No --squash-ploidy: +13/41 TPs (+31.7 pp)</text>
+    <text style="font-size: 6.1px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(509.354414 43.272416)">GT=0/0: 64-&gt;0 | Multi-allelic pairs: 5/5 (100%)</text>
    </g>
    <g id="text_51">
     <text style="font-weight: 700; font-size: 9.1px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="442.863203" y="17.714578" transform="rotate(-0 442.863203 17.714578)">B. Diploid SEQC2 vcfeval &amp; Multi-Allelic Recovery</text>

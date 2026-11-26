@@ -9,10 +9,11 @@ This package provides a deterministic, single-command reproducibility pipeline f
 ## 1. Quickstart: Offline Reproduction (After One-Time Setup)
 
 Two complementary, cryptographically checksummed empirical study bundles power the manuscript without mixing cross-host timings:
+
 1. **`benchmarks/gcp-study-v106/` (`Figures 1–8`, `Tables 1–8`, `Supplementary Tables S1–S6`):** All aggregated metrics, per-cell runtime/RSS measurements, truth evaluations, and SHA-256 digests from the 60 Google Cloud Platform (GCP `n2-standard-32`) study cells (`v1.0.6` cloud benchmark baseline, engine fingerprint `5865a2a0b24a8c17`, performance fingerprint `c490c36317b8f25b`).
 2. **`benchmarks/v110-compat-study/` (`Figure 9`, `Table 9`, `Supplementary Table S7`):** Host-independent deterministic callset, strict VCFv4.2/v4.3 schema-validator, `bcftools norm --check-ref e` FASTA concordance, `QIAseq V3` `-sp` single-primer extension, and diploid `rtg vcfeval` subclonal somatic metrics across 6 evaluation domains plus the 35-entry `CompatProfile` / CLI capability catalog for **VarDictRust `v1.1.0`** (`b18477ae0a7b07c1`, performance fingerprint `5c41be8047133842`; verified or re-collected by [`paper/collect_v110_compat_metrics.py`](collect_v110_compat_metrics.py)).
 
-Alongside these two committed datasets, [`paper/build_manuscript.py`](build_manuscript.py) and [`paper/render_pdf.py`](render_pdf.py) dynamically read `Cargo.toml`, `.agents/skills/vardictrust-release/scripts/check_release_consistency.py`, `crates/vardictrust-core/src/`, and `benchmarks/evidence/*.json` to synchronize the current release architecture (`92` CLI flags across `7` functional groups including 18/18 `var2vcf_*.pl` post-filters via `--vcf-all-alleles` / `--all-alleles`, `--amplicon-single-primer` / `-sp`, `--preset` across `wgs`, `wes`, `amplicon`, and `ctdna`, dual-mode `--compat=vardictjava|off` `CompatProfile` governance with `32` opt-in switches, multithreaded BGZF `--output` + `--tbi`/`--csi` indexing, OpenJDK 8 `TreeNode` `JavaHashMap`, `8 MiB` `SpillableVcfAccumulator` VCF spill cap, singleflight `16 MiB` Illumina CRAM container cache + 2-slot `CRAM_META_TLS` + `SeekWindowReader`, `.bai`/`.csi` structural header pre-validation, automated Cargo workspace tests + `37` harness self-tests, and `cargo-fuzz` harnesses).
+Alongside these two committed datasets, [`paper/build_manuscript.py`](build_manuscript.py) and [`paper/render_pdf.py`](render_pdf.py) dynamically read `Cargo.toml`, `.agents/skills/vardictrust-release/scripts/check_release_consistency.py`, `crates/vardictrust-core/src/`, and `benchmarks/evidence/*.json` to synchronize the current release architecture (`92` CLI flags across `7` functional groups including 18/18 `var2vcf_*.pl` post-filters via `--vcf-all-alleles` / `--all-alleles`, `--amplicon-single-primer` / `-sp`, `--preset` across `wgs`, `wes`, `amplicon`, and `ctdna`, dual-mode `--compat=vardictjava|off` `CompatProfile` governance with `32` opt-in switches, multithreaded BGZF `--output` + `--tbi`/`--csi` indexing, OpenJDK 8 `TreeNode` `JavaHashMap`, `8 MiB` `SpillableVcfAccumulator` VCF spill cap, singleflight `16 MiB` CRAM per-container cache across a `160 MiB` 4-shard LRU cache + `512 MiB` FASTA cache + 2-slot `CRAM_META_TLS` + `SeekWindowReader`, `.bai`/`.csi` structural header pre-validation, automated Cargo workspace tests + `37` harness self-tests, and `cargo-fuzz` harnesses).
 
 > **Prerequisites (one-time, needs network):** building the Python virtual environment (`.venv`) via `uv` downloads dependencies from PyPI, and PDF rendering needs a headless Chrome/Chromium binary. Do this once with network access; everything after it runs fully offline from committed data. To run the pipeline on a machine without Chrome, export `PAPER_ALLOW_STALE_PDF=1` to reuse the checked-in PDFs — without it, `reproduce_all.sh` fails fast instead of reporting stale PDFs as reproduced (see §5).
 
@@ -24,8 +25,9 @@ bash paper/reproduce_all.sh
 ```
 
 This single command automatically:
+
 1. Bootstraps a local Python virtual environment (`.venv`) using `uv` with dependencies from [`paper/requirements.txt`](requirements.txt).
-2. Verifies the SHA-256 hashes and invariants of both committed study bundles against [`benchmarks/gcp-study-v106/SHA256SUMS.tsv`](../benchmarks/gcp-study-v106/SHA256SUMS.tsv) and [`benchmarks/v110-compat-study/SHA256SUMS.tsv`](../benchmarks/v110-compat-study/SHA256SUMS.tsv) (pass `--run-v110-eval` to re-execute all 6 deterministic `v1.1.0` domains locally).
+2. Verifies the SHA-256 hashes and invariants of both committed study bundles against [`benchmarks/gcp-study-v106/SHA256SUMS.tsv`](../benchmarks/gcp-study-v106/SHA256SUMS.tsv) and [`benchmarks/v110-compat-study/SHA256SUMS.tsv`](../benchmarks/v110-compat-study/SHA256SUMS.tsv) without rewriting tracked files (pass `--reaggregate-gcp` to re-extract `benchmarks/gcp-study-v106/` from local raw cells, or `--run-v110-eval` to re-execute all 6 deterministic `v1.1.0` domains locally).
 3. Regenerates all **9 Main Figures** ([`paper/figures/fig1..fig9.{svg,pdf}`](figures/)) and all **16 Tables** ([`paper/tables/table1..table9.{md,tex}`](tables/) and [`paper/tables/supp_table1..supp_table7.{md,tex}`](tables/)).
 4. Compiles and byte-verifies the manuscript and supplement ([`paper/manuscript.md`](manuscript.md), [`paper/supplement.md`](supplement.md)) and renders typeset PDFs ([`paper/manuscript.pdf`](manuscript.pdf), [`paper/supplement.pdf`](supplement.pdf)) with embedded vector figures.
 5. Generates the 10-slide high-resolution LinkedIn carousel in `scratch/linkedin/`.
@@ -44,11 +46,11 @@ gcloud storage rsync -r \
   gs://vardict-paper-trial-results/cells-v106/ \
   benchmarks/data/gcp-study-v106/
 
-# Or run reproduce_all.sh with the --sync-gcs flag:
+# Or run reproduce_all.sh with --sync-gcs (or --reaggregate-gcp when raw cells are already on disk):
 bash paper/reproduce_all.sh --sync-gcs
 ```
 
-When `benchmarks/data/gcp-study-v106/` contains the 60 raw cell directories, [`paper/aggregate_gcp_study.py`](aggregate_gcp_study.py) re-extracts all metrics from raw telemetry, audits SHA-256 checksums, and overwrites [`benchmarks/gcp-study-v106/master_gcp_metrics.json`](../benchmarks/gcp-study-v106/master_gcp_metrics.json).
+When `--sync-gcs` or `--reaggregate-gcp` is passed and `benchmarks/data/gcp-study-v106/` contains the 60 raw cell directories, [`paper/aggregate_gcp_study.py`](aggregate_gcp_study.py) re-extracts all metrics from raw telemetry, audits SHA-256 checksums, and overwrites [`benchmarks/gcp-study-v106/master_gcp_metrics.json`](../benchmarks/gcp-study-v106/master_gcp_metrics.json).
 
 ---
 
@@ -98,7 +100,7 @@ paper/
 | **Figure 4** | Bounded Memory & Multi-Core Scaling (H2) | `s1_ceiling_*`, `s2_table3_*`, `s3_rna_*`, `s4_scale_*`, `s4_span_*`, `s4_perf_*`, `s4_jobs_*` | Stage 1, Stage 2, Stage 3, Stage 4 |
 | **Figure 5** | Full-Genome chr1..chr22 Germline & Somatic WGS Scaling | `s5_wgs_hg002_*`, `s5_wgs_hg008_*` | Stage 5 (WGS Arms A & B) |
 | **Figure 6** | 10-Platform Sequencing Chemistry & GA4GH v3.5 | `s5_cross_platform_*`, `s6_ga4gh_v35_*` | Stage 5, Stage 6 |
-| **Figure 7** | Next-Gen Truth (v5.0Q, CMRG, Mosaic) & HG008 Landscape | `s4_tier3_*`, `s6_hg002_v50q_*`, `s6_hg008_modern_*` | Stage 4, Stage 6 |
+| **Figure 7** | Next-Gen Truth (v5.0q, CMRG, Mosaic) & HG008 Benchmark | `s4_tier3_*`, `s6_hg002_v50q_*`, `s6_hg008_modern_*` | Stage 4, Stage 6 |
 | **Figure 8** | Supply Chain, Determinism, CLI Parity & CPP-1..12 | `s2_tierp_mode_*`, `s4_scale_*`, `s5_h4_*` | Stage 2, Stage 4, Stage 5 |
 | **Figure 9** | `v1.1.0` Opt-In `--compat=off` Schema, Diploid `SEQC2` & `--preset` | `benchmarks/v110-compat-study/v110_compat_metrics.json` | Deterministic `v1.1.0` Domains 1–5 |
 | **Table 1** | Algorithmic Parity (H1/H1a) & Option C Summary | `s1_*`, `s2_tierp_*`, `s3_rna_*`, `s4_*`, `sweep_*` | Stage 1, Stage 2, Stage 3, Stage 4, Sweeps |
@@ -107,7 +109,7 @@ paper/
 | **Table 4** | Bounded Memory (H2), Multi-Core Scaling & Span | `s2_table3_*`, `s3_rna_*`, `s4_jobs_*`, `s4_perf_*`, `s4_scale_*`, `s4_span_*` | Stage 2, Stage 3, Stage 4 |
 | **Table 5** | Full-Genome Germline & 364x Somatic WGS Scaling | `s5_wgs_hg002_*`, `s5_wgs_hg008_*` | Stage 5 (WGS Arms A & B) |
 | **Table 6** | 10-Platform Chemistry Generalization & GA4GH v3.5 | `s5_cross_platform_*`, `s6_ga4gh_v35_*` | Stage 5, Stage 6 |
-| **Table 7** | Next-Gen Truth Benchmarks & HG008 Landscape | `s4_tier3_*`, `s6_hg002_v50q_*`, `s6_hg008_modern_*` | Stage 4, Stage 6 |
+| **Table 7** | Next-Gen Truth Benchmarks & HG008 Benchmark | `s4_tier3_*`, `s6_hg002_v50q_*`, `s6_hg008_modern_*` | Stage 4, Stage 6 |
 | **Table 8** | Supply-Chain Security (H4), Static musl & Divergences | `s2_tierp_mode_*`, `s5_h4_maintenance_security_matrix` | Stage 2, Stage 5 |
 | **Table 9** | `v1.1.0` `--compat=off`, `--preset`, & Validator/Truth Summary | `benchmarks/v110-compat-study/v110_compat_metrics.json` | Deterministic `v1.1.0` Domains 1–6 |
 | **Table S1** | Complete 60-Directory GCP Study Inventory | All 60 directories in `cells_60_inventory.tsv` | All 6 Stages + Sweeps |
@@ -149,16 +151,19 @@ python3 harness/sync_evidence_docs.py --check
 
 ### 6.1 Uploadable Asset Bundle
 All camera-ready and editorial-portal submission artifacts are generated deterministically by `bash paper/reproduce_all.sh`:
+
 - **Typeset Main Manuscript & Supplement PDFs (`bioRxiv` & Initial Peer Review):** [`paper/manuscript.pdf`](manuscript.pdf) (single-file typeset PDF with inline vector figures `Figure 1`–`Figure 9` and `Table 1`–`Table 9`) and [`paper/supplement.pdf`](supplement.pdf) (`Supplementary Methods 1.0–1.8`, `Supplementary Notes 1–3`, and `Supplementary Tables S1–S7`).
 - **Standalone Camera-Ready Vector Figures (`300+` DPI / TrueType Type-42 PDF & Searchable SVG):** [`paper/figures/fig1.pdf`](figures/fig1.pdf)–[`paper/figures/fig9.pdf`](figures/fig9.pdf) and [`paper/figures/fig1.svg`](figures/fig1.svg)–[`paper/figures/fig9.svg`](figures/fig9.svg) (Okabe-Ito colorblind-safe palette).
 - **Standalone LaTeX & Markdown Tables:** [`paper/tables/table1.tex`](tables/table1.tex)–[`paper/tables/table9.tex`](tables/table9.tex) and [`paper/tables/supp_table1.tex`](tables/supp_table1.tex)–[`paper/tables/supp_table7.tex`](tables/supp_table7.tex) (`booktabs` + `\resizebox{\textwidth}{!}{...}` ready for Springer Nature `sn-jnl` or Oxford `bioinfo` LaTeX templates).
 
 ### 6.2 Manuscript Structure & Formatting Metrics
+
 - **Structured Abstract:** Strictly `<= 350` words across `Background`, `Results`, and `Conclusions` (*Genome Biology* Software article limit `250–350` words), followed by `10` indexing keywords and a `5`-bullet **Key Points** box.
 - **Display Items:** `9` Main Figures (`Figures 1–9`), `9` Main Tables (`Tables 1–9`), `7` Supplementary Tables (`Tables S1–S7`), and `27` numbered, DOI-verified references.
 - **Preprint Licensing & Category (`bioRxiv`):** Subject area **Bioinformatics**; recommended license **CC BY 4.0** (matching permissive `MIT` software licensing in [`LICENSE`](../LICENSE)).
 
 ### 6.3 Portal Metadata, Disclosures, & Data Availability Checklist
+
 - **Corresponding Author:** Palak Sheth (`palakpsheth@gmail.com`; [LinkedIn](https://www.linkedin.com/in/palak-p-sheth/); attach ORCID iD in Springer Nature Snapp / Oxford ScholarOne / `bioRxiv` portal metadata).
 - **CRediT Taxonomy & Competing Interests:** Sole-author CRediT roles (`Conceptualization` through `Visualization`), self-funded cloud compute disclosure (`No external funding`), and `No competing interests` statement included in [`manuscript.md`](manuscript.md) under `## Declarations`.
 - **AI-Assisted Development & Transparency Disclosure:** Included under `### AI-assisted development and transparency disclosure` in [`manuscript.md`](manuscript.md) per ICMJE, Springer Nature/*Genome Biology*, Oxford University Press, and [rewrites.bio](https://rewrites.bio) policies (disclosing `Google Gemini / Antigravity CLI` and `Anthropic Claude`, non-authorship of AI tools, full human responsibility, and automated differential/workspace test gates).
@@ -167,6 +172,7 @@ All camera-ready and editorial-portal submission artifacts are generated determi
   - **Public Sequencing Benchmarks:** NCBI SRA `PRJNA744870` (`SRR15006375`, `SRR15006376`, `SRR15006386`, `SRR15006540`), `PRJNA523380` (`SRR8657348`), and `PRJNA506071` (`SEQC2 HCC1395/HCC1395BL`); NIST GIAB FTP (`HG002` `v4.2.1`, `v5.0q T2T-Q100`, `CMRG v1.00`, `Mosaic v1.10`; `HG005`; `HG008` `v0.3`/`v0.4`); and `ENA SRP295113` + Figshare (`doi:10.6084/m9.figshare.19128005.v2`, `doi:10.6084/m9.figshare.13511829.v4`) for `QIAseq V3` and Illumina paired-end oncopanel benchmarks.
 
 ### 6.4 Suggested Cover-Letter Highlights (*Genome Biology* / *Bioinformatics*)
-1. **Drop-In Pipeline Consolidation Without Re-Validation Friction:** `VarDictRust` consolidates `VarDictJava -> R -> Perl` (`121` Conda packages) into a single `3.46 MB` `#![forbid(unsafe_code)]` static Rust binary that preserves `100%` Tier-1/2 numerical and allele equivalence (`ε = 1e-6`) across `13/13` operational modes and `10` short-read sequencing chemistries by default (`--compat=vardictjava`).
-2. **Bounded $O(\text{tile} + \text{halo})$ Whole-Genome Scaling:** Eliminates whole-chromosome JVM out-of-memory crashes (`38.2×` faster and `110.2×` leaner than `VarDictJava -Xmx200g` on contiguous `chr1`), completing unchunked `130.8 GB` `HG002` and `329.0 GB` `364×` `HG008` somatic WGS on a `128 GiB` node and recovering `+2.46%` SNV / `+2.43%` indel recall on `NIST GIAB v5.0q T2T-Q100` (`+4.18%` / `+5.74%` on `CMRG v1.00`).
-3. **Governed Opt-In Clinical Correctness (`v1.1.0`):** Isolates `32` upstream VCFv4.2/v4.3 schema, SV, somatic multi-allelic, adapter-chimera, and `--eqx` fixes behind `--compat=off` plus `--preset` (`wgs`, `wes`, `amplicon`, `ctdna`) and `-sp`, eliminating `11,612` strict VCF schema defects across `19` callsets and recovering `+31.7%` subclonal `SEQC2` somatic recall (`+0.1538` optimal $F_1$) in diploid `rtg vcfeval` without `--squash-ploidy`.
+
+1. **Drop-In Pipeline Consolidation Without Re-Validation Friction:** `VarDictRust` consolidates `VarDictJava -> R -> Perl` (`102` Conda packages) into a single `4.56 MiB` static `musl` (`4.46 MiB` `glibc`) `#![forbid(unsafe_code)]` Rust binary that preserves `100%` Tier-1/2 numerical and allele equivalence (`ε = 1e-6`) across `13/13` operational modes and all completing paired runs across `10` short-read sequencing chemistries (`11/20` runs where `VarDictJava` did not time out) by default (`--compat=vardictjava`).
+2. **Bounded $O(\text{tile} + \text{halo})$ Whole-Genome Scaling:** Eliminates whole-chromosome JVM out-of-memory crashes (`51.5×` faster and `342.2×` leaner than `VarDictJava -Xmx200g` on contiguous `chr1`), completing unchunked `130.8 GB` `HG002` (`5.05 GB` RAM) and `329.0 GB` `364×` `HG008` somatic WGS (`12.43 GB` RAM) within `128 GiB` (`n2-standard-32`) and recovering `+5.01%` SNV / `+17.26%` indel recall on `NIST GIAB v5.0q T2T-Q100` (`+17.47%` / `+27.98%` on `CMRG v1.00`).
+3. **Governed Opt-In Clinical Correctness (`v1.1.0`):** Isolates `32` upstream VCFv4.2/v4.3 schema, SV, somatic multi-allelic, adapter-chimera, and `--eqx` fixes behind `--compat=off` plus `--preset` (`wgs`, `wes`, `amplicon`, `ctdna`) and `-sp`, eliminating `11,612` strict VCF schema defects across `19` callsets and rescuing `+13/41` (`+31.7 pp`) `GT=0/0`-masked `SEQC2`-slice somatic calls (`+0.1538` optimal $F_1$) in ploidy-strict diploid `rtg vcfeval` without `--squash-ploidy`.

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Reproduce all VarDictRust v1.0.6 cloud & v1.1.0 clinical paper figures, tables, manuscript/supplement PDFs, and LinkedIn carousel.
 # Default mode is 100% offline using git-tracked benchmarks/gcp-study-v106/ and benchmarks/v110-compat-study/.
-# Usage: bash paper/reproduce_all.sh [--sync-gcs] [--run-v110-eval] [--require-head-fingerprint]
+# Usage: bash paper/reproduce_all.sh [--sync-gcs] [--reaggregate-gcp] [--run-v110-eval] [--require-head-fingerprint]
 #   --sync-gcs                  Re-pull raw cell outputs from gs://vardict-paper-trial-results/cells-v106/.
+#   --reaggregate-gcp           Re-extract benchmarks/gcp-study-v106/ from local benchmarks/data/gcp-study-v106/ raw cells.
 #   --run-v110-eval             Re-execute all 6 deterministic v1.1.0 --compat=off & --preset domains locally.
 #   --require-head-fingerprint  Enforce live HEAD engine fingerprint parity in check_release_consistency.py
 #                               (also enabled automatically on release/* branches/PRs and refs/tags/v*).
@@ -15,12 +16,16 @@ export PATH="$HOME/.local/bin:$PATH"
 UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")}"
 
 SYNC_GCS=0
+REAGGREGATE_GCP=0
 RUN_V110_EVAL=0
 REQUIRE_HEAD_FP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --sync-gcs)
       SYNC_GCS=1
+      ;;
+    --reaggregate-gcp)
+      REAGGREGATE_GCP=1
       ;;
     --run-v110-eval)
       RUN_V110_EVAL=1
@@ -80,7 +85,7 @@ if [[ "$SYNC_GCS" -eq 1 ]]; then
 fi
 
 RAW_CELLS_DIR="$ROOT/benchmarks/data/gcp-study-v106"
-if [[ -d "$RAW_CELLS_DIR" ]] && [[ $(find "$RAW_CELLS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l) -ge 60 ]]; then
+if [[ ( "$SYNC_GCS" -eq 1 || "$REAGGREGATE_GCP" -eq 1 || ! -f "$ROOT/benchmarks/gcp-study-v106/SHA256SUMS.tsv" ) && -d "$RAW_CELLS_DIR" ]] && [[ $(find "$RAW_CELLS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l) -ge 60 ]]; then
   echo "Aggregating 60 raw GCP study cells from $RAW_CELLS_DIR..."
   "$PY" paper/aggregate_gcp_study.py --raw-dir "$RAW_CELLS_DIR" --out-dir benchmarks/gcp-study-v106
 else

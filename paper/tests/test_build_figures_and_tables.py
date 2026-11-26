@@ -394,13 +394,26 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0, msg=f"stderr={res.stderr}\nstdout={res.stdout}")
 
+        fig7_svg = (FIG_DIR / "fig7.svg").read_text(encoding="utf-8")
+        fig8_svg = (FIG_DIR / "fig8.svg").read_text(encoding="utf-8")
         fig9_svg = (FIG_DIR / "fig9.svg").read_text(encoding="utf-8")
         ET.fromstring(fig9_svg)
+        self.assertNotIn("Landscape", fig7_svg)
+        self.assertNotIn("Scratch OCI", fig8_svg)
         self.assertIn("SEQC2", fig9_svg)
+        self.assertIn("0.639", fig9_svg)
+        self.assertIn("0.643", fig9_svg)
         self.assertIn(">0<", re.sub(r"\s+", "", fig9_svg))
 
+        t2_md = (TAB_DIR / "table2.md").read_text(encoding="utf-8")
+        t8_md = (TAB_DIR / "table8.md").read_text(encoding="utf-8")
         t9_md = (TAB_DIR / "table9.md").read_text(encoding="utf-8")
         s7_md = (TAB_DIR / "supp_table7.md").read_text(encoding="utf-8")
+
+        self.assertIn("0.00049", t2_md)
+        self.assertIn("Published C++ Port [11]", t8_md)
+        self.assertIn("MIT, v1.1.0", t8_md)
+        self.assertNotIn("Unpinned ecosystem dependencies", t8_md)
 
         t9_data_rows = [
             ln for ln in t9_md.splitlines()
@@ -413,7 +426,23 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         self.assertIn(v110_doc["meta"]["study_fingerprint"], t9_md)
         for ref_num in ("1", "10", "12", "13", "19", "26", "27"):
             self.assertRegex(t9_md, rf"\[[^\]]*\b{ref_num}\b[^\]]*\]", f"Missing citation [{ref_num}] in table9.md")
-        self.assertNotIn("43/91", t9_md, "Mismatched QIAseq -sp numerator/denominator (43/91) in table9.md")
+        self.assertIn("SEQC2 TP=43/91", t9_data_rows[2])
+        self.assertNotIn("43/91", t9_data_rows[4], "Mismatched QIAseq -sp numerator/denominator (43/91) in Domain 5 of table9.md")
+        self.assertIn("43/192", t9_data_rows[4])
+        self.assertIn("24/91", t9_data_rows[4])
+        self.assertIn("+31.7 pp", t9_md)
+        self.assertNotIn("+31.7%", t9_md)
+        for req_ci in (
+            "39.75%–71.53%",
+            "73.80%–95.92%",
+            "35.13%–67.12%",
+            "67.94%–92.85%",
+            "36.69%–58.00%",
+            "59.98%–75.86%",
+            "8.18%–18.03%",
+            "16.71%–28.96%",
+        ):
+            self.assertIn(req_ci, t9_md, f"Missing Clopper-Pearson CI {req_ci} in table9.md")
 
         s7_data_rows = [
             ln for ln in s7_md.splitlines()
@@ -428,13 +457,27 @@ class TestBuildFiguresAndTables(unittest.TestCase):
             self.assertRegex(s7_md, rf"\[[^\]]*\b{ref_num}\b[^\]]*\]", f"Missing citation [{ref_num}] in supp_table7.md")
 
         bare_issue_re = re.compile(r"(?<![A-Za-z0-9_/-])#\d+\b")
-        for label, md_txt in (("table9.md", t9_md), ("supp_table7.md", s7_md)):
+        all_16_stems = [f"table{i}" for i in range(1, 10)] + [f"supp_table{i}" for i in range(1, 8)]
+        for stem in all_16_stems:
+            label = f"{stem}.md"
+            md_txt = (TAB_DIR / label).read_text(encoding="utf-8")
             body_no_heading = "\n".join(
                 ln for ln in md_txt.splitlines() if not ln.startswith("### ")
             )
             self.assertIsNone(
                 bare_issue_re.search(body_no_heading),
                 f"Bare #N issue reference found in {label}",
+            )
+            for banned_tok in ("Landscape", "Clinical AML AML", "M17", "supply-chain"):
+                self.assertNotIn(
+                    banned_tok,
+                    md_txt,
+                    f"Banned token {banned_tok!r} found in {label}",
+                )
+
+        for label, md_txt in (("table9.md", t9_md), ("supp_table7.md", s7_md)):
+            body_no_heading = "\n".join(
+                ln for ln in md_txt.splitlines() if not ln.startswith("### ")
             )
             for code_span in re.findall(r"`([^`\n]+)`", md_txt):
                 self.assertNotIn("|", code_span, f"Pipe character inside inline code span in {label}: {code_span!r}")

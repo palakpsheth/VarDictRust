@@ -6,8 +6,8 @@ from __future__ import annotations
 import ast
 import csv
 import hashlib
+import importlib.util
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -270,7 +270,72 @@ class TestCollectV110CompatMetrics(unittest.TestCase):
             tsv_rows = list(reader)
         self.assertEqual(len(tsv_rows), 6)
         for row in tsv_rows:
-            self.assertEqual(row["verdict"], "PASS")
+            self.assertTrue(
+                row["verdict"].startswith("PASS"),
+                f"Expected PASS prefix in verdict, got {row['verdict']!r}",
+            )
+
+        # Arm 1 provenance clarity: 17 wet-lab BAM slices vs 1 synthetic SV BAM + IUPAC fixture
+        self.assertIn("17", tsv_rows[0]["provenance_type"])
+        self.assertIn("vartovcf_sv_contig1", tsv_rows[0]["provenance_type"])
+        self.assertIn("IUPAC", tsv_rows[0]["provenance_type"])
+
+        # Arm 2 full unthresholded + optimal-QUAL metrics and percentage-point (+31.7 pp) verdict
+        for col_name in ("vardictjava_result", "compat_off_result"):
+            self.assertIn("P=", tsv_rows[1][col_name])
+            self.assertIn("R=", tsv_rows[1][col_name])
+            self.assertIn("QUAL", tsv_rows[1][col_name])
+        self.assertIn("+31.7 pp", tsv_rows[1]["verdict"])
+        self.assertNotIn("+31.7%", tsv_rows[1]["verdict"])
+
+        # Arm 5 full-panel /192 denominator alongside >=50x /91 denominator
+        self.assertIn("24/192", tsv_rows[4]["vardictjava_result"])
+        self.assertIn("14/91", tsv_rows[4]["vardictjava_result"])
+        self.assertIn("43/192", tsv_rows[4]["compat_off_result"])
+        self.assertIn("24/91", tsv_rows[4]["compat_off_result"])
+
+    def test_explicit_minus_z_on_all_zero_based_bed_cli_calls_and_sanitize_order(self) -> None:
+        src = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("import bisect", src, "Unused import bisect must be removed")
+        tree = ast.parse(src, filename=str(SCRIPT))
+
+        bed_col_lists_found = 0
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.List, ast.Tuple)):
+                str_elts = [
+                    elt.value if isinstance(elt, ast.Constant) and isinstance(elt.value, str) else None
+                    for elt in node.elts
+                ]
+                for i in range(len(str_elts) - 5):
+                    if str_elts[i : i + 6] == ["-c", "1", "-S", "2", "-E", "3"]:
+                        bed_col_lists_found += 1
+                        prev_tok = str_elts[i - 1] if i > 0 else None
+                        self.assertEqual(
+                            prev_tok,
+                            "-z",
+                            f"Line {getattr(node, 'lineno', '?')}: explicit 0-based BED '-c 1 -S 2 -E 3' must have '-z' immediately before '-c'",
+                        )
+        self.assertGreaterEqual(bed_col_lists_found, 8)
+
+        # Verify sanitize_text substitutes longer nested paths before shorter parent prefixes
+        spec = importlib.util.spec_from_file_location("collect_v110_compat_metrics", SCRIPT)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # Worktree layout: data_root (/repo) is a parent prefix of root_dir (/repo/.worktrees/wt)
+        sanitized = mod.sanitize_text(
+            "cmd /repo/.worktrees/wt/sub/file.vcf /repo/.worktrees/wt/tmp_run/out.vcf",
+            tmpdir="/repo/.worktrees/wt/tmp_run",
+            data_root=Path("/repo"),
+            root_dir=Path("/repo/.worktrees/wt"),
+        )
+        self.assertEqual(sanitized, "cmd $REPO_ROOT/sub/file.vcf $WORK_TMP/out.vcf")
+
+    def test_wolff_2026_gigabyte_doi_fixed_in_upstream_bugs_md(self) -> None:
+        ub_md = (ROOT / "docs" / "upstream-bugs.md").read_text(encoding="utf-8")
+        self.assertIn("https://doi.org/10.46471/gigabyte.194", ub_md)
+        self.assertNotIn("10.1093/gigabyte/giaf156", ub_md)
 
     def test_switch_catalog_matches_config_rs_in_order_and_hygiene(self) -> None:
         expected_switches = parse_compat_profile_fields(CONFIG_RS)

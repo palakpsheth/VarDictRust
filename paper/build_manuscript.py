@@ -214,6 +214,29 @@ def _load_repo_release_and_engine_macros(repo_root: Path) -> dict[str, str]:
     out["cram_container_cap_mib"] = _extract_mib_const(
         bam_rs, "MAX_CACHED_CRAM_CONTAINER_BYTES", "crates/vardictrust-core/src/bam.rs"
     )
+    out["cram_shard_cap_mib"] = _extract_mib_const(
+        bam_rs, "MAX_SHARD_CACHED_CRAM_BYTES", "crates/vardictrust-core/src/bam.rs"
+    )
+    out["fasta_cache_cap_mib"] = _extract_mib_const(
+        bam_rs,
+        "DEFAULT_FASTA_CACHE_BUDGET_BYTES",
+        "crates/vardictrust-core/src/bam.rs",
+    )
+    shards_m = re.search(
+        r"\bconst\s+CRAM_CONTAINER_CACHE_SHARDS\s*:\s*usize\s*=\s*([^;]+);",
+        bam_rs,
+    )
+    if not shards_m:
+        raise ValueError(
+            "Could not extract CRAM_CONTAINER_CACHE_SHARDS from crates/vardictrust-core/src/bam.rs"
+        )
+    cram_shards = _eval_rust_const_int(
+        shards_m.group(1), "CRAM_CONTAINER_CACHE_SHARDS"
+    )
+    out["cram_cache_shards"] = str(cram_shards)
+    out["cram_total_cache_mib"] = str(
+        cram_shards * int(out["cram_shard_cap_mib"])
+    )
     out["max_bai_cap_mib"] = _extract_mib_const(
         bam_rs, "MAX_BAI_BYTES", "crates/vardictrust-core/src/bam.rs"
     )
@@ -250,12 +273,64 @@ def _load_repo_release_and_engine_macros(repo_root: Path) -> dict[str, str]:
 
     mm_m = re.search(r"\bmax_mismatches\s*:\s*(\d+)\s*,", default_body)
     indel_m = re.search(r"\bindel_size\s*:\s*(\d+)\s*,", default_body)
+    def_freq_m = re.search(r"\bfreq\s*:\s*([0-9.]+)\s*,", default_body)
+    def_mr_m = re.search(r"\bmin_reads\s*:\s*(\d+)\s*,", default_body)
+    def_bq_m = re.search(r"\bbase_qual\s*:\s*([0-9.]+)\s*,", default_body)
     if not mm_m:
         raise ValueError("Could not extract default max_mismatches from Config::default()")
     if not indel_m:
         raise ValueError("Could not extract default indel_size from Config::default()")
+    if not (def_freq_m and def_mr_m and def_bq_m):
+        raise ValueError("Could not extract default freq/min_reads/base_qual from Config::default()")
     out["default_max_mm"] = mm_m.group(1)
     out["default_indel_size_bp"] = indel_m.group(1)
+
+    def_freq_s = def_freq_m.group(1)
+    def_mr_s = def_mr_m.group(1)
+    def_bq_s = def_bq_m.group(1)
+
+    preset_fn_m = re.search(
+        r"pub\s+fn\s+from_preset\s*\([^)]*\)\s*->\s*Self\s*\{([\s\S]*?)\n    \}",
+        cfg_rs,
+    )
+    if not preset_fn_m:
+        raise ValueError("Could not extract Config::from_preset from crates/vardictrust-core/src/config.rs")
+    preset_body = preset_fn_m.group(1)
+    mapq_m = re.search(r"cfg\.vcf_mapq\s*=\s*Some\(VcfThreshold::new\(([0-9.]+)\)\);", preset_body)
+    if not mapq_m:
+        raise ValueError("Could not extract cfg.vcf_mapq from Config::from_preset")
+    out["preset_shared_mapq"] = str(int(float(mapq_m.group(1))))
+
+    for variant_name, prefix in (
+        ("Wgs", "preset_wgs"),
+        ("Wes", "preset_wes"),
+        ("Amplicon", "preset_amp"),
+        ("Ctdna", "preset_ctdna"),
+    ):
+        arm_m = re.search(
+            rf"WorkflowPreset::{variant_name}\s*=>\s*\{{([\s\S]*?)\n            \}}",
+            preset_body,
+        )
+        if not arm_m:
+            raise ValueError(f"Could not extract WorkflowPreset::{variant_name} arm from Config::from_preset")
+        arm_src = arm_m.group(1)
+        f_m = re.search(r"cfg\.freq\s*=\s*([0-9.]+);", arm_src)
+        mr_m = re.search(r"cfg\.min_reads\s*=\s*(\d+);", arm_src)
+        vaf_m = re.search(r"cfg\.vcf_af\s*=\s*Some\(VcfThreshold::new\(([0-9.]+)\)\);", arm_src)
+        dp_m = re.search(r"cfg\.vcf_min_depth\s*=\s*Some\(VcfThreshold::new\((\d+)\)\);", arm_src)
+        vd_m = re.search(r"cfg\.vcf_min_vd\s*=\s*Some\(VcfThreshold::new\((\d+)\)\);", arm_src)
+        qm_m = re.search(r"cfg\.vcf_qmean\s*=\s*Some\(VcfThreshold::new\(([0-9.]+)\)\);", arm_src)
+        amp_m = re.search(r'cfg\.amplicon\s*=\s*Some\("([^"]+)"\.to_string\(\)\);', arm_src)
+        if not (vaf_m and dp_m and vd_m):
+            raise ValueError(f"Missing vcf_af/vcf_min_depth/vcf_min_vd in WorkflowPreset::{variant_name}")
+        out[f"{prefix}_freq"] = f_m.group(1) if f_m else def_freq_s
+        out[f"{prefix}_min_reads"] = mr_m.group(1) if mr_m else def_mr_s
+        out[f"{prefix}_vcf_af"] = vaf_m.group(1)
+        out[f"{prefix}_min_dp"] = dp_m.group(1)
+        out[f"{prefix}_min_vd"] = vd_m.group(1)
+        out[f"{prefix}_qmean"] = qm_m.group(1) if qm_m else def_bq_s
+        if amp_m:
+            out[f"{prefix}_param"] = amp_m.group(1)
 
     hg008_ev_path = repo_root / "benchmarks" / "evidence" / "hg008-tier2.json"
     scale_ev_path = repo_root / "benchmarks" / "evidence" / "scale.json"
@@ -323,6 +398,11 @@ def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
     out["v110_arm1_norm_vj"] = str(a1["bcftools_norm_check_ref_vj_passed"])
     out["v110_arm1_norm_off"] = str(a1["bcftools_norm_check_ref_off_passed"])
     out["v110_arm1_norm_tot"] = str(a1["bcftools_norm_check_ref_off_total"])
+    out["v110_compat_switch_count"] = out["v110_compat_switches"]
+    out["v110_schema_defects_vj"] = out["v110_arm1_defects_vj"]
+    out["v110_bcftools_norm_off"] = (
+        f"{out['v110_arm1_norm_off']}/{out['v110_arm1_norm_tot']}"
+    )
 
     # Domain 2: Diploid SEQC2 HCC1395/HCC1395BL rtg vcfeval without --squash-ploidy
     a2_vj = a2["vardictjava"]
@@ -368,13 +448,20 @@ def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
     out["v110_arm2_off_best_r"] = f"{float(a2_off['best_sensitivity']):.4f}"
     out["v110_arm2_off_best_f1"] = f"{float(a2_off['best_f_measure']):.4f}"
     out["v110_arm2_tp_gain"] = str(a2["tp_baseline_gain"])
+    out["v110_arm2_recall_gain_pp"] = (
+        f"{float(a2['sensitivity_gain']) * 100.0:.1f}"
+    )
     out["v110_arm2_r_gain_pct"] = f"{float(a2['sensitivity_gain']) * 100.0:.1f}%"
-    out["v110_arm2_f1_gain"] = f"{float(a2['f_measure_gain']):.4f}"
+    out["v110_arm2_unthresh_f1_gain"] = f"{float(a2['f_measure_gain']):.4f}"
     out["v110_arm2_best_tp_gain"] = str(a2["best_tp_baseline_gain"])
+    out["v110_arm2_best_recall_gain_pp"] = (
+        f"{float(a2['best_sensitivity_gain']) * 100.0:.1f}"
+    )
     out["v110_arm2_best_r_gain_pct"] = (
         f"{float(a2['best_sensitivity_gain']) * 100.0:.1f}%"
     )
     out["v110_arm2_best_f1_gain"] = f"{float(a2['best_f_measure_gain']):.4f}"
+    out["v110_arm2_f1_gain"] = out["v110_arm2_best_f1_gain"]
 
     # Exact Clopper-Pearson 95% CIs ONLY over independent truth-set variant denominators (AR-11)
     out["cp95_v110_seqc2_vj_r"] = fmt_cp_ci(
@@ -382,6 +469,9 @@ def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
     )
     out["cp95_v110_seqc2_off_r"] = fmt_cp_ci(
         int(a2_off["tp_baseline"]), int(a2["truth_total"])
+    )
+    out["cp95_v110_seqc2_vj_best_r"] = fmt_cp_ci(
+        int(a2_vj["best_tp_baseline"]), int(a2["truth_total"])
     )
     out["cp95_v110_seqc2_off_best_r"] = fmt_cp_ci(
         int(a2_off["best_tp_baseline"]), int(a2["truth_total"])
@@ -401,17 +491,41 @@ def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
     out["v110_arm3_seqc2_ivs"] = f"{int(a3['seqc2_hc']['evaluated_intervals']):,}"
     out["v110_arm3_seqc2_bp"] = f"{int(a3['seqc2_hc']['evaluated_bp']):,}"
     out["v110_arm3_seqc2_tp"] = str(a3["seqc2_hc"]["compat_off"]["tp"])
+    out["v110_arm3_seqc2_fp"] = str(a3["seqc2_hc"]["compat_off"]["fp"])
     out["v110_arm3_seqc2_truth"] = str(a3["seqc2_hc"]["compat_off"]["truth_total"])
+    out["v110_arm3_seqc2_p"] = f"{float(a3['seqc2_hc']['compat_off']['precision']):.4f}"
+    out["v110_arm3_seqc2_r"] = (
+        f"{float(a3['seqc2_hc']['compat_off']['sensitivity']):.4f}"
+    )
     out["v110_arm3_seqc2_f1"] = f"{float(a3['seqc2_hc']['compat_off']['f1']):.4f}"
+    out["cp95_v110_arm3_seqc2_r"] = fmt_cp_ci(
+        int(a3["seqc2_hc"]["compat_off"]["tp"]),
+        int(a3["seqc2_hc"]["compat_off"]["truth_total"]),
+    )
     out["v110_arm3_hg008_ivs"] = str(a3["hg008_v04"]["evaluated_intervals"])
     out["v110_arm3_hg008_bp"] = f"{int(a3['hg008_v04']['evaluated_bp']):,}"
     out["v110_arm3_hg008_tp"] = str(a3["hg008_v04"]["compat_off"]["tp"])
     out["v110_arm3_hg008_truth"] = str(a3["hg008_v04"]["compat_off"]["truth_total"])
+    out["v110_arm3_hg008_vj_fp"] = str(a3["hg008_v04"]["vardictjava"]["fp"])
+    out["v110_arm3_hg008_off_fp"] = str(a3["hg008_v04"]["compat_off"]["fp"])
+    out["v110_arm3_hg008_vj_p"] = (
+        f"{float(a3['hg008_v04']['vardictjava']['precision']):.4f}"
+    )
+    out["v110_arm3_hg008_off_p"] = (
+        f"{float(a3['hg008_v04']['compat_off']['precision']):.4f}"
+    )
+    out["v110_arm3_hg008_r"] = (
+        f"{float(a3['hg008_v04']['compat_off']['sensitivity']):.4f}"
+    )
     out["v110_arm3_hg008_vj_f1"] = (
         f"{float(a3['hg008_v04']['vardictjava']['f1']):.4f}"
     )
     out["v110_arm3_hg008_off_f1"] = (
         f"{float(a3['hg008_v04']['compat_off']['f1']):.4f}"
+    )
+    out["cp95_v110_arm3_hg008_r"] = fmt_cp_ci(
+        int(a3["hg008_v04"]["compat_off"]["tp"]),
+        int(a3["hg008_v04"]["compat_off"]["truth_total"]),
     )
 
     # Domain 4: BRCA2 soft-clip adapter chimera suppression
@@ -455,10 +569,21 @@ def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
         int(a5["qiaseq_spe_known_pos_total"]),
     )
     out["cp95_v110_qiaseq_kp"] = out["cp95_v110_qiaseq_dp50_sp"]
+    out["cp95_v110_qiaseq_panel_nosp"] = fmt_cp_ci(
+        int(a5["qiaseq_spe_no_sp_known_pos_tp"]),
+        int(a5["qiaseq_spe_panel_known_pos_unmasked"]),
+    )
     out["cp95_v110_qiaseq_panel_sp"] = fmt_cp_ci(
         int(a5["qiaseq_spe_known_pos_tp"]),
         int(a5["qiaseq_spe_panel_known_pos_unmasked"]),
     )
+    out["v110_qiaseq_panel_tp_gain"] = out["v110_arm5_qia_panel_gain"]
+    out["v110_qiaseq_panel_nosp_tp"] = out["v110_arm5_qia_panel_nosp"]
+    out["v110_qiaseq_panel_sp_tp"] = out["v110_arm5_qia_panel_sp"]
+    out["v110_qiaseq_panel_total"] = out["v110_arm5_qia_panel_tot"]
+    out["v110_qiaseq_dp50_nosp_tp"] = out["v110_arm5_qia_dp50_nosp"]
+    out["v110_qiaseq_dp50_sp_tp"] = out["v110_arm5_qia_dp50_sp"]
+    out["v110_qiaseq_dp50_total"] = out["v110_arm5_qia_dp50_tot"]
     out["v110_arm5_ac5_d100"] = str(a5["sample_ac5_ctdna_d100_filtered"])
     out["v110_arm5_ctdna_freq"] = f"{float(a5['preset_ctdna_freq']):.3f}"
     out["v110_arm5_ctdna_vcf_af"] = f"{float(a5['preset_ctdna_vcf_af']):.3f}"
@@ -472,6 +597,9 @@ def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
     out["v110_arm5_spike_af"] = f"{float(a5['spikein_observed_af']):.4f}"
     out["v110_arm5_wt_copies"] = str(a5["admixture_wt_copies"])
     out["v110_arm5_alt_reads"] = str(a5["admixture_alt_reads"])
+    out["v110_arm5_wt_bg_dp"] = (
+        f"{int(a5['spikein_observed_dp']) - int(a5['spikein_observed_vd']):,}"
+    )
 
     # Domain 6: Multi-block --csi spanning-SV indexing & -p homopolymer tiling
     out["v110_arm6_csi_bin_bp"] = f"{int(a6['csi_leaf_bin_bp']):,}"
@@ -479,6 +607,7 @@ def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
     out["v110_arm6_max_sv_seq_bp"] = f"{int(a6['max_explicit_sv_seq_bp']):,}"
     out["v110_arm6_colo_blocks"] = str(a6["colo829_bgzf_blocks"])
     out["v110_arm6_span_blocks"] = str(a6["multi_block_bgzf_blocks"])
+    out["v110_arm6_span_bins"] = str(int(a6["interior_bin_queries_total"]) - 1)
     out["v110_arm6_hg008_blocks"] = str(a6["hg008_bgzf_blocks"])
     out["v110_arm6_csi_pass"] = str(a6["interior_bin_queries_passed"])
     out["v110_arm6_csi_tot"] = str(a6["interior_bin_queries_total"])
@@ -598,9 +727,14 @@ def build_macro_context(
     sw_match = int(sw["match_arms"])
     sw_tot = int(sw["total_arms"])
     sw_diff = sw_tot - sw_match
+    sw_single_win = len(sw["by_cell"]["sweep_span_chr1_f0"]) + len(
+        sw["by_cell"]["sweep_R_chr1_full"]
+    )
     m["sweep_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}%"
     m["optc_match_arms"] = str(sw_match)
     m["optc_total_arms"] = str(sw_tot)
+    m["optc_bed_arms"] = str(sw_tot - sw_single_win)
+    m["optc_single_win_arms"] = str(sw_single_win)
     m["optc_diff_arms"] = str(sw_diff)
     m["optc_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}"
     m["cp95_78_87"] = fmt_cp_ci(sw_match, sw_tot)
@@ -732,6 +866,10 @@ def build_macro_context(
     m["s2_tierp_mwu_rss_u"] = f"{mwu_rss.statistic:.1f}"
     m["s2_tierp_mwu_rss_p"] = f"{mwu_rss.pvalue:.4g}"
     m["s2_tierp_sign_perm_p"] = f"{2.0 ** (-len(rust_walls_12)):.5f}"
+    m["s2_tierp_sign_perm_p_twosided"] = (
+        f"{2.0 * (2.0 ** (-len(rust_walls_12))):.5f}"
+    )
+    m["s2_tierp_sign_perm_exp_twosided"] = str(len(rust_walls_12) - 1)
 
     # Stage 2 Table 3 -R chr1
     rchr1 = s2["table3_R_chr1"]
@@ -835,9 +973,10 @@ def build_macro_context(
             f"{td['cpp']['wall_s_min']:.2f}–{td['cpp']['wall_s_max']:.2f}"
         )
         m[f"s4_exome_{tk}_cpp_rss_gib"] = f"{td['cpp']['max_rss_gib_mean']:.2f}"
-        m[f"s4_exome_{tk}_speedup_vs_java"] = (
-            f"{td['java']['wall_s_mean'] / td['rust']['wall_s_mean']:.1f}"
-        )
+        sp_ex_j = td.get("rust_speedup_vs_java")
+        if sp_ex_j is None:
+            sp_ex_j = td["java"]["wall_s_mean"] / td["rust"]["wall_s_mean"]
+        m[f"s4_exome_{tk}_speedup_vs_java"] = f"{float(sp_ex_j):.1f}"
         m[f"s4_exome_{tk}_rss_ratio_vs_java"] = (
             f"{td['java']['max_rss_kb_mean'] / td['rust']['max_rss_kb_mean']:.1f}"
         )
@@ -942,6 +1081,17 @@ def build_macro_context(
     h2_b = s5["wgs_hg002_full_giab_3way_th32"]
     h8_a = s5["wgs_hg008_full_contigs_3way_th32"]
     h8_b = s5["wgs_hg008_full_giab_3way_th32"]
+
+    for s5_macro_prefix, s5_cell in (
+        ("s5_hg002_contigs", h2_a),
+        ("s5_hg002_giab", h2_b),
+        ("s5_hg008_contigs", h8_a),
+        ("s5_hg008_giab", h8_b),
+    ):
+        for eng_k in ("rust", "java", "cpp"):
+            m[f"{s5_macro_prefix}_{eng_k}_rss_gb"] = (
+                f"{float(s5_cell[eng_k]['max_rss_gb_dec']):.2f}"
+            )
 
     m["s5_hg002_contigs_cpp_rss_ratio_vs_rust"] = (
         f"{h2_a['cpp']['max_rss_kb'] / h2_a['rust']['max_rss_kb']:.1f}"
