@@ -22,7 +22,7 @@
     "max_rss_kb": "873584",
     "wall": "0:18.87"
   },
-  "date": "2026-11-18T12:17:16-08:00",
+  "date": "2026-11-25T19:18:39-08:00",
   "extra": {
     "cpp_chunk": "50000",
     "cpp_head": [
@@ -145,11 +145,11 @@
       ],
       "hit": 18,
       "live": 0,
-      "run": "recertify-1795031026"
+      "run": "recertify-1795661101"
     }
   },
-  "fingerprint": "2d82664ff81000f7",
-  "head": "2c2cc5fef125f787e285f075cdf891f5d31ea814",
+  "fingerprint": "b18477ae0a7b07c1",
+  "head": "8222e3f8e0d10d725c05029a69580c1c7e9a7eb0",
   "inputs": [
     {
       "path": "scratch/g4/ref/giabv3/GRCh38_GIABv3.fasta",
@@ -187,7 +187,7 @@
   "result": "MATCH",
   "rust_time": {
     "exit": "0",
-    "max_rss_kb": "267976",
-    "wall": "0:08.20"
+    "max_rss_kb": "206172",
+    "wall": "0:09.36"
   }
 }

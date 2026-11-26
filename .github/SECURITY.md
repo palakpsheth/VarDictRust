@@ -10,8 +10,8 @@ Only the latest active major and minor releases receive security updates and vul
 
 | Version | Supported | Security Maintenance |
 | :--- | :--- | :--- |
-| **`1.0.x`** | :white_check_mark: | Active support (patches for critical/high vulnerabilities and supply-chain advisories) |
-| `< 1.0.0` | :x: | Unsupported (development / pre-release milestones) |
+| **`1.1.x`** | :white_check_mark: | Active support (patches for critical/high vulnerabilities and supply-chain advisories) |
+| `< 1.1.0` | :x: | Unsupported (superseded releases and development milestones) |
 
 ---
 

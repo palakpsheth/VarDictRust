@@ -17,7 +17,7 @@ META_YAML="$RECIPE_DIR/meta.yaml"
 if [[ "${1:-}" == -* ]]; then
   set -- "" "$@"
 fi
-VERSION="${1:-1.0.10}"
+VERSION="${1:-1.1.0}"
 if [ $# -gt 0 ]; then
   shift
 fi

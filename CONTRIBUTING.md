@@ -145,7 +145,7 @@ VarDictRust ships four repository-specific [Agent Skills](AGENTS.md#19-repositor
 
 **Discovery across AI tools:** `.agents/skills/` is committed in-tree and discovered automatically by Gemini CLI, OpenAI Codex, GitHub Copilot, Cursor, and OpenCode. Contributors can also run the bundled release consistency validator directly:
 ```bash
-python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version 1.0.10 --phase pre-tag --verify-cargo-list
+python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version 1.1.0 --phase pre-tag --verify-cargo-list
 ```
 
 ---

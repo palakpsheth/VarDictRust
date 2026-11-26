@@ -1,4 +1,4 @@
-# VarDictRust Paper Reproducibility Package (`v1.0.10` Release / `v1.0.6` GCP Study)
+# VarDictRust Paper Reproducibility Package (`v1.1.0` Release / `v1.0.6` GCP Study)
 
 This package provides a deterministic, single-command reproducibility pipeline for all figures, tables, text statistics, and LinkedIn dissemination assets accompanying the `VarDictRust` evaluation manuscript:
 
