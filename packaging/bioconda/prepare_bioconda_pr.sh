@@ -23,6 +23,7 @@ if [ $# -gt 0 ]; then
 fi
 
 OFFLINE_SHA256=""
+BUILD_NUMBER="0"
 while [ $# -gt 0 ]; do
   case "$1" in
     --version)
@@ -41,6 +42,14 @@ while [ $# -gt 0 ]; do
       OFFLINE_SHA256="$2"
       shift 2
       ;;
+    --build-number)
+      if [ $# -lt 2 ]; then
+        echo "ERROR: --build-number requires a non-negative integer argument." >&2
+        exit 1
+      fi
+      BUILD_NUMBER="$2"
+      shift 2
+      ;;
     --meta-yaml)
       if [ $# -lt 2 ]; then
         echo "ERROR: --meta-yaml requires a target meta.yaml file path." >&2
@@ -50,7 +59,7 @@ while [ $# -gt 0 ]; do
       shift 2
       ;;
     *)
-      echo "ERROR: Unknown argument '$1' (usage: prepare_bioconda_pr.sh [VERSION] [--offline-sha256 <HEX64>] [--meta-yaml <PATH>])." >&2
+      echo "ERROR: Unknown argument '$1' (usage: prepare_bioconda_pr.sh [VERSION] [--offline-sha256 <HEX64>] [--build-number <N>] [--meta-yaml <PATH>])." >&2
       exit 1
       ;;
   esac
@@ -58,6 +67,11 @@ done
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "ERROR: Invalid VERSION '${VERSION}' (expected strict SemVer X.Y.Z)." >&2
+  exit 1
+fi
+
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: Invalid --build-number '${BUILD_NUMBER}' (expected non-negative integer)." >&2
   exit 1
 fi
 
@@ -70,15 +84,19 @@ update_bioconda_meta_yaml() {
   local meta_path="$1"
   local ver="$2"
   local sha="$3"
+  local build_num="$4"
 
-  python3 - "$meta_path" "$ver" "$sha" <<'PY'
+  python3 - "$meta_path" "$ver" "$sha" "$build_num" <<'PY'
 import pathlib, re, sys
 
 path = pathlib.Path(sys.argv[1])
 ver = sys.argv[2]
 sha = sys.argv[3].lower()
+build_num = sys.argv[4]
 if not re.fullmatch(r"[0-9a-f]{64}", sha):
     sys.exit(f"ERROR: invalid 64-hex SHA256 digest: {sys.argv[3]!r}")
+if not re.fullmatch(r"[0-9]+", build_num):
+    sys.exit(f"ERROR: invalid non-negative build number: {build_num!r}")
 
 ver_tuple = tuple(int(x) for x in ver.split("."))
 txt = path.read_text(encoding="utf-8")
@@ -86,7 +104,7 @@ txt = path.read_text(encoding="utf-8")
 replacements = [
     (r"sha256: [0-9a-fA-F]+", f"sha256: {sha}", "sha256"),
     (r'\{% set version = "[^"]*" %\}', f'{{% set version = "{ver}" %}}', "version"),
-    (r"(?m)^([ \t]*number:[ \t]*)[0-9]+", r"\g<1>0", "build.number"),
+    (r"(?m)^([ \t]*number:[ \t]*)[0-9]+", rf"\g<1>{build_num}", "build.number"),
 ]
 
 if ver_tuple >= (1, 1, 0):
@@ -159,9 +177,9 @@ else
 fi
 
 # Update sha256, version, build number, and (for v1.1.0+) pure-MIT metadata in meta.yaml
-update_bioconda_meta_yaml "$META_YAML" "$VERSION" "$SHA256"
+update_bioconda_meta_yaml "$META_YAML" "$VERSION" "$SHA256" "$BUILD_NUMBER"
 
-echo "Updated $META_YAML with version ${VERSION} and sha256 ${SHA256}."
+echo "Updated $META_YAML with version ${VERSION} (build ${BUILD_NUMBER}) and sha256 ${SHA256}."
 echo ""
 echo "Next steps to publish on Bioconda:"
 echo "1. Fork https://github.com/bioconda/bioconda-recipes"

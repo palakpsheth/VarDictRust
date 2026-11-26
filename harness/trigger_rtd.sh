@@ -3,6 +3,7 @@
 #
 # Usage:
 #   bash harness/trigger_rtd.sh status [project_slug]
+#   bash harness/trigger_rtd.sh sync [project_slug]
 #   bash harness/trigger_rtd.sh build [project_slug] [branch]
 #   bash harness/trigger_rtd.sh builds [project_slug]
 
@@ -50,6 +51,24 @@ case "$CMD" in
             exit 1
         fi
         ;;
+    sync)
+        echo "=== Syncing ReadTheDocs Versions: ${PROJECT_SLUG} ==="
+        RESPONSE="$(curl --proto '=https' --tlsv1.2 -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
+            -H @- <<< "Authorization: Token ${RTD_TOKEN}" \
+            "${BASE_URL}/sync-versions/")"
+        STATUS_CODE="$(echo "$RESPONSE" | grep 'HTTP_STATUS:' | cut -d':' -f2)"
+        BODY="$(echo "$RESPONSE" | grep -v 'HTTP_STATUS:')"
+        if [ "$STATUS_CODE" -eq 202 ] || [ "$STATUS_CODE" -eq 204 ]; then
+            echo "Version sync triggered successfully (HTTP ${STATUS_CODE}):"
+            if [ -n "$BODY" ]; then
+                echo "$BODY" | python3 -m json.tool || echo "$BODY"
+            fi
+        else
+            echo "Version sync returned HTTP Status: ${STATUS_CODE}" >&2
+            echo "$BODY" | python3 -m json.tool || echo "$BODY"
+            exit 1
+        fi
+        ;;
     build)
         echo "=== Triggering ReadTheDocs Build: ${PROJECT_SLUG} (version: ${VERSION}) ==="
         RESPONSE="$(curl --proto '=https' --tlsv1.2 -s -w "\nHTTP_STATUS:%{http_code}" -X POST \
@@ -83,7 +102,7 @@ case "$CMD" in
         fi
         ;;
     *)
-        echo "Usage: $0 [status|build|builds] [project_slug] [version]" >&2
+        echo "Usage: $0 [status|sync|build|builds] [project_slug] [version]" >&2
         exit 1
         ;;
 esac

@@ -1,5 +1,5 @@
 {% set name = "vardictrust" %}
-{% set version = "1.0.10" %}
+{% set version = "1.1.0" %}
 
 package:
   name: {{ name|lower }}
@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://github.com/palakpsheth/VarDictRust/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: e7c0daf0c7df4c540296252fabce792f5ca5c72b9bc0517c4d7874a737c81b94
+  sha256: c38fa31f2c2c33b16eef91e2a6f5b096a302498acbb8dbc04a58c6cb726fb7e9
 
 build:
   number: 0
@@ -30,8 +30,8 @@ test:
 
 about:
   home: https://github.com/palakpsheth/VarDictRust
-  license: MIT AND GPL-2.0-or-later
-  license_family: GPL2
+  license: MIT
+  license_family: MIT
   license_file:
     - LICENSE
     - LICENSE-3RD-PARTY
@@ -40,12 +40,13 @@ about:
   description: |
     VarDictRust is a fast, memory-safe Rust somatic and germline variant caller
     that consolidates the VarDictJava v1.8.3 + R + Perl pipeline into a single
-    binary with bounded-memory WGS tiling, default byte-identical VarDictJava
-    v1.8.3 parity on valid inputs (v1.0.10 default; --compat=vardictjava in
-    v1.1.0+), native multithreaded BGZF and Tabix/CSI VCF output, and (in
-    v1.1.0+) opt-in --compat=off correctness, SV, and SAM =/X (--eqx) alignment
-    fixes (17 switches) plus 18/18 var2vcf post-filtering including
-    --vcf-all-alleles multi-allelic VCF output.
+    MIT-licensed binary with bounded-memory WGS tiling, default byte-identical
+    VarDictJava v1.8.3 parity on valid inputs (--compat=vardictjava), native
+    multithreaded BGZF and Tabix/CSI VCF output, opt-in --compat=off correctness,
+    SV, and SAM =/X (--eqx) alignment fixes (32 switches), clinical workflow
+    presets (--preset wgs|wes|amplicon|ctdna), --amplicon-single-primer support,
+    and 18/18 var2vcf post-filtering including --vcf-all-alleles multi-allelic
+    VCF output.
   doc_url: https://vardictrust.readthedocs.io/
   dev_url: https://github.com/palakpsheth/VarDictRust
 

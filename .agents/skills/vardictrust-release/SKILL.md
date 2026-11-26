@@ -114,7 +114,9 @@ gh api repos/nf-core/modules/issues/<nfcore-pr>/labels -X POST --input - <<< '{"
 PR_NODE_ID="$(gh api repos/nf-core/modules/pulls/<nfcore-pr> --jq '.node_id')"
 gh api graphql -f query='mutation($id: ID!) { enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { id state position } } }' -f id="$PR_NODE_ID"
 
-# Trigger ReadTheDocs latest build and sync external registry metadata:
+# Sync ReadTheDocs tags and trigger stable + latest builds, then sync external registry metadata:
+bash harness/trigger_rtd.sh sync vardictrust
+bash harness/trigger_rtd.sh build vardictrust stable
 bash harness/trigger_rtd.sh build vardictrust latest
 # Verify ReadTheDocs admin project metadata (description & project_url) at https://app.readthedocs.org/projects/vardictrust/
 # and update ELIXIR bio.tools (https://bio.tools/vardictrust) version X.Y.Z, SPDX license, and dual-mode description.

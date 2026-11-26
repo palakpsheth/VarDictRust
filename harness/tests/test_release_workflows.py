@@ -1373,6 +1373,28 @@ esac
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
+        # 0) Live ROOT_DIR packaging state must always satisfy check_pre_tag_surfaces:
+        cargo_ver_m = re.search(
+            r'^\[workspace\.package\]\s*\nversion\s*=\s*"([^"]+)"',
+            (ROOT_DIR / "Cargo.toml").read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(cargo_ver_m)
+        live_ver = cargo_ver_m.group(1)
+        errs_live: list[str] = []
+        mod.check_pre_tag_surfaces(ROOT_DIR, live_ver, errs_live, phase="pre-tag")
+        pkg_errs_live = [
+            e
+            for e in errs_live
+            if "packaging/bioconda/recipes/vardictrust/meta.yaml" in e
+            or "packaging/nf-core/modules/vardictrust/" in e
+        ]
+        self.assertEqual(
+            pkg_errs_live,
+            [],
+            f"Live ROOT_DIR packaging failed check_pre_tag_surfaces: {pkg_errs_live}",
+        )
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = pathlib.Path(tmpdir)
             for item in ROOT_DIR.iterdir():
@@ -1382,6 +1404,54 @@ esac
                     shutil.copytree(item, tmp_root / "packaging")
                 else:
                     os.symlink(item, tmp_root / item.name)
+
+            bc_meta = tmp_root / "packaging" / "bioconda" / "recipes" / "vardictrust" / "meta.yaml"
+            nf_env = tmp_root / "packaging" / "nf-core" / "modules" / "vardictrust" / "environment.yml"
+            nf_meta = tmp_root / "packaging" / "nf-core" / "modules" / "vardictrust" / "meta.yml"
+
+            # Seed deterministic legacy 1.0.10 GPL dual-licensed recipe state into tmp_root
+            # so this state-machine test remains invariant before and after Phase 3A/3B:
+            bc_1010 = re.sub(
+                r'\{%\s*set\s+version\s*=\s*"[^"]*"\s*%\}',
+                '{% set version = "1.0.10" %}',
+                bc_meta.read_text(encoding="utf-8"),
+                count=1,
+            )
+            bc_1010 = re.sub(
+                r"(?m)^([ \t]*license:[ \t]*).+$",
+                r"\g<1>MIT AND GPL-2.0-or-later",
+                bc_1010,
+                count=1,
+            )
+            bc_1010 = re.sub(
+                r"(?m)^([ \t]*license_family:[ \t]*).+$",
+                r"\g<1>GPL2",
+                bc_1010,
+                count=1,
+            )
+            bc_meta.write_text(bc_1010, encoding="utf-8")
+
+            nf_env.write_text(
+                re.sub(
+                    r"bioconda::vardictrust=[0-9]+\.[0-9]+\.[0-9]+",
+                    "bioconda::vardictrust=1.0.10",
+                    nf_env.read_text(encoding="utf-8"),
+                    count=1,
+                ),
+                encoding="utf-8",
+            )
+            nf_meta.write_text(
+                re.sub(
+                    r'(^\s*-\s*"vardictrust":\s*\n(?:(?!^\s*-\s*"[A-Za-z0-9_-]+":)[^\n]*\n)*?'
+                    r"^(\s*)licence:\s*\n)"
+                    r"(\s*-\s*\"[^\n]+\"\s*\n)+",
+                    lambda m: f'{m.group(1)}{m.group(2)}  - "MIT"\n{m.group(2)}  - "GPL-2.0-or-later"\n',
+                    nf_meta.read_text(encoding="utf-8"),
+                    count=1,
+                    flags=re.MULTILINE,
+                ),
+                encoding="utf-8",
+            )
 
             # 1) Simulate Phase 1 pre-tag for 1.1.0 while Bioconda & nf-core recipes remain pinned to 1.0.10:
             errs_pretag: list[str] = []
@@ -1399,9 +1469,6 @@ esac
             )
 
             # 2) Once recipes bump their own pinned version to 1.1.0, stale GPL dual-licensing is rejected:
-            bc_meta = tmp_root / "packaging" / "bioconda" / "recipes" / "vardictrust" / "meta.yaml"
-            nf_env = tmp_root / "packaging" / "nf-core" / "modules" / "vardictrust" / "environment.yml"
-            nf_meta = tmp_root / "packaging" / "nf-core" / "modules" / "vardictrust" / "meta.yml"
             bc_meta.write_text(
                 bc_meta.read_text(encoding="utf-8").replace(
                     '{% set version = "1.0.10" %}', '{% set version = "1.1.0" %}'
