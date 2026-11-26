@@ -196,6 +196,7 @@
       "pileup_covered_bases_retained": 2439,
       "pileup_covered_bases_retained_pct": 100.0,
       "pileup_covered_bases_total": 2439,
+      "pileup_full_span_cases_total": 2,
       "pileup_untiled_eq_tiled_cases": 2,
       "pos0_sentinel_rows": 0
     }

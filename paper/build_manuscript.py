@@ -611,6 +611,7 @@ def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
     out["v110_arm6_hg008_blocks"] = str(a6["hg008_bgzf_blocks"])
     out["v110_arm6_csi_pass"] = str(a6["interior_bin_queries_passed"])
     out["v110_arm6_csi_tot"] = str(a6["interior_bin_queries_total"])
+    out["v110_arm6_pileup_full_span_total"] = str(a6["pileup_full_span_cases_total"])
     out["v110_arm6_pileup_eq_cases"] = str(a6["pileup_untiled_eq_tiled_cases"])
     out["v110_arm6_pileup_ret"] = f"{int(a6['pileup_covered_bases_retained']):,}"
     out["v110_arm6_pileup_tot"] = f"{int(a6['pileup_covered_bases_total']):,}"
@@ -727,14 +728,20 @@ def build_macro_context(
     sw_match = int(sw["match_arms"])
     sw_tot = int(sw["total_arms"])
     sw_diff = sw_tot - sw_match
-    sw_single_win = len(sw["by_cell"]["sweep_span_chr1_f0"]) + len(
-        sw["by_cell"]["sweep_R_chr1_full"]
+    sw_single_cells = ("sweep_span_chr1_f0", "sweep_R_chr1_full")
+    sw_single_rows = [r for k in sw_single_cells for r in sw["by_cell"][k]]
+    sw_single_win = len(sw_single_rows)
+    sw_single_win_match = sum(
+        1 for r in sw_single_rows if str(r.get("verdict", "")).upper().startswith("MATCH")
     )
+    sw_bed_match = sw_match - sw_single_win_match
     m["sweep_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}%"
     m["optc_match_arms"] = str(sw_match)
     m["optc_total_arms"] = str(sw_tot)
     m["optc_bed_arms"] = str(sw_tot - sw_single_win)
+    m["optc_bed_match_arms"] = str(sw_bed_match)
     m["optc_single_win_arms"] = str(sw_single_win)
+    m["optc_single_win_match_arms"] = str(sw_single_win_match)
     m["optc_diff_arms"] = str(sw_diff)
     m["optc_match_pct"] = f"{(sw_match / sw_tot) * 100.0:.2f}"
     m["cp95_78_87"] = fmt_cp_ci(sw_match, sw_tot)

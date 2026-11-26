@@ -1377,7 +1377,7 @@ def build_fig5(doc: dict[str, Any], fig_dir: Path) -> None:
     ax_c.set_title(
         "C. Full-Genome WGS Truth Accuracy (HG002 Java==Rust; HG008 Rust Only)",
         loc="left",
-        fontsize=8.3,
+        fontsize=7.9,
     )
     ax_c.legend(loc="lower right", frameon=True, fontsize=7.5)
 
@@ -2048,7 +2048,7 @@ def build_fig9(v110_doc: dict[str, Any], fig_dir: Path) -> None:
             txt,
             ha="center",
             va="bottom",
-            fontsize=6.7,
+            fontsize=5.8,
             fontweight="bold",
             color=PALETTE["VarDictJava"],
         )
@@ -2059,7 +2059,7 @@ def build_fig9(v110_doc: dict[str, Any], fig_dir: Path) -> None:
             txt,
             ha="center",
             va="bottom",
-            fontsize=6.7,
+            fontsize=5.8,
             fontweight="bold",
             color=PALETTE["VarDictRust"],
         )
@@ -4169,7 +4169,10 @@ def build_all_tables(
 
 
 def verify_outputs(
-    fig_dir: Path, tab_dir: Path, inv_rows: list[dict[str, str]]
+    fig_dir: Path,
+    tab_dir: Path,
+    inv_rows: list[dict[str, str]],
+    v110_doc: dict[str, Any],
 ) -> None:
     """Verify all 9 figures (SVG+PDF) and 16 tables (MD+TeX) exist, are valid, and represent all 60 cells."""
     for i in range(1, 10):
@@ -4234,6 +4237,11 @@ def verify_outputs(
         if cid not in s1_txt:
             raise ValueError(f"Cell {cid} missing from supp_table1.md")
 
+    s7_txt = (tab_dir / "supp_table7.md").read_text(encoding="utf-8")
+    for sw_entry in v110_doc["switch_catalog"]:
+        if sw_entry["name"] not in s7_txt:
+            raise ValueError(f"Switch {sw_entry['name']} missing from supp_table7.md")
+
 
 def build_all(
     input_json: Path,
@@ -4261,7 +4269,7 @@ def build_all(
     build_fig8(doc, fig_dir)
     build_fig9(v110_doc, fig_dir)
     build_all_tables(doc, inv_rows, tab_dir, v110_doc)
-    verify_outputs(fig_dir, tab_dir, inv_rows)
+    verify_outputs(fig_dir, tab_dir, inv_rows, v110_doc)
 
 
 def main() -> int:
@@ -4298,28 +4306,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.verify:
-        missing_any = (
-            any(
-                not (args.fig_dir / f"fig{i}.svg").is_file()
-                or not (args.fig_dir / f"fig{i}.pdf").is_file()
-                for i in range(1, 10)
-            )
-            or any(
-                not (args.tab_dir / f"table{i}.md").is_file()
-                or not (args.tab_dir / f"table{i}.tex").is_file()
-                for i in range(1, 10)
-            )
-            or any(
-                not (args.tab_dir / f"supp_table{i}.md").is_file()
-                or not (args.tab_dir / f"supp_table{i}.tex").is_file()
-                for i in range(1, 8)
-            )
-        )
-        if missing_any:
-            build_all(args.input, args.fig_dir, args.tab_dir, args.v110_input)
-        else:
-            inv_rows = load_tsv(args.input.parent / "cells_60_inventory.tsv")
-            verify_outputs(args.fig_dir, args.tab_dir, inv_rows)
+        if not args.input.is_file():
+            raise SystemExit(f"ERROR: missing master metrics JSON: {args.input}")
+        if not args.v110_input.is_file():
+            raise SystemExit(f"ERROR: missing v1.1.0 metrics JSON: {args.v110_input}")
+        inv_rows = load_tsv(args.input.parent / "cells_60_inventory.tsv")
+        v110_doc = json.loads(args.v110_input.read_text(encoding="utf-8"))
+        verify_outputs(args.fig_dir, args.tab_dir, inv_rows, v110_doc)
         print(
             f"OK verified 9 SVG/PDF figures in {args.fig_dir} and 16 MD/TeX tables in {args.tab_dir}"
         )

@@ -149,18 +149,6 @@ FORBIDDEN_DOMAIN_STRINGS = {
 
 
 class TestBuildFiguresAndTables(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        if SCRIPT.is_file():
-            res = subprocess.run(
-                [sys.executable, str(SCRIPT), "--input", "benchmarks/gcp-study-v106/master_gcp_metrics.json"],
-                cwd=str(ROOT),
-                capture_output=True,
-                text=True,
-            )
-            if res.returncode != 0:
-                raise RuntimeError(f"build_figures_and_tables.py failed:\nstderr={res.stderr}\nstdout={res.stdout}")
-
     def test_build_and_verify_all_figures_and_tables(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")
         res = subprocess.run(
@@ -170,6 +158,27 @@ class TestBuildFiguresAndTables(unittest.TestCase):
             text=True,
         )
         self.assertEqual(res.returncode, 0, msg=f"stderr={res.stderr}\nstdout={res.stdout}")
+
+        # --verify must fail closed when a figure/table is missing or --v110-input is invalid
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tp = Path(tmpdir)
+            res_missing = subprocess.run(
+                [sys.executable, str(SCRIPT), "--verify", "--fig-dir", str(tp)],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(res_missing.returncode, 0, "--verify must fail closed on missing figures")
+
+            res_bad_v110 = subprocess.run(
+                [sys.executable, str(SCRIPT), "--verify", "--v110-input", str(tp / "missing.json")],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(res_bad_v110.returncode, 0, "--verify must fail closed on missing --v110-input")
 
         for i in range(1, 10):
             svg = FIG_DIR / f"fig{i}.svg"

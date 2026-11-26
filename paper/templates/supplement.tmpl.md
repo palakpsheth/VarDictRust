@@ -3,7 +3,7 @@
 **Authors:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/)<sup>1,*</sup>  
 <sup>1</sup>Independent Researcher ([palakpsheth@gmail.com](mailto:palakpsheth@gmail.com) | [https://www.linkedin.com/in/palak-p-sheth/](https://www.linkedin.com/in/palak-p-sheth/))  
 **Cloud Study Engine Baseline:** `VarDictRust` `v{{m:version}}` (commit `{{m:commit}}`, engine fingerprint `{{m:fingerprint}}`, performance fingerprint `{{m:perf_fingerprint}}`)  
-**Deterministic Clinical & Validator Study Baseline:** `VarDictRust` `v{{m:v110_study_version}}` (`benchmarks/v110-compat-study/`, source fingerprint `{{m:v110_study_fingerprint}}`, performance fingerprint `{{m:v110_study_perf_fingerprint}}`; `rtg-tools` `v{{m:v110_rtg_version}}`, `bcftools`/`tabix`/`samtools` `v{{m:v110_bcftools_version}}`)  
+**Deterministic Clinical & Validator Study Baseline:** `VarDictRust` `v{{m:v110_study_version}}` (`benchmarks/v110-compat-study/`, source fingerprint `{{m:v110_study_fingerprint}}`, performance fingerprint `{{m:v110_study_perf_fingerprint}}`; `rtg-tools` `v{{m:v110_rtg_version}}`, `bcftools` `v{{m:v110_bcftools_version}}`, `samtools` `v{{m:v110_samtools_version}}`, `tabix` `v{{m:v110_tabix_version}}`)  
 **Latest Certified Release & Workspace Snapshot:** Certified release `VarDictRust` `v{{m:current_release_version}}` (engine fingerprint `{{m:current_release_fingerprint}}`, performance fingerprint `{{m:current_perf_fingerprint}}`); exposes `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups and `{{m:workspace_test_count}}` Cargo workspace tests + `{{m:harness_self_test_count}}` harness self-tests  
 **Reference Oracles:** `{{m:oracle_version}}` and `{{m:cpp_version}}`  
 **Cloud Benchmark Host:** `{{m:host}}` (`{{m:nvme_raid0_tb}}` TB NVMe RAID0 scratch; `-Xmx200g` full-WGS comparator baselines provisioned on `n2-highmem-32` `256` GiB RAM with identical Intel Xeon Platinum 8373C Ice Lake silicon; exploratory staging also verified on `c3d-standard-32`)
@@ -179,7 +179,7 @@ rtg vcfeval -b HG002_GRCh38_v5.0q_T2T.vcf.gz -e HG002_GRCh38_v5.0q_T2T.bed \
 ```
 
 ### 1.8 Deterministic `v{{m:v110_study_version}}` Opt-In `--compat=off` & Clinical Workflow Preset Evaluation (`benchmarks/v110-compat-study/`)
-The `{{m:v110_total_arms}}` deterministic validation domains (`Figure 9`, `Table 9`, `Supplementary Table S7`) are collected and verified by `paper/collect_v110_compat_metrics.py` (`--run` or offline `--verify`, pinned to `VarDictRust` `v{{m:v110_study_version}}`, source fingerprint `{{m:v110_study_fingerprint}}`, `rtg-tools` `v{{m:v110_rtg_version}}` [12], `bcftools` `v{{m:v110_bcftools_version}}`, and `samtools`/`tabix` `v{{m:v110_tabix_version}}` [26]).
+The `{{m:v110_total_arms}}` deterministic validation domains (`Figure 9`, `Table 9`, `Supplementary Table S7`) are collected and verified by `paper/collect_v110_compat_metrics.py` (`--run` or offline `--verify`, pinned to `VarDictRust` `v{{m:v110_study_version}}`, source fingerprint `{{m:v110_study_fingerprint}}`, `rtg-tools` `v{{m:v110_rtg_version}}` [12], `bcftools` `v{{m:v110_bcftools_version}}`, `samtools` `v{{m:v110_samtools_version}}`, and `tabix` `v{{m:v110_tabix_version}}` [26]).
 
 All `{{m:v110_preset_count}}` clinical workflow presets (`##VarDictRustPreset=<PRESET>`) activate `--compat=off`, `0`-based BED coordinates (`-z`, seeding standard `BED4` columns `-c 1 -S 2 -E 3 -g 4` on `wgs`, `wes`, and `ctdna` so UCSC `BED8` files are never auto-hijacked into amplicon mode), and `--vcf-mapq {{m:preset_shared_mapq}}`:
 

@@ -3,7 +3,7 @@
 **Authors:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/)<sup>1,*</sup>  
 <sup>1</sup>Independent Researcher ([palakpsheth@gmail.com](mailto:palakpsheth@gmail.com) | [https://www.linkedin.com/in/palak-p-sheth/](https://www.linkedin.com/in/palak-p-sheth/))  
 **Cloud Study Engine Baseline:** `VarDictRust` `v1.0.6` (commit `2a8e9a3`, engine fingerprint `5865a2a0b24a8c17`, performance fingerprint `c490c36317b8f25b`)  
-**Deterministic Clinical & Validator Study Baseline:** `VarDictRust` `v1.1.0` (`benchmarks/v110-compat-study/`, source fingerprint `b18477ae0a7b07c1`, performance fingerprint `5c41be8047133842`; `rtg-tools` `v3.13`, `bcftools`/`tabix`/`samtools` `v1.24`)  
+**Deterministic Clinical & Validator Study Baseline:** `VarDictRust` `v1.1.0` (`benchmarks/v110-compat-study/`, source fingerprint `b18477ae0a7b07c1`, performance fingerprint `5c41be8047133842`; `rtg-tools` `v3.13`, `bcftools` `v1.24`, `samtools` `v1.24`, `tabix` `v1.24`)  
 **Latest Certified Release & Workspace Snapshot:** Certified release `VarDictRust` `v1.1.0` (engine fingerprint `b18477ae0a7b07c1`, performance fingerprint `5c41be8047133842`); exposes `92` CLI flags across `7` functional groups and `807` Cargo workspace tests + `37` harness self-tests  
 **Reference Oracles:** `VarDictJava v1.8.3 (0886261)` and `vardictcpp ae93fe39dc (Wolff 2026)`  
 **Cloud Benchmark Host:** `GCP n2-standard-32 (Intel Xeon Platinum 8373C Ice Lake, 32 vCPUs, 128 GiB RAM, 4x375 GB NVMe RAID0)` (`1.5` TB NVMe RAID0 scratch; `-Xmx200g` full-WGS comparator baselines provisioned on `n2-highmem-32` `256` GiB RAM with identical Intel Xeon Platinum 8373C Ice Lake silicon; exploratory staging also verified on `c3d-standard-32`)
@@ -179,7 +179,7 @@ rtg vcfeval -b HG002_GRCh38_v5.0q_T2T.vcf.gz -e HG002_GRCh38_v5.0q_T2T.bed \
 ```
 
 ### 1.8 Deterministic `v1.1.0` Opt-In `--compat=off` & Clinical Workflow Preset Evaluation (`benchmarks/v110-compat-study/`)
-The `6` deterministic validation domains (`Figure 9`, `Table 9`, `Supplementary Table S7`) are collected and verified by `paper/collect_v110_compat_metrics.py` (`--run` or offline `--verify`, pinned to `VarDictRust` `v1.1.0`, source fingerprint `b18477ae0a7b07c1`, `rtg-tools` `v3.13` [12], `bcftools` `v1.24`, and `samtools`/`tabix` `v1.24` [26]).
+The `6` deterministic validation domains (`Figure 9`, `Table 9`, `Supplementary Table S7`) are collected and verified by `paper/collect_v110_compat_metrics.py` (`--run` or offline `--verify`, pinned to `VarDictRust` `v1.1.0`, source fingerprint `b18477ae0a7b07c1`, `rtg-tools` `v3.13` [12], `bcftools` `v1.24`, `samtools` `v1.24`, and `tabix` `v1.24` [26]).
 
 All `4` clinical workflow presets (`##VarDictRustPreset=<PRESET>`) activate `--compat=off`, `0`-based BED coordinates (`-z`, seeding standard `BED4` columns `-c 1 -S 2 -E 3 -g 4` on `wgs`, `wes`, and `ctdna` so UCSC `BED8` files are never auto-hijacked into amplicon mode), and `--vcf-mapq 20`:
 

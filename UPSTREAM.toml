@@ -184,7 +184,7 @@ paired_somatic_amplicon = [
 ]
 clinical_benchmark_dois = [
     "https://doi.org/10.1093/nar/gkw227",
-    "https://doi.org/10.1093/gigabyte/giaf156",
+    "https://doi.org/10.46471/gigabyte.194",
     "https://doi.org/10.1101/023754",
     "https://doi.org/10.1038/s41587-021-00993-6",
     "https://doi.org/10.1038/s41597-022-01359-6",

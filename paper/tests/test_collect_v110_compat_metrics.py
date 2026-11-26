@@ -5,16 +5,17 @@ from __future__ import annotations
 
 import ast
 import csv
-import hashlib
 import importlib.util
 import json
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,41 +25,15 @@ OUT_DIR = ROOT / "benchmarks" / "v110-compat-study"
 CONFIG_RS = ROOT / "crates" / "vardictrust-core" / "src" / "config.rs"
 ROADMAP_MD = ROOT / "ROADMAP.md"
 UPSTREAM_TOML = ROOT / "UPSTREAM.toml"
-
-ALLOWED_DOMAINS = frozenset(
-    {
-        "VCF Schema & Genotypes",
-        "Structural Variants & Indexing",
-        "Somatic & Amplicon Calling",
-        "CIGAR, Pileup & Aligner",
-        "Depth, Rounding & Determinism",
-    }
-)
-
-DEFECT_KEYS = (
-    "nonsv_info_end",
-    "ad_number_r_mismatch",
-    "noncanonical_gt",
-    "noncanonical_sv",
-    "accounting_type_iupac_shift3",
-)
+ECOSYSTEM_SURVEY_MD = ROOT / "docs" / "ecosystem-survey.md"
 
 
-def parse_compat_profile_fields(config_rs_path: Path) -> list[str]:
-    text = config_rs_path.read_text(encoding="utf-8")
-    m = re.search(r"pub struct CompatProfile\s*\{(.*?)\n\}", text, flags=re.DOTALL)
-    if not m:
-        raise AssertionError(f"Could not locate pub struct CompatProfile in {config_rs_path}")
-    body = m.group(1)
-    return re.findall(r"^\s*pub\s+([a-z0-9_]+)\s*:\s*bool\s*,", body, flags=re.MULTILINE)
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _load_collector_module():
+    spec = importlib.util.spec_from_file_location("collect_v110_compat_metrics", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 class TestCollectV110CompatMetrics(unittest.TestCase):
@@ -147,109 +122,28 @@ class TestCollectV110CompatMetrics(unittest.TestCase):
             [r["path"] for r in rows],
             ["v110_compat_arms.tsv", "v110_compat_metrics.json"],
         )
+        mod = _load_collector_module()
+        mod.verify_bundle(OUT_DIR)
         for r in rows:
             target = OUT_DIR / r["path"]
-            self.assertEqual(sha256_file(target), r["sha256"])
+            self.assertEqual(mod.sha256_file(target), r["sha256"])
             self.assertEqual(str(target.stat().st_size), r["size_bytes"])
 
     def test_metrics_json_schema_and_six_arms_invariants(self) -> None:
+        mod = _load_collector_module()
+        mod.verify_bundle(OUT_DIR)
         metrics_path = OUT_DIR / "v110_compat_metrics.json"
         arms_path = OUT_DIR / "v110_compat_arms.tsv"
-        self.assertTrue(metrics_path.is_file(), f"Missing {metrics_path}")
-        self.assertTrue(arms_path.is_file(), f"Missing {arms_path}")
-
         doc = json.loads(metrics_path.read_text(encoding="utf-8"))
-        meta = doc["meta"]
-        self.assertEqual(meta["study_id"], "v110-compat-and-presets")
-        self.assertEqual(meta["study_version"], "1.1.0")
-        self.assertEqual(meta["study_fingerprint"], "b18477ae0a7b07c1")
-        self.assertEqual(meta["study_perf_fingerprint"], "5c41be8047133842")
-        self.assertEqual(meta["compat_switch_count"], 32)
-        self.assertEqual(meta["preset_count"], 4)
-        self.assertEqual(meta["var2vcf_flag_count"], 18)
-        self.assertEqual(meta["total_arms"], 6)
-        for tool_ver_key in ("rtg_version", "bcftools_version", "tabix_version", "samtools_version"):
-            self.assertTrue(meta[tool_ver_key].strip(), f"Empty {tool_ver_key}")
-
-        # Verify zero host-dependent wall-clock/RSS metrics anywhere in JSON
-        serialized = json.dumps(doc)
-        self.assertIsNone(
-            re.search(r'"(wall_sec|elapsed_s|rss_kb|max_rss|runtime_s)"', serialized),
-            "Host-dependent timing/RSS key leaked into v110_compat_metrics.json",
-        )
-
-        # Arm 1
         a1 = doc["arms"]["arm1_vcf_schema_and_bcftools_norm"]
-        self.assertEqual(a1["total_callsets"], 19)
-        self.assertGreaterEqual(a1["distinct_bams"], 14)
-        for k in DEFECT_KEYS:
+        for k in mod.DEFECT_KEYS:
             self.assertGreater(a1["vardictjava_defects"][k], 0, f"Expected VJ defect > 0 for {k}")
             self.assertEqual(a1["compat_off_defects"][k], 0, f"Expected compat_off defect == 0 for {k}")
-        self.assertEqual(a1["total_defects_vj"], sum(a1["vardictjava_defects"].values()))
-        self.assertEqual(a1["total_defects_off"], 0)
-        self.assertEqual(a1["bcftools_norm_check_ref_off_passed"], 19)
-        self.assertEqual(a1["bcftools_norm_check_ref_off_total"], 19)
-        self.assertLess(a1["bcftools_norm_check_ref_vj_passed"], 19)
 
-        # Arm 2
-        a2 = doc["arms"]["arm2_seqc2_diploid_vcfeval"]
-        self.assertEqual(a2["discovery_af"], 0.05)
-        self.assertEqual(a2["vcf_af"], 0.30)
-        self.assertEqual(a2["gt_proj_tvaf_threshold"], 0.75)
-        self.assertGreater(a2["vardictjava"]["gt00_carrier_somatic"], 0)
-        self.assertEqual(a2["compat_off"]["gt00_carrier_somatic"], 0)
-        self.assertGreater(a2["tp_baseline_gain"], 0)
-        self.assertGreater(a2["f_measure_gain"], 0.0)
-        self.assertGreater(a2["best_f_measure_gain"], 0.0)
-        self.assertGreater(a2["compat_off"]["tp_baseline"], a2["vardictjava"]["tp_baseline"])
-        self.assertGreater(a2["compat_off"]["f_measure"], a2["vardictjava"]["f_measure"])
-        self.assertGreater(a2["compat_off"]["best_f_measure"], a2["vardictjava"]["best_f_measure"])
-
-        # Arm 3
-        a3 = doc["arms"]["arm3_somatic_multiallelic_and_truth"]
-        self.assertEqual(a3["distinct_bam_pairs"], 5)
-        self.assertEqual(a3["total_runs"], 6)
-        self.assertEqual(a3["vj_recovered_pairs"], 0)
-        self.assertEqual(a3["off_recovered_pairs"], 5)
-        self.assertEqual(a3["vj_recovered_runs"], 0)
-        self.assertEqual(a3["off_recovered_runs"], 6)
-        self.assertGreaterEqual(a3["muc19_variants"], 20)
-        self.assertEqual(a3["muc19_vd_gt_dp_violations"], 0)
-        for cohort_key in ("seqc2_hc", "hg008_v04"):
-            self.assertIn("vardictjava", a3[cohort_key])
-            self.assertIn("compat_off", a3[cohort_key])
-            self.assertGreater(a3[cohort_key]["compat_off"]["tp"], 0)
-
-        # Arm 4
-        a4 = doc["arms"]["arm4_brca2_adaptor_chimera"]
-        self.assertEqual(a4["chimera_pos"], 32683955)
-        self.assertGreaterEqual(a4["vj_chimeric_insertions"], 1)
-        self.assertGreater(a4["vj_chimeric_ins_bp"], 30)
-        self.assertEqual(a4["off_chimeric_insertions"], 0)
-
-        # Arm 5
-        a5 = doc["arms"]["arm5_clinical_presets_and_amplicon"]
-        self.assertGreaterEqual(a5["wgs_hg002_60kbp_records"], 20)
-        self.assertGreaterEqual(a5["wgs_hg008_paired_records"], 10)
-        self.assertGreaterEqual(a5["wes_seqc2_264kbp_records"], 15)
-        self.assertTrue(a5["wes_bed8_non_hijack_verified"])
-        self.assertGreaterEqual(a5["amplicon_single_8col_records"], 1)
-        self.assertFalse(a5["paired_somatic_amplicon_vj_supported"])
-        self.assertGreaterEqual(a5["paired_somatic_amplicon_off_records"], 10)
-        self.assertGreater(a5["qiaseq_spe_known_pos_tp"], a5["qiaseq_spe_no_sp_known_pos_tp"])
-        self.assertGreaterEqual(a5["qiaseq_spe_known_pos_total"], a5["qiaseq_spe_known_pos_tp"])
-        self.assertTrue(a5["spikein_detected"])
-        self.assertEqual(a5["spikein_observed_vd"], 6)
-        self.assertGreaterEqual(a5["spikein_observed_dp"], 1000)
-
-        # Arm 6
         a6 = doc["arms"]["arm6_csi_spanning_sv_and_pileup_tiling"]
-        self.assertEqual(a6["csi_leaf_bin_bp"], 16384)
-        self.assertEqual(a6["max_explicit_sv_seq_bp"], 32768)
-        self.assertGreaterEqual(a6["multi_block_bgzf_blocks"], 20)
-        self.assertGreater(a6["interior_bin_queries_total"], 0)
-        self.assertEqual(a6["interior_bin_queries_passed"], a6["interior_bin_queries_total"])
-        self.assertEqual(a6["pos0_sentinel_rows"], 0)
+        self.assertEqual(a6["pileup_full_span_cases_total"], 2)
+        self.assertEqual(a6["pileup_untiled_eq_tiled_cases"], a6["pileup_full_span_cases_total"])
+        self.assertEqual(a6["pileup_covered_bases_retained"], a6["pileup_covered_bases_total"])
 
         # TSV rows
         with arms_path.open("r", encoding="utf-8", newline="") as fh:
@@ -333,13 +227,20 @@ class TestCollectV110CompatMetrics(unittest.TestCase):
         self.assertEqual(sanitized, "cmd $REPO_ROOT/sub/file.vcf $WORK_TMP/out.vcf")
 
     def test_wolff_2026_gigabyte_doi_fixed_in_upstream_bugs_md(self) -> None:
-        ub_md = (ROOT / "docs" / "upstream-bugs.md").read_text(encoding="utf-8")
-        self.assertIn("https://doi.org/10.46471/gigabyte.194", ub_md)
-        self.assertNotIn("10.1093/gigabyte/giaf156", ub_md)
+        for doc_path in (
+            ROOT / "docs" / "upstream-bugs.md",
+            ECOSYSTEM_SURVEY_MD,
+            ROADMAP_MD,
+            UPSTREAM_TOML,
+        ):
+            txt = doc_path.read_text(encoding="utf-8")
+            self.assertIn("https://doi.org/10.46471/gigabyte.194", txt, f"Missing verified Wolff DOI in {doc_path}")
+            self.assertNotIn("10.1093/gigabyte/giaf156", txt, f"Stale 404 Wolff DOI left in {doc_path}")
 
     def test_switch_catalog_matches_config_rs_in_order_and_hygiene(self) -> None:
-        expected_switches = parse_compat_profile_fields(CONFIG_RS)
-        self.assertEqual(len(expected_switches), 32)
+        mod = _load_collector_module()
+        expected_switches = mod.parse_compat_profile_switches(CONFIG_RS, ROADMAP_MD, require_exact_count=False)
+        self.assertGreaterEqual(len(expected_switches), 32)
 
         metrics_path = OUT_DIR / "v110_compat_metrics.json"
         self.assertTrue(metrics_path.is_file(), f"Missing {metrics_path}")
@@ -348,52 +249,77 @@ class TestCollectV110CompatMetrics(unittest.TestCase):
         self.assertEqual(len(catalog), 35)
 
         got_switches = [entry["name"] for entry in catalog[:32]]
-        self.assertEqual(got_switches, expected_switches)
+        self.assertEqual(got_switches, expected_switches[:32])
 
-        cli_names = [entry["name"] for entry in catalog[32:]]
-        self.assertEqual(
-            cli_names,
-            ["--vcf-all-alleles", "--amplicon-single-primer", "--preset"],
-        )
+        # Verify v1.1.1+ future growth (33rd switch in config.rs + ROADMAP.md) passes offline verify
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tp = Path(tmpdir)
+            cfg_copy = tp / "config.rs"
+            rm_copy = tp / "ROADMAP.md"
+            cfg_txt = CONFIG_RS.read_text(encoding="utf-8").replace(
+                "pub canonical_vcf_gt: bool,",
+                "pub canonical_vcf_gt: bool,\n    pub future_v111_switch: bool,",
+            )
+            cfg_copy.write_text(cfg_txt, encoding="utf-8")
+            rm_copy.write_text(ROADMAP_MD.read_text(encoding="utf-8") + "\n`future_v111_switch`\n", encoding="utf-8")
+            grown = mod.parse_compat_profile_switches(cfg_copy, rm_copy, require_exact_count=False)
+            self.assertEqual(len(grown), len(expected_switches) + 1)
+            with self.assertRaises(RuntimeError):
+                mod.parse_compat_profile_switches(cfg_copy, rm_copy, require_exact_count=True)
 
-        bare_issue_re = re.compile(r"(?<![A-Za-z0-9_/-])#\d+\b")
-        forbidden_jargon_re = re.compile(
-            r"\b(Gate\s*\d+|s[1-6]_[a-z0-9_]+|arm[1-6]_[a-z0-9_]+|Option C|Tier[- ]P|evidence_certified)\b"
+        for entry in catalog:
+            self.assertIn(entry["domain"], mod.ALLOWED_DOMAINS)
+
+    def test_audit_vcf_schema_bgzf_and_intersect_beds_unit(self) -> None:
+        mod = _load_collector_module()
+        vcf_hdr = (
+            "##fileformat=VCFv4.2\n"
+            "##ALT=<ID=DEL,Description=\"Deletion\">\n"
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
         )
-        for idx, entry in enumerate(catalog, start=1):
-            self.assertEqual(entry["index"], idx)
-            self.assertIn(entry["domain"], ALLOWED_DOMAINS)
-            for field in (
-                "name",
-                "category",
-                "domain",
-                "upstream_refs",
-                "vardictjava_behavior",
-                "compat_off_behavior",
-                "verification_arm",
-            ):
-                val = str(entry[field])
-                self.assertTrue(val.strip(), f"Empty {field} in switch_catalog[{idx}]")
-                self.assertIsNone(
-                    bare_issue_re.search(val),
-                    f"Bare #N citation in switch_catalog[{idx}].{field}: {val!r}",
-                )
-                self.assertIsNone(
-                    forbidden_jargon_re.search(val),
-                    f"Internal harness jargon in switch_catalog[{idx}].{field}: {val!r}",
-                )
-                # Verify no unescaped '<' or '|' outside inline backtick code spans
-                outside_code = re.sub(r"`[^`]+`", "", val)
-                self.assertNotIn(
-                    "<",
-                    outside_code,
-                    f"Unbackticked '<' token in switch_catalog[{idx}].{field}: {val!r}",
-                )
-                self.assertNotIn(
-                    "|",
-                    outside_code,
-                    f"Unescaped '|' pipe in switch_catalog[{idx}].{field}: {val!r}",
-                )
+        recs = [
+            # 1. Clean SNV + clean <DEL>
+            "chr1\t10\t.\tA\tG\t50\tPASS\tTYPE=SNV;VD=5;HICNT=5;HICOV=20\tGT:DP:VD:AD:AF:ALD\t0/1:20:5:15,5:0.25:3,2",
+            "chr1\t100\t.\tC\t<DEL>\t60\tPASS\tEND=200;SVTYPE=DEL;SVLEN=-100;TYPE=DEL\tGT:DP:VD:AD:AF:ALD\t0/1:30:8:22,8:0.2667:4,4",
+            # 2. Defective rows covering all 5 defect classes
+            "chr1\t20\t.\tA\tT\t40\tPASS\tEND=20;TYPE=SNV\tGT:DP:VD:AD:AF:ALD\t0/1:10:4:6,4:0.4:2,2",
+            "chr1\t30\t.\tG\t.\t0\tPASS\t.\tGT:DP:VD:AD:AF:ALD\t0/0:10:0:10,0:0.0:0,0",
+            "chr1\t40\t.\tC\tA\t30\tf0.30\tTYPE=SNV\tGT:DP:VD:AD:AF:ALD\t0/0:20:3:17,3:0.15:2,1",
+            "chr1\t50\t.\tACGT\t<dup-2>\t40\tPASS\tEND=60;SVTYPE=DUP;SVLEN=10\tGT:DP:VD:AD:AF:ALD\t0/1:20:5:15,5:0.25:3,2",
+            "chr1\t60\t.\tT\tR\t-5\tPASS\tTYPE=Complex;VD=6;HICNT=8;HICOV=5\tGT:DP:VD:AD:AF:ALD\t0/1:4:6:0,6:1.5:3,2",
+        ]
+        n_clean, def_clean = mod.audit_vcf_schema(vcf_hdr + "\n".join(recs[:2]) + "\n", check_ref_ok=True)
+        self.assertEqual(n_clean, 2)
+        self.assertEqual(sum(def_clean.values()), 0)
+
+        n_all, def_all = mod.audit_vcf_schema(vcf_hdr + "\n".join(recs) + "\n", check_ref_ok=True)
+        self.assertEqual(n_all, 7)
+        for k in mod.DEFECT_KEYS:
+            self.assertEqual(def_all[k], 1, f"Expected exactly 1 defect in {k}, got {def_all}")
+
+        # Test intersect_beds and count_bgzf_blocks on synthetic inputs
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tp = Path(tmpdir)
+            ba = tp / "a.bed"
+            bb = tp / "b.bed"
+            bo = tp / "out.bed"
+            ba.write_text("chr1\t100\t300\nchr1\t250\t400\n", encoding="utf-8")
+            bb.write_text("chr1\t150\t350\n", encoding="utf-8")
+            n_iv, tot_bp = mod.intersect_beds(ba, bb, bo)
+            self.assertEqual((n_iv, tot_bp), (1, 200))
+            self.assertEqual(bo.read_text(encoding="utf-8"), "chr1\t150\t350\n")
+
+            def make_bgzf_block(payload: bytes) -> bytes:
+                comp = zlib.compressobj(6, zlib.DEFLATED, -15)
+                cdata = comp.compress(payload) + comp.flush()
+                bsize = 18 + len(cdata) + 8
+                hdr = struct.pack("<BBBBIBBHBBHH", 31, 139, 8, 4, 0, 0, 255, 6, 66, 67, 2, bsize - 1)
+                trl = struct.pack("<II", zlib.crc32(payload) & 0xFFFFFFFF, len(payload))
+                return hdr + cdata + trl
+
+            bgz = tp / "test.vcf.gz"
+            bgz.write_bytes(make_bgzf_block(b"hello\n") + make_bgzf_block(b"world\n") + make_bgzf_block(b""))
+            self.assertEqual(mod.count_bgzf_blocks(bgz), 2)
 
     def test_stdlib_purity_of_collector_and_test(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")

@@ -379,18 +379,28 @@ def atomic_write_text(path: Path, content: str) -> None:
     os.replace(tmp_path, path)
 
 
-def parse_compat_profile_switches(config_rs: Path, roadmap_md: Path) -> list[str]:
+def parse_compat_profile_switches(
+    config_rs: Path,
+    roadmap_md: Path,
+    require_exact_count: bool = True,
+) -> list[str]:
     text = config_rs.read_text(encoding="utf-8")
     m = re.search(r"pub struct CompatProfile\s*\{(.*?)\n\}", text, flags=re.DOTALL)
     if not m:
         raise RuntimeError(f"Failed to locate pub struct CompatProfile in {config_rs}")
     switches = re.findall(r"^\s*pub\s+([a-z0-9_]+)\s*:\s*bool\s*,", m.group(1), flags=re.MULTILINE)
-    if len(switches) != EXPECTED_COMPAT_SWITCH_COUNT:
+    if require_exact_count:
+        if len(switches) != EXPECTED_COMPAT_SWITCH_COUNT:
+            raise RuntimeError(
+                f"Expected {EXPECTED_COMPAT_SWITCH_COUNT} CompatProfile bool fields in {config_rs}, found {len(switches)}"
+            )
+    elif len(switches) < EXPECTED_COMPAT_SWITCH_COUNT:
         raise RuntimeError(
-            f"Expected {EXPECTED_COMPAT_SWITCH_COUNT} CompatProfile bool fields in {config_rs}, found {len(switches)}"
+            f"Expected at least {EXPECTED_COMPAT_SWITCH_COUNT} CompatProfile bool fields in {config_rs}, found {len(switches)}"
         )
     roadmap_text = roadmap_md.read_text(encoding="utf-8")
-    for sw in switches:
+    check_list = switches if require_exact_count else switches[:EXPECTED_COMPAT_SWITCH_COUNT]
+    for sw in check_list:
         if f"`{sw}`" not in roadmap_text:
             raise RuntimeError(f"CompatProfile switch `{sw}` missing from {roadmap_md}")
     return switches
@@ -1652,18 +1662,18 @@ def run_collection(out_dir: Path) -> None:
             if int(dp_cols[2]) >= 50:
                 callable_50x.add((dp_cols[0], int(dp_cols[1])))
 
-        kp_in_inserts: set[tuple[str, int, str]] = set()
-        kp_callable_50x: set[tuple[str, int, str]] = set()
+        kp_in_inserts: set[tuple[str, int, str, str]] = set()
+        kp_callable_50x: set[tuple[str, int, str, str]] = set()
         with gzip.open(w4_dir / "raw" / "KnownPositives_hg19ToHg38.vcf.gz", "rt", encoding="utf-8") as fh:
             for line in fh:
                 if line.startswith("#") or not line.strip():
                     continue
                 p = line.rstrip("\n").split("\t")
-                c, pos1, alt_a = p[0], int(p[1]), p[4]
+                c, pos1, ref_a, alt_a = p[0], int(p[1]), p[3], p[4]
                 if any(s_i < pos1 <= e_i for s_i, e_i in ins_ivs_by_chr.get(c, [])):
-                    kp_in_inserts.add((c, pos1, alt_a))
+                    kp_in_inserts.add((c, pos1, ref_a, alt_a))
                     if (c, pos1) in callable_50x:
-                        kp_callable_50x.add((c, pos1, alt_a))
+                        kp_callable_50x.add((c, pos1, ref_a, alt_a))
 
         qgn_sp_gz = tmp / "qgn_preset_sp.vcf.gz"
         subprocess.run(
@@ -1684,22 +1694,26 @@ def run_collection(out_dir: Path) -> None:
         qgn_sp_kp_tp = sum(
             1
             for r in qgn_sp_recs
-            if r.split("\t")[6] == "PASS" and (r.split("\t")[0], int(r.split("\t")[1]), r.split("\t")[4]) in kp_in_inserts
+            if r.split("\t")[6] == "PASS"
+            and (r.split("\t")[0], int(r.split("\t")[1]), r.split("\t")[3], r.split("\t")[4]) in kp_in_inserts
         )
         qgn_nosp_kp_tp = sum(
             1
             for r in qgn_nosp_recs
-            if r.split("\t")[6] == "PASS" and (r.split("\t")[0], int(r.split("\t")[1]), r.split("\t")[4]) in kp_in_inserts
+            if r.split("\t")[6] == "PASS"
+            and (r.split("\t")[0], int(r.split("\t")[1]), r.split("\t")[3], r.split("\t")[4]) in kp_in_inserts
         )
         qgn_sp_dp50_kp_tp = sum(
             1
             for r in qgn_sp_recs
-            if r.split("\t")[6] == "PASS" and (r.split("\t")[0], int(r.split("\t")[1]), r.split("\t")[4]) in kp_callable_50x
+            if r.split("\t")[6] == "PASS"
+            and (r.split("\t")[0], int(r.split("\t")[1]), r.split("\t")[3], r.split("\t")[4]) in kp_callable_50x
         )
         qgn_nosp_dp50_kp_tp = sum(
             1
             for r in qgn_nosp_recs
-            if r.split("\t")[6] == "PASS" and (r.split("\t")[0], int(r.split("\t")[1]), r.split("\t")[4]) in kp_callable_50x
+            if r.split("\t")[6] == "PASS"
+            and (r.split("\t")[0], int(r.split("\t")[1]), r.split("\t")[3], r.split("\t")[4]) in kp_callable_50x
         )
 
         # 5.4 --preset ctdna (~1,000x 0.5% VAF spike-in + wet-lab SampleAC5 d100 soft-filtering)
@@ -2067,6 +2081,7 @@ def run_collection(out_dir: Path) -> None:
             "hg008_bgzf_blocks": hg008_blocks,
             "interior_bin_queries_passed": interior_passed,
             "interior_bin_queries_total": interior_total,
+            "pileup_full_span_cases_total": sum(1 for *_, fs in pileup_cases if fs),
             "pileup_untiled_eq_tiled_cases": untiled_eq_tiled_cases,
             "pileup_covered_bases_total": covered_bases_total,
             "pileup_covered_bases_retained": covered_bases_retained,
@@ -2356,17 +2371,22 @@ def verify_bundle(out_dir: Path) -> None:
         or a6["multi_block_bgzf_blocks"] < 20
         or a6["interior_bin_queries_passed"] != a6["interior_bin_queries_total"]
         or a6["interior_bin_queries_total"] <= 0
+        or a6["pileup_full_span_cases_total"] <= 0
+        or a6["pileup_untiled_eq_tiled_cases"] != a6["pileup_full_span_cases_total"]
+        or a6["pileup_covered_bases_total"] <= 0
+        or a6["pileup_covered_bases_retained"] != a6["pileup_covered_bases_total"]
         or a6["pos0_sentinel_rows"] != 0
     ):
         raise ValueError("Arm 6 CSI spanning-SV or -p pileup tiling invariant failed")
 
-    # 4. Verify 35-entry switch_catalog against config.rs & hygiene rules
-    expected_switches = parse_compat_profile_switches(CONFIG_RS_PATH, ROADMAP_MD_PATH)
+    # 4. Verify 35-entry switch_catalog against config.rs & hygiene rules (prefix-tolerant for v1.1.1+ growth)
+    sw_cnt = int(meta["compat_switch_count"])
+    expected_switches = parse_compat_profile_switches(CONFIG_RS_PATH, ROADMAP_MD_PATH, require_exact_count=False)
     catalog = doc["switch_catalog"]
-    if len(catalog) != 35:
-        raise ValueError(f"Expected 35 switch_catalog entries, got {len(catalog)}")
-    if [c["name"] for c in catalog[:32]] != expected_switches:
-        raise ValueError("switch_catalog[0..32] does not match CompatProfile declaration order in config.rs")
+    if len(catalog) != sw_cnt + 3:
+        raise ValueError(f"Expected {sw_cnt + 3} switch_catalog entries, got {len(catalog)}")
+    if [c["name"] for c in catalog[:sw_cnt]] != expected_switches[:sw_cnt]:
+        raise ValueError(f"switch_catalog[0..{sw_cnt}] does not match CompatProfile declaration order in config.rs")
 
     bare_issue_re = re.compile(r"(?<![A-Za-z0-9_/-])#\d+\b")
     jargon_re = re.compile(r"\b(Gate\s*\d+|s[1-6]_[a-z0-9_]+|arm[1-6]_[a-z0-9_]+|Option C|Tier[- ]P|evidence_certified)\b")
