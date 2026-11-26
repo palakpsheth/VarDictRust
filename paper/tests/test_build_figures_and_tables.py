@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import json
 import re
 import subprocess
 import sys
@@ -17,6 +18,7 @@ SCRIPT = ROOT / "paper" / "build_figures_and_tables.py"
 FIG_DIR = ROOT / "paper" / "figures"
 TAB_DIR = ROOT / "paper" / "tables"
 INV_PATH = ROOT / "benchmarks" / "gcp-study-v106" / "cells_60_inventory.tsv"
+V110_PATH = ROOT / "benchmarks" / "v110-compat-study" / "v110_compat_metrics.json"
 
 ALLOWED_INT_CONSTANTS = (
     set(range(-20, 101))
@@ -108,6 +110,20 @@ FORBIDDEN_DOMAIN_NUMBERS = {
     106.47,
     228.9,
     760.96,
+    1985,
+    9486,
+    11612,
+    13148,
+    13152,
+    455937,
+    32683955,
+    120999311,
+    0.6389,
+    0.6429,
+    0.8293,
+    0.5122,
+    0.7293,
+    0.3233,
 }
 
 FORBIDDEN_DOMAIN_STRINGS = {
@@ -124,6 +140,11 @@ FORBIDDEN_DOMAIN_STRINGS = {
     "10,195,118",
     "213.70",
     "106.47",
+    "11,612",
+    "9,486",
+    "1,985",
+    "0.6389",
+    "0.6429",
 }
 
 
@@ -150,20 +171,20 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0, msg=f"stderr={res.stderr}\nstdout={res.stdout}")
 
-        for i in range(1, 9):
+        for i in range(1, 10):
             svg = FIG_DIR / f"fig{i}.svg"
             pdf = FIG_DIR / f"fig{i}.pdf"
             self.assertTrue(svg.is_file() and svg.stat().st_size > 2000, f"Missing/empty {svg}")
             self.assertTrue(pdf.is_file() and pdf.stat().st_size > 2000, f"Missing/empty {pdf}")
 
-        for i in range(1, 9):
+        for i in range(1, 10):
             md = TAB_DIR / f"table{i}.md"
             tex = TAB_DIR / f"table{i}.tex"
             self.assertTrue(md.is_file() and md.stat().st_size > 200, f"Missing/empty {md}")
             self.assertTrue(tex.is_file() and tex.stat().st_size > 200, f"Missing/empty {tex}")
             self.assertIsNone(re.search(r"\b(nan|NaN)\b", md.read_text(encoding="utf-8")))
 
-        for i in range(1, 7):
+        for i in range(1, 8):
             smd = TAB_DIR / f"supp_table{i}.md"
             stex = TAB_DIR / f"supp_table{i}.tex"
             self.assertTrue(smd.is_file() and smd.stat().st_size > 200, f"Missing/empty {smd}")
@@ -175,9 +196,9 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         self.assertNotIn("benchmarks/evidence", src)
         ast.parse(src)
 
-    def test_all_8_figures_generated_and_valid_svg_pdf(self) -> None:
+    def test_all_9_figures_generated_and_valid_svg_pdf(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")
-        for i in range(1, 9):
+        for i in range(1, 10):
             svg = FIG_DIR / f"fig{i}.svg"
             pdf = FIG_DIR / f"fig{i}.pdf"
             self.assertTrue(svg.is_file(), f"Missing {svg}")
@@ -196,10 +217,10 @@ class TestBuildFiguresAndTables(unittest.TestCase):
             self.assertTrue(pdf_bytes.startswith(b"%PDF-"), f"Invalid PDF header in {pdf}")
             self.assertIn(b"%%EOF", pdf_bytes[-1024:], f"Missing %%EOF in {pdf}")
 
-    def test_all_14_tables_generated_with_zero_nan(self) -> None:
+    def test_all_16_tables_generated_with_zero_nan(self) -> None:
         self.assertTrue(SCRIPT.is_file(), f"Missing {SCRIPT}")
-        table_stems = [f"table{i}" for i in range(1, 9)] + [f"supp_table{i}" for i in range(1, 7)]
-        self.assertEqual(len(table_stems), 14)
+        table_stems = [f"table{i}" for i in range(1, 10)] + [f"supp_table{i}" for i in range(1, 8)]
+        self.assertEqual(len(table_stems), 16)
         for stem in table_stems:
             md = TAB_DIR / f"{stem}.md"
             tex = TAB_DIR / f"{stem}.tex"
@@ -241,13 +262,16 @@ class TestBuildFiguresAndTables(unittest.TestCase):
             self.assertIn(cid.replace("_", "\\_"), supp1_tex, f"Cell {cid} missing from supp_table1.tex")
             self.assertIn(cid, supp_tables_md, f"Cell {cid} missing from supp_table1..6.md")
 
-        clean_table_stems = [f"table{i}" for i in range(1, 9)] + [f"supp_table{i}" for i in range(2, 7)]
+        clean_table_stems = [f"table{i}" for i in range(1, 10)] + [f"supp_table{i}" for i in range(2, 8)]
         for stem in clean_table_stems:
             t_md_path = TAB_DIR / f"{stem}.md"
             t_md = t_md_path.read_text(encoding="utf-8")
             self.assertIsNone(
-                re.search(r"\b(s[1-6]_[a-z0-9_]+|sweep_[a-z0-9_]+|evidence_certified)\b", t_md),
-                f"Raw internal cell_id found in {t_md_path}",
+                re.search(
+                    r"\b(s[1-6]_[a-z0-9_]+|sweep_[a-z0-9_]+|arm[1-6]_[a-z0-9_]*|evidence_certified)\b",
+                    t_md,
+                ),
+                f"Raw internal cell_id or arm slug found in {t_md_path}",
             )
             for bad_tok in (
                 "Option C",
@@ -269,7 +293,7 @@ class TestBuildFiguresAndTables(unittest.TestCase):
                 )
 
     def test_all_tables_have_citations_and_superscript_notes(self) -> None:
-        table_stems = [f"table{i}" for i in range(1, 9)] + [f"supp_table{i}" for i in range(1, 7)]
+        table_stems = [f"table{i}" for i in range(1, 10)] + [f"supp_table{i}" for i in range(1, 8)]
         for stem in table_stems:
             md_path = TAB_DIR / f"{stem}.md"
             tex_path = TAB_DIR / f"{stem}.tex"
@@ -351,6 +375,75 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         self.assertIn("30/30 Sub-Arms Exact Match", table1_md)
         self.assertIn("1/1 Sub-Arm Exact Match", table1_md)
         self.assertIn("2/2 Sub-Arms Exact Match", table1_md)
+
+    def test_v110_fig9_table9_and_supp_table7_hygiene_and_metrics(self) -> None:
+        self.assertTrue(V110_PATH.is_file(), f"Missing {V110_PATH}")
+        v110_doc = json.loads(V110_PATH.read_text(encoding="utf-8"))
+
+        res = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--verify",
+                "--v110-input",
+                str(V110_PATH),
+            ],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0, msg=f"stderr={res.stderr}\nstdout={res.stdout}")
+
+        fig9_svg = (FIG_DIR / "fig9.svg").read_text(encoding="utf-8")
+        ET.fromstring(fig9_svg)
+        self.assertIn("SEQC2", fig9_svg)
+        self.assertIn(">0<", re.sub(r"\s+", "", fig9_svg))
+
+        t9_md = (TAB_DIR / "table9.md").read_text(encoding="utf-8")
+        s7_md = (TAB_DIR / "supp_table7.md").read_text(encoding="utf-8")
+
+        t9_data_rows = [
+            ln for ln in t9_md.splitlines()
+            if ln.strip().startswith("|") and not re.match(r"^\|\s*[:\-| ]+\|\s*$", ln.strip())
+        ][1:]
+        self.assertEqual(len(t9_data_rows), 6, f"Expected 6 empirical domain rows in table9.md, got {len(t9_data_rows)}")
+
+        for sup_letter in ("a", "b", "c", "d", "e", "f"):
+            self.assertIn(f"<sup>{sup_letter}</sup>", t9_md, f"Missing <sup>{sup_letter}</sup> in table9.md")
+        self.assertIn(v110_doc["meta"]["study_fingerprint"], t9_md)
+        for ref_num in ("1", "10", "12", "13", "19", "26", "27"):
+            self.assertRegex(t9_md, rf"\[[^\]]*\b{ref_num}\b[^\]]*\]", f"Missing citation [{ref_num}] in table9.md")
+        self.assertNotIn("43/91", t9_md, "Mismatched QIAseq -sp numerator/denominator (43/91) in table9.md")
+
+        s7_data_rows = [
+            ln for ln in s7_md.splitlines()
+            if ln.strip().startswith("|") and not re.match(r"^\|\s*[:\-| ]+\|\s*$", ln.strip())
+        ][1:]
+        self.assertEqual(len(s7_data_rows), 35, f"Expected 35 switch_catalog rows in supp_table7.md, got {len(s7_data_rows)}")
+        for entry in v110_doc["switch_catalog"]:
+            self.assertIn(entry["name"], s7_md, f"Missing switch_catalog entry {entry['name']} in supp_table7.md")
+        for sup_letter in ("a", "b", "c"):
+            self.assertIn(f"<sup>{sup_letter}</sup>", s7_md, f"Missing <sup>{sup_letter}</sup> in supp_table7.md")
+        for ref_num in ("1", "10", "12", "26", "27"):
+            self.assertRegex(s7_md, rf"\[[^\]]*\b{ref_num}\b[^\]]*\]", f"Missing citation [{ref_num}] in supp_table7.md")
+
+        bare_issue_re = re.compile(r"(?<![A-Za-z0-9_/-])#\d+\b")
+        for label, md_txt in (("table9.md", t9_md), ("supp_table7.md", s7_md)):
+            body_no_heading = "\n".join(
+                ln for ln in md_txt.splitlines() if not ln.startswith("### ")
+            )
+            self.assertIsNone(
+                bare_issue_re.search(body_no_heading),
+                f"Bare #N issue reference found in {label}",
+            )
+            for code_span in re.findall(r"`([^`\n]+)`", md_txt):
+                self.assertNotIn("|", code_span, f"Pipe character inside inline code span in {label}: {code_span!r}")
+            stripped_code = re.sub(r"`[^`\n]+`", "", body_no_heading)
+            stripped_sup = re.sub(r"</?(?:sup|sub)>", "", stripped_code)
+            self.assertIsNone(
+                re.search(r"<[A-Za-z0-9_\-±.+]+>", stripped_sup),
+                f"Unbackticked <...> angle-bracket token in {label}",
+            )
 
 
 
