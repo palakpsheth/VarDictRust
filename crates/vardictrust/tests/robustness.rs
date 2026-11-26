@@ -1,4 +1,4 @@
-//! Process-level CLI smoke and robustness tests (`26` tests).
+//! Process-level CLI smoke and robustness tests (`31` tests).
 //!
 //! Verifies end-to-end binary stream redirection (`--DP ERR` / `--defaultPrinter ERR`),
 //! verbose stderr region debug output (`-y` / `--verbose`), non-zero exit codes on
@@ -9663,4 +9663,414 @@ fn index_rejects_unsorted_pos_split_contigs_and_bad_end() {
             }
         }
     }
+}
+
+#[test]
+fn workflow_presets_cli_end_to_end() {
+    use noodles::core::Position;
+    use noodles::sam::alignment::{
+        record::{
+            cigar::{op::Kind, Op},
+            Flags, MappingQuality,
+        },
+        record_buf::{Cigar, RecordBuf},
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ref_seq = Vec::with_capacity(300);
+    for i in 0..300usize {
+        ref_seq.push(b"ACGT"[(i * 7 + (i / 5) * 3 + 1) % 4]);
+    }
+    let fa_path = dir.path().join("preset_e2e.fa");
+    std::fs::write(
+        &fa_path,
+        format!(">chr1\n{}\n", std::str::from_utf8(&ref_seq).unwrap()),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("preset_e2e.fa.fai"),
+        format!(
+            "chr1\t{}\t6\t{}\t{}\n",
+            ref_seq.len(),
+            ref_seq.len(),
+            ref_seq.len() + 1
+        ),
+    )
+    .unwrap();
+
+    let flip_nt = |b: u8| -> u8 {
+        match b {
+            b'A' => b'G',
+            b'G' => b'C',
+            b'C' => b'T',
+            _ => b'A',
+        }
+    };
+    let cigar_100m: Cigar = [Op::new(Kind::Match, 100)].into_iter().collect();
+    let cigar_70m: Cigar = [Op::new(Kind::Match, 70)].into_iter().collect();
+    let tumor_bam = dir.path().join("preset_t.bam");
+    let normal_bam = dir.path().join("preset_n.bam");
+    let spe_bam = dir.path().join("preset_spe.bam");
+    let mut t_recs = Vec::new();
+    let mut n_recs = Vec::new();
+    let mut spe_recs = Vec::new();
+
+    // 110 reads covering ~85..186 (100M, staggered starts 85..=87 so PSTD=1 in non-amplicon modes
+    // while staying within <=2 bp and >=0.98 overlap of amplicon [85, 184]):
+    // - 30 alt reads at pos 120 (MQ=60)
+    // - 10 alt reads at pos 155 with MQ=5 (exercises paired somatic Q20 dedup!)
+    // - 70 wild-type reads (DP=110 satisfies ctdna d100, amplicon d50, wes d20, wgs d10!)
+    for i in 0..110usize {
+        let start = 85 + (i % 3);
+        let flags = if i % 2 == 1 {
+            Flags::REVERSE_COMPLEMENTED
+        } else {
+            Flags::empty()
+        };
+        let mut tseq = ref_seq[start - 1..start - 1 + 100].to_vec();
+        let mut mq = 60u8;
+        if i < 30 {
+            tseq[120 - start] = flip_nt(ref_seq[119]);
+        } else if i < 40 {
+            tseq[155 - start] = flip_nt(ref_seq[154]);
+            mq = 5;
+        }
+        let qbyte = 38u8 + (i % 2) as u8;
+        t_recs.push(
+            RecordBuf::builder()
+                .set_name(format!("t_{i}"))
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::new(start).unwrap())
+                .set_mapping_quality(MappingQuality::new(mq).unwrap())
+                .set_cigar(cigar_100m.clone())
+                .set_sequence(tseq.into())
+                .set_quality_scores(vec![qbyte; 100].into())
+                .build(),
+        );
+        n_recs.push(
+            RecordBuf::builder()
+                .set_name(format!("n_{i}"))
+                .set_flags(flags)
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::new(start).unwrap())
+                .set_mapping_quality(MappingQuality::new(60).unwrap())
+                .set_cigar(cigar_100m.clone())
+                .set_sequence(ref_seq[start - 1..start - 1 + 100].to_vec().into())
+                .set_quality_scores(vec![qbyte; 100].into())
+                .build(),
+        );
+    }
+    t_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+    n_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+    // Single-primer sheared reads starting at 85..=87 (70M -> overlap 70/100 = 0.70 < 0.95 -> requires -sp!)
+    for i in 0..60usize {
+        let start = 85 + (i % 3);
+        let mut sseq = ref_seq[start - 1..start - 1 + 70].to_vec();
+        if i < 20 {
+            sseq[120 - start] = flip_nt(ref_seq[119]);
+        }
+        spe_recs.push(
+            RecordBuf::builder()
+                .set_name(format!("spe_{i}"))
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::new(start).unwrap())
+                .set_mapping_quality(MappingQuality::new(60).unwrap())
+                .set_cigar(cigar_70m.clone())
+                .set_sequence(sseq.into())
+                .set_quality_scores(vec![38u8 + (i % 2) as u8; 70].into())
+                .build(),
+        );
+    }
+    spe_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+    write_indexed_bam(&tumor_bam, "chr1", ref_seq.len(), &t_recs).unwrap();
+    write_indexed_bam(&normal_bam, "chr1", ref_seq.len(), &n_recs).unwrap();
+    write_indexed_bam(&spe_bam, "chr1", ref_seq.len(), &spe_recs).unwrap();
+
+    let bed4 = dir.path().join("utr4.bed");
+    std::fs::write(&bed4, "chr1\t84\t184\t3'_UTR\n").unwrap();
+    let bed8 = dir.path().join("amp8.bed");
+    std::fs::write(&bed8, "chr1\t84\t184\tEGFR\t0\t+\t94\t178\n").unwrap();
+    let custom_tsv = dir.path().join("custom.tsv");
+    std::fs::write(&custom_tsv, "ROW1\tchr1\t84\t184\n").unwrap();
+
+    // 1. All 4 presets end-to-end (wgs, wes, ctdna on BED4; amplicon on BED8 incl. -sp and paired T/N)
+    for (preset, exp_f, exp_d, exp_v) in [
+        ("wgs", "f0.05", "d10", "v3"),
+        ("wes", "f0.02", "d20", "v4"),
+        ("ctdna", "f0.002", "d100", "v4"),
+    ] {
+        let out = base_cmd()
+            .arg("-G")
+            .arg(&fa_path)
+            .arg("-b")
+            .arg(&tumor_bam)
+            .args(["--preset", preset, "--threads=1"])
+            .arg(&bed4)
+            .output()
+            .expect("spawn preset BED4");
+        assert!(
+            out.status.success(),
+            "--preset {preset} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains(&format!(
+            "##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n##VarDictRustPreset={preset}\n"
+        )));
+        assert!(stdout.contains(&format!("##FILTER=<ID={exp_f},")));
+        assert!(stdout.contains(&format!("##FILTER=<ID={exp_d},")));
+        assert!(stdout.contains(&format!("##FILTER=<ID={exp_v},")));
+        assert!(stdout.contains("##FILTER=<ID=Q20,"));
+        assert!(stdout
+            .lines()
+            .any(|l| l.starts_with("chr1\t120\t") && l.contains("\tPASS\t")));
+    }
+
+    // Explicit -f 0.01 clears preset vcf_af -> ##FILTER=<ID=f0.01
+    let out_f_override = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&tumor_bam)
+        .args(["--preset", "wgs", "-f", "0.01", "--threads=1"])
+        .arg(&bed4)
+        .output()
+        .unwrap();
+    assert!(out_f_override.status.success());
+    assert!(String::from_utf8_lossy(&out_f_override.stdout).contains("##FILTER=<ID=f0.01,"));
+
+    // Custom -c 2 -S 3 -E 4 with --preset wgs (AR-20) + -p pileup
+    let out_custom = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&tumor_bam)
+        .args([
+            "--preset",
+            "wgs",
+            "-c",
+            "2",
+            "-S",
+            "3",
+            "-E",
+            "4",
+            "--emit-intermediate",
+            "--threads=1",
+        ])
+        .arg(&custom_tsv)
+        .output()
+        .unwrap();
+    assert!(
+        out_custom.status.success(),
+        "custom cols failed: {}",
+        String::from_utf8_lossy(&out_custom.stderr)
+    );
+    let custom_var = String::from_utf8_lossy(&out_custom.stdout);
+    assert!(
+        custom_var.lines().any(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            c.get(1) == Some(&"chr1") && c.get(3) == Some(&"120")
+        }),
+        "AR-20 col_gene fallback must set gene='chr1' rather than '184':\n{custom_var}"
+    );
+
+    let out_pileup = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&tumor_bam)
+        .args(["--preset", "wgs", "-p", "-R", "chr1:119-121", "--threads=1"])
+        .output()
+        .unwrap();
+    assert!(out_pileup.status.success());
+    let pileup_lines: Vec<&str> = std::str::from_utf8(&out_pileup.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .collect();
+    assert_eq!(
+        pileup_lines.len(),
+        3,
+        "expected 3 pileup positions 119..=121"
+    );
+
+    // Amplicon preset with -sp (no -a!) and paired tumor|normal somatic amplicon + Q20 dedup
+    let out_amp_sp = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&spe_bam)
+        .args(["--preset", "amplicon", "-sp", "--threads=1"])
+        .arg(&bed8)
+        .output()
+        .unwrap();
+    assert!(
+        out_amp_sp.status.success(),
+        "--preset amplicon -sp failed: {}",
+        String::from_utf8_lossy(&out_amp_sp.stderr)
+    );
+    let amp_sp_vcf = String::from_utf8_lossy(&out_amp_sp.stdout);
+    assert!(amp_sp_vcf.contains("##VarDictRustPreset=amplicon\n"));
+    assert!(amp_sp_vcf
+        .lines()
+        .any(|l| l.starts_with("chr1\t120\t") && l.contains("GDAMP=1;")));
+
+    let pair_arg = format!("{}|{}", tumor_bam.display(), normal_bam.display());
+    let out_amp_pair = base_cmd()
+        .arg("-G")
+        .arg(&fa_path)
+        .arg("-b")
+        .arg(&pair_arg)
+        .args(["--preset", "amplicon", "-N", "TUM|NORM", "--threads=1"])
+        .arg(&bed8)
+        .output()
+        .unwrap();
+    assert!(
+        out_amp_pair.status.success(),
+        "paired --preset amplicon failed: {}",
+        String::from_utf8_lossy(&out_amp_pair.stderr)
+    );
+    let amp_pair_vcf = String::from_utf8_lossy(&out_amp_pair.stdout);
+    assert!(amp_pair_vcf.contains("##VarDictRustPreset=amplicon\n"));
+    let row_155 = amp_pair_vcf
+        .lines()
+        .find(|l| l.starts_with("chr1\t155\t"))
+        .expect("expected chr1:155 low-MQ SNV in paired amplicon VCF");
+    let filt_155 = row_155.split('\t').nth(6).unwrap_or("");
+    assert_eq!(
+        filt_155.split(';').filter(|&t| t == "Q20").count(),
+        1,
+        "paired --preset amplicon must emit Q20 once, got {filt_155}"
+    );
+    assert!(row_155.contains("GDAMP=1;"));
+
+    // 2. Process-level rejection cases (non-zero exit, never panic code 101)
+    for bad_args in [
+        vec![
+            "--preset",
+            "hifi",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec![
+            "--preset",
+            "ont",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec![
+            "--preset",
+            "unknown",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec![
+            "--preset",
+            "wgs\n",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec!["--preset", "-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10"],
+        vec![
+            "-preset",
+            "wgs",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec![
+            "--preset",
+            "wgs",
+            "--parity",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec![
+            "--preset",
+            "wgs",
+            "--compat=vardictjava",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec![
+            "--preset",
+            "wgs",
+            "--preset",
+            "wes",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec![
+            "--preset",
+            "amplicon",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+        ],
+        vec![
+            "--preset",
+            "amplicon",
+            "-i",
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "panel8.bed",
+        ],
+    ] {
+        let res = base_cmd().args(&bad_args).output().unwrap();
+        assert!(
+            !res.status.success() && res.status.code() != Some(101),
+            "expected clean non-zero exit for {bad_args:?}, got status={:?}, stderr={}",
+            res.status,
+            String::from_utf8_lossy(&res.stderr)
+        );
+    }
+
+    // 3. Subprocess --completions bash|zsh|fish and --manpage include --preset
+    for shell in ["bash", "zsh", "fish"] {
+        let comp = base_cmd().args(["--completions", shell]).output().unwrap();
+        assert!(comp.status.success());
+        let txt = String::from_utf8_lossy(&comp.stdout);
+        assert!(txt.contains("preset") && txt.contains("ctdna"));
+    }
+    let man = base_cmd().arg("--manpage").output().unwrap();
+    assert!(man.status.success());
+    assert!(String::from_utf8_lossy(&man.stdout).contains("\\-\\-preset <PRESET>"));
 }

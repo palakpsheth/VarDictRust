@@ -31,6 +31,12 @@ fn push_vcf_rounded(
 }
 
 fn validate_vcf_header_inputs(config: &Config) -> io::Result<()> {
+    if config.preset.is_some() && config.compat.target != crate::config::CompatTarget::Off {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--preset requires CompatTarget::Off",
+        ));
+    }
     if config
         .reference
         .as_bytes()
@@ -619,6 +625,9 @@ fn write_common_vcf_header_prefix<W: Write>(
     writeln!(w, "##source=VarDict_v1.8.2")?;
     if config.compat.target == crate::config::CompatTarget::Off {
         writeln!(w, "##VarDictRustCompat=off")?;
+        if let Some(preset) = config.preset {
+            writeln!(w, "##VarDictRustPreset={preset}")?;
+        }
     }
     writeln!(w, "##reference={}", config.reference)?;
 
@@ -3091,7 +3100,10 @@ pub fn format_paired_vcf_record(
             if mapq_low {
                 filters.push(q_tag);
             }
-            if mapq_snv_low {
+            if mapq_snv_low
+                && (!mapq_low
+                    || config.compat.target == crate::config::CompatTarget::VardictJava183)
+            {
                 filters.push(q_tag);
             }
         }

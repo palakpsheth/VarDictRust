@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`40` tests).
+//! First-class functional engine behavior integration suite (`42` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs,
@@ -7998,5 +7998,327 @@ mod vcf_all_alleles_and_compat_off {
         assert_eq!(dcols[3].len(), 5_001, "expected full 5,001-bp REF allele");
         assert_eq!(dcols[3].as_bytes(), &del5k_ref[1_198..6_199]);
         assert_eq!(dcols[4], "G");
+    }
+
+    #[test]
+    fn workflow_presets_bed_region_guards_and_paired_q20_dedup_e2e() {
+        use noodles::sam::alignment::record::MappingQuality;
+        use vardictrust_core::config::{VcfThreshold, WorkflowPreset};
+        use vardictrust_core::output::vcf::{print_paired_vcf_header, print_vcf_header};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ref_seq = lcg_ref_bytes(0x9494_2026_1111_2222, 400);
+        let fa_path = write_multi_contig_fasta(dir.path(), "preset_ref", &[("chr1", &ref_seq)]);
+        let flip_nt = |b: u8| -> u8 {
+            match b {
+                b'A' => b'G',
+                b'G' => b'C',
+                b'C' => b'T',
+                _ => b'A',
+            }
+        };
+
+        // Build single/tumor BAM with:
+        // - SNV at chr1:100 (boundary of 1-based `-R chr1:100-200`, 10 alt + 10 ref reads)
+        // - SNV at chr1:140 (inside [100, 200], 12 alt + 12 ref reads, MQ=60)
+        // - Low-MQ SNV at chr1:175 (inside [100, 200], 8 alt reads with MQ=5 + 12 ref reads with MQ=60 -> mapq1 = 5.0 < 10.0!)
+        let tumor_bam = dir.path().join("preset_tumor.bam");
+        let normal_bam = dir.path().join("preset_normal.bam");
+        let mut t_recs = Vec::new();
+        let mut n_recs = Vec::new();
+
+        // Reads spanning 85..184 (100M) for amplicon [85..184] and capture intervals
+        let alt_100 = flip_nt(ref_seq[99]);
+        let alt_140 = flip_nt(ref_seq[139]);
+        let alt_175 = flip_nt(ref_seq[174]);
+        for i in 0..24usize {
+            let start = 85;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut t_seq = ref_seq[start - 1..start - 1 + 100].to_vec();
+            let mut mq = 60u8;
+            if i < 10 {
+                t_seq[100 - start] = alt_100;
+            }
+            if (4..16).contains(&i) {
+                t_seq[140 - start] = alt_140;
+            }
+            if i >= 16 {
+                t_seq[175 - start] = alt_175;
+                mq = 5;
+            }
+            let mut rec = mk_contig_rec(
+                &format!("pt_{i}"),
+                0,
+                flags,
+                start,
+                &[(100, Kind::Match)],
+                t_seq,
+                vec![38u8; 100],
+                None,
+            );
+            *rec.mapping_quality_mut() = MappingQuality::new(mq);
+            t_recs.push(rec);
+
+            let n_seq = ref_seq[start - 1..start - 1 + 100].to_vec();
+            n_recs.push(mk_contig_rec(
+                &format!("pn_{i}"),
+                0,
+                flags,
+                start,
+                &[(100, Kind::Match)],
+                n_seq,
+                vec![38u8; 100],
+                None,
+            ));
+        }
+        write_multi_contig_bam(&tumor_bam, &[("chr1", ref_seq.len())], t_recs)
+            .expect("write preset_tumor.bam");
+        write_multi_contig_bam(&normal_bam, &[("chr1", ref_seq.len())], n_recs)
+            .expect("write preset_normal.bam");
+
+        // 1. BED3 (`chr1\t99\t200`) and BED4 with `3'_UTR` (`chr1\t99\t200\t3'_UTR`, AR-01)
+        let bed3_path = dir.path().join("targets3.bed");
+        fs::write(&bed3_path, "chr1\t99\t200\n").expect("bed3");
+        let bed4_path = dir.path().join("targets4_utr.bed");
+        fs::write(&bed4_path, "chr1\t99\t200\t3'_UTR\n").expect("bed4");
+
+        for preset in [
+            WorkflowPreset::Wgs,
+            WorkflowPreset::Wes,
+            WorkflowPreset::Ctdna,
+        ] {
+            let mut cfg4 = Config::from_preset(preset);
+            cfg4.reference = fa_path.to_string_lossy().into_owned();
+            cfg4.bam = tumor_bam.to_string_lossy().into_owned();
+            cfg4.sample = "PRESET_SMPL".to_string();
+            cfg4.sample_explicit = true;
+            cfg4.bed = Some(bed4_path.to_string_lossy().into_owned());
+            cfg4.threads = 1;
+            if preset == WorkflowPreset::Ctdna {
+                cfg4.vcf_min_depth = Some(VcfThreshold::new(20));
+            }
+            let var_out = run_core_var(&cfg4).expect("BED4 3'_UTR .var must not crash");
+            assert!(
+                var_out.lines().all(|l| {
+                    let cols: Vec<&str> = l.split('\t').collect();
+                    cols.len() == 36 && cols.get(1) == Some(&"3'_UTR")
+                }),
+                "{preset} BED4 must emit 36-col Simple .var with gene == 3'_UTR, got:\n{var_out}"
+            );
+            let vcf_out = run_core_vcf(&cfg4).expect("BED4 3'_UTR .vcf");
+            let hdr_lines: Vec<&str> = vcf_out.lines().take(5).collect();
+            assert_eq!(hdr_lines.get(2), Some(&"##VarDictRustCompat=off"));
+            let exp_preset_hdr = format!("##VarDictRustPreset={preset}");
+            assert_eq!(hdr_lines.get(3), Some(&exp_preset_hdr.as_str()));
+            assert!(!extract_variants(&vcf_out).is_empty());
+        }
+
+        let mut cfg_bed3 = Config::from_preset(WorkflowPreset::Wgs);
+        cfg_bed3.reference = fa_path.to_string_lossy().into_owned();
+        cfg_bed3.bam = tumor_bam.to_string_lossy().into_owned();
+        cfg_bed3.bed = Some(bed3_path.to_string_lossy().into_owned());
+        cfg_bed3.threads = 1;
+        let vcf_bed3 = run_core_vcf(&cfg_bed3).expect("BED3 under Wgs");
+        assert!(
+            extract_variants(&vcf_bed3)
+                .iter()
+                .any(|l| l.starts_with("chr1\t100\t")),
+            "0-based BED3 [99, 200) -> 1-based [100, 200] must retain pos 100"
+        );
+
+        // 2. UCSC 8-col capture/CDS BED8 NOT hijacked into Amplicon under Wgs/Wes/Ctdna (AR-02),
+        //    whereas WorkflowPreset::Amplicon runs Amplicon mode!
+        let bed8_path = dir.path().join("ucsc_cds8.bed");
+        fs::write(&bed8_path, "chr1\t84\t184\tTP53\t0\t+\t94\t178\n").expect("bed8");
+        for preset in [
+            WorkflowPreset::Wgs,
+            WorkflowPreset::Wes,
+            WorkflowPreset::Ctdna,
+        ] {
+            let mut cfg8 = Config::from_preset(preset);
+            cfg8.reference = fa_path.to_string_lossy().into_owned();
+            cfg8.bam = tumor_bam.to_string_lossy().into_owned();
+            cfg8.bed = Some(bed8_path.to_string_lossy().into_owned());
+            cfg8.threads = 1;
+            let var8 = run_core_var(&cfg8).expect("BED8 .var under non-amplicon preset");
+            assert!(
+                !var8.is_empty() && var8.lines().all(|l| l.split('\t').count() == 36),
+                "{preset} on UCSC BED8 must stay Simple (36 cols), never Amplicon (38 cols):\n{var8}"
+            );
+            let vcf8 = run_core_vcf(&cfg8).expect("BED8 .vcf under non-amplicon preset");
+            assert!(
+                !extract_variants(&vcf8).iter().any(|l| l.contains("GDAMP=")),
+                "{preset} on UCSC BED8 must not emit GDAMP= in VCF records"
+            );
+        }
+
+        let mut cfg_amp = Config::from_preset(WorkflowPreset::Amplicon);
+        cfg_amp.reference = fa_path.to_string_lossy().into_owned();
+        cfg_amp.bam = tumor_bam.to_string_lossy().into_owned();
+        cfg_amp.bed = Some(bed8_path.to_string_lossy().into_owned());
+        cfg_amp.vcf_min_depth = Some(VcfThreshold::new(20));
+        cfg_amp.threads = 1;
+        let var_amp = run_core_var(&cfg_amp).expect("Amplicon preset .var");
+        assert!(
+            !var_amp.is_empty() && var_amp.lines().all(|l| l.split('\t').count() == 38),
+            "Amplicon preset must run 38-col Amplicon mode"
+        );
+        let vcf_amp = run_core_vcf(&cfg_amp).expect("Amplicon preset .vcf");
+        assert!(vcf_amp.contains("##VarDictRustPreset=amplicon\n"));
+        assert!(extract_variants(&vcf_amp)
+            .iter()
+            .all(|l| l.contains("GDAMP=")));
+
+        // 3. `-R chr1:100-200` with Config::from_preset(Wgs) stays 1-based closed (AR-03),
+        //    while explicit `-z` (`zero_based_defined = true`) shifts start to Pos1(101).
+        let mut cfg_reg_1b = Config::from_preset(WorkflowPreset::Wgs);
+        cfg_reg_1b.reference = fa_path.to_string_lossy().into_owned();
+        cfg_reg_1b.bam = tumor_bam.to_string_lossy().into_owned();
+        cfg_reg_1b.region = Some("chr1:100-200".to_string());
+        cfg_reg_1b.threads = 1;
+        let vcf_reg_1b = run_core_vcf(&cfg_reg_1b).expect("-R 1-based under Wgs");
+        assert!(
+            extract_variants(&vcf_reg_1b)
+                .iter()
+                .any(|l| l.starts_with("chr1\t100\t")),
+            "-R chr1:100-200 without -z must retain 1-based pos 100 under Wgs preset"
+        );
+
+        let mut cfg_reg_0b = cfg_reg_1b.clone();
+        cfg_reg_0b.zero_based = true;
+        cfg_reg_0b.zero_based_defined = true;
+        let vcf_reg_0b = run_core_vcf(&cfg_reg_0b).expect("-R + -z 0-based under Wgs");
+        assert!(
+            !extract_variants(&vcf_reg_0b)
+                .iter()
+                .any(|l| l.starts_with("chr1\t100\t"))
+                && extract_variants(&vcf_reg_0b)
+                    .iter()
+                    .any(|l| l.starts_with("chr1\t140\t")),
+            "-R chr1:100-200 with zero_based_defined=true must shift start to Pos1(101) and drop pos 100"
+        );
+
+        // 4. Programmatic validation guards (AR-03, AR-12)
+        let mut bad_compat = Config::from_preset(WorkflowPreset::Wgs);
+        bad_compat.reference = fa_path.to_string_lossy().into_owned();
+        bad_compat.bam = tumor_bam.to_string_lossy().into_owned();
+        bad_compat.region = Some("chr1:100-200".to_string());
+        bad_compat.compat = COMPAT_VARDICTJAVA_1_8_3;
+        let err_compat = run_core_vcf(&bad_compat).expect_err("preset + VardictJava183 must fail");
+        assert!(
+            matches!(err_compat, VardictError::Parse(_))
+                && err_compat
+                    .to_string()
+                    .contains("--preset requires --compat=off"),
+            "unexpected error: {err_compat}"
+        );
+        let mut hdr_sink = Vec::new();
+        let mut bad_hdr_cfg = bad_compat.clone();
+        bad_hdr_cfg.reference.clear();
+        let hdr_err1 = print_vcf_header(
+            &mut hdr_sink,
+            &bad_hdr_cfg,
+            &std::collections::HashMap::new(),
+        )
+        .expect_err("print_vcf_header must reject preset + VardictJava183");
+        assert_eq!(hdr_err1.kind(), std::io::ErrorKind::InvalidInput);
+        let hdr_err2 = print_paired_vcf_header(
+            &mut hdr_sink,
+            &bad_hdr_cfg,
+            &std::collections::HashMap::new(),
+        )
+        .expect_err("print_paired_vcf_header must reject preset + VardictJava183");
+        assert_eq!(hdr_err2.kind(), std::io::ErrorKind::InvalidInput);
+
+        let mut bad_amp_reg = Config::from_preset(WorkflowPreset::Amplicon);
+        bad_amp_reg.reference = fa_path.to_string_lossy().into_owned();
+        bad_amp_reg.bam = tumor_bam.to_string_lossy().into_owned();
+        bad_amp_reg.region = Some("chr1:100-200".to_string());
+        let err_amp_reg = run_core_vcf(&bad_amp_reg).expect_err("Amplicon + -R must fail");
+        assert!(
+            matches!(err_amp_reg, VardictError::Parse(_))
+                && err_amp_reg
+                    .to_string()
+                    .contains("cannot be combined with -R"),
+            "unexpected error: {err_amp_reg}"
+        );
+
+        let mut bad_amp_splice = Config::from_preset(WorkflowPreset::Amplicon);
+        bad_amp_splice.reference = fa_path.to_string_lossy().into_owned();
+        bad_amp_splice.bam = tumor_bam.to_string_lossy().into_owned();
+        bad_amp_splice.bed = Some(bed8_path.to_string_lossy().into_owned());
+        bad_amp_splice.splice = true;
+        let err_amp_splice =
+            run_core_var(&bad_amp_splice).expect_err("Amplicon + splice must fail");
+        assert!(
+            matches!(err_amp_splice, VardictError::Parse(_))
+                && err_amp_splice
+                    .to_string()
+                    .contains("cannot be combined with -i / --splice"),
+            "unexpected error: {err_amp_splice}"
+        );
+
+        let mut bad_ctdna_sp = Config::from_preset(WorkflowPreset::Ctdna);
+        bad_ctdna_sp.reference = fa_path.to_string_lossy().into_owned();
+        bad_ctdna_sp.bam = tumor_bam.to_string_lossy().into_owned();
+        bad_ctdna_sp.bed = Some(bed8_path.to_string_lossy().into_owned());
+        bad_ctdna_sp.amplicon_single_primer = true;
+        let err_ctdna_sp =
+            run_core_var(&bad_ctdna_sp).expect_err("Ctdna + -sp without -a must fail");
+        assert!(
+            matches!(err_ctdna_sp, VardictError::Parse(_))
+                && err_ctdna_sp
+                    .to_string()
+                    .contains("requires explicit -a (or use --preset amplicon)"),
+            "unexpected error: {err_ctdna_sp}"
+        );
+
+        // 5. Paired somatic Q20 single-tag deduplication (AR-04)
+        let bam_pair = format!("{}|{}", tumor_bam.display(), normal_bam.display());
+        let mut som_wgs = Config::from_preset(WorkflowPreset::Wgs);
+        som_wgs.reference = fa_path.to_string_lossy().into_owned();
+        som_wgs.bam = bam_pair.clone();
+        som_wgs.sample = "TUM|NORM".to_string();
+        som_wgs.sample_explicit = true;
+        som_wgs.region = Some("chr1:100-200".to_string());
+        som_wgs.threads = 1;
+        let som_wgs_vcf = run_core_vcf(&som_wgs).expect("paired Wgs VCF");
+        let low_mq_row_wgs = extract_variants(&som_wgs_vcf)
+            .into_iter()
+            .find(|l| l.starts_with("chr1\t175\t"))
+            .expect("expected low-MQ SNV at chr1:175");
+        let wgs_filter = low_mq_row_wgs.split('\t').nth(6).unwrap_or("");
+        assert_eq!(
+            wgs_filter.split(';').filter(|&t| t == "Q20").count(),
+            1,
+            "paired Wgs must emit Q20 exactly once, got FILTER={wgs_filter} in {low_mq_row_wgs}"
+        );
+
+        let som_vj = Config {
+            reference: fa_path.to_string_lossy().into_owned(),
+            bam: bam_pair,
+            sample: "TUM|NORM".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:100-200".to_string()),
+            vcf_mapq: Some(VcfThreshold::new(20.0)),
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            threads: 1,
+            ..Config::default()
+        };
+        let som_vj_vcf = run_core_vcf(&som_vj).expect("paired VardictJava183 VCF");
+        let low_mq_row_vj = extract_variants(&som_vj_vcf)
+            .into_iter()
+            .find(|l| l.starts_with("chr1\t175\t"))
+            .expect("expected low-MQ SNV at chr1:175 in VJ mode");
+        let vj_filter = low_mq_row_vj.split('\t').nth(6).unwrap_or("");
+        assert_eq!(
+            vj_filter.split(';').filter(|&t| t == "Q20").count(),
+            2,
+            "default VardictJava183 must preserve legacy duplicate Q20;Q20, got FILTER={vj_filter}"
+        );
     }
 }

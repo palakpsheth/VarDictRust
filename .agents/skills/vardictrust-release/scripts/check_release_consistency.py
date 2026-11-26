@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (803 total:
-579 core lib + 110 corpus_parity + 41 engine_behavior + 2 amplicon_stream_mem
-+ 3 cram_stack + 34 CLI bin + 34 CLI integration binary tests), engine
+Verifies that all version-bearing files, workspace test counts (807 total:
+580 core lib + 110 corpus_parity + 42 engine_behavior + 2 amplicon_stream_mem
++ 3 cram_stack + 35 CLI bin + 35 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
 """
@@ -21,14 +21,14 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 803,
-    "core_lib": 579,
+    "total_workspace": 807,
+    "core_lib": 580,
     "corpus_parity": 110,
-    "engine_behavior": 41,
+    "engine_behavior": 42,
     "amplicon_stream_mem": 2,
     "cram_stack": 3,
-    "cli_bin": 34,
-    "cli_integration": 34,
+    "cli_bin": 35,
+    "cli_integration": 35,
     "harness_self_tests": 37,
 }
 
@@ -285,7 +285,7 @@ EXPECTED_CLI_HEADINGS = (
     "6. Structural Variants & Complex Indels",
     "7. Performance & Concurrency",
 )
-EXPECTED_CLI_FLAG_COUNT = 91
+EXPECTED_CLI_FLAG_COUNT = 92
 
 
 def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None:
@@ -302,8 +302,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "README.md",
-        r"`(?:87|89|90)` CLI flags|(?:89|90) CLI flags|(?:89|90)-flag|6 functional groups",
-        "README.md stale 87/89/90 CLI flags or 6 functional groups",
+        r"`(?:87|89|90|91)` CLI flags|(?:89|90|91) CLI flags|(?:87|89|90|91)-flag|6 functional groups",
+        "README.md stale 87/89/90/91 CLI flags or 6 functional groups",
         errors,
     )
 
@@ -413,8 +413,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "ROADMAP.md",
-        r"`(?:87|89|90)`-flag CLI surface|(?:89|90) CLI flags|(?:89|90)-flag|6 functional groups",
-        "ROADMAP.md stale 87/89/90-flag CLI surface or 6 functional groups",
+        r"`(?:87|89|90|91)`-flag CLI surface|`(?:87|89|90|91)` total CLI flags|`(?:87|89|90|91)` CLI flags|(?:89|90|91) CLI flags|(?:87|89|90|91)-flag|6 functional groups",
+        "ROADMAP.md stale 87/89/90/91-flag CLI surface or 6 functional groups",
         errors,
     )
 
@@ -425,6 +425,20 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
         "CHANGELOG.md stale 87 total CLI flags across 6 functional groups",
         errors,
     )
+
+    for bioconda_rel in (
+        "CHANGELOG.md",
+        "ROADMAP.md",
+        "UPSTREAM.toml",
+        "harness/verify_wave4_public_data.sh",
+    ):
+        forbid_regex(
+            repo_root,
+            bioconda_rel,
+            r"bioconda-recipes(?:#|/pull/)71636\b",
+            f"{bioconda_rel} stale bioconda-recipes#71636 provenance (expected #71875)",
+            errors,
+        )
 
     require_regex(
         repo_root,
@@ -443,8 +457,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "docs/ecosystem-survey.md",
-        r"(?:87|89|90)-flag|`(?:87|89|90)` CLI flags|(?:89|90) CLI flags|6 functional groups",
-        "docs/ecosystem-survey.md stale 87/89/90-flag or 6 functional groups",
+        r"(?:87|89|90|91)-flag|`(?:87|89|90|91)` CLI flags|(?:89|90|91) CLI flags|6 functional groups",
+        "docs/ecosystem-survey.md stale 87/89/90/91-flag or 6 functional groups",
         errors,
     )
 
@@ -458,8 +472,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
-        r"(?:87|89|90)-flag CLI surface|(?:89|90) CLI flags|(?:89|90)-flag|6 functional groups",
-        "test-matrix-and-ci-audit.md stale 87/89/90-flag CLI surface or 6 functional groups",
+        r"(?:87|89|90|91)-flag CLI surface|`(?:87|89|90|91)` CLI flags|(?:89|90|91) CLI flags|(?:87|89|90|91)-flag|6 functional groups",
+        "test-matrix-and-ci-audit.md stale 87/89/90/91-flag CLI surface or 6 functional groups",
         errors,
     )
 
@@ -473,8 +487,8 @@ def check_cli_and_migration_surfaces(repo_root: Path, errors: list[str]) -> None
     forbid_regex(
         repo_root,
         "wiki/Home.md",
-        r"(?:87|89|90)-flag|(?:89|90) CLI flags|6 functional groups",
-        "wiki/Home.md stale 87/89/90-flag or 6 functional groups",
+        r"(?:87|89|90|91)-flag|`(?:87|89|90|91)` CLI flags|(?:89|90|91) CLI flags|6 functional groups",
+        "wiki/Home.md stale 87/89/90/91-flag or 6 functional groups",
         errors,
     )
 
@@ -1176,7 +1190,7 @@ def check_pre_tag_surfaces(
     # 18. .github/SECURITY.md Supported Versions SemVer branch
     check_security_policy_surface(repo_root, version, errors)
 
-    # G1. CLI 90-flag / 7-group & Migration Guide surfaces
+    # G1. CLI 92-flag / 7-group & Migration Guide surfaces
     check_cli_and_migration_surfaces(repo_root, errors)
 
     # G2. UPSTREAM.toml commit & comparator pins

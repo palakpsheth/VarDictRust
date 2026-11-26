@@ -559,6 +559,239 @@ class TestBiocondaRecipe(unittest.TestCase):
             self.assertNotIn("macOS-arm64", doc, f"{name} must not use invalid Conda subdir 'macOS-arm64'")
             self.assertNotIn("macOS-64", doc, f"{name} must not use invalid Conda subdir 'macOS-64'")
 
+    def test_prepare_bioconda_pr_pure_mit_transition(self):
+        prep_script = ROOT_DIR / "packaging" / "bioconda" / "prepare_bioconda_pr.sh"
+        self.assertTrue(prep_script.is_file(), f"Missing Bioconda helper: {prep_script}")
+        self.assertTrue(os.access(prep_script, os.X_OK), "prepare_bioconda_pr.sh must be executable")
+        prep_src = prep_script.read_text(encoding="utf-8")
+        non_echo_lines = "\n".join(
+            line for line in prep_src.splitlines() if not line.lstrip().startswith(("echo ", "#"))
+        )
+        self.assertNotIn(
+            "git archive",
+            non_echo_lines,
+            "prepare_bioconda_pr.sh must never invoke git archive",
+        )
+
+        before_status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+        legacy_1010_meta_fixture = (
+            '{% set name = "vardictrust" %}\n'
+            '{% set version = "1.0.10" %}\n\n'
+            "package:\n"
+            "  name: {{ name|lower }}\n"
+            "  version: {{ version }}\n\n"
+            "source:\n"
+            "  url: https://github.com/palakpsheth/VarDictRust/archive/refs/tags/v{{ version }}.tar.gz\n"
+            "  sha256: e7c0daf0c7df4c540296252fabce792f5ca5c72b9bc0517c4d7874a737c81b94\n\n"
+            "build:\n"
+            "  number: 3\n"
+            "  binary_relocation: false\n"
+            "  run_exports:\n"
+            '    - {{ pin_subpackage(name, max_pin="x") }}\n\n'
+            "requirements:\n"
+            "  build:\n"
+            "    - {{ compiler('c') }}\n"
+            "    - {{ stdlib('c') }}\n"
+            "    - {{ compiler('rust') }}\n"
+            "    - make\n"
+            "    - cargo-bundle-licenses\n\n"
+            "test:\n"
+            "  commands:\n"
+            "    - vardictrust --version\n"
+            "    - vardictrust --help\n\n"
+            "about:\n"
+            "  home: https://github.com/palakpsheth/VarDictRust\n"
+            "  license: MIT AND GPL-2.0-or-later\n"
+            "  license_family: GPL2\n"
+            "  license_file:\n"
+            "    - LICENSE\n"
+            "    - LICENSE-3RD-PARTY\n"
+            "    - THIRDPARTY.yml\n"
+            '  summary: "Fast Rust somatic & germline variant caller - drop-in VarDictJava with fixes"\n'
+            "  description: |\n"
+            "    VarDictRust is a fast, memory-safe Rust somatic and germline variant caller\n"
+            "    that consolidates the VarDictJava v1.8.3 + R + Perl pipeline into a single\n"
+            "    binary with bounded-memory WGS tiling, default byte-identical VarDictJava\n"
+            "    v1.8.3 parity on valid inputs (v1.0.10 default; --compat=vardictjava in\n"
+            "    v1.1.0+), native multithreaded BGZF and Tabix/CSI VCF output, and (in\n"
+            "    v1.1.0+) opt-in --compat=off correctness, SV, and SAM =/X (--eqx) alignment\n"
+            "    fixes (17 switches) plus 18/18 var2vcf post-filtering including\n"
+            "    --vcf-all-alleles multi-allelic VCF output.\n"
+            "  doc_url: https://vardictrust.readthedocs.io/\n"
+            "  dev_url: https://github.com/palakpsheth/VarDictRust\n\n"
+            "extra:\n"
+            "  additional-platforms:\n"
+            "    - linux-aarch64\n"
+            "    - osx-arm64\n"
+            "  recipe-maintainers:\n"
+            "    - palakpsheth\n"
+            "  identifiers:\n"
+            "    - doi:10.1093/nar/gkw227\n"
+            "    - biotools:vardictrust\n"
+        )
+
+        sha_1010 = "a1" * 32
+        sha_110 = "B2" * 32  # mixed case exercises lowercase normalization
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = pathlib.Path(tmp_dir)
+            tmp_meta = tmp_path / "meta.yaml"
+            tmp_meta.write_text(legacy_1010_meta_fixture, encoding="utf-8")
+
+            # 1) 1.0.10 keeps legacy MIT AND GPL-2.0-or-later / GPL2 metadata
+            r10 = subprocess.run(
+                [
+                    "bash",
+                    str(prep_script),
+                    "1.0.10",
+                    "--offline-sha256",
+                    sha_1010,
+                    "--meta-yaml",
+                    str(tmp_meta),
+                ],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                r10.returncode,
+                0,
+                f"prepare_bioconda_pr.sh 1.0.10 failed:\n{r10.stderr}\n{r10.stdout}",
+            )
+            txt10 = tmp_meta.read_text(encoding="utf-8")
+            self.assertIn('{% set version = "1.0.10" %}', txt10)
+            self.assertIn(f"sha256: {sha_1010}", txt10)
+            self.assertIn("  number: 0\n", txt10)
+            self.assertIn("  license: MIT AND GPL-2.0-or-later\n", txt10)
+            self.assertIn("  license_family: GPL2\n", txt10)
+
+            # 1b) Leading --offline-sha256 without positional VERSION falls back to default VERSION
+            cargo_ver_m = re.search(
+                r'^\[workspace\.package\]\s*\nversion\s*=\s*"([^"]+)"',
+                (ROOT_DIR / "Cargo.toml").read_text(encoding="utf-8"),
+                re.MULTILINE,
+            )
+            self.assertIsNotNone(cargo_ver_m)
+            default_ver = cargo_ver_m.group(1)
+            r_def = subprocess.run(
+                [
+                    "bash",
+                    str(prep_script),
+                    "--offline-sha256",
+                    "d4" * 32,
+                    "--meta-yaml",
+                    str(tmp_meta),
+                ],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(r_def.returncode, 0, f"Leading-flag prepare_bioconda_pr.sh failed:\n{r_def.stderr}")
+            self.assertIn(f'{{% set version = "{default_ver}" %}}', tmp_meta.read_text(encoding="utf-8"))
+            self.assertIn(f"sha256: {'d4' * 32}", tmp_meta.read_text(encoding="utf-8"))
+
+            # 2) 1.1.0 transitions cleanly to pure MIT + 32 switches + presets + -sp
+            r11 = subprocess.run(
+                [
+                    "bash",
+                    str(prep_script),
+                    "1.1.0",
+                    "--offline-sha256",
+                    sha_110,
+                    "--meta-yaml",
+                    str(tmp_meta),
+                ],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                r11.returncode,
+                0,
+                f"prepare_bioconda_pr.sh 1.1.0 failed:\n{r11.stderr}\n{r11.stdout}",
+            )
+            txt11 = tmp_meta.read_text(encoding="utf-8")
+            self.assertIn('{% set version = "1.1.0" %}', txt11)
+            self.assertIn(f"sha256: {sha_110.lower()}", txt11)
+            self.assertIn("  number: 0\n", txt11)
+            self.assertIn("  license: MIT\n", txt11)
+            self.assertIn("  license_family: MIT\n", txt11)
+            self.assertNotIn("GPL", txt11)
+            self.assertNotIn("v1.0.10", txt11)
+            self.assertNotIn("17 switches", txt11)
+            self.assertIn("32 switches", txt11)
+            self.assertIn("--preset wgs|wes|amplicon|ctdna", txt11)
+            self.assertIn("--amplicon-single-primer", txt11)
+            self.assertIn("18/18 var2vcf post-filtering including --vcf-all-alleles", txt11)
+            self.assertNotIn("ultra-fast", txt11.lower())
+
+            # Validate against check_release_consistency.py post-bioconda regex rules
+            self.assertRegex(txt11, re.compile(r"^\s*license:\s*MIT\s*$", re.MULTILINE))
+            self.assertRegex(txt11, re.compile(r"^\s*license_family:\s*MIT\s*$", re.MULTILINE))
+            self.assertIsNone(re.search(r"GPL-2\.0|GPL-2\.0-or-later|GPL2", txt11))
+
+            # 3) Idempotent 1.1.0 -> 1.1.1 re-run on already-transitioned pure-MIT meta.yaml
+            r111 = subprocess.run(
+                [
+                    "bash",
+                    str(prep_script),
+                    "1.1.1",
+                    "--offline-sha256",
+                    "c3" * 32,
+                    "--meta-yaml",
+                    str(tmp_meta),
+                ],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                r111.returncode,
+                0,
+                f"prepare_bioconda_pr.sh 1.1.1 idempotency failed:\n{r111.stderr}\n{r111.stdout}",
+            )
+            txt111 = tmp_meta.read_text(encoding="utf-8")
+            self.assertIn('{% set version = "1.1.1" %}', txt111)
+            self.assertIn("  license: MIT\n", txt111)
+            self.assertNotIn("GPL", txt111)
+
+            # 4) Reject malformed --offline-sha256 and malformed SemVer
+            bad_sha = subprocess.run(
+                ["bash", str(prep_script), "1.1.0", "--offline-sha256", "not-a-sha", "--meta-yaml", str(tmp_meta)],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(bad_sha.returncode, 0)
+            bad_ver = subprocess.run(
+                ["bash", str(prep_script), "v1.1.0", "--offline-sha256", sha_1010, "--meta-yaml", str(tmp_meta)],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(bad_ver.returncode, 0)
+
+        after_status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertEqual(before_status, after_status, "prepare_bioconda_pr.sh test dirtied git working tree")
+
 
 class TestNfCoreModulePackaging(unittest.TestCase):
     """Verify in-tree Nextflow nf-core module structure, review fixes, and lockfiles."""
@@ -697,6 +930,302 @@ class TestNfCoreModulePackaging(unittest.TestCase):
                 meta_yml,
                 f"README.md Wave container URI {uri!r} not found in packaging/nf-core/modules/vardictrust/meta.yml",
             )
+
+    def test_prepare_nfcore_pr_pure_mit_and_wave_uri_sync(self):
+        prep_script = NFCORE_DIR / "prepare_nfcore_pr.sh"
+        before_status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+        new_dock_amd64 = "1122334455667788"
+        new_dock_arm64 = "99aabbccddeeff00"
+        new_sing_amd64 = "feedfacecafebeef"
+        new_sing_arm64 = "0123456789abcdef"
+        new_sing_https = (
+            "https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/"
+            "fe/feedfacecafebeef0123456789abcdef0123456789abcdef0123456789abcdef/data"
+        )
+
+        legacy_sing_https = (
+            "https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/"
+            "33/33ba32a84ffa98e9001a1079218cc9deb09a41939afe85fa189a090665aad393/data"
+        )
+        legacy_containers_yaml = (
+            "containers:\n"
+            "  docker:\n"
+            "    linux/amd64:\n"
+            "      name: community.wave.seqera.io/library/htslib_vardictrust:8e6fd2fa9924d063\n"
+            "      build_id: bd-8e6fd2fa9924d063_1\n"
+            "      scan_id: sc-6661aaf185680122_1\n"
+            "    linux/arm64:\n"
+            "      name: community.wave.seqera.io/library/htslib_vardictrust:ad558d83a9c24379\n"
+            "      build_id: bd-ad558d83a9c24379_1\n"
+            "      scan_id: sc-7e2f609f25d38bf9_1\n"
+            "  singularity:\n"
+            "    linux/arm64:\n"
+            "      name: oras://community.wave.seqera.io/library/htslib_vardictrust:dcf7214823b2eb9c\n"
+            "      build_id: bd-dcf7214823b2eb9c_1\n"
+            "      https: https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/ce/ce467182e178a8f56468fc04d8748dd2447f9ecdef4bd7d3951f5549c45f31b8/data\n"
+            "    linux/amd64:\n"
+            "      name: oras://community.wave.seqera.io/library/htslib_vardictrust:b603893bd98569d2\n"
+            "      build_id: bd-b603893bd98569d2_1\n"
+            f"      https: {legacy_sing_https}\n"
+            "  conda:\n"
+            "    linux/amd64:\n"
+            "      lock_file: modules/nf-core/vardictrust/.conda-lock/linux_amd64-bd-8e6fd2fa9924d063_1.txt\n"
+            "    linux/arm64:\n"
+            "      lock_file: modules/nf-core/vardictrust/.conda-lock/linux_arm64-bd-ad558d83a9c24379_1.txt\n"
+        )
+        legacy_readme_snippet = (
+            "### 3. Containerized Execution (Docker, Podman, Apptainer via Seqera Wave)\n\n"
+            "```bash\n"
+            "# Docker / Podman (linux/amd64: 8e6fd2fa9924d063 | linux/arm64: ad558d83a9c24379)\n"
+            "docker run --rm -v $(pwd):/data community.wave.seqera.io/library/htslib_vardictrust:8e6fd2fa9924d063 \\\n"
+            "  vardictrust -G /data/ref.fa -b /data/sample.bam -R chr1:1000-2000 > output.vcf\n\n"
+            "# Apptainer / Singularity ORAS (linux/amd64: b603893bd98569d2 | linux/arm64: dcf7214823b2eb9c)\n"
+            "apptainer exec oras://community.wave.seqera.io/library/htslib_vardictrust:b603893bd98569d2 vardictrust --help\n"
+            "```\n"
+        )
+
+        def seed_legacy_1010_nfcore_fixture(mod_dest: pathlib.Path, readme_dest: pathlib.Path) -> None:
+            shutil.copytree(NFCORE_MOD_DIR, mod_dest)
+            env_p = mod_dest / "environment.yml"
+            env_p.write_text(
+                re.sub(
+                    r"bioconda::vardictrust=[^\s\"']+",
+                    "bioconda::vardictrust=1.0.10",
+                    env_p.read_text(encoding="utf-8"),
+                ),
+                encoding="utf-8",
+            )
+            meta_p = mod_dest / "meta.yml"
+            meta_txt = meta_p.read_text(encoding="utf-8")
+            meta_txt = re.sub(
+                r'(-\s*"vardictrust":[\s\S]*?licence:\s*\n)(?:\s*-\s*"[^"]+"\s*\n)+',
+                r'\g<1>        - "MIT"\n        - "GPL-2.0-or-later"\n',
+                meta_txt,
+                count=1,
+            )
+            meta_txt = re.sub(r"(?m)^containers:\n[\s\S]*\Z", legacy_containers_yaml, meta_txt, count=1)
+            meta_p.write_text(meta_txt, encoding="utf-8")
+
+            mnf_p = mod_dest / "main.nf"
+            mnf_txt = mnf_p.read_text(encoding="utf-8")
+            mnf_txt = re.sub(
+                r"https://community-cr-prod\.seqera\.io/docker/registry/v2/blobs/sha256/[0-9a-f]{2}/[0-9a-f]{64}/data",
+                legacy_sing_https,
+                mnf_txt,
+            )
+            mnf_txt = re.sub(
+                r"community\.wave\.seqera\.io/library/htslib_vardictrust:[0-9a-f]{16}",
+                "community.wave.seqera.io/library/htslib_vardictrust:8e6fd2fa9924d063",
+                mnf_txt,
+            )
+            mnf_p.write_text(mnf_txt, encoding="utf-8")
+
+            lock_dir = mod_dest / ".conda-lock"
+            shutil.rmtree(lock_dir, ignore_errors=True)
+            lock_dir.mkdir(parents=True)
+            (lock_dir / "linux_amd64-bd-8e6fd2fa9924d063_1.txt").write_text("# lock\n", encoding="utf-8")
+            (lock_dir / "linux_arm64-bd-ad558d83a9c24379_1.txt").write_text("# lock\n", encoding="utf-8")
+            readme_dest.write_text(legacy_readme_snippet, encoding="utf-8")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = pathlib.Path(tmp_dir)
+
+            # A) Test --hermetic-sync on 1.0.10 (retains GPL-2.0-or-later) vs 1.1.0 (pure MIT + README Wave sync)
+            herm_dir = tmp_path / "hermetic"
+            herm_dir.mkdir(parents=True)
+            herm_readme = herm_dir / "README.md"
+            seed_legacy_1010_nfcore_fixture(herm_dir / "mod", herm_readme)
+
+            r10 = subprocess.run(
+                [
+                    "bash",
+                    str(prep_script),
+                    "--hermetic-sync",
+                    "1.0.10",
+                    str(herm_dir / "mod" / "environment.yml"),
+                    str(herm_dir / "mod" / "meta.yml"),
+                    str(herm_dir / "mod" / "main.nf"),
+                    str(herm_readme),
+                ],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(r10.returncode, 0, f"--hermetic-sync 1.0.10 failed:\n{r10.stderr}")
+            self.assertIn('"GPL-2.0-or-later"', (herm_dir / "mod" / "meta.yml").read_text(encoding="utf-8"))
+
+            # Simulate nf-core modules containers create updating main.nf + meta.yml Wave digests
+            main_nf_p = herm_dir / "mod" / "main.nf"
+            meta_yml_p = herm_dir / "mod" / "meta.yml"
+            main_nf_txt = re.sub(
+                r"https://community-cr-prod\.seqera\.io/docker/registry/v2/blobs/sha256/[0-9a-f]{2}/[0-9a-f]{64}/data",
+                new_sing_https,
+                main_nf_p.read_text(encoding="utf-8"),
+            )
+            main_nf_txt = re.sub(
+                r"community\.wave\.seqera\.io/library/htslib_vardictrust:[0-9a-f]{16}",
+                f"community.wave.seqera.io/library/htslib_vardictrust:{new_dock_amd64}",
+                main_nf_txt,
+            )
+            main_nf_p.write_text(main_nf_txt, encoding="utf-8")
+
+            orig_meta = meta_yml_p.read_text(encoding="utf-8")
+            upd_meta = (
+                orig_meta.replace("8e6fd2fa9924d063", new_dock_amd64)
+                .replace("ad558d83a9c24379", new_dock_arm64)
+                .replace("b603893bd98569d2", new_sing_amd64)
+                .replace("dcf7214823b2eb9c", new_sing_arm64)
+                .replace(legacy_sing_https, new_sing_https)
+            )
+            meta_yml_p.write_text(upd_meta, encoding="utf-8")
+
+            # B) Full end-to-end mocked prepare_nfcore_pr.sh 1.1.0 execution (including Wave container + README sync)
+            in_tree_copy = tmp_path / "in_tree_mod"
+            e2e_readme = tmp_path / "README_e2e.md"
+            seed_legacy_1010_nfcore_fixture(in_tree_copy, e2e_readme)
+
+            nfcore_repo = tmp_path / "nf-core-modules"
+            nfcore_repo.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q"], cwd=str(nfcore_repo), check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(nfcore_repo), check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(nfcore_repo), check=True)
+            (nfcore_repo / "README.md").write_text("nf-core mock\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=str(nfcore_repo), check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(nfcore_repo), check=True)
+
+            mock_bin = tmp_path / "mock_bin"
+            mock_bin.mkdir()
+            (mock_bin / "curl").write_text(
+                f"#!{sys.executable}\n"
+                "import json, sys\n"
+                "print(json.dumps({\n"
+                "    'versions': ['1.0.10', '1.1.0'],\n"
+                "    'files': [\n"
+                "        {'version': '1.1.0', 'attrs': {'subdir': 'linux-64'}},\n"
+                "        {'version': '1.1.0', 'attrs': {'subdir': 'linux-aarch64'}},\n"
+                "    ],\n"
+                "}))\n",
+                encoding="utf-8",
+            )
+            (mock_bin / "nf-core").write_text(
+                f"#!{sys.executable}\n"
+                "import pathlib, re, sys\n"
+                "args = sys.argv[1:]\n"
+                "if args[:3] == ['modules', 'containers', 'create']:\n"
+                "    mod = pathlib.Path('modules/nf-core/vardictrust')\n"
+                "    mnf = mod / 'main.nf'\n"
+                "    myml = mod / 'meta.yml'\n"
+                "    # Verify pure-MIT licence rewrite already ran BEFORE containers create\n"
+                "    mtxt = myml.read_text(encoding='utf-8')\n"
+                "    if 'GPL' in mtxt:\n"
+                "        sys.exit('GPL still present before containers create')\n"
+                f"    mnf_t = re.sub(r'https://community-cr-prod\\.seqera\\.io/docker/registry/v2/blobs/sha256/[0-9a-f]{{2}}/[0-9a-f]{{64}}/data', {new_sing_https!r}, mnf.read_text(encoding='utf-8'))\n"
+                f"    mnf_t = re.sub(r'community\\.wave\\.seqera\\.io/library/htslib_vardictrust:[0-9a-f]{{16}}', 'community.wave.seqera.io/library/htslib_vardictrust:{new_dock_amd64}', mnf_t)\n"
+                "    mnf.write_text(mnf_t, encoding='utf-8')\n"
+                f"    mtxt = mtxt.replace('8e6fd2fa9924d063', {new_dock_amd64!r}).replace('ad558d83a9c24379', {new_dock_arm64!r}).replace('b603893bd98569d2', {new_sing_amd64!r}).replace('dcf7214823b2eb9c', {new_sing_arm64!r}).replace('https://community-cr-prod.seqera.io/docker/registry/v2/blobs/sha256/33/33ba32a84ffa98e9001a1079218cc9deb09a41939afe85fa189a090665aad393/data', {new_sing_https!r})\n"
+                "    myml.write_text(mtxt, encoding='utf-8')\n"
+                "    lock_dir = mod / '.conda-lock'\n"
+                "    lock_dir.mkdir(exist_ok=True)\n"
+                f"    (lock_dir / 'linux_amd64-bd-{new_dock_amd64}_1.txt').write_text('# lock\\n', encoding='utf-8')\n"
+                f"    (lock_dir / 'linux_arm64-bd-{new_dock_arm64}_1.txt').write_text('# lock\\n', encoding='utf-8')\n"
+                "sys.exit(0)\n",
+                encoding="utf-8",
+            )
+            for stub in ("nf-test", "nextflow", "docker"):
+                (mock_bin / stub).write_text(f"#!{sys.executable}\nimport sys; sys.exit(0)\n", encoding="utf-8")
+            for p in mock_bin.iterdir():
+                p.chmod(0o755)
+
+            env = dict(os.environ)
+            env["PATH"] = f"{mock_bin}:{env.get('PATH', '')}"
+            env["NFCORE_MODULES_DIR"] = str(nfcore_repo)
+            env["IN_TREE_MODULE_DIR"] = str(in_tree_copy)
+            env["README_MD"] = str(e2e_readme)
+
+            e2e = subprocess.run(
+                ["bash", str(prep_script), "1.1.0"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                e2e.returncode,
+                0,
+                f"Mocked prepare_nfcore_pr.sh 1.1.0 failed:\n{e2e.stderr}\n{e2e.stdout}",
+            )
+
+            out_env = (in_tree_copy / "environment.yml").read_text(encoding="utf-8")
+            out_meta = (in_tree_copy / "meta.yml").read_text(encoding="utf-8")
+            out_readme = e2e_readme.read_text(encoding="utf-8")
+
+            self.assertIn("bioconda::vardictrust=1.1.0", out_env)
+            self.assertNotIn("GPL", out_meta)
+            self.assertRegex(
+                out_meta,
+                re.compile(r'-\s*"vardictrust":[\s\S]*?licence:\s*\n\s*-\s*"MIT"\s*\n\s*args_id:'),
+            )
+            self.assertRegex(
+                out_meta,
+                re.compile(r'-\s*"htslib":[\s\S]*?licence:\s*\n\s*-\s*"MIT"\s*\n\s*args_id:'),
+            )
+            self.assertNotIn("--output", out_meta)
+            self.assertNotIn("--tbi", out_meta)
+
+            # Verify README Wave URIs and multi-arch comments match updated meta.yml 1-to-1
+            synced_uris = re.findall(
+                r"(?:oras://)?community\.wave\.seqera\.io/library/htslib_vardictrust:[0-9a-f]{16}",
+                out_readme,
+            )
+            self.assertGreaterEqual(len(synced_uris), 2)
+            for uri in synced_uris:
+                self.assertIn(uri, out_meta)
+            self.assertIn(f"linux/amd64: {new_dock_amd64} | linux/arm64: {new_dock_arm64}", out_readme)
+            self.assertIn(f"linux/amd64: {new_sing_amd64} | linux/arm64: {new_sing_arm64}", out_readme)
+            self.assertNotIn("8e6fd2fa9924d063", out_readme)
+            self.assertNotIn("b603893bd98569d2", out_readme)
+
+            # C) Negative check: main.nf vs meta.yml Wave URI mismatch must fail non-zero
+            bad_main = herm_dir / "mod" / "main_bad.nf"
+            bad_main.write_text(
+                main_nf_p.read_text(encoding="utf-8").replace(new_dock_amd64, "deadbeefdeadbeef"),
+                encoding="utf-8",
+            )
+            mismatch_res = subprocess.run(
+                [
+                    "bash",
+                    str(prep_script),
+                    "--hermetic-sync",
+                    "1.1.0",
+                    str(herm_dir / "mod" / "environment.yml"),
+                    str(meta_yml_p),
+                    str(bad_main),
+                    str(herm_readme),
+                ],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(mismatch_res.returncode, 0, "Desynchronized main.nf vs meta.yml must fail")
+
+        after_status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        self.assertEqual(before_status, after_status, "prepare_nfcore_pr.sh test dirtied git working tree")
 
 
 class TestRepoAgentSkills(unittest.TestCase):

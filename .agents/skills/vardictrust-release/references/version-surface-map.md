@@ -20,13 +20,13 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 8 | `packaging/nf-core/prepare_nfcore_pr.sh` | `VERSION="${1:-X.Y.Z}"` | Default version fallback for Phase 3B Nextflow script |
 | 9 | `harness/run_self_tests.sh` | `# VarDictRust vX.Y.Z — Harness Self-Test Runner` | Header version banner |
 | 10 | `docs/release/vX.Y.Z-pr.md` | `# Release vX.Y.Z:` | Release certification dossier (`FP`, `PERF_FP`, test counts, 4-channel checklist) |
-| 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, `91`-row CLI parameter table, and `803` test breakdown (`579 + 110 + 41 + 2 + 3 + 34 + 34`) | Main repository landing page |
-| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `803 PASS` (`579 PASS` core lib), `3.20x speedup, 1.34x flat RSS`, `2d82664ff81000f7` | Empirical divergence & certification summary |
-| 13 | `CONTRIBUTING.md` | `803` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
-| 14 | `benchmarks/README.md` & `harness/README.md` | `Certified in \`vX.Y.Z\``, link to `docs/release/vX.Y.Z-pr.md`, `803` workspace tests, and `37` diagnostic test scripts | Benchmark scoreboard & harness overview |
-| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `803` workspace tests (`579` core lib + `110` `corpus_parity` + `41` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `34` bin + `34` CLI integration), `2d82664ff81000f7` | Testing matrix & CI audit specification |
+| 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, `92`-row CLI parameter table, and `807` test breakdown (`580 + 110 + 42 + 2 + 3 + 35 + 35`) | Main repository landing page |
+| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `807 PASS` (`580 PASS` core lib), `3.20x speedup, 1.34x flat RSS`, `2d82664ff81000f7` | Empirical divergence & certification summary |
+| 13 | `CONTRIBUTING.md` | `807` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
+| 14 | `benchmarks/README.md` & `harness/README.md` | `Certified in \`vX.Y.Z\``, link to `docs/release/vX.Y.Z-pr.md`, `807` workspace tests, and `37` diagnostic test scripts | Benchmark scoreboard & harness overview |
+| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `807` workspace tests (`580` core lib + `110` `corpus_parity` + `42` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `35` bin + `35` CLI integration), `2d82664ff81000f7` | Testing matrix & CI audit specification |
 | 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `2d82664ff81000f7`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
-| 17 | `zensical.toml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `"Release vX.Y.Z Certification" = "docs/release/vX.Y.Z-pr.md"`, `vX.Y.Z` links, and `803` workspace tests | ReadTheDocs navigation & GitHub Wiki |
+| 17 | `zensical.toml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `"Release vX.Y.Z Certification" = "docs/release/vX.Y.Z-pr.md"`, `vX.Y.Z` links, and `807` workspace tests | ReadTheDocs navigation & GitHub Wiki |
 | 18 | `.github/SECURITY.md` | **`X.Y.x`** \| `:white_check_mark:` and `< X.Y.0` \| `:x:` in Supported Versions table (single active `major.minor.x` derived from `Cargo.toml`) | Active supported release branch policy |
 
 ### Additional Pre-Tag Consistency Guards (`check_release_consistency.py` Guards `G1`–`G3`)
@@ -35,9 +35,9 @@ In addition to the 18 pre-tag version surfaces above, `--phase pre-tag` enforces
 
 | Guard | Validated Surfaces | Invariant Enforced |
 | :--- | :--- | :--- |
-| `G1` | `crates/vardictrust/src/{cli.rs,completions_man.rs}`, `README.md`, `ROADMAP.md`, `docs/ecosystem-survey.md`, `docs/migration.md`, `zensical.toml`, & `wiki/_Sidebar.md` | Exact 1:1 short/long CLI flag parity across all `91` `Cli` arguments (`7` functional groups) vs `README.md`'s `91`-row table, plus `var2vcf_*.pl` and `--compat=off` migration guide checks |
+| `G1` | `crates/vardictrust/src/{cli.rs,completions_man.rs}`, `README.md`, `ROADMAP.md`, `docs/ecosystem-survey.md`, `docs/migration.md`, `zensical.toml`, & `wiki/_Sidebar.md` | Exact 1:1 short/long CLI flag parity across all `92` `Cli` arguments (`7` functional groups) vs `README.md`'s `92`-row table, plus `var2vcf_*.pl` and `--compat=off` migration guide checks |
 | `G2` | `UPSTREAM.toml` | Immutable reference comparator pins (`VarDictJava` `1.8.3` commit `0886261`, `VarDict` scripts commit `009e017`, and advisory `vardictcpp` `3` build `hc52dbad_0`) |
-| `G3` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`803` total: `579` `vardictrust-core` lib + `34` `vardictrust` bin + `80` integration + `110` `corpus_parity`) |
+| `G3` | `.github/workflows/ci.yml` & `.agents/skills/vardictrust-release/references/version-surface-map.md` | Synchronized workspace test-count breakdown (`807` total: `580` `vardictrust-core` lib + `35` `vardictrust` bin + `82` integration + `110` `corpus_parity`) |
 
 ---
 
