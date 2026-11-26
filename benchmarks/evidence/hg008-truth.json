@@ -13,7 +13,7 @@
   ],
   "compare_head": [],
   "cpp_time": null,
-  "date": "2026-11-18T12:13:18-08:00",
+  "date": "2026-11-25T19:14:47-08:00",
   "extra": {
     "cpp_f1": 0.3858,
     "cpp_f1_normalized": 0.3858,
@@ -37,8 +37,8 @@
       "tp_call": 575
     }
   },
-  "fingerprint": "2d82664ff81000f7",
-  "head": "2c2cc5fef125f787e285f075cdf891f5d31ea814",
+  "fingerprint": "b18477ae0a7b07c1",
+  "head": "8222e3f8e0d10d725c05029a69580c1c7e9a7eb0",
   "inputs": [
     {
       "path": "scratch/g4/hg008/truth/HG008-T_somatic_smvar_benchmark_v0.3_tumorvariants.vcf.gz",

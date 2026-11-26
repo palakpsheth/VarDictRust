@@ -1,7 +1,7 @@
 {
   "suite": "multimodal_multislice_parity_suite",
-  "timestamp": "2026-11-18T20:18:08Z",
-  "fingerprint": "2d82664ff81000f7",
+  "timestamp": "2026-11-26T03:19:31Z",
+  "fingerprint": "b18477ae0a7b07c1",
   "mode": "tier-2-live-oracle-strict-bytes",
   "inputs": [
     {
@@ -371,27 +371,9 @@
       },
       {
         "event": "HIT",
-        "key": "723a701245b6809a",
-        "kind": "java",
-        "label": "ext-m5"
-      },
-      {
-        "event": "HIT",
         "key": "95256b2e252bf0f8",
         "kind": "java",
         "label": "ext-m4"
-      },
-      {
-        "event": "HIT",
-        "key": "0f6334cd397d5978",
-        "kind": "java",
-        "label": "ext-m8"
-      },
-      {
-        "event": "HIT",
-        "key": "85ba2b2a7f6b8c38",
-        "kind": "java",
-        "label": "ext-m6"
       },
       {
         "event": "HIT",
@@ -401,21 +383,39 @@
       },
       {
         "event": "HIT",
+        "key": "85ba2b2a7f6b8c38",
+        "kind": "java",
+        "label": "ext-m6"
+      },
+      {
+        "event": "HIT",
         "key": "8e3efc2fd21710b8",
         "kind": "java",
         "label": "ext-m7"
       },
       {
         "event": "HIT",
-        "key": "db77f1dab86ccc6f",
-        "kind": "java",
-        "label": "ext-m3"
-      },
-      {
-        "event": "HIT",
         "key": "6e5a27881dc6c949",
         "kind": "java",
         "label": "ext-m2"
+      },
+      {
+        "event": "HIT",
+        "key": "0f6334cd397d5978",
+        "kind": "java",
+        "label": "ext-m8"
+      },
+      {
+        "event": "HIT",
+        "key": "723a701245b6809a",
+        "kind": "java",
+        "label": "ext-m5"
+      },
+      {
+        "event": "HIT",
+        "key": "db77f1dab86ccc6f",
+        "kind": "java",
+        "label": "ext-m3"
       },
       {
         "event": "HIT",
@@ -431,15 +431,15 @@
       },
       {
         "event": "HIT",
-        "key": "bbec0a01de25068a",
-        "kind": "cpp",
-        "label": "ext-m2"
-      },
-      {
-        "event": "HIT",
         "key": "45fcb4b843126775",
         "kind": "cpp",
         "label": "ext-m3"
+      },
+      {
+        "event": "HIT",
+        "key": "bbec0a01de25068a",
+        "kind": "cpp",
+        "label": "ext-m2"
       },
       {
         "event": "HIT",
@@ -449,15 +449,15 @@
       },
       {
         "event": "HIT",
-        "key": "f690205489791e00",
-        "kind": "java",
-        "label": "ext-m12"
-      },
-      {
-        "event": "HIT",
         "key": "bc241656ab9e3e1e",
         "kind": "java",
         "label": "ext-m11"
+      },
+      {
+        "event": "HIT",
+        "key": "f690205489791e00",
+        "kind": "java",
+        "label": "ext-m12"
       },
       {
         "event": "HIT",
@@ -467,21 +467,15 @@
       },
       {
         "event": "HIT",
-        "key": "e414dc335d4277f8",
-        "kind": "cpp",
-        "label": "ext-m11"
-      },
-      {
-        "event": "HIT",
         "key": "a02ae53f65514324",
         "kind": "cpp",
         "label": "ext-m12"
       },
       {
         "event": "HIT",
-        "key": "81664c2cf8960840",
-        "kind": "java",
-        "label": "ext-m13"
+        "key": "e414dc335d4277f8",
+        "kind": "cpp",
+        "label": "ext-m11"
       },
       {
         "event": "HIT",
@@ -491,9 +485,9 @@
       },
       {
         "event": "HIT",
-        "key": "7b1a057921ca1362",
-        "kind": "cpp",
-        "label": "ext-m7"
+        "key": "81664c2cf8960840",
+        "kind": "java",
+        "label": "ext-m13"
       },
       {
         "event": "HIT",
@@ -503,9 +497,21 @@
       },
       {
         "event": "HIT",
+        "key": "4c2b8764d97e6ace",
+        "kind": "java",
+        "label": "ext-m14"
+      },
+      {
+        "event": "HIT",
         "key": "b1ef0bb96fe1d246",
         "kind": "cpp",
         "label": "ext-m6"
+      },
+      {
+        "event": "HIT",
+        "key": "7b1a057921ca1362",
+        "kind": "cpp",
+        "label": "ext-m7"
       },
       {
         "event": "HIT",
@@ -521,8 +527,8 @@
       },
       {
         "event": "HIT",
-        "key": "4c2b8764d97e6ace",
-        "kind": "java",
+        "key": "c822b61588587dd6",
+        "kind": "cpp",
         "label": "ext-m14"
       },
       {
@@ -539,12 +545,6 @@
       },
       {
         "event": "HIT",
-        "key": "c822b61588587dd6",
-        "kind": "cpp",
-        "label": "ext-m14"
-      },
-      {
-        "event": "HIT",
         "key": "a8664306d617cf31",
         "kind": "java",
         "label": "ext-m16"
@@ -557,15 +557,33 @@
       },
       {
         "event": "HIT",
+        "key": "843271922acfd4d4",
+        "kind": "cpp",
+        "label": "ext-m17"
+      },
+      {
+        "event": "HIT",
         "key": "5ba2668ee40a2bd8",
         "kind": "cpp",
         "label": "ext-m16"
       },
       {
         "event": "HIT",
-        "key": "843271922acfd4d4",
-        "kind": "cpp",
-        "label": "ext-m17"
+        "key": "6df3b3ae48168c08",
+        "kind": "java",
+        "label": "mm-HG005_1C"
+      },
+      {
+        "event": "HIT",
+        "key": "62b979e49dfc8c35",
+        "kind": "java",
+        "label": "mm-HG005_1B"
+      },
+      {
+        "event": "HIT",
+        "key": "cb6820b9a7123093",
+        "kind": "java",
+        "label": "mm-SEQC2_2A"
       },
       {
         "event": "HIT",
@@ -587,21 +605,9 @@
       },
       {
         "event": "HIT",
-        "key": "cb6820b9a7123093",
-        "kind": "java",
-        "label": "mm-SEQC2_2A"
-      },
-      {
-        "event": "HIT",
         "key": "9702f7e749437eb5",
         "kind": "java",
         "label": "mm-HG002_3A"
-      },
-      {
-        "event": "HIT",
-        "key": "62b979e49dfc8c35",
-        "kind": "java",
-        "label": "mm-HG005_1B"
       },
       {
         "event": "HIT",
@@ -611,9 +617,9 @@
       },
       {
         "event": "HIT",
-        "key": "6df3b3ae48168c08",
-        "kind": "java",
-        "label": "mm-HG005_1C"
+        "key": "7ef8197a186b955b",
+        "kind": "cpp",
+        "label": "mm-SEQC2_2A"
       },
       {
         "event": "HIT",
@@ -623,15 +629,9 @@
       },
       {
         "event": "HIT",
-        "key": "7ef8197a186b955b",
+        "key": "a0e440474b6b584d",
         "kind": "cpp",
-        "label": "mm-SEQC2_2A"
-      },
-      {
-        "event": "HIT",
-        "key": "d67911748a7f8165",
-        "kind": "cpp",
-        "label": "mm-SEQC2_2C"
+        "label": "mm-HG002_3B"
       },
       {
         "event": "HIT",
@@ -641,21 +641,15 @@
       },
       {
         "event": "HIT",
-        "key": "a0e440474b6b584d",
-        "kind": "cpp",
-        "label": "mm-HG002_3B"
-      },
-      {
-        "event": "HIT",
-        "key": "5cf1e0db19f5d9e4",
-        "kind": "java",
-        "label": "mm-HG002_3C"
-      },
-      {
-        "event": "HIT",
         "key": "69184dce1421de14",
         "kind": "cpp",
         "label": "mm-HG005_1B"
+      },
+      {
+        "event": "HIT",
+        "key": "d67911748a7f8165",
+        "kind": "cpp",
+        "label": "mm-SEQC2_2C"
       },
       {
         "event": "HIT",
@@ -665,9 +659,9 @@
       },
       {
         "event": "HIT",
-        "key": "162fbcc115d6dab3",
+        "key": "5cf1e0db19f5d9e4",
         "kind": "java",
-        "label": "mm-NA24385_5A"
+        "label": "mm-HG002_3C"
       },
       {
         "event": "HIT",
@@ -677,15 +671,21 @@
       },
       {
         "event": "HIT",
+        "key": "db2b361e9ec5d3a9",
+        "kind": "java",
+        "label": "mm-HG008_4A"
+      },
+      {
+        "event": "HIT",
         "key": "2fa8c5bd97777328",
         "kind": "cpp",
         "label": "mm-HG005_1C"
       },
       {
         "event": "HIT",
-        "key": "db2b361e9ec5d3a9",
+        "key": "162fbcc115d6dab3",
         "kind": "java",
-        "label": "mm-HG008_4A"
+        "label": "mm-NA24385_5A"
       },
       {
         "event": "HIT",
@@ -713,6 +713,18 @@
       },
       {
         "event": "HIT",
+        "key": "4b5d3b02d29607d4",
+        "kind": "java",
+        "label": "mm-NA24385_5C"
+      },
+      {
+        "event": "HIT",
+        "key": "695f49f571e9ebc4",
+        "kind": "cpp",
+        "label": "mm-HG008_4A"
+      },
+      {
+        "event": "HIT",
         "key": "40b56592fc45c393",
         "kind": "java",
         "label": "mm-RNA_6B"
@@ -725,27 +737,15 @@
       },
       {
         "event": "HIT",
-        "key": "4b5d3b02d29607d4",
-        "kind": "java",
-        "label": "mm-NA24385_5C"
+        "key": "b500555e47194316",
+        "kind": "cpp",
+        "label": "mm-HG008_4C"
       },
       {
         "event": "HIT",
         "key": "c46658bd99c3e2d9",
         "kind": "cpp",
         "label": "mm-HG008_4B"
-      },
-      {
-        "event": "HIT",
-        "key": "695f49f571e9ebc4",
-        "kind": "cpp",
-        "label": "mm-HG008_4A"
-      },
-      {
-        "event": "HIT",
-        "key": "b500555e47194316",
-        "kind": "cpp",
-        "label": "mm-HG008_4C"
       },
       {
         "event": "HIT",
@@ -768,7 +768,7 @@
     ],
     "hit": 86,
     "live": 0,
-    "run": "recertify-1795031026"
+    "run": "recertify-1795661101"
   },
   "result": "MATCH",
   "slices": [
@@ -778,7 +778,7 @@
       "region": "chr3 40000000 40010000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 608
+      "time_ms": 584
     },
     {
       "slice_id": "HG005_1B",
@@ -786,7 +786,7 @@
       "region": "chr6 30000000 30010000",
       "variants": 10,
       "status": "MATCH",
-      "time_ms": 442
+      "time_ms": 400
     },
     {
       "slice_id": "HG005_1C",
@@ -794,7 +794,7 @@
       "region": "chr21 20000000 20010000",
       "variants": 8,
       "status": "MATCH",
-      "time_ms": 586
+      "time_ms": 539
     },
     {
       "slice_id": "SEQC2_2A",
@@ -802,7 +802,7 @@
       "region": "chr7 140400000 140420000",
       "variants": 31,
       "status": "MATCH",
-      "time_ms": 359
+      "time_ms": 313
     },
     {
       "slice_id": "SEQC2_2B",
@@ -810,7 +810,7 @@
       "region": "chr11 530000 550000",
       "variants": 16,
       "status": "MATCH",
-      "time_ms": 308
+      "time_ms": 324
     },
     {
       "slice_id": "SEQC2_2C",
@@ -818,7 +818,7 @@
       "region": "chr12 25200000 25250000",
       "variants": 55,
       "status": "MATCH",
-      "time_ms": 417
+      "time_ms": 421
     },
     {
       "slice_id": "HG002_3A",
@@ -826,7 +826,7 @@
       "region": "chr20 10000000 10020000",
       "variants": 337,
       "status": "MATCH",
-      "time_ms": 374
+      "time_ms": 346
     },
     {
       "slice_id": "HG002_3B",
@@ -834,7 +834,7 @@
       "region": "chr20 20000000 20020000",
       "variants": 273,
       "status": "MATCH",
-      "time_ms": 430
+      "time_ms": 329
     },
     {
       "slice_id": "HG002_3C",
@@ -842,7 +842,7 @@
       "region": "chr20 30000000 30020000",
       "variants": 4,
       "status": "MATCH",
-      "time_ms": 126
+      "time_ms": 90
     },
     {
       "slice_id": "HG008_4A",
@@ -850,7 +850,7 @@
       "region": "chr1 1743056 1744086 slice_1_6",
       "variants": 23,
       "status": "MATCH",
-      "time_ms": 239
+      "time_ms": 189
     },
     {
       "slice_id": "HG008_4B",
@@ -858,7 +858,7 @@
       "region": "chr1 6170843 6182754 slice_2_3",
       "variants": 50,
       "status": "MATCH",
-      "time_ms": 214
+      "time_ms": 240
     },
     {
       "slice_id": "HG008_4C",
@@ -866,7 +866,7 @@
       "region": "chr1 56757190 56764123 slice_3_4",
       "variants": 42,
       "status": "MATCH",
-      "time_ms": 258
+      "time_ms": 194
     },
     {
       "slice_id": "NA24385_5A",
@@ -874,7 +874,7 @@
       "region": "1 246981051 246981611",
       "variants": 25,
       "status": "MATCH",
-      "time_ms": 482
+      "time_ms": 421
     },
     {
       "slice_id": "NA24385_5B",
@@ -882,7 +882,7 @@
       "region": "19 58559581 58567861",
       "variants": 20,
       "status": "MATCH",
-      "time_ms": 225
+      "time_ms": 183
     },
     {
       "slice_id": "NA24385_5C",
@@ -890,7 +890,7 @@
       "region": "20 36018823 36039513",
       "variants": 181,
       "status": "MATCH",
-      "time_ms": 176
+      "time_ms": 169
     },
     {
       "slice_id": "RNA_6A",
@@ -898,7 +898,7 @@
       "region": "chr8:90534611-90550000",
       "variants": 3,
       "status": "MATCH",
-      "time_ms": 92
+      "time_ms": 70
     },
     {
       "slice_id": "RNA_6B",
@@ -914,7 +914,7 @@
       "region": "chr8:90580000-90620070",
       "variants": 12,
       "status": "MATCH",
-      "time_ms": 75
+      "time_ms": 93
     }
   ]
 }

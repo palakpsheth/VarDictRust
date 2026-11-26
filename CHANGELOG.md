@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-25
+
 ### Added
 
 - Added clinical short-read workflow presets `--preset <wgs|wes|amplicon|ctdna>` ([`palakpsheth/VarDictRust#94`](https://github.com/palakpsheth/VarDictRust/issues/94), `WorkflowPreset` and `Config::from_preset` in `crates/vardictrust-core/src/config.rs`, expanding the CLI surface to `92` flags across `7` functional groups while keeping default invocations 100% byte-identical to `VarDictJava v1.8.3` under `--compat=vardictjava`), stamping `##VarDictRustCompat=off` and `##VarDictRustPreset=<PRESET>` in VCF headers, enforcing BED4 `3'_UTR` gene retention (`AR-01`), UCSC 8-column CDS BED8 `SimpleMode` preservation under `wgs`/`wes`/`ctdna` vs `AmpliconMode` under `--preset amplicon` (`AR-02`), 1-based `-R` preservation when `-z` is omitted (`AR-03`), and paired somatic `Q20` single-tag `FILTER` deduplication under `--compat=off` (`AR-04`), automating the `1.1.0+` pure-`MIT` packaging and multi-arch Seqera Wave URI transition in `packaging/bioconda/prepare_bioconda_pr.sh` and `packaging/nf-core/prepare_nfcore_pr.sh`, adding a 5-gate real-world clinical preset validation runner (`harness/verify_presets_public_data.sh`), and expanding Cargo workspace tests from `803` to `807` (`580` `vardictrust-core` lib + `110` `corpus_parity` + `42` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `35` CLI bin + `35` CLI integration) and Python harness unit tests from `154` to `156`.
@@ -474,7 +476,8 @@ Robustness improvements by design (no valid-input output changes relative to Var
 - Correct `##contig` lengths from the `.fai` ([VarDictJava#320](https://github.com/AstraZeneca-NGS/VarDictJava/issues/320));
   fail-fast on missing BAM index ([VarDictJava#187](https://github.com/AstraZeneca-NGS/VarDictJava/issues/187)).
 
-[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.10...HEAD
+[Unreleased]: https://github.com/palakpsheth/VarDictRust/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.10...v1.1.0
 [1.0.10]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.9...v1.0.10
 [1.0.9]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/palakpsheth/VarDictRust/compare/v1.0.7...v1.0.8

@@ -21,11 +21,11 @@ Reference companion for [`.agents/skills/vardictrust-release/SKILL.md`](../SKILL
 | 9 | `harness/run_self_tests.sh` | `# VarDictRust vX.Y.Z — Harness Self-Test Runner` | Header version banner |
 | 10 | `docs/release/vX.Y.Z-pr.md` | `# Release vX.Y.Z:` | Release certification dossier (`FP`, `PERF_FP`, test counts, 4-channel checklist) |
 | 11 | `README.md` | `--tag vX.Y.Z`, `version = {X.Y.Z}`, `92`-row CLI parameter table, and `807` test breakdown (`580 + 110 + 42 + 2 + 3 + 35 + 35`) | Main repository landing page |
-| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `807 PASS` (`580 PASS` core lib), `3.20x speedup, 1.34x flat RSS`, `2d82664ff81000f7` | Empirical divergence & certification summary |
+| 12 | `DIVERGENCES.md` | `Verified Parity Baseline (release/vX.Y.Z`, `##source=VarDict_v1.8.2`, `807 PASS` (`580 PASS` core lib), `3.24x speedup, 1.37x flat RSS`, `b18477ae0a7b07c1` | Empirical divergence & certification summary |
 | 13 | `CONTRIBUTING.md` | `807` workspace tests (`§5.4`), `aarch64-unknown-linux-musl` (`§9.1`), and `.agents/skills/` runbook links | Contributor & release guide |
 | 14 | `benchmarks/README.md` & `harness/README.md` | `Certified in \`vX.Y.Z\``, link to `docs/release/vX.Y.Z-pr.md`, `807` workspace tests, and `37` diagnostic test scripts | Benchmark scoreboard & harness overview |
-| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `807` workspace tests (`580` core lib + `110` `corpus_parity` + `42` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `35` bin + `35` CLI integration), `2d82664ff81000f7` | Testing matrix & CI audit specification |
-| 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `2d82664ff81000f7`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
+| 15 | `docs/testing/test-matrix-and-ci-audit.md` | `vX.Y.Z`, `807` workspace tests (`580` core lib + `110` `corpus_parity` + `42` `engine_behavior` + `2` `amplicon_stream_mem` + `3` `cram_stack` + `35` bin + `35` CLI integration), `b18477ae0a7b07c1` | Testing matrix & CI audit specification |
+| 16 | `docs/validation/omnibus-empirical-validation.md` | `Release \`vX.Y.Z\`` header, `b18477ae0a7b07c1`, and §13 16-file SHA-256 manifest | Omnibus empirical validation report |
 | 17 | `zensical.toml`, `wiki/Home.md`, & `wiki/_Sidebar.md` | `"Release vX.Y.Z Certification" = "docs/release/vX.Y.Z-pr.md"`, `vX.Y.Z` links, and `807` workspace tests | ReadTheDocs navigation & GitHub Wiki |
 | 18 | `.github/SECURITY.md` | **`X.Y.x`** \| `:white_check_mark:` and `< X.Y.0` \| `:x:` in Supported Versions table (single active `major.minor.x` derived from `Cargo.toml`) | Active supported release branch policy |
 

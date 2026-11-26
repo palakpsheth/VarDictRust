@@ -199,7 +199,7 @@ readme_file.write_text(readme_txt, encoding="utf-8")
 PY
 }
 
-VERSION="${1:-1.0.10}"
+VERSION="${1:-1.1.0}"
 if [ "${1:-}" = "--hermetic-sync" ]; then
   if [ $# -ne 6 ]; then
     echo "Usage: prepare_nfcore_pr.sh --hermetic-sync <VERSION> <ENV_YML> <META_YML> <MAIN_NF> <README_MD>" >&2
