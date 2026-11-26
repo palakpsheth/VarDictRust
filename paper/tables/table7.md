@@ -1,4 +1,4 @@
-### Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100 [14, 16], CMRG v1.00 [15], Mosaic SNV v1.10 [20]) & HG008 GIAB v0.4 [19] Somatic Caller Landscape
+### Table 7. Next-Generation Truth Benchmarks (GIAB v5.0q T2T-Q100 [14, 16], CMRG v1.00 [15], Mosaic SNV v1.10 [20]) & HG008 GIAB v0.4 [19] Somatic Caller Benchmark
 
 | Benchmark / Evaluation Scope | Caller / Configuration | Sequencing Chemistry | SNV Precision / Recall / F1 [12] | InDel Precision / Recall / F1 [12] |
 | :--- | :--- | :--- | :--- | :--- |

@@ -152,3 +152,18 @@ Individual cohort staging scripts invoked by [`harness/stage_g4.sh`](../harness/
 - **GIAB HG008 paired PDAC slices + CRAM twins (`scratch/g4/hg008/`):** `bash harness/get_hg008_slice.sh`
 - **SEQC2 WES alignment + BED derivation (`scratch/g4/seqc2/`):** `bash harness/stage_g4.sh seqc2` (calls [`harness/seqc2_align.sh`](../harness/seqc2_align.sh) and [`harness/select_slice_regions.py`](../harness/select_slice_regions.py))
 - **18 Multi-modal slices (`scratch/g4/multimodal/`):** `bash harness/get_multimodal_slices.sh`
+
+### 7.1 Deterministic v1.1.0 --compat=off & Clinical Preset Study Bundle
+
+In addition to the 16 default-parity release evidence artifacts in [`benchmarks/evidence/`](evidence/) and the 60-cell cloud performance study in [`benchmarks/gcp-study-v106/`](gcp-study-v106/), [`benchmarks/v110-compat-study/`](v110-compat-study/) archives the host-independent deterministic callset, validator, and truth-set evaluation for **VarDictRust v1.1.0** opt-in `--compat=off` (`32` `CompatProfile` switches) and `--preset` (`wgs`, `wes`, `amplicon`, `ctdna`) modes (pinned `v1.1.0` study fingerprint `b18477ae0a7b07c1`, performance fingerprint `5c41be8047133842`; zero host-dependent wall-clock or RSS measurements mixed across hosts):
+
+- **[`v110_compat_metrics.json`](v110-compat-study/v110_compat_metrics.json) & [`v110_compat_arms.tsv`](v110-compat-study/v110_compat_arms.tsv):** Machine-readable summary across all 6 evaluation domains (`19` callsets targeted `CompatProfile` VCFv4.2/v4.3 schema/canonicalization/accounting audit & `bcftools norm --check-ref e` reference concordance, diploid `SEQC2` `rtg vcfeval` subclonal somatic recovery without `--squash-ploidy`, `5`-pair multi-allelic somatic continuation + *MUC19* paralog depth reconciliation, patient *BRCA2* `--adaptor` chimera suppression, `4` clinical workflow presets + wet-lab `QIAseq V3` `-sp` + `0.5%` VAF `ctDNA` spike-in, and multi-BGZF-block `--csi` spanning `<DEL>`/`<DUP>`/`<INV>` retrieval + `-p` homopolymer pileup tiling) plus the `35`-entry `CompatProfile` and CLI capability catalog feeding [`Figure 9`](../paper/figures/fig9.svg), [`Table 9`](../paper/tables/table9.md), and [`Supplementary Table S7`](../paper/tables/supp_table7.md).
+- **[`SHA256SUMS.tsv`](v110-compat-study/SHA256SUMS.tsv):** Cryptographic SHA-256 manifest verified offline by [`paper/collect_v110_compat_metrics.py`](../paper/collect_v110_compat_metrics.py).
+
+```bash
+# Offline checksum, schema, and 32-switch config.rs alignment verification:
+python3 paper/collect_v110_compat_metrics.py --verify
+
+# Full local deterministic re-execution across all 6 evaluation domains:
+python3 paper/collect_v110_compat_metrics.py --run
+```

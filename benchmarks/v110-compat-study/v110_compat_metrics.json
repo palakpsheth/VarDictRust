@@ -1,0 +1,571 @@
+{
+  "arms": {
+    "arm1_vcf_schema_and_bcftools_norm": {
+      "bcftools_norm_check_ref_off_passed": 19,
+      "bcftools_norm_check_ref_off_total": 19,
+      "bcftools_norm_check_ref_vj_passed": 17,
+      "compat_off_defects": {
+        "accounting_type_iupac_shift3": 0,
+        "ad_number_r_mismatch": 0,
+        "noncanonical_gt": 0,
+        "noncanonical_sv": 0,
+        "nonsv_info_end": 0
+      },
+      "distinct_bams": 18,
+      "total_callsets": 19,
+      "total_defects_off": 0,
+      "total_defects_vj": 11612,
+      "total_records_off": 13152,
+      "total_records_vj": 13148,
+      "vardictjava_defects": {
+        "accounting_type_iupac_shift3": 88,
+        "ad_number_r_mismatch": 3,
+        "noncanonical_gt": 1985,
+        "noncanonical_sv": 50,
+        "nonsv_info_end": 9486
+      }
+    },
+    "arm2_seqc2_diploid_vcfeval": {
+      "best_f_measure_gain": 0.1538,
+      "best_sensitivity_gain": 0.3171,
+      "best_tp_baseline_gain": 13,
+      "compat_off": {
+        "best_f_measure": 0.8,
+        "best_fn": 7,
+        "best_fp": 10,
+        "best_precision": 0.7727,
+        "best_qual_threshold": 84.0,
+        "best_sensitivity": 0.8293,
+        "best_tp_baseline": 34,
+        "best_tp_call": 34,
+        "f_measure": 0.6429,
+        "fn": 5,
+        "fp": 35,
+        "gt00_carrier_somatic": 0,
+        "precision": 0.507,
+        "retained_somatic_calls": 204,
+        "sensitivity": 0.878,
+        "tp_baseline": 36,
+        "tp_call": 36
+      },
+      "discovery_af": 0.05,
+      "evaluated_bp": 455937,
+      "evaluated_intervals": 1411,
+      "f_measure_gain": 0.004,
+      "gt_proj_tvaf_threshold": 0.75,
+      "sensitivity_gain": 0.317,
+      "subclonal_truth_lt_030": 21,
+      "target_contigs": [
+        "chr7",
+        "chr9",
+        "chr11",
+        "chr12",
+        "chr17",
+        "chr22"
+      ],
+      "tp_baseline_gain": 13,
+      "truth_in_eval_bed": 41,
+      "truth_total": 41,
+      "vardictjava": {
+        "best_f_measure": 0.6462,
+        "best_fn": 20,
+        "best_fp": 3,
+        "best_precision": 0.875,
+        "best_qual_threshold": 127.0,
+        "best_sensitivity": 0.5122,
+        "best_tp_baseline": 21,
+        "best_tp_call": 21,
+        "f_measure": 0.6389,
+        "fn": 18,
+        "fp": 8,
+        "gt00_carrier_somatic": 64,
+        "precision": 0.7419,
+        "retained_somatic_calls": 204,
+        "sensitivity": 0.561,
+        "tp_baseline": 23,
+        "tp_call": 23
+      },
+      "vcf_af": 0.3
+    },
+    "arm3_somatic_multiallelic_and_truth": {
+      "distinct_bam_pairs": 5,
+      "hg008_v04": {
+        "compat_off": {
+          "f1": 0.7293,
+          "fn": 45,
+          "fp": 27,
+          "precision": 0.7823,
+          "sensitivity": 0.6831,
+          "tp": 97,
+          "truth_total": 142
+        },
+        "evaluated_bp": 712097,
+        "evaluated_intervals": 52,
+        "vardictjava": {
+          "f1": 0.7321,
+          "fn": 45,
+          "fp": 26,
+          "precision": 0.7886,
+          "sensitivity": 0.6831,
+          "tp": 97,
+          "truth_total": 142
+        }
+      },
+      "muc19_variants": 28,
+      "muc19_vd_gt_dp_violations": 0,
+      "off_recovered_pairs": 5,
+      "off_recovered_runs": 6,
+      "off_secondary_alleles": 20,
+      "seqc2_hc": {
+        "compat_off": {
+          "f1": 0.3233,
+          "fn": 48,
+          "fp": 132,
+          "precision": 0.2457,
+          "sensitivity": 0.4725,
+          "tp": 43,
+          "truth_total": 91
+        },
+        "evaluated_bp": 2446100,
+        "evaluated_intervals": 577,
+        "vardictjava": {
+          "f1": 0.3233,
+          "fn": 48,
+          "fp": 132,
+          "precision": 0.2457,
+          "sensitivity": 0.4725,
+          "tp": 43,
+          "truth_total": 91
+        }
+      },
+      "total_runs": 6,
+      "vj_recovered_pairs": 0,
+      "vj_recovered_runs": 0,
+      "vj_secondary_alleles": 0
+    },
+    "arm4_brca2_adaptor_chimera": {
+      "chimera_chrom": "chr13",
+      "chimera_pos": 32683955,
+      "off_chimeric_insertions": 0,
+      "off_total_records": 0,
+      "region_span_bp": 147,
+      "vj_chimeric_ins_bp": 122,
+      "vj_chimeric_insertions": 1,
+      "vj_total_records": 1
+    },
+    "arm5_clinical_presets_and_amplicon": {
+      "admixture_alt_reads": 6,
+      "admixture_wt_copies": 11,
+      "amplicon_single_8col_records": 2,
+      "compat_off_default_f001_detected": false,
+      "paired_somatic_amplicon_off_records": 13,
+      "paired_somatic_amplicon_vj_supported": false,
+      "preset_ctdna_freq": 0.001,
+      "preset_ctdna_vcf_af": 0.002,
+      "qiaseq_spe_dp50_known_pos_tp": 24,
+      "qiaseq_spe_dp50_no_sp_known_pos_tp": 14,
+      "qiaseq_spe_known_pos_total": 91,
+      "qiaseq_spe_known_pos_tp": 43,
+      "qiaseq_spe_no_sp_known_pos_tp": 24,
+      "qiaseq_spe_panel_known_pos_unmasked": 192,
+      "qiaseq_spe_tumor_records": 124,
+      "sample_ac5_ctdna_d100_filtered": 39,
+      "spikein_chrom": "chr12",
+      "spikein_detected": true,
+      "spikein_discovery_af": 0.0025,
+      "spikein_observed_af": 0.0049,
+      "spikein_observed_dp": 1216,
+      "spikein_observed_vd": 6,
+      "spikein_pos": 120999311,
+      "spikein_target_vaf_pct": 0.5,
+      "wes_bed8_non_hijack_verified": true,
+      "wes_seqc2_264kbp_records": 610,
+      "wes_seqc2_evaluated_bp": 263914,
+      "wgs_hg002_60kbp_records": 206,
+      "wgs_hg008_paired_records": 79,
+      "wgs_tbi_and_csi_verified": true
+    },
+    "arm6_csi_spanning_sv_and_pileup_tiling": {
+      "colo829_bgzf_blocks": 9,
+      "csi_leaf_bin_bp": 16384,
+      "hg008_bgzf_blocks": 144,
+      "interior_bin_queries_passed": 8,
+      "interior_bin_queries_total": 8,
+      "max_explicit_sv_seq_bp": 32768,
+      "multi_block_bgzf_blocks": 29,
+      "pileup_covered_bases_retained": 2439,
+      "pileup_covered_bases_retained_pct": 100.0,
+      "pileup_covered_bases_total": 2439,
+      "pileup_full_span_cases_total": 2,
+      "pileup_untiled_eq_tiled_cases": 2,
+      "pos0_sentinel_rows": 0
+    }
+  },
+  "meta": {
+    "bcftools_version": "1.24",
+    "compat_switch_count": 32,
+    "preset_count": 4,
+    "rtg_version": "3.13",
+    "samtools_version": "1.24",
+    "scope_note": "Host-independent deterministic callset, targeted CompatProfile VCFv4.2/v4.3 schema/canonicalization/accounting audit, bcftools norm --check-ref e FASTA concordance, and diploid rtg vcfeval metrics (zero host-dependent wall-clock/RSS timings).",
+    "study_fingerprint": "b18477ae0a7b07c1",
+    "study_id": "v110-compat-and-presets",
+    "study_perf_fingerprint": "5c41be8047133842",
+    "study_version": "1.1.0",
+    "tabix_version": "1.24",
+    "total_arms": 6,
+    "var2vcf_flag_count": 18
+  },
+  "switch_catalog": [
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Applies bijective VCFv4.2 percent-encoding on `INFO/SAMPLE` (`%2D`, `%2E`, `%XX`)",
+      "domain": "VCF Schema & Genotypes",
+      "index": 1,
+      "name": "sanitize_sample_info",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#116, AstraZeneca-NGS/VarDict#197",
+      "vardictjava_behavior": "Interpolates raw `;`, `=`, `,`, `%`, `-`, `.`, and whitespace into `INFO/SAMPLE`, splitting VCFv4.2 fields",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Emits standard `<DUP>` symbolic `ALT` with non-negative span and unified `2 * SVFLANK + dup_val` genotype",
+      "domain": "Structural Variants & Indexing",
+      "index": 2,
+      "name": "standard_dup_symbolic_alt",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#342, ToVarsBuilder.java:619,700",
+      "vardictjava_behavior": "Emits non-standard `<dup-N>` symbolic `ALT` when `mlen < 100` and mismatches homozygous `<DUP>` span",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Re-extracts FASTA-concordant 3-prime-shifted deletion and insertion `REF`/`ALT` alleles with CRISPR double-shift guard",
+      "domain": "VCF Schema & Genotypes",
+      "index": 3,
+      "name": "shift3_3prime_alleles",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#292, AstraZeneca-NGS/VarDictJava#395, AstraZeneca-NGS/VarDict#25",
+      "vardictjava_behavior": "Shifts `-3` indel coordinates 3-prime without updating `REF` and `ALT` sequences to match the reference FASTA",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Enforces merged requested interval bounds (`start_pos >= 1` within target intervals)",
+      "domain": "Depth, Rounding & Determinism",
+      "index": 4,
+      "name": "strict_region_bounds",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#369, AstraZeneca-NGS/VarDictJava#137",
+      "vardictjava_behavior": "Allows realigned indel and SV anchors to spill outside requested `-R` or BED target intervals",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Suppresses `-p` `<R,R>` and `N/N` zero-depth sentinel rows in Simple and Amplicon modes",
+      "domain": "CIGAR, Pileup & Aligner",
+      "index": 5,
+      "name": "suppress_pileup_sentinels",
+      "upstream_refs": "UB-1, UB-2, SimplePostProcessModule.java",
+      "vardictjava_behavior": "Emits spurious position-0 `<R,R>` and `N/N` zero-depth sentinel records in `-p` pileup mode",
+      "verification_arm": "Domain 6 (CSI & Pileup)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Computes `INFO/DUPRATE` from live `u64` duplicate and total read counters across untiled and tiled runs",
+      "domain": "Depth, Rounding & Determinism",
+      "index": 6,
+      "name": "live_duprate",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#387, CigarParser.java:78,162",
+      "vardictjava_behavior": "Copies zeroed read counters before pileup iteration, leaving `INFO/DUPRATE` permanently `0`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Preserves both unprefixed and `chr`-prefixed sex and mitochondrial contigs under total contig order",
+      "domain": "VCF Schema & Genotypes",
+      "index": 7,
+      "name": "preserve_mixed_sex_contigs",
+      "upstream_refs": "AstraZeneca-NGS/VarDict#185, AstraZeneca-NGS/VarDict#191",
+      "vardictjava_behavior": "Drops `chrX`, `chrY`, or `chrM` in `var2vcf` `reorder` when unprefixed `X`, `Y`, or `MT` co-occur",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Absorbs negative trailing `M` into `rdoff_corr` during homopolymer multi-indel CIGAR coalescing",
+      "domain": "CIGAR, Pileup & Aligner",
+      "index": 8,
+      "name": "cigar_homopolymer_merge",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#402, hedera-dx/VarDictJava@17d1cb51",
+      "vardictjava_behavior": "Produces negative trailing `M` (`rm < 0`) during homopolymer multi-indel merges in `modifyCigar`, skipping the read",
+      "verification_arm": "Domain 6 (CSI & Pileup)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Treats `=` (`SequenceMatch`) and `X` (`SequenceMismatch`) equivalently to `M` across pileup, realignment, and dedup",
+      "domain": "CIGAR, Pileup & Aligner",
+      "index": 9,
+      "name": "eqx_cigar_read_length",
+      "upstream_refs": "CigarParser.java:1605-1629,1990-1991",
+      "vardictjava_behavior": "Excludes `=` and `X` CIGAR operators from aligned read length, yielding `rlen1 = 0` and negative `PMEAN`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Retains single-sample symbolic SVs supported by discordant mate pairs (`SPANPAIR > 0`) unless `--min-splitreads` is set",
+      "domain": "Structural Variants & Indexing",
+      "index": 10,
+      "name": "preserve_discordant_svs",
+      "upstream_refs": "UB-5, var2vcf_valid.pl:197-205",
+      "vardictjava_behavior": "Drops single-sample symbolic `<DEL>`, `<DUP>`, and `<INV>` calls whenever `SPLITREAD < 1` despite `SPANPAIR > 0`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Passes pre-decrement inclusive cluster end `mark_pe` when `tbp != 0` and `tbp < pe`",
+      "domain": "Structural Variants & Indexing",
+      "index": 11,
+      "name": "mark_dup_sv_inclusive_end",
+      "upstream_refs": "UB-6, StructuralVariantsProcessor.java:1413-1468",
+      "vardictjava_behavior": "Passes post-decrement `pe` to `markDUPSV`, truncating the `svfdup` mate-cluster right boundary by 1 bp",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Gates `find_inv_sub_paths` mate-window loads on local `>= 12 bp` soft-clip presence and validated `find_match_rev`",
+      "domain": "Structural Variants & Indexing",
+      "index": 12,
+      "name": "sv_lazy_mate_pileup",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#370, StructuralVariantsProcessor.java:519-675",
+      "vardictjava_behavior": "Scans mate windows eagerly in `findINVsub` before checking local `>= 12 bp` soft-clip presence or reverse-complement match",
+      "verification_arm": "Domain 6 (CSI & Pileup)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Rounds exact IEEE-754 binary `f64` values via `round_half_even_compat` without `DigitList` underflow truncation",
+      "domain": "Depth, Rounding & Determinism",
+      "index": 13,
+      "name": "exact_binary_half_even",
+      "upstream_refs": "Utils.java:101-103",
+      "vardictjava_behavior": "Truncates `5e-(d+1)` underflow ties to `0.0` in OpenJDK `DecimalFormat` `DigitList` despite binary `f64` exceeding midpoint",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Enforces `VD <= DP`, `AF <= 1.0`, `ADJAF <= 1.0`, and `HICNT <= HICOV` (`HIAF <= 1.0`) across all variant types",
+      "domain": "Depth, Rounding & Determinism",
+      "index": 14,
+      "name": "reconcile_vd_dp",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#92, AstraZeneca-NGS/VarDictJava#386, AstraZeneca-NGS/VarDictJava#400, AstraZeneca-NGS/VarDict#113",
+      "vardictjava_behavior": "Increments realigned `VD` and `HICNT` without updating locus `DP` and `HICOV`, permitting `VD > DP` and `AF > 1.0`",
+      "verification_arm": "Domain 3 (Multi-Allelic & Paralog)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Iterates variant and post-processing position maps in strictly ascending genomic coordinate order",
+      "domain": "Depth, Rounding & Determinism",
+      "index": 15,
+      "name": "coordinate_sorted_vars",
+      "upstream_refs": "UB-3, AstraZeneca-NGS/VarDictJava#282, AstraZeneca-NGS/VarDictJava#390, palakpsheth/VarDictRust#34",
+      "vardictjava_behavior": "Iterates variant and post-processing position maps in `JavaHashMap` bucket order rather than coordinate order",
+      "verification_arm": "Domain 6 (CSI & Pileup)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Omits out-of-bounds sentinel mismatch and length increment when `rem5 < rem3` in `find_35_match`",
+      "domain": "CIGAR, Pileup & Aligner",
+      "index": 16,
+      "name": "exact_35_overlap",
+      "upstream_refs": "palakpsheth/VarDictRust#34, VariationRealigner.java:2006-2042",
+      "vardictjava_behavior": "Adds `+1` spurious out-of-bounds loop sentinel mismatch and `+1` overlap length when `rem5 < rem3` in `find35match`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Matches exact deletion CIGAR operator length (`len == dlen`) in `no_passing_reads`",
+      "domain": "CIGAR, Pileup & Aligner",
+      "index": 17,
+      "name": "exact_cigar_dlen_match",
+      "upstream_refs": "palakpsheth/VarDictRust#34, VariationRealigner.java:2056-2065",
+      "vardictjava_behavior": "Uses substring `contains(dlen + \"D\")` in `noPassingReads`, falsely matching decimal suffixes such as `12D` for `2D`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Continues (`continue`) evaluating remaining tumor candidate alleles at multi-allelic somatic loci",
+      "domain": "Somatic & Amplicon Calling",
+      "index": 18,
+      "name": "somatic_continue_after_bad_var",
+      "upstream_refs": "joachimwolff/VarDictJava#4, clintval/vartovcf#139, clintval/vartovcf#149, AstraZeneca-NGS/VarDictJava#376",
+      "vardictjava_behavior": "Executes `break` in `printVariationsFromFirstSample` when the top-AF candidate fails `isGoodVar`, dropping passing secondary alleles",
+      "verification_arm": "Domain 3 (Multi-Allelic & Paralog)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Threads directional `5`/`3` soft-clip orientation and `--adaptor` screening across all 20 consensus call sites",
+      "domain": "CIGAR, Pileup & Aligner",
+      "index": 19,
+      "name": "adaptor_all_consensus_dirs",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#240, AstraZeneca-NGS/VarDictJava#241, AstraZeneca-NGS/VarDict#119, PolinaBevad/VarDictJava@92c62cf6",
+      "vardictjava_behavior": "Calls `findConseq(sc, 0)` without `--adaptor` sets in `adjustMNP`, `realignIndels`, `sv`, and `adjSNV`, assembling adapter chimeras",
+      "verification_arm": "Domain 4 (Adapter Chimera)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Emits canonical 1-bp upstream VCFv4.2 anchor, `##ALT` headers, negative `<DEL>` `SVLEN` (`END - POS == abs(SVLEN)`), and paired `END;SVTYPE;SVLEN`",
+      "domain": "Structural Variants & Indexing",
+      "index": 20,
+      "name": "canonical_sv_vcf_anchoring",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#398, AstraZeneca-NGS/VarDictJava#225, AstraZeneca-NGS/VarDictJava#229, clintval/vartovcf#192",
+      "vardictjava_behavior": "Emits multi-kb `REF` spans on symbolic SVs, positive `SVLEN` on `<DEL>`, missing `##ALT` headers, and missing paired SV `INFO` tags",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Runs per-amplicon tumor-normal pileup, primer masking, and `GDAMP;TLAMP;NCAMP;AMPFLAG` `AMPBIAS` concordance across `.var` and VCF",
+      "domain": "Somatic & Amplicon Calling",
+      "index": 21,
+      "name": "paired_somatic_amplicon",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#378, AstraZeneca-NGS/VarDictJava#155, AstraZeneca-NGS/VarDict#109, MHH-Bioinformatics-Hematology/vardictcpp#1",
+      "vardictjava_behavior": "Runs single-sample `AmpliconMode` on `bam1` only in `.var` mode and rejects paired `-b` plus `-a` in VCF mode",
+      "verification_arm": "Domain 5 (Clinical Presets & Amplicon)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Strips outer positive-length `H`/`P` operators without advancing `alignment_start` and treats interior `P` as non-consuming",
+      "domain": "CIGAR, Pileup & Aligner",
+      "index": 22,
+      "name": "cigar_strip_outer_hard_clips",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#341, AstraZeneca-NGS/VarDictJava#103, Kennedy-Lab-UW/VarDictJava@9a0beb0d",
+      "vardictjava_behavior": "Leaves outer `H`/`P` operators blocking terminal `I -> S` and `D` stripping in `CigarModifier` and distorting `PMEAN`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Floors subtracted `PMEAN`, `QMEAN`, `MQ`, `NM`, and VCF `QUAL` at `0.0` (`>= 0.0`)",
+      "domain": "Depth, Rounding & Determinism",
+      "index": 23,
+      "name": "nonnegative_subtracted_means",
+      "upstream_refs": "bcbio/bcbio-nextgen#1704, Variation.java",
+      "vardictjava_behavior": "Subtracts `qmean` and `pmean` in `Variation.subCnt` without flooring at zero, allowing negative `PMEAN`, `QMEAN`, and VCF `QUAL`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Resets all auxiliary `Variation` accumulators on `cnt = 0` and reconciles `fwd + rev == VD` and `0 <= HICNT <= VD`",
+      "domain": "Depth, Rounding & Determinism",
+      "index": 24,
+      "name": "reconcile_strand_and_hq_sums",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#316, clintval/vartovcf#120, clintval/vartovcf#142",
+      "vardictjava_behavior": "Zeros `cnt = 0` without clearing `fwd`, `rev`, or `hicnt`, leaving `ALD[0] + ALD[1] != VD` and `HICNT > VD`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Enforces `DP >= RD + VD` (`total_pos_cov >= ref_fwd + ref_rev + pos_coverage`) across variant and somatic builders",
+      "domain": "Depth, Rounding & Determinism",
+      "index": 25,
+      "name": "reconcile_rd_vd_dp",
+      "upstream_refs": "AstraZeneca-NGS/VarDict#168, AstraZeneca-NGS/VarDictJava#323, clintval/vartovcf#102",
+      "vardictjava_behavior": "Adjusts `ref_coverage` independently of `ref_fwd + ref_rev`, allowing `RD + VD > DP` (`AD[0] + AD[1] > DP`)",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Reduces IUPAC ambiguity codes in `ALT` outside symbolic `<...>` brackets and suppresses non-pileup `REF == ALT` records",
+      "domain": "VCF Schema & Genotypes",
+      "index": 26,
+      "name": "sanitize_iupac_alt_alleles",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#267, AstraZeneca-NGS/VarDictJava#287, AstraZeneca-NGS/VarDict#137, bcbio/bcbio-nextgen#3321",
+      "vardictjava_behavior": "Reduces IUPAC ambiguity codes only on `REF`, leaking IUPAC codes into `ALT` and emitting non-pileup `REF == ALT` records",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Materializes explicit sequence alleles (`<= 32,768 bp`) for split-refined SVs shorter than `-L` and suppresses short discordant-only SVs",
+      "domain": "Structural Variants & Indexing",
+      "index": 27,
+      "name": "sv_respect_min_len",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#328, AstraZeneca-NGS/VarDict#157",
+      "vardictjava_behavior": "Ignores `-L` (`--min-sv-len`) in `find_del`, `find_dup`, and `find_inv`, emitting sub-1000 bp SVs as symbolic `<DUP>`/`<INV>`",
+      "verification_arm": "Domain 6 (CSI & Pileup)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Hydrates and emits the `ALT=\".\"` reference pileup row whenever all candidate variants shift away from a `-p` locus",
+      "domain": "CIGAR, Pileup & Aligner",
+      "index": 28,
+      "name": "pileup_preserve_shifted_ref",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#330, SimplePostProcessModule.java:73",
+      "vardictjava_behavior": "Checks `vvar.size() == 1` during `-p` hydration, silently dropping covered coordinates when `>= 2` indels shift away",
+      "verification_arm": "Domain 6 (CSI & Pileup)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Recomputes `Variant::var_type` after `adj_complex` across Simple, Amplicon, and Somatic post-processing",
+      "domain": "VCF Schema & Genotypes",
+      "index": 29,
+      "name": "recompute_vartype_after_adj_complex",
+      "upstream_refs": "clintval/vartovcf#109, clintval/vartovcf#147, SimplePostProcessModule.java:83,93",
+      "vardictjava_behavior": "Computes `INFO/TYPE` before `adjComplex` trims shared bases, leaving trimmed SNVs and indels mislabeled `TYPE=Complex`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Emits strict `Number=R` `FORMAT/AD` cardinality (`1 + n_alt`: `AD=rd` when `ALT=\".\"` and `AD=rd,vd` when `ALT != \".\"`)",
+      "domain": "VCF Schema & Genotypes",
+      "index": 30,
+      "name": "strict_vcf_ad_number_r",
+      "upstream_refs": "clintval/vartovcf#101, AstraZeneca-NGS/VarDict#75, AstraZeneca-NGS/VarDict#76, EBIvariation/vcf-validator#99, sigven/pcgr#12",
+      "vardictjava_behavior": "Keys single-sample `FORMAT/AD` on `VD != 0`, emitting 2-element `AD=rd,0` on `ALT=\".\"` rows and 1-element `AD=rd` on `VD=0` variants",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Omits `INFO/END` on non-symbolic VCF records by default while retaining `INFO/END` on symbolic `<...>` SVs unless `--no-end` is set",
+      "domain": "VCF Schema & Genotypes",
+      "index": 31,
+      "name": "omit_nonsv_vcf_end",
+      "upstream_refs": "clintval/vartovcf#105, bcbio/bcbio-nextgen#1704",
+      "vardictjava_behavior": "Emits `INFO/END` on every SNV and short indel under `-R` when `--no-end` is omitted, failing `GATK ValidateVariants` and `bcftools norm`",
+      "verification_arm": "Domain 1 (VCF Schema)"
+    },
+    {
+      "category": "CompatProfile Switch",
+      "compat_off_behavior": "Canonicalizes unphased `1/0` to `0/1` and promotes concrete non-dot `0/0` `ALT` carriers (`VD > 0`) to `0/1`",
+      "domain": "VCF Schema & Genotypes",
+      "index": 32,
+      "name": "canonical_vcf_gt",
+      "upstream_refs": "clintval/vartovcf#99, clintval/vartovcf#54, AstraZeneca-NGS/VarDictJava#344, AstraZeneca-NGS/VarDict#186",
+      "vardictjava_behavior": "Emits unphased `1/0` (`0.5 <= AF < 1 - GTFREQ`) and `0/0` on sub-threshold `VD > 0` carriers (ignored as `CALL=IGN` in diploid `rtg vcfeval`)",
+      "verification_arm": "Domain 2 (Diploid Somatic)"
+    },
+    {
+      "category": "Opt-In CLI Capability",
+      "compat_off_behavior": "Emits all passing `(CHROM, POS, END, REF, ALT)` alleles per locus sorted by 4-decimal `AF` descending (`--all-alleles`, `--vcfall`)",
+      "domain": "VCF Schema & Genotypes",
+      "index": 33,
+      "name": "--vcf-all-alleles",
+      "upstream_refs": "UB-7, AstraZeneca-NGS/VarDictJava#65, AstraZeneca-NGS/VarDictJava#383, AstraZeneca-NGS/VarDict#155",
+      "vardictjava_behavior": "Collapses multi-allelic loci to a single highest-AF winner per position unless Perl `var2vcf_*.pl -A` is piped externally",
+      "verification_arm": "Domain 3 (Multi-Allelic & Paralog)"
+    },
+    {
+      "category": "Opt-In CLI Capability",
+      "compat_off_behavior": "Enforces `-a` primer-edge distance strictly on primed amplicon edge(s) (`-sp`) and bypasses sheared-end overlap filtering",
+      "domain": "Somatic & Amplicon Calling",
+      "index": 34,
+      "name": "--amplicon-single-primer",
+      "upstream_refs": "AstraZeneca-NGS/VarDictJava#303, AstraZeneca-NGS/VarDictJava#301, AstraZeneca-NGS/VarDictJava#326, AstraZeneca-NGS/VarDict#191",
+      "vardictjava_behavior": "Enforces two-primer 5-prime and 3-prime edge distance plus `0.95` overlap filters on sheared R2 ends, discarding QIAseq/Archer SPE reads",
+      "verification_arm": "Domain 5 (Clinical Presets & Amplicon)"
+    },
+    {
+      "category": "Opt-In CLI Capability",
+      "compat_off_behavior": "Configures `--compat=off`, standard 0-based BED indexing, and modality-calibrated filters for `wgs`, `wes`, `amplicon`, and `ctdna`",
+      "domain": "Somatic & Amplicon Calling",
+      "index": 35,
+      "name": "--preset",
+      "upstream_refs": "palakpsheth/VarDictRust#94, palakpsheth/VarDictRust#158",
+      "vardictjava_behavior": "Requires manual 1-based vs 0-based BED `-c/-S/-E/-z` flags and separate Perl `var2vcf` filter pipes across sequencing modalities",
+      "verification_arm": "Domain 5 (Clinical Presets & Amplicon)"
+    }
+  ]
+}

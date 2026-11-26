@@ -40,11 +40,23 @@ FORBIDDEN_TEMPLATE_EMPIRICAL_STRINGS = {
     "10,195,118",
     "309,569",
     "213.70",
+    "218.83",
+    "219.25",
+    "5.05",
+    "12.43",
     "106.47",
     "228.90",
     "760.96",
     "12,668",
     "54,448",
+    "11,612",
+    "13,148",
+    "13,152",
+    "455,937",
+    "0.6389",
+    "0.6429",
+    "0.5610",
+    "0.8780",
 }
 
 EXPECTED_FIGURE_IDS = [
@@ -56,6 +68,7 @@ EXPECTED_FIGURE_IDS = [
     "fig6_cross_platform_and_ga4gh",
     "fig7_nextgen_truth_v50q_cmrg_mosaic",
     "fig8_modern_callers_and_low_vaf",
+    "fig9_v110_compat_and_presets",
 ]
 
 EXPECTED_TABLE_IDS = [
@@ -67,6 +80,7 @@ EXPECTED_TABLE_IDS = [
     "table6_cross_platform_chr20",
     "table7_v50q_cmrg_mosaic_and_hg008_v04",
     "table8_supply_chain_and_divergences",
+    "table9_v110_compat_and_presets",
 ]
 
 EXPECTED_SUPP_TABLE_IDS = [
@@ -76,6 +90,7 @@ EXPECTED_SUPP_TABLE_IDS = [
     "supp_table4_qual_roc_and_noise_floor",
     "supp_table5_ga4gh_70cell_matrix",
     "supp_table6_sv_and_amplicon_splice",
+    "supp_table7_compat_32switches_catalog",
 ]
 
 
@@ -106,11 +121,11 @@ class TestPaperReproducibility(unittest.TestCase):
             cid = r["cell_id"]
             self.assertIn(cid, combined, f"Cell {cid} missing from manuscript+supplement")
 
-        # 3. All 8 Figures, 8 Main Tables, and 6 Supplementary Tables referenced
-        for i in range(1, 9):
+        # 3. All 9 Figures, 9 Main Tables, and 7 Supplementary Tables referenced
+        for i in range(1, 10):
             self.assertIn(f"Figure {i}", ms_text)
             self.assertIn(f"Table {i}", ms_text)
-        for i in range(1, 7):
+        for i in range(1, 8):
             self.assertIn(f"Table S{i}", combined)
 
         # 4. Required Genome Biology / Bioinformatics sections & disclosures present
@@ -118,14 +133,19 @@ class TestPaperReproducibility(unittest.TestCase):
             "### Background",
             "### Results",
             "### Conclusions",
-            "## Availability of data and materials",
+            "### Availability of data and materials",
+            "### AI-assisted development and transparency disclosure",
+            "Joachim Wolff",
+            "10.1038/s41597-022-01359-6",
             "--nosv",
         ):
             self.assertIn(req, ms_text, f"Missing required token/section in manuscript.md: {req}")
         for sup_req in (
             "5865a2a0b24a8c17",
             "c490c36317b8f25b",
+            "b18477ae0a7b07c1",
             "Liss_lab",
+            "10.1038/s41597-022-01359-6",
         ):
             self.assertIn(sup_req, sup_text, f"Missing required provenance token in supplement.md: {sup_req}")
 
@@ -174,16 +194,16 @@ class TestPaperReproducibility(unittest.TestCase):
                 f"Forbidden token {m.group(0) if m else ''!r} found in {doc_path.name}",
             )
 
-    def test_all_8_figures_and_14_tables_referenced(self) -> None:
+    def test_all_9_figures_and_16_tables_referenced(self) -> None:
         ms_text = MANUSCRIPT.read_text(encoding="utf-8")
         sup_text = SUPPLEMENT.read_text(encoding="utf-8")
         combined = ms_text + "\n" + sup_text
 
-        for i in range(1, 9):
+        for i in range(1, 10):
             self.assertIn(f"Figure {i}", ms_text)
             self.assertIn(f"figures/fig{i}.svg", ms_text)
             self.assertIn(f"Table {i}", ms_text)
-        for i in range(1, 7):
+        for i in range(1, 8):
             self.assertIn(f"Table S{i}", combined)
 
         for fid in EXPECTED_FIGURE_IDS:
@@ -192,6 +212,45 @@ class TestPaperReproducibility(unittest.TestCase):
             self.assertIn(tid, combined, f"Missing main table identifier {tid}")
         for stid in EXPECTED_SUPP_TABLE_IDS:
             self.assertIn(stid, combined, f"Missing supplementary table identifier {stid}")
+
+    def test_structured_abstract_word_count_and_key_points(self) -> None:
+        ms_text = MANUSCRIPT.read_text(encoding="utf-8")
+        m_abs = re.search(
+            r"^## Abstract\s*\n([\s\S]+?)\n\*\*Keywords:\*\*",
+            ms_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(m_abs, "Could not locate ## Abstract ... **Keywords:** block in manuscript.md")
+        assert m_abs is not None
+        abs_lines = [
+            ln.strip()
+            for ln in m_abs.group(1).splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        abs_words = " ".join(abs_lines).split()
+        self.assertLessEqual(
+            len(abs_words),
+            350,
+            f"Structured Abstract exceeds 350-word Genome Biology limit: {len(abs_words)} words",
+        )
+        self.assertGreaterEqual(
+            len(abs_words),
+            200,
+            f"Structured Abstract unexpectedly short: {len(abs_words)} words",
+        )
+
+        m_kp = re.search(
+            r"^>\s*\*\*Key Points\*\*\s*\n((?:>.*\n)+)",
+            ms_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(m_kp, "Missing > **Key Points** callout box in manuscript.md")
+        assert m_kp is not None
+        kp_bullets = [
+            ln for ln in m_kp.group(1).splitlines() if re.match(r"^>\s*-\s+", ln)
+        ]
+        self.assertGreaterEqual(len(kp_bullets), 3, "Key Points box must contain >= 3 bullets")
+        self.assertLessEqual(len(kp_bullets), 5, f"Key Points box exceeds 5 bullets: {len(kp_bullets)}")
 
     def test_all_60_cells_referenced_across_manuscript_and_supplement(self) -> None:
         ms_text = MANUSCRIPT.read_text(encoding="utf-8")
@@ -222,6 +281,18 @@ class TestPaperReproducibility(unittest.TestCase):
             "Stage 4",
             "Stage 5",
             "Stage 6",
+            "s1_",
+            "s2_",
+            "s3_",
+            "s4_",
+            "s5_",
+            "s6_",
+            "arm1_",
+            "arm2_",
+            "arm3_",
+            "arm4_",
+            "arm5_",
+            "arm6_",
         ]
         for term in forbidden_jargon:
             self.assertNotIn(
@@ -255,6 +326,19 @@ class TestPaperReproducibility(unittest.TestCase):
             "github.com/rewrites-bio",
             "rewrites.bio) Initiative",
             "rewrites.bio) initiative",
+            "Lukas Wolff",
+            "10.1038/s41597-022-01359-2",
+            "Landscape",
+            "Clinical AML AML",
+            "Scratch OCI",
+            "matching `--preset wes`'s",
+            "matching --preset wes's",
+            "We thank",
+            "Table 9,&",
+            "strict VCF schema",
+            "strict VCFv4.2/v4.3 schema compliance",
+            "strict VCFv4.2/v4.3 schema defects",
+            "Every entry is verified",
         ]
         for phrase in banned_ai_phrases:
             self.assertNotIn(
@@ -307,6 +391,17 @@ class TestPaperReproducibility(unittest.TestCase):
                 f"Missing required provenance disclosure in supplement.md: {phrase!r}",
             )
 
+        bare_issue_re = re.compile(r"(?<![A-Za-z0-9_/-])#\d+\b")
+        for tmpl_path in (MANUSCRIPT_TMPL, SUPPLEMENT_TMPL):
+            raw_txt = tmpl_path.read_text(encoding="utf-8")
+            no_fenced = re.sub(r"```[\s\S]*?```", "", raw_txt)
+            body_lines = [ln for ln in no_fenced.splitlines() if not ln.lstrip().startswith("#")]
+            m_bare = bare_issue_re.search("\n".join(body_lines))
+            self.assertIsNone(
+                m_bare,
+                f"Bare #N issue reference {m_bare.group(0) if m_bare else ''!r} found in {tmpl_path.name}; repo-qualify as owner/repo#N",
+            )
+
     def test_build_manuscript_script_has_no_hardcoded_empirical_strings(self) -> None:
         self.assertTrue(BUILD_SCRIPT.is_file(), f"Missing {BUILD_SCRIPT}")
         tree = ast.parse(BUILD_SCRIPT.read_text(encoding="utf-8"), filename=str(BUILD_SCRIPT))
@@ -346,6 +441,153 @@ class TestPaperReproducibility(unittest.TestCase):
             raw = pdf_path.read_bytes()
             self.assertTrue(raw.startswith(b"%PDF-"), f"Invalid PDF header in {pdf_path}")
             self.assertIn(b"%%EOF", raw[-1024:], f"Missing %%EOF trailer in {pdf_path}")
+
+    def test_paper_readme_cover_letter_matches_certified_macros(self) -> None:
+        import json as _json
+
+        sys.path.insert(0, str(ROOT / "paper"))
+        import build_manuscript as bm  # type: ignore[import-not-found]
+
+        gcp_doc = _json.loads(
+            (ROOT / "benchmarks" / "gcp-study-v106" / "master_gcp_metrics.json").read_text(encoding="utf-8")
+        )
+        v110_doc = _json.loads(
+            (ROOT / "benchmarks" / "v110-compat-study" / "v110_compat_metrics.json").read_text(encoding="utf-8")
+        )
+        macros = bm.build_macro_context(gcp_doc, v110_doc)
+        readme_txt = (ROOT / "paper" / "README.md").read_text(encoding="utf-8")
+
+        for macro_key in (
+            "s5_h4_conda_pkgs",
+            "s5_h4_musl_mb",
+            "s2_rchr1_speedup_vs_java",
+            "s2_rchr1_rss_ratio_vs_java",
+            "s6_v50q_snv_r_gain_pct",
+            "s6_v50q_indel_r_gain_pct",
+            "s6_cmrg_snv_r_gain_pct",
+            "s6_cmrg_indel_r_gain_pct",
+            "v110_schema_defects_vj",
+            "v110_arm2_f1_gain",
+        ):
+            self.assertIn(macro_key, macros, f"Missing macro {macro_key} in build_macro_context()")
+            self.assertIn(
+                macros[macro_key],
+                readme_txt,
+                f"paper/README.md missing certified macro {macro_key}={macros[macro_key]!r}",
+            )
+
+        self.assertIn("--reaggregate-gcp", readme_txt)
+        self.assertIn("+31.7 pp", readme_txt)
+        for stale_str in (
+            "Landscape",
+            "ecosystem",
+            "121` Conda",
+            "3.46 MB",
+            "38.2×",
+            "110.2×",
+            "strict VCF schema",
+            "strict VCFv4.2/v4.3 schema-validator",
+        ):
+            self.assertNotIn(stale_str, readme_txt, f"Stale/banned string {stale_str!r} in paper/README.md")
+
+    def test_reproduce_all_reaggregate_gcp_fails_fast_when_raw_cells_incomplete(self) -> None:
+        import os as _os
+        import shutil as _shutil
+        import tempfile as _tempfile
+
+        with _tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir) / "repo"
+            (tmp_root / "paper").mkdir(parents=True)
+            (tmp_root / ".venv" / "bin").mkdir(parents=True)
+            (tmp_root / "benchmarks" / "gcp-study-v106").mkdir(parents=True)
+            (tmp_root / "benchmarks" / "gcp-study-v106" / "SHA256SUMS.tsv").write_text(
+                "sha256\tpath\tsize_bytes\n", encoding="utf-8"
+            )
+            # Only 2 raw cell dirs (< 60)
+            for idx in range(2):
+                (tmp_root / "benchmarks" / "data" / "gcp-study-v106" / f"cell_{idx:02d}").mkdir(parents=True)
+
+            copied_repro = tmp_root / "paper" / "reproduce_all.sh"
+            _shutil.copy2(ROOT / "paper" / "reproduce_all.sh", copied_repro)
+            copied_repro.chmod(0o755)
+            for tool_stub in ("python", "pytest"):
+                sp = tmp_root / ".venv" / "bin" / tool_stub
+                sp.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+                sp.chmod(0o755)
+
+            run_env = dict(_os.environ)
+            run_env["PAPER_ALLOW_STALE_PDF"] = "1"
+            res = subprocess.run(
+                ["bash", str(copied_repro), "--reaggregate-gcp"],
+                cwd=str(tmp_root),
+                env=run_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(
+                res.returncode,
+                0,
+                "Expected --reaggregate-gcp with < 60 raw cells to fail fast instead of falling back to offline verify",
+            )
+            self.assertIn("explicit GCP reaggregation requested", res.stderr)
+
+    def test_stage5_rss_sync_aggregate_verify_fail_closed_and_pdf_zwsp(self) -> None:
+        import tempfile as _tempfile
+
+        ms_text = MANUSCRIPT.read_text(encoding="utf-8")
+        sup_text = SUPPLEMENT.read_text(encoding="utf-8")
+        ms_plain = ms_text.replace("`", "")
+        sup_plain = sup_text.replace("`", "")
+
+        for expected_mem in ("5.05 GB", "12.43 GB", "218.83 GB", "32.68 GB", "94.06 GB"):
+            self.assertIn(expected_mem, ms_plain, f"Expected Stage-5 RSS {expected_mem!r} in manuscript.md")
+            self.assertIn(expected_mem, sup_plain, f"Expected Stage-5 RSS {expected_mem!r} in supplement.md")
+        for stale_mem in ("4.93 GB", "12.14 GB", "213.7 GB", "214.1 GB"):
+            self.assertNotIn(stale_mem, ms_plain, f"Stale GiB-labeled-as-GB {stale_mem!r} in manuscript.md")
+            self.assertNotIn(stale_mem, sup_plain, f"Stale GiB-labeled-as-GB {stale_mem!r} in supplement.md")
+
+        self.assertIn("29.4×", ms_plain)
+        self.assertNotIn("29.3×", ms_plain)
+        self.assertNotIn("29.3x", ms_plain)
+        self.assertIn("0.00049", ms_plain)
+        self.assertIn("0.00049", sup_plain)
+
+        # aggregate_gcp_study.py --verify must fail closed when master_gcp_metrics.json is missing
+        with _tempfile.TemporaryDirectory() as tmpdir:
+            tmp_out = Path(tmpdir) / "out"
+            tmp_raw = Path(tmpdir) / "raw"
+            tmp_out.mkdir()
+            tmp_raw.mkdir()
+            res = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "paper" / "aggregate_gcp_study.py"),
+                    "--verify",
+                    "--out-dir",
+                    str(tmp_out),
+                    "--raw-dir",
+                    str(tmp_raw),
+                ],
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(res.returncode, 0)
+            self.assertFalse((tmp_out / "master_gcp_metrics.json").exists())
+
+        # render_pdf.py must not split 0/1 or 34/41 with &#8203; and must protect short code hyphens
+        sys.path.insert(0, str(ROOT / "paper"))
+        import render_pdf as rp  # type: ignore[import-not-found]
+
+        rendered = rp._postprocess_body_html(
+            "<td>0/1 and 1/0 and N/N and 34/41 and path_one/path_two</td><p><code>--compat=off</code></p>"
+        )
+        self.assertIn("0/1", rendered)
+        self.assertIn("34/41", rendered)
+        self.assertIn("path_&#8203;one/&#8203;path_&#8203;two", rendered)
+        self.assertIn("&#8209;&#8209;compat=off", rendered)
 
 
 if __name__ == "__main__":

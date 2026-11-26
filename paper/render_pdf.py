@@ -155,7 +155,7 @@ def preprocess_markdown_for_html(md_text: str, base_dir: Path) -> str:
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _replace_image, text)
 
-    # 6. Sanitize raw '<' / '<=' / '>=' / '->' in Markdown table rows and ensure blank lines before lists
+    # 6. Sanitize raw '<' / '<=' / '>=' / '->' in Markdown table rows and prose/footnotes, and ensure blank lines before lists
     processed_lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -171,6 +171,14 @@ def preprocess_markdown_for_html(md_text: str, base_dir: Path) -> str:
                 line = re.sub(
                     r"<(?!(?:  |/?(?:span|sub|sup|i|code|strong|em|a)\b))", "&lt;", line
                 )
+        else:
+            # Escape raw '<' on non-table prose/footnote lines that is NOT a valid HTML tag we emitted or allowed
+            line = line.replace("<=", "&le;")
+            line = re.sub(
+                r"<(?!(?:figure\b|/figure>|img\b|div\b|/div>|span\b|/span>|sub\b|/sub>|sup\b|/sup>|i\b|/i>|a\s|/a>|br\b))",
+                "&lt;",
+                line,
+            )
         # Ensure blank line before list items (- ... or 1. ...) so Python-Markdown starts a list block
         if re.match(r"^\s*(?:-\s+|\d+\.\s+)", line):
             if processed_lines and processed_lines[-1].strip() != "":
@@ -452,10 +460,17 @@ blockquote ul {
 """
 
 
-def _build_print_css(cargo_toml_path: Path | None = None) -> str:
+def _build_print_css(
+    cargo_toml_path: Path | None = None, title: str = "VarDictRust Manuscript"
+) -> str:
     ver = _read_workspace_version(cargo_toml_path)
+    doc_kind = (
+        "Supplementary Material"
+        if "Supplement" in title
+        else "Empirical Validation & Architectural Manuscript"
+    )
     footer_left = (
-        f"VarDictRust v{ver} (v1.0.6 GCP Study) — Empirical Validation & Architectural Manuscript"
+        f"VarDictRust v{ver} (v1.0.6 Cloud & v1.1.0 Clinical Study) — {doc_kind}"
     )
     return _PRINT_CSS_TEMPLATE.replace("@@FOOTER_LEFT@@", footer_left)
 
@@ -486,21 +501,45 @@ def _postprocess_body_html(body_html: str) -> str:
 
     s = re.sub(r"<pre>[\s\S]*?</pre>", _save_pre, body_html)
 
-    # 3. Insert zero-width space (&#8203;) after '_' and '/' inside text nodes of <td> and inline <code>
+    # 3. Insert zero-width space (&#8203;) after '_' and multi-character non-numeric '/' inside <td> and inline <code>,
+    #    and convert ASCII '-' inside short inline <code> tokens into non-breaking hyphens (&#8209;) so CLI flags never split.
     def _add_zwsp_in_tags(html_fragment: str) -> str:
         parts = re.split(r"(<[^>]+>)", html_fragment)
         for i in range(0, len(parts), 2):
-            parts[i] = re.sub(r"([_/])([A-Za-z0-9])", r"\1&#8203;\2", parts[i])
+            parts[i] = re.sub(r"_([A-Za-z0-9])", r"_&#8203;\1", parts[i])
+            parts[i] = re.sub(
+                r"([A-Za-z0-9]{2,})/([A-Za-z0-9]{2,})",
+                lambda m: (
+                    m.group(0)
+                    if (m.group(1).isdigit() and m.group(2).isdigit())
+                    else f"{m.group(1)}/&#8203;{m.group(2)}"
+                ),
+                parts[i],
+            )
         return "".join(parts)
+
+    def _format_inline_code(inner: str) -> str:
+        plain = html.unescape(re.sub(r"<[^>]+>", "", inner))
+        if len(plain) <= 28 and "/" not in plain and " " not in plain:
+            inner = inner.replace("-", "&#8209;")
+        return f"<code>{_add_zwsp_in_tags(inner)}</code>"
 
     s = re.sub(
         r"<td>([\s\S]*?)</td>", lambda m: f"<td>{_add_zwsp_in_tags(m.group(1))}</td>", s
     )
     s = re.sub(
         r"<code>([\s\S]*?)</code>",
-        lambda m: f"<code>{_add_zwsp_in_tags(m.group(1))}</code>",
+        lambda m: _format_inline_code(m.group(1)),
         s,
     )
+    text_parts = re.split(r"(<[^>]+>)", s)
+    for i in range(0, len(text_parts), 2):
+        text_parts[i] = re.sub(
+            r"(?<![A-Za-z0-9&#;/])(--?[A-Za-z0-9][A-Za-z0-9-]{0,24})(?![A-Za-z0-9-])",
+            lambda m: m.group(0).replace("-", "&#8209;"),
+            text_parts[i],
+        )
+    s = "".join(text_parts)
 
     for idx, block in enumerate(pre_blocks):
         s = s.replace(f"@@PREBLOCK{idx}@@", block)
@@ -516,7 +555,7 @@ def markdown_to_html_document(md_text: str, base_dir: Path, title: str) -> str:
         extensions=["tables", "fenced_code", "sane_lists"],
     )
     body_html = _postprocess_body_html(body_html)
-    print_css = _build_print_css()
+    print_css = _build_print_css(title=title)
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
@@ -579,11 +618,20 @@ def render_markdown_to_pdf(
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-crash-reporter",
+            "--no-first-run",
+            "--disable-extensions",
             "--no-pdf-header-footer",
             f"--print-to-pdf={tmp_pdf}",
             tmp_html.as_uri(),
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
         if not tmp_pdf.is_file() or tmp_pdf.stat().st_size == 0:
             raise RuntimeError(f"Chrome failed to produce PDF at {tmp_pdf}")
 
@@ -599,7 +647,12 @@ def render_markdown_to_pdf(
                 f"-sOutputFile={opt_pdf}",
                 str(tmp_pdf),
             ]
-            res = subprocess.run(gs_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            res = subprocess.run(
+                gs_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
             if res.returncode == 0 and opt_pdf.is_file() and opt_pdf.stat().st_size > 0:
                 shutil.copyfile(opt_pdf, pdf_path)
                 return
