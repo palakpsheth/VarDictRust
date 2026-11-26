@@ -3,7 +3,8 @@
 **Authors:** [Palak Sheth](https://www.linkedin.com/in/palak-p-sheth/)<sup>1,*</sup>  
 <sup>1</sup>Independent Researcher ([palakpsheth@gmail.com](mailto:palakpsheth@gmail.com) | [https://www.linkedin.com/in/palak-p-sheth/](https://www.linkedin.com/in/palak-p-sheth/))  
 **Cloud Study Engine Baseline:** `VarDictRust` `v{{m:version}}` (commit `{{m:commit}}`, engine fingerprint `{{m:fingerprint}}`, performance fingerprint `{{m:perf_fingerprint}}`)  
-**Latest Certified Release & Workspace Snapshot:** Certified parity release `VarDictRust` `v{{m:current_release_version}}` (engine fingerprint `{{m:current_release_fingerprint}}`, performance fingerprint `{{m:current_perf_fingerprint}}`); repository workspace exposes `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups and `{{m:workspace_test_count}}` Cargo workspace tests + `{{m:harness_self_test_count}}` harness self-tests  
+**Deterministic Clinical & Validator Study Baseline:** `VarDictRust` `v{{m:v110_study_version}}` (`benchmarks/v110-compat-study/`, source fingerprint `{{m:v110_study_fingerprint}}`, performance fingerprint `{{m:v110_study_perf_fingerprint}}`; `rtg-tools` `v{{m:v110_rtg_version}}`, `bcftools`/`tabix`/`samtools` `v{{m:v110_bcftools_version}}`)  
+**Latest Certified Release & Workspace Snapshot:** Certified release `VarDictRust` `v{{m:current_release_version}}` (engine fingerprint `{{m:current_release_fingerprint}}`, performance fingerprint `{{m:current_perf_fingerprint}}`); exposes `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups and `{{m:workspace_test_count}}` Cargo workspace tests + `{{m:harness_self_test_count}}` harness self-tests  
 **Reference Oracles:** `{{m:oracle_version}}` and `{{m:cpp_version}}`  
 **Cloud Benchmark Host:** `{{m:host}}` (`{{m:nvme_raid0_tb}}` TB NVMe RAID0 scratch; exploratory staging also verified on `c3d-standard-32`)
 
@@ -11,8 +12,8 @@
 
 ## Table of Contents
 
-1. **Supplementary Methods: Exact Command-Line Invocations Across All 60 Benchmark Cells**
-    - 1.0 Manuscript Figure and Table to 60-Cell Provenance Crosswalk
+1. **Supplementary Methods: Exact Command-Line Invocations Across All 60 Cloud Cells and 6 Deterministic v{{m:v110_study_version}} Domains**
+    - 1.0 Manuscript Figure and Table Provenance Crosswalk
     - 1.1 Domain 1: Ceiling, Multi-Region Boundary, and Tile-Invariance Cells (`4` cells)
     - 1.2 Domain 2: Wolff AML Panel Replication, 13-Mode Sweep, Field Callers, and `-R chr1` (`17` cells)
     - 1.3 Domain 3: Full-Sample {{m:s3_rna_bam_gib}} GiB RNA-Seq Splice Calling (`1` cell)
@@ -20,6 +21,7 @@
     - 1.5 Multi-Regime Parameter Sweep: Comprehensive 87-Arm `.var` and `.vcf` Parity Sweep (`12` cells)
     - 1.6 Domain 5: Full-Genome WGS (Unchunked Full Chromosomes vs. Pre-Chunked Callable Intervals), 10-Platform Chr20 Panel, and Supply Chain (`7` cells)
     - 1.7 Domain 6: GA4GH v3.5 Stratification, GIAB v5.0q/CMRG/Mosaic, HG008 v0.4 11-Caller Matrix, and Low-VAF Titration (`4` cells)
+    - 1.8 Deterministic `v{{m:v110_study_version}}` Opt-In `--compat=off` & Clinical Workflow Preset Evaluation (`benchmarks/v110-compat-study/`, `{{m:v110_total_arms}}` domains)
 
 2. **Supplementary Note 1: Analytical Derivation of JVM (`VarDictJava`) and `vardictcpp` Heap Retention (Unchunked Chromosomes vs. Pre-Chunked Callable Intervals)**
 
@@ -27,19 +29,19 @@
 
 4. **Supplementary Note 3: Biostatistical Methodology, Exact Clopper-Pearson Intervals, and `--compat=vardictjava|off` Governance**
 
-5. **Supplementary Tables (`Supplementary Table S1` – `Supplementary Table S6`) and Complete 60-Cell Verification Ledger**
+5. **Supplementary Tables (`Supplementary Table S1` – `Supplementary Table S7`) and Complete 60-Cell Verification Ledger**
 
 6. **References**
 
 ---
 
-## 1. Supplementary Methods: Exact Command-Line Invocations Across All 60 Benchmark Cells
+## 1. Supplementary Methods: Exact Command-Line Invocations Across All 60 Cloud Cells and 6 Deterministic v{{m:v110_study_version}} Domains
 
-All `{{m:total_cells}}` verification cells ran on `{{m:host}}` (`Ubuntu 24.04 LTS`, Linux kernel `6.8`, `{{m:nvme_raid0_tb}}` TB 4-way NVMe RAID0 scratch mounted at `/var/tmp/vardict-paper`). They comprise `{{m:compute_cells}}` cloud compute cells plus `1` certified local-to-cloud evidence bundle `evidence_certified`. Timed runs used `/usr/bin/time -v` across `n = 3` independent technical replicates. The cap was `timeout 10800` (`3` hours, exit code `rc=124` on timeout; `rc=3` on JVM `OutOfMemoryError`).
+All `{{m:total_cells}}` cloud verification cells (`Figures 1–8`, `Tables 1–8`, `Supplementary Tables S1–S6`) ran on `{{m:host}}` (`Ubuntu 24.04 LTS`, Linux kernel `6.8`, `{{m:nvme_raid0_tb}}` TB 4-way NVMe RAID0 scratch mounted at `/var/tmp/vardict-paper`). They comprise `{{m:compute_cells}}` cloud compute cells plus `1` certified local-to-cloud evidence bundle `evidence_certified`. Timed runs used `/usr/bin/time -v` across `n = 3` independent technical replicates. The cap was `timeout 10800` (`3` hours, exit code `rc=124` on timeout; `rc=3` on JVM `OutOfMemoryError`). All `{{m:v110_total_arms}}` `v{{m:v110_study_version}}` `--compat=off` and `--preset` domains (`Figure 9`, `Table 9`, `Supplementary Table S7`) evaluate host-independent deterministic callset, VCFv4.2/v4.3 schema-validator, `bcftools norm` [26], and diploid `rtg vcfeval` [12] metrics archived in `benchmarks/v110-compat-study/` (`Subsection 1.8`), recording zero host-dependent wall-clock or RSS timings.
 
-### 1.0 Manuscript Figure and Table to 60-Cell Provenance Crosswalk
+### 1.0 Manuscript Figure and Table Provenance Crosswalk
 
-The crosswalk below maps each main-text Figure (`Figure 1`–`Figure 8`) and Table (`Table 1`–`Table 8`) to its benchmark directory in `benchmarks/gcp-study-v106/`. `Supplementary Table S1` holds the full ledger.
+The crosswalk below maps `Figure 1`–`Figure 8` and `Table 1`–`Table 8` (`Supplementary Tables S1–S6`) to the `{{m:total_cells}}` benchmark directories in `benchmarks/gcp-study-v106/`, and maps `Figure 9`, `Table 9`, and `Supplementary Table S7` separately to the deterministic `v{{m:v110_study_version}}` study bundle in `benchmarks/v110-compat-study/`. `Supplementary Table S1` holds the full `{{m:total_cells}}`-cell ledger.
 
 - **`Figure 1` & `Table 1` (Architecture, Operational Modes, and 87-Arm Equivalence Sweep):** `s1_ceiling_amplicon`, `s1_ceiling_hg008`, `s1_gate7_ref_multiregion`, `s1_h1a_simple_tiles`, `s2_tierp_mode_parity_sweep`, `s3_rna_splice_parity_n3`, `s4_multimodal_and_cram_twin`, and `evidence_certified`. The `12` `sweep_*` cells add `sweep_4targets_full`, `sweep_R_chr1_full`, `sweep_hg002_chr20_exome`, `sweep_multimodal_and_cram_twin`, `sweep_rna_hg002_52gb`, `sweep_span_chr1_f0`, `sweep_tierp_13modes`, `sweep_tierp_SRR15006540`, `sweep_tierp_SRR8657348`, `sweep_tierp_somatic_76_86`, `sweep_ultradeep_mrd_stress`, and `sweep_wgs_mrd_matrix`.
 
@@ -56,6 +58,8 @@ The crosswalk below maps each main-text Figure (`Figure 1`–`Figure 8`) and Tab
 - **`Figure 7` & `Table 7` (Next-Generation `GIAB v5.0q T2T-Q100`, `CMRG v1.00`, `Mosaic v1.10`, and 11-Caller `HG008 v0.4` Benchmark):** `s6_hg002_v50q_cmrg_mosaic_eval` and `s6_hg008_modern_ml_and_commercial_callers`.
 
 - **`Figure 8` & `Table 8` (Software Supply Chain and 12-Point `vardictcpp` Divergence Audit):** `s5_h4_maintenance_security_matrix` and `s2_tierp_mode_parity_sweep`.
+
+- **`Figure 9`, `Table 9`, & `Supplementary Table S7` (Deterministic `v{{m:v110_study_version}}` Opt-In `--compat=off` Corrections, Clinical `--preset` Modes, and `{{m:v110_switch_catalog_total}}`-Entry Catalog):** `benchmarks/v110-compat-study/v110_compat_metrics.json` and `benchmarks/v110-compat-study/v110_compat_arms.tsv` (`paper/collect_v110_compat_metrics.py --verify`; `{{m:v110_total_arms}}` deterministic validation domains, zero host-timing mixing).
 
 ### 1.1 Domain 1: Ceiling, Multi-Region Boundary, and Tile-Invariance Cells (`s1_*`)
 Domain 1 comprises `4` cells (`s1_ceiling_amplicon`, `s1_ceiling_hg008`, `s1_gate7_ref_multiregion`, and `s1_h1a_simple_tiles`):
@@ -174,6 +178,37 @@ rtg vcfeval -b HG002_GRCh38_v5.0q_T2T.vcf.gz -e HG002_GRCh38_v5.0q_T2T.bed \
   -c hg002_unchunked.vcf.gz -t GRCh38.sdf -o eval_v50q_unchunked
 ```
 
+### 1.8 Deterministic `v{{m:v110_study_version}}` Opt-In `--compat=off` & Clinical Workflow Preset Evaluation (`benchmarks/v110-compat-study/`)
+The `{{m:v110_total_arms}}` deterministic validation domains (`Figure 9`, `Table 9`, `Supplementary Table S7`) are collected and verified by `paper/collect_v110_compat_metrics.py` (`--run` or offline `--verify`, pinned to `VarDictRust` `v{{m:v110_study_version}}`, source fingerprint `{{m:v110_study_fingerprint}}`, `rtg-tools` `v{{m:v110_rtg_version}}` [12], `bcftools` `v{{m:v110_bcftools_version}}`, and `samtools`/`tabix` `v{{m:v110_tabix_version}}` [26]):
+```bash
+# Domain 1: Strict VCFv4.2/v4.3 schema & bcftools norm --check-ref e across {{m:v110_arm1_callsets}} callsets ({{m:v110_arm1_bams}} BAMs):
+vardictrust --compat=off -G GRCh38.d1.vd1.fa -b "HCC1395.bam|HCC1395BL.bam" -f {{m:v110_arm2_discovery_af}} \
+  --vcf-af {{m:v110_arm2_vcf_af}} --fisher -z -c 1 -S 2 -E 3 -g 4 --output seqc2_off.vcf slices.bed
+bcftools norm --check-ref e -f GRCh38.d1.vd1.fa seqc2_off.vcf -o seqc2_norm.vcf
+
+# Domain 2: Diploid SEQC2 HCC1395/HCC1395BL rtg vcfeval ({{m:v110_arm2_intervals}} intervals, {{m:v110_arm2_bp}} bp; no --squash-ploidy):
+rtg RTG_MEM=4G RTG_JAVA_OPTS=-Dtalkback=false vcfeval -T 4 \
+  -b seqc2_truth_diploid.vcf.gz -c seqc2_off_somatic.vcf.gz \
+  -e seqc2_scoped_eval.bed -t GRCh38_scoped.sdf \
+  --all-records --vcf-score-field=QUAL --sample=TUMOR,TUMOR -o vcfeval_off
+
+# Domain 3 & Domain 4: Multi-allelic somatic continuation ({{m:v110_arm3_pairs}} pairs, {{m:v110_arm3_runs}} runs) & BRCA2 --adaptor chimera:
+vardictrust --compat=off --vcf-all-alleles -G hg19.fa -b "Tumor.bam|Normal.bam" -R chr1:755917-756517 -f {{m:f_std}} > ma_off.vcf
+vardictrust --compat=off --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT \
+  -G GRCh38.d1.vd1.fa -b adaptor_insertion.bam -R {{m:v110_arm4_chrom}}:32683877-32684023 -f {{m:f_std}} -q 25 -r 2 -UN > brca2_off.vcf
+
+# Domain 5: Clinical workflow presets (wgs, wes, amplicon, ctdna) & wet-lab QIAseq V3 -sp [27]:
+vardictrust --preset wgs -G GRCh38_GIABv3.fasta -b "HG008-T.bam|HG008-N.bam" -N "HG008_T|HG008_N" --fisher --output hg008_wgs.vcf.gz --csi hg008_3col.bed
+vardictrust --preset wes -G GRCh38.d1.vd1.fa -b "HCC1395.bam|HCC1395BL.bam" -N "HCC1395|HCC1395BL" --fisher --output seqc2_wes.vcf.gz --tbi seqc2_ucsc.bed8
+vardictrust --preset amplicon -sp -UN -G GRCh38.d1.vd1.fa -b SampleA_QGN1.bam --output qgn_sp.vcf.gz --tbi qiaseq_spe_grch38.amp8.bed
+vardictrust --preset ctdna -G GRCh38.d1.vd1.fa -b ctdna_0p5pct.bam -N CTDNA_0P5 --output ctdna.vcf.gz --tbi ctdna_locus_3col.bed
+
+# Domain 6: Multi-BGZF-block --csi spanning-SV retrieval ({{m:v110_arm6_csi_pass}}/{{m:v110_arm6_csi_tot}} interior {{m:v110_arm6_csi_bin_bp}}-bp queries) & -p tiling:
+vardictrust --compat=off --vcf-all-alleles -p -G hg19.fa -b span3_sv.bam -R chr20:46841200-46895000 \
+  -f {{m:f_mrd_wgs}} --output span3_sv_pileup.vcf.gz --csi -th 4
+tabix span3_sv_pileup.vcf.gz chr20:46858752-46858752
+```
+
 ---
 
 ## 2. Supplementary Note 1: Analytical Derivation of JVM (`VarDictJava`) and `vardictcpp` Heap Retention (Unchunked Chromosomes vs. Pre-Chunked Callable Intervals)
@@ -206,7 +241,7 @@ Across cells `s2_tierp_mode_parity_sweep`, `s5_h4_maintenance_security_matrix`, 
 
 - **`CPP-5` (50 kbp Chunk Boundary Deduplication):** Without external BED splitting (`--chunk {{m:cpp_chunk_bp}}` / `CPP_CHUNK={{m:cpp_chunk_bp}}`), `vardictcpp` consumes `{{m:s2_rchr1_cpp_rss_gib}}` GiB on `chr1`. It consumes `{{m:s5_hg002_contigs_cpp_rss_gb}}` GB on HG002 unchunked chromosomes and `{{m:s5_hg008_contigs_cpp_rss_gb}}` GB (`rc=124` timeout) on HG008 unchunked chromosomes. When intervals are chunked, `vardictcpp` lacks boundary deduplication. It emits `+{{m:s5_hg002_contigs_cpp_excess}}` duplicate/shifted calls on HG002 unchunked chromosomes (`{{m:s5_hg002_contigs_cpp_vars}}` vs `{{m:s5_hg002_contigs_rust_vars}}`) and `+{{m:s5_hg002_giab_cpp_diff_vars}}` on pre-chunked intervals (`{{m:s5_hg002_giab_cpp_vars}}` vs `{{m:s5_hg002_giab_vars}}`).
 
-- **`CPP-6` (Missing `##contig` Header Lines):** `vardictcpp` omits `##contig=<ID=...,length=...>` lines from VCF headers (`VarDictJava` issue `#320`). Strict VCF validators and `rtg vcfeval` header checks then warn or fail.
+- **`CPP-6` (Missing `##contig` Header Lines):** `vardictcpp` omits `##contig=<ID=...,length=...>` lines from VCF headers (`AstraZeneca-NGS/VarDictJava#320`). Strict VCF validators and `rtg vcfeval` header checks then warn or fail.
 
 - **`CPP-7` (GRCh37 / b37 Chromosome Naming):** `vardictcpp` hardcodes `chr`-prefix assumptions in internal chromosome handling. That breaks or diverges on `b37` / `GRCh37` numeric contigs (`1`..`22`, `X`, `Y`, `MT`).
 
@@ -240,17 +275,19 @@ with $p_{\text{lo} } = 0$ when $k = 0$ and $p_{\text{hi} } = 1$ when $k = n$:
 - GA4GH `v3.5` `{{m:s6_ga4gh_cells}}`-cell stratification matrix (`{{m:s6_ga4gh_cells}}/{{m:s6_ga4gh_cells}}`): `100%` (`95%` CI `{{m:cp95_70_70}}`)
 - Multi-regime parity sweep across `12` suites (`{{m:optc_match_arms}}/{{m:optc_total_arms}}`): `{{m:optc_match_pct}}%` (`95%` CI `{{m:cp95_optc_sweep}}`). Scope covers untiled $\le {{m:s1_tile_1m}}$ bp BED suites plus single-window `--tile-size` runs on `sweep_span_chr1_f0` (`{{m:sw_span_f0_rows}}` `.var` / `{{m:s4_span_f0_vars}}` `.vcf`) and `sweep_R_chr1_full` (`{{m:sw_rchr1_rows}}` `.var`; `Supplementary Table S2`)
 - NIST Mosaic SNV `v1.10` sensitivity (`{{m:s6_mosaic_rust_tp}}/{{m:s6_mosaic_truth_total}}`): `{{m:s6_mosaic_rust_r_pct}}` (`95%` CI `{{m:cp95_84_85}}`)
+- `v{{m:v110_study_version}}` diploid `SEQC2` subclonal somatic recall without `--squash-ploidy` (`Table 9`): default `--compat=vardictjava` `{{m:v110_arm2_vj_tp}}/{{m:v110_arm2_truth_total}}` (`95%` CI `{{m:cp95_v110_seqc2_vj_r}}`) vs. opt-in `--compat=off` unthresholded `{{m:v110_arm2_off_tp}}/{{m:v110_arm2_truth_total}}` (`95%` CI `{{m:cp95_v110_seqc2_off_r}}`) and optimal `QUAL >= {{m:v110_arm2_off_best_qual}}` `{{m:v110_arm2_off_best_tp}}/{{m:v110_arm2_truth_total}}` (`95%` CI `{{m:cp95_v110_seqc2_off_best_r}}`)
+- `v{{m:v110_study_version}}` wet-lab `QIAseq V3` `-sp` `KnownPositives` recall [27] (`Table 9`): at `DP >= 50` (`SampleA_QGN1`), without `-sp` `{{m:v110_arm5_qia_dp50_nosp}}/{{m:v110_arm5_qia_dp50_tot}}` (`95%` CI `{{m:cp95_v110_qiaseq_dp50_nosp}}`) vs. with `-sp` `{{m:v110_arm5_qia_dp50_sp}}/{{m:v110_arm5_qia_dp50_tot}}` (`95%` CI `{{m:cp95_v110_qiaseq_kp}}`), and across unmasked full-panel inserts `{{m:v110_arm5_qia_panel_sp}}/{{m:v110_arm5_qia_panel_tot}}` (`95%` CI `{{m:cp95_v110_qiaseq_panel_sp}}`; Clopper-Pearson intervals are restricted strictly to independent biological truth-set variant denominators rather than correlated per-callset VCF schema rows)
 
 ### 4.2 Non-Parametric Runtime and Memory Hypothesis Testing
 
 Across the $N = 12$ AML sample-by-thread cells (`s2_tierp_v2_*`, `n = 3` technical replicates each), we report the mean. Replicate range is min–max (`Supplementary Table S3`). Comparing `VarDictRust` against `VarDictJava` across $N = 12$ gives two-sided Mann-Whitney $U = {{m:s2_tierp_mwu_wall_u}}$ ($p = {{m:s2_tierp_mwu_wall_p}}$) for wall time. For peak RSS, $U = {{m:s2_tierp_mwu_rss_u}}$ ($p = {{m:s2_tierp_mwu_rss_p}}$). An exact paired sign-flip permutation test gives $p = 2^{-12} = {{m:s2_tierp_sign_perm_p}}$.
 
-### 4.3 Release Governance: Default Parity Consolidation (`v{{m:version}}` to `v{{m:current_release_version}}`) Versus `v1.1+` Opt-In `--compat=off`
-All default invocations (`--compat=vardictjava` / `--parity`) from the `v{{m:version}}` cloud benchmark baseline through certified release `v{{m:current_release_version}}` (engine fingerprint `{{m:current_release_fingerprint}}`) enforce strict `VarDictJava v1.8.3` parity on valid inputs. Building on certified `v{{m:current_release_version}}` into `v1.1+` dual-mode governance, the repository workspace consolidates all `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups (including `var2vcf` post-filtering, `--vcf-all-alleles` / `--all-alleles`, `--amplicon-single-primer` / `-sp`, `--preset wgs|wes|amplicon|ctdna` (`##VarDictRustPreset=<PRESET>`), opt-in `--compat=off`, multithreaded BGZF `--output`, and `--tbi`/`--csi` indexing with `16` kbp linear-window `loffset` propagation for spanning SVs across BGZF blocks, `clintval/vartovcf#161`), OpenJDK 8 `TreeNode` Red-Black treeification in `JavaHashMap`, `{{m:vcf_spill_cap_mib}}` MiB `SpillableVcfAccumulator` VCF disk spilling, singleflight `{{m:cram_container_cap_mib}}` MiB Illumina CRAM container caching with two-slot `CRAM_META_TLS` and `SeekWindowReader` validation, pre-validated `.bai`/`.csi` index bounds (`{{m:max_bai_cap_mib}}`/`{{m:max_csi_cap_mib}}` MiB), `{{m:workspace_test_count}}` Cargo workspace tests (`{{m:core_lib_test_count}}` core library unit tests), `{{m:harness_self_test_count}}` harness diagnostic self-tests, and in-process `cargo-fuzz` targets without altering default valid-input variant calls. In the repository workspace, `32` `CompatProfile` switches are implemented under opt-in `--compat=off` (stamping `##VarDictRustCompat=off` in VCF headers without per-bug `--fix` CLI flag sprawl): `AstraZeneca-NGS/VarDictJava#116` `INFO/SAMPLE` percent-encoding, `AstraZeneca-NGS/VarDictJava#342` `<DUP>` symbolic alleles, `AstraZeneca-NGS/VarDictJava#292` `SHIFT3` 3'-shifted alleles, `AstraZeneca-NGS/VarDictJava#369` target-region bounds, `UB-1`/`UB-2` `-p` pileup sentinels, live `DUPRATE` accounting, mixed sex/mitochondrial contig preservation, `AstraZeneca-NGS/VarDictJava#402` homopolymer multi-indel CIGAR merging (`cigar_homopolymer_merge`), native `=`/`X` (`--eqx`) CIGAR read-length and coalescing support (`eqx_cigar_read_length` for `minimap2 --eqx` / `pbmm2` alignments), `UB-5`/`UB-6` SV fixes (`preserve_discordant_svs`, `mark_dup_sv_inclusive_end`), lazy mate-window pileup (`sv_lazy_mate_pileup`), exact IEEE-754 binary `HALF_EVEN` tie rounding (`5e-5` $\to$ $10^{-4}$, `exact_binary_half_even`), `AstraZeneca-NGS/VarDictJava#92`/`AstraZeneca-NGS/VarDictJava#386`/`AstraZeneca-NGS/VarDictJava#400` depth reconciliation (`reconcile_vd_dp`), `UB-3`/`AstraZeneca-NGS/VarDictJava#282` coordinate-sorted position iteration (`coordinate_sorted_vars`), exact `find_35_match` overlap bounds (`exact_35_overlap`), exact deletion CIGAR operator length matching (`exact_cigar_dlen_match`), `joachimwolff/VarDictJava#4` / `clintval/vartovcf#139` multi-allelic somatic secondary-allele continuation (`somatic_continue_after_bad_var`), `AstraZeneca-NGS/VarDictJava#240` / `AstraZeneca-NGS/VarDict#119` all-direction `--adaptor` soft-clip screening (`adaptor_all_consensus_dirs`), `AstraZeneca-NGS/VarDictJava#398` / `clintval/vartovcf#192` canonical 1-bp VCFv4.2 SV anchoring and signed `SVLEN` (`canonical_sv_vcf_anchoring`), `AstraZeneca-NGS/VarDictJava#378` paired tumor-normal somatic amplicon calling (`paired_somatic_amplicon`), `AstraZeneca-NGS/VarDictJava#341` / `AstraZeneca-NGS/VarDictJava#103` outer hard-clip/pad stripping (`cigar_strip_outer_hard_clips`), `bcbio/bcbio-nextgen#1704` non-negative subtracted means and `QUAL` (`nonnegative_subtracted_means`), `AstraZeneca-NGS/VarDictJava#316` strand/HQ sum reconciliation (`reconcile_strand_and_hq_sums`), `AstraZeneca-NGS/VarDict#168` `DP >= RD + VD` reconciliation (`reconcile_rd_vd_dp`), `AstraZeneca-NGS/VarDictJava#267` IUPAC `ALT` reduction (`sanitize_iupac_alt_alleles`), `AstraZeneca-NGS/VarDictJava#328` `-L` (`1000` bp default) SV length enforcement (`sv_respect_min_len`), `AstraZeneca-NGS/VarDictJava#330` `-p` shifted-reference retention (`pileup_preserve_shifted_ref`), `clintval/vartovcf#109` post-`adj_complex` `TYPE` refresh (`recompute_vartype_after_adj_complex`), `clintval/vartovcf#101` `Number=R` `FORMAT/AD` (`strict_vcf_ad_number_r`), `clintval/vartovcf#105` non-SV `INFO/END` omission (`omit_nonsv_vcf_end`), and `clintval/vartovcf#99` canonical `0/1` genotypes (`canonical_vcf_gt`); prospective `AstraZeneca-NGS/VarDictJava#62` over-filtering and `AstraZeneca-NGS/VarDictJava#363` realignment-drop heuristics remain deferred to `v1.1.1+` and long-read `--preset hifi|ont` profiles to `v2.0`, while parity-restoring fixes (`splice-tile-ownership`, `mate-window-ownership`, `raw-af-filter-token`, `csi-linear-loffset-spanning-sv`) ship as verified defaults.
+### 4.3 Release Governance: Default Parity Consolidation (`v{{m:version}}` to `v{{m:current_release_version}}`) Versus `v{{m:v110_study_version}}` Opt-In `--compat=off`
+All default invocations (`--compat=vardictjava` / `--parity`) from the `v{{m:version}}` cloud benchmark baseline through certified release `v{{m:current_release_version}}` (engine fingerprint `{{m:current_release_fingerprint}}`) enforce strict `VarDictJava v1.8.3` parity on valid inputs. Certified `VarDictRust` `v{{m:current_release_version}}` consolidates all `{{m:cli_flag_count}}` CLI flags across `{{m:cli_group_count}}` functional groups (including all `{{m:v110_var2vcf_flags}}` native `var2vcf` post-filters, `--vcf-all-alleles` / `--all-alleles`, `--amplicon-single-primer` / `-sp`, `--preset` across `wgs`, `wes`, `amplicon`, and `ctdna` stamping `##VarDictRustPreset=<PRESET>`, opt-in `--compat=off`, multithreaded BGZF `--output`, and `--tbi`/`--csi` indexing with `{{m:v110_arm6_csi_bin_kbp}}` kbp linear-window `loffset` propagation for spanning SVs across BGZF blocks, `clintval/vartovcf#161`), OpenJDK 8 `TreeNode` Red-Black treeification in `JavaHashMap`, `{{m:vcf_spill_cap_mib}}` MiB `SpillableVcfAccumulator` VCF disk spilling, singleflight `{{m:cram_container_cap_mib}}` MiB Illumina CRAM container caching with two-slot `CRAM_META_TLS` and `SeekWindowReader` validation, pre-validated `.bai`/`.csi` index bounds (`{{m:max_bai_cap_mib}}`/`{{m:max_csi_cap_mib}}` MiB), `{{m:workspace_test_count}}` Cargo workspace tests (`{{m:core_lib_test_count}}` core library unit tests), `{{m:harness_self_test_count}}` harness diagnostic self-tests, and in-process `cargo-fuzz` targets without altering default valid-input variant calls. Under opt-in `--compat=off` (`##VarDictRustCompat=off`, zero per-bug `--fix` CLI flag sprawl), `VarDictRust` `v{{m:v110_study_version}}` activates all `{{m:v110_compat_switches}}` `CompatProfile` switches cataloged in declaration order with their upstream lineage and empirical verification domains in `Supplementary Table S7` (`Table 9`, `Figure 9`), while prospective `AstraZeneca-NGS/VarDictJava#62` over-filtering and `AstraZeneca-NGS/VarDictJava#363` realignment-drop heuristics remain deferred to `v1.1.1+`, long-read `--preset hifi|ont` profiles to `v2.0`, and parity-restoring fixes (`splice-tile-ownership`, `mate-window-ownership`, `raw-af-filter-token`, `csi-linear-loffset-spanning-sv`) ship as verified defaults.
 
 ---
 
-## 5. Supplementary Tables (`Supplementary Table S1` – `Supplementary Table S6`) and Complete 60-Cell Verification Ledger
+## 5. Supplementary Tables (`Supplementary Table S1` – `Supplementary Table S7`) and Complete 60-Cell Verification Ledger
 
 {{table:supp_table1}}
 
@@ -273,6 +310,10 @@ All default invocations (`--compat=vardictjava` / `--parity`) from the `v{{m:ver
 ---
 
 {{table:supp_table6}}
+
+---
+
+{{table:supp_table7}}
 
 ---
 
@@ -304,3 +345,4 @@ All default invocations (`--compat=vardictjava` / `--parity`) from the `v{{m:ver
 24. Narzisi G, Corvelo A, Arora K, Bergmann EA, Shah M, Musunuri R, et al. Genome-wide somatic variant calling using localized colored de Bruijn graphs. *Commun Biol.* 2018;1:20. doi:10.1038/s42003-018-0023-9.
 25. Hartwig Medical Foundation. SAGE somatic variant caller. HMFTools. https://github.com/hartwigmedical/hmftools/tree/master/sage.
 26. Danecek P, Bonfield JK, Liddle J, Marshall J, Ohan V, Pollard MO, et al. Twelve years of SAMtools and BCFtools. *GigaScience.* 2021;10(2):giab008. doi:10.1093/gigascience/giab008.
+27. Gong B, Kusko R, Jones W, Tong W, Xu J. Ultra-deep multi-oncopanel sequencing of benchmarking samples with a wide range of variant allele frequencies. *Sci Data.* 2022;9(1):288. doi:10.1038/s41597-022-01359-6.

@@ -2,8 +2,8 @@
 """Compile paper/manuscript.md and paper/supplement.md from macro-parameterized templates.
 
 Reads exclusively from git-tracked benchmarks/gcp-study-v106/ (master_gcp_metrics.json and
-cells_60_inventory.tsv) and paper/tables/*.md. Supports default build mode and --check
-idempotency/reproducibility verification mode.
+cells_60_inventory.tsv), benchmarks/v110-compat-study/v110_compat_metrics.json, and
+paper/tables/*.md. Supports default build mode and --check idempotency verification mode.
 """
 
 from __future__ import annotations
@@ -27,6 +27,9 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_METRICS = ROOT / "benchmarks" / "gcp-study-v106" / "master_gcp_metrics.json"
+DEFAULT_V110_METRICS = (
+    ROOT / "benchmarks" / "v110-compat-study" / "v110_compat_metrics.json"
+)
 DEFAULT_INVENTORY = ROOT / "benchmarks" / "gcp-study-v106" / "cells_60_inventory.tsv"
 DEFAULT_TABLES_DIR = ROOT / "paper" / "tables"
 DEFAULT_TMPL_DIR = ROOT / "paper" / "templates"
@@ -66,6 +69,11 @@ TABLE_ALIASES: dict[str, tuple[str, str]] = {
         "table8.md",
         "table8_supply_chain_and_divergences",
     ),
+    "table9": ("table9.md", "table9_v110_compat_and_presets"),
+    "table9_v110_compat_and_presets": (
+        "table9.md",
+        "table9_v110_compat_and_presets",
+    ),
     "supp_table1": ("supp_table1.md", "supp_table1_60cell_inventory"),
     "supp_table1_60cell_inventory": ("supp_table1.md", "supp_table1_60cell_inventory"),
     "supp_table2": ("supp_table2.md", "supp_table2_option_c_87arms"),
@@ -89,6 +97,11 @@ TABLE_ALIASES: dict[str, tuple[str, str]] = {
     "supp_table6_sv_and_amplicon_splice": (
         "supp_table6.md",
         "supp_table6_sv_and_amplicon_splice",
+    ),
+    "supp_table7": ("supp_table7.md", "supp_table7_compat_32switches_catalog"),
+    "supp_table7_compat_32switches_catalog": (
+        "supp_table7.md",
+        "supp_table7_compat_32switches_catalog",
     ),
 }
 
@@ -267,8 +280,223 @@ def fmt_cp_ci(k: int, n: int) -> str:
     return f"{lo:.2f}%–{hi:.2f}%"
 
 
-def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
-    """Construct complete flat macro dictionary derived from master_gcp_metrics.json."""
+def _build_v110_macros(v110_doc: dict[str, Any]) -> dict[str, str]:
+    """Derive deterministic v1.1.0 --compat=off and --preset macros from v110_compat_metrics.json."""
+    out: dict[str, str] = {}
+    v_meta = v110_doc["meta"]
+    arms = v110_doc["arms"]
+    a1 = arms["arm1_vcf_schema_and_bcftools_norm"]
+    a2 = arms["arm2_seqc2_diploid_vcfeval"]
+    a3 = arms["arm3_somatic_multiallelic_and_truth"]
+    a4 = arms["arm4_brca2_adaptor_chimera"]
+    a5 = arms["arm5_clinical_presets_and_amplicon"]
+    a6 = arms["arm6_csi_spanning_sv_and_pileup_tiling"]
+
+    out["v110_study_id"] = str(v_meta["study_id"])
+    out["v110_study_version"] = str(v_meta["study_version"])
+    out["v110_study_fingerprint"] = str(v_meta["study_fingerprint"])
+    out["v110_study_perf_fingerprint"] = str(v_meta["study_perf_fingerprint"])
+    out["v110_compat_switches"] = str(v_meta["compat_switch_count"])
+    out["v110_preset_count"] = str(v_meta["preset_count"])
+    out["v110_var2vcf_flags"] = str(v_meta["var2vcf_flag_count"])
+    out["v110_total_arms"] = str(v_meta["total_arms"])
+    out["v110_rtg_version"] = str(v_meta["rtg_version"])
+    out["v110_bcftools_version"] = str(v_meta["bcftools_version"])
+    out["v110_samtools_version"] = str(v_meta["samtools_version"])
+    out["v110_tabix_version"] = str(v_meta["tabix_version"])
+    out["v110_switch_catalog_total"] = str(len(v110_doc["switch_catalog"]))
+
+    # Domain 1: Strict VCFv4.2/v4.3 schema & bcftools norm --check-ref e
+    out["v110_arm1_callsets"] = str(a1["total_callsets"])
+    out["v110_arm1_bams"] = str(a1["distinct_bams"])
+    out["v110_arm1_records_vj"] = f"{int(a1['total_records_vj']):,}"
+    out["v110_arm1_records_off"] = f"{int(a1['total_records_off']):,}"
+    out["v110_arm1_defects_vj"] = f"{int(a1['total_defects_vj']):,}"
+    out["v110_arm1_defects_off"] = str(a1["total_defects_off"])
+    out["v110_arm1_def_end"] = f"{int(a1['vardictjava_defects']['nonsv_info_end']):,}"
+    out["v110_arm1_def_gt"] = f"{int(a1['vardictjava_defects']['noncanonical_gt']):,}"
+    out["v110_arm1_def_acct"] = str(
+        a1["vardictjava_defects"]["accounting_type_iupac_shift3"]
+    )
+    out["v110_arm1_def_sv"] = str(a1["vardictjava_defects"]["noncanonical_sv"])
+    out["v110_arm1_def_ad"] = str(a1["vardictjava_defects"]["ad_number_r_mismatch"])
+    out["v110_arm1_norm_vj"] = str(a1["bcftools_norm_check_ref_vj_passed"])
+    out["v110_arm1_norm_off"] = str(a1["bcftools_norm_check_ref_off_passed"])
+    out["v110_arm1_norm_tot"] = str(a1["bcftools_norm_check_ref_off_total"])
+
+    # Domain 2: Diploid SEQC2 HCC1395/HCC1395BL rtg vcfeval without --squash-ploidy
+    a2_vj = a2["vardictjava"]
+    a2_off = a2["compat_off"]
+    out["v110_arm2_contigs_count"] = str(len(a2["target_contigs"]))
+    out["v110_arm2_intervals"] = f"{int(a2['evaluated_intervals']):,}"
+    out["v110_arm2_bp"] = f"{int(a2['evaluated_bp']):,}"
+    out["v110_arm2_discovery_af"] = f"{float(a2['discovery_af']):.2f}"
+    out["v110_arm2_vcf_af"] = f"{float(a2['vcf_af']):.2f}"
+    out["v110_arm2_tvaf_thr"] = f"{float(a2['gt_proj_tvaf_threshold']):.2f}"
+    out["v110_arm2_truth_total"] = str(a2["truth_total"])
+    out["v110_arm2_subclonal_lt030"] = str(a2["subclonal_truth_lt_030"])
+    out["v110_arm2_retained_vj"] = str(a2_vj["retained_somatic_calls"])
+    out["v110_arm2_retained_off"] = str(a2_off["retained_somatic_calls"])
+    out["v110_arm2_gt00_vj"] = str(a2_vj["gt00_carrier_somatic"])
+    out["v110_arm2_gt00_off"] = str(a2_off["gt00_carrier_somatic"])
+    out["v110_arm2_vj_tp"] = str(a2_vj["tp_baseline"])
+    out["v110_arm2_vj_fp"] = str(a2_vj["fp"])
+    out["v110_arm2_vj_fn"] = str(a2_vj["fn"])
+    out["v110_arm2_vj_p"] = f"{float(a2_vj['precision']):.4f}"
+    out["v110_arm2_vj_r"] = f"{float(a2_vj['sensitivity']):.4f}"
+    out["v110_arm2_vj_f1"] = f"{float(a2_vj['f_measure']):.4f}"
+    out["v110_arm2_vj_best_qual"] = str(int(round(float(a2_vj["best_qual_threshold"]))))
+    out["v110_arm2_vj_best_tp"] = str(a2_vj["best_tp_baseline"])
+    out["v110_arm2_vj_best_fp"] = str(a2_vj["best_fp"])
+    out["v110_arm2_vj_best_fn"] = str(a2_vj["best_fn"])
+    out["v110_arm2_vj_best_p"] = f"{float(a2_vj['best_precision']):.4f}"
+    out["v110_arm2_vj_best_r"] = f"{float(a2_vj['best_sensitivity']):.4f}"
+    out["v110_arm2_vj_best_f1"] = f"{float(a2_vj['best_f_measure']):.4f}"
+    out["v110_arm2_off_tp"] = str(a2_off["tp_baseline"])
+    out["v110_arm2_off_fp"] = str(a2_off["fp"])
+    out["v110_arm2_off_fn"] = str(a2_off["fn"])
+    out["v110_arm2_off_p"] = f"{float(a2_off['precision']):.4f}"
+    out["v110_arm2_off_r"] = f"{float(a2_off['sensitivity']):.4f}"
+    out["v110_arm2_off_f1"] = f"{float(a2_off['f_measure']):.4f}"
+    out["v110_arm2_off_best_qual"] = str(
+        int(round(float(a2_off["best_qual_threshold"])))
+    )
+    out["v110_arm2_off_best_tp"] = str(a2_off["best_tp_baseline"])
+    out["v110_arm2_off_best_fp"] = str(a2_off["best_fp"])
+    out["v110_arm2_off_best_fn"] = str(a2_off["best_fn"])
+    out["v110_arm2_off_best_p"] = f"{float(a2_off['best_precision']):.4f}"
+    out["v110_arm2_off_best_r"] = f"{float(a2_off['best_sensitivity']):.4f}"
+    out["v110_arm2_off_best_f1"] = f"{float(a2_off['best_f_measure']):.4f}"
+    out["v110_arm2_tp_gain"] = str(a2["tp_baseline_gain"])
+    out["v110_arm2_r_gain_pct"] = f"{float(a2['sensitivity_gain']) * 100.0:.1f}%"
+    out["v110_arm2_f1_gain"] = f"{float(a2['f_measure_gain']):.4f}"
+    out["v110_arm2_best_tp_gain"] = str(a2["best_tp_baseline_gain"])
+    out["v110_arm2_best_r_gain_pct"] = (
+        f"{float(a2['best_sensitivity_gain']) * 100.0:.1f}%"
+    )
+    out["v110_arm2_best_f1_gain"] = f"{float(a2['best_f_measure_gain']):.4f}"
+
+    # Exact Clopper-Pearson 95% CIs ONLY over independent truth-set variant denominators (AR-11)
+    out["cp95_v110_seqc2_vj_r"] = fmt_cp_ci(
+        int(a2_vj["tp_baseline"]), int(a2["truth_total"])
+    )
+    out["cp95_v110_seqc2_off_r"] = fmt_cp_ci(
+        int(a2_off["tp_baseline"]), int(a2["truth_total"])
+    )
+    out["cp95_v110_seqc2_off_best_r"] = fmt_cp_ci(
+        int(a2_off["best_tp_baseline"]), int(a2["truth_total"])
+    )
+
+    # Domain 3: Multi-allelic somatic continuation, MUC19 paralog, & truth slices
+    out["v110_arm3_pairs"] = str(a3["distinct_bam_pairs"])
+    out["v110_arm3_runs"] = str(a3["total_runs"])
+    out["v110_arm3_vj_pairs"] = str(a3["vj_recovered_pairs"])
+    out["v110_arm3_off_pairs"] = str(a3["off_recovered_pairs"])
+    out["v110_arm3_vj_runs"] = str(a3["vj_recovered_runs"])
+    out["v110_arm3_off_runs"] = str(a3["off_recovered_runs"])
+    out["v110_arm3_vj_sec"] = str(a3["vj_secondary_alleles"])
+    out["v110_arm3_off_sec"] = str(a3["off_secondary_alleles"])
+    out["v110_arm3_muc19_vars"] = str(a3["muc19_variants"])
+    out["v110_arm3_muc19_viol"] = str(a3["muc19_vd_gt_dp_violations"])
+    out["v110_arm3_seqc2_ivs"] = f"{int(a3['seqc2_hc']['evaluated_intervals']):,}"
+    out["v110_arm3_seqc2_bp"] = f"{int(a3['seqc2_hc']['evaluated_bp']):,}"
+    out["v110_arm3_seqc2_tp"] = str(a3["seqc2_hc"]["compat_off"]["tp"])
+    out["v110_arm3_seqc2_truth"] = str(a3["seqc2_hc"]["compat_off"]["truth_total"])
+    out["v110_arm3_seqc2_f1"] = f"{float(a3['seqc2_hc']['compat_off']['f1']):.4f}"
+    out["v110_arm3_hg008_ivs"] = str(a3["hg008_v04"]["evaluated_intervals"])
+    out["v110_arm3_hg008_bp"] = f"{int(a3['hg008_v04']['evaluated_bp']):,}"
+    out["v110_arm3_hg008_tp"] = str(a3["hg008_v04"]["compat_off"]["tp"])
+    out["v110_arm3_hg008_truth"] = str(a3["hg008_v04"]["compat_off"]["truth_total"])
+    out["v110_arm3_hg008_vj_f1"] = (
+        f"{float(a3['hg008_v04']['vardictjava']['f1']):.4f}"
+    )
+    out["v110_arm3_hg008_off_f1"] = (
+        f"{float(a3['hg008_v04']['compat_off']['f1']):.4f}"
+    )
+
+    # Domain 4: BRCA2 soft-clip adapter chimera suppression
+    out["v110_arm4_chrom"] = str(a4["chimera_chrom"])
+    out["v110_arm4_pos_raw"] = str(a4["chimera_pos"])
+    out["v110_arm4_pos"] = f"{int(a4['chimera_pos']):,}"
+    out["v110_arm4_span_bp"] = str(a4["region_span_bp"])
+    out["v110_arm4_vj_ins"] = str(a4["vj_chimeric_insertions"])
+    out["v110_arm4_vj_ins_bp"] = str(a4["vj_chimeric_ins_bp"])
+    out["v110_arm4_off_ins"] = str(a4["off_chimeric_insertions"])
+    out["v110_arm4_off_recs"] = str(a4["off_total_records"])
+
+    # Domain 5: Clinical workflow presets & QIAseq V3 -sp
+    out["v110_arm5_wgs_hg002"] = str(a5["wgs_hg002_60kbp_records"])
+    out["v110_arm5_wgs_hg008"] = str(a5["wgs_hg008_paired_records"])
+    out["v110_arm5_wes_bp"] = f"{int(a5['wes_seqc2_evaluated_bp']):,}"
+    out["v110_arm5_wes_kbp"] = str(round(int(a5["wes_seqc2_evaluated_bp"]) / 1000))
+    out["v110_arm5_wes_recs"] = str(a5["wes_seqc2_264kbp_records"])
+    out["v110_arm5_amp_single"] = str(a5["amplicon_single_8col_records"])
+    out["v110_arm5_amp_paired"] = str(a5["paired_somatic_amplicon_off_records"])
+    out["v110_arm5_qia_recs"] = str(a5["qiaseq_spe_tumor_records"])
+    out["v110_arm5_qia_panel_nosp"] = str(a5["qiaseq_spe_no_sp_known_pos_tp"])
+    out["v110_arm5_qia_panel_sp"] = str(a5["qiaseq_spe_known_pos_tp"])
+    out["v110_arm5_qia_panel_tot"] = str(a5["qiaseq_spe_panel_known_pos_unmasked"])
+    out["v110_arm5_qia_panel_gain"] = str(
+        int(a5["qiaseq_spe_known_pos_tp"]) - int(a5["qiaseq_spe_no_sp_known_pos_tp"])
+    )
+    out["v110_arm5_qia_dp50_nosp"] = str(a5["qiaseq_spe_dp50_no_sp_known_pos_tp"])
+    out["v110_arm5_qia_dp50_sp"] = str(a5["qiaseq_spe_dp50_known_pos_tp"])
+    out["v110_arm5_qia_dp50_tot"] = str(a5["qiaseq_spe_known_pos_total"])
+    out["v110_arm5_qia_dp50_gain"] = str(
+        int(a5["qiaseq_spe_dp50_known_pos_tp"])
+        - int(a5["qiaseq_spe_dp50_no_sp_known_pos_tp"])
+    )
+    out["cp95_v110_qiaseq_dp50_nosp"] = fmt_cp_ci(
+        int(a5["qiaseq_spe_dp50_no_sp_known_pos_tp"]),
+        int(a5["qiaseq_spe_known_pos_total"]),
+    )
+    out["cp95_v110_qiaseq_dp50_sp"] = fmt_cp_ci(
+        int(a5["qiaseq_spe_dp50_known_pos_tp"]),
+        int(a5["qiaseq_spe_known_pos_total"]),
+    )
+    out["cp95_v110_qiaseq_kp"] = out["cp95_v110_qiaseq_dp50_sp"]
+    out["cp95_v110_qiaseq_panel_sp"] = fmt_cp_ci(
+        int(a5["qiaseq_spe_known_pos_tp"]),
+        int(a5["qiaseq_spe_panel_known_pos_unmasked"]),
+    )
+    out["v110_arm5_ac5_d100"] = str(a5["sample_ac5_ctdna_d100_filtered"])
+    out["v110_arm5_ctdna_freq"] = f"{float(a5['preset_ctdna_freq']):.3f}"
+    out["v110_arm5_ctdna_vcf_af"] = f"{float(a5['preset_ctdna_vcf_af']):.3f}"
+    out["v110_arm5_spike_vaf_pct"] = f"{float(a5['spikein_target_vaf_pct']):.1f}%"
+    out["v110_arm5_spike_disc_af"] = f"{float(a5['spikein_discovery_af']):.4f}"
+    out["v110_arm5_spike_chrom"] = str(a5["spikein_chrom"])
+    out["v110_arm5_spike_pos_raw"] = str(a5["spikein_pos"])
+    out["v110_arm5_spike_pos"] = f"{int(a5['spikein_pos']):,}"
+    out["v110_arm5_spike_dp"] = f"{int(a5['spikein_observed_dp']):,}"
+    out["v110_arm5_spike_vd"] = str(a5["spikein_observed_vd"])
+    out["v110_arm5_spike_af"] = f"{float(a5['spikein_observed_af']):.4f}"
+    out["v110_arm5_wt_copies"] = str(a5["admixture_wt_copies"])
+    out["v110_arm5_alt_reads"] = str(a5["admixture_alt_reads"])
+
+    # Domain 6: Multi-block --csi spanning-SV indexing & -p homopolymer tiling
+    out["v110_arm6_csi_bin_bp"] = f"{int(a6['csi_leaf_bin_bp']):,}"
+    out["v110_arm6_csi_bin_kbp"] = str(int(a6["csi_leaf_bin_bp"]) // 1024)
+    out["v110_arm6_max_sv_seq_bp"] = f"{int(a6['max_explicit_sv_seq_bp']):,}"
+    out["v110_arm6_colo_blocks"] = str(a6["colo829_bgzf_blocks"])
+    out["v110_arm6_span_blocks"] = str(a6["multi_block_bgzf_blocks"])
+    out["v110_arm6_hg008_blocks"] = str(a6["hg008_bgzf_blocks"])
+    out["v110_arm6_csi_pass"] = str(a6["interior_bin_queries_passed"])
+    out["v110_arm6_csi_tot"] = str(a6["interior_bin_queries_total"])
+    out["v110_arm6_pileup_eq_cases"] = str(a6["pileup_untiled_eq_tiled_cases"])
+    out["v110_arm6_pileup_ret"] = f"{int(a6['pileup_covered_bases_retained']):,}"
+    out["v110_arm6_pileup_tot"] = f"{int(a6['pileup_covered_bases_total']):,}"
+    out["v110_arm6_pileup_pct"] = (
+        f"{float(a6['pileup_covered_bases_retained_pct']):.1f}%"
+    )
+    out["v110_arm6_pos0_rows"] = str(a6["pos0_sentinel_rows"])
+
+    return out
+
+
+def build_macro_context(
+    doc: dict[str, Any], v110_doc: dict[str, Any] | None = None
+) -> dict[str, str]:
+    """Construct complete flat macro dictionary derived from master_gcp_metrics.json and v110_compat_metrics.json."""
     m: dict[str, str] = {}
     for k, v in doc.get("flat_macros", {}).items():
         if isinstance(v, float):
@@ -896,6 +1124,11 @@ def build_macro_context(doc: dict[str, Any]) -> dict[str, str]:
     # (keeps m["version"] == "1.0.6" and all 60-cell GCP study provenance untouched)
     m.update(_load_repo_release_and_engine_macros(ROOT))
 
+    if v110_doc is None and DEFAULT_V110_METRICS.is_file():
+        v110_doc = json.loads(DEFAULT_V110_METRICS.read_text(encoding="utf-8"))
+    if v110_doc is not None:
+        m.update(_build_v110_macros(v110_doc))
+
     return m
 
 
@@ -956,6 +1189,12 @@ def main() -> int:
         help="Path to master_gcp_metrics.json",
     )
     parser.add_argument(
+        "--v110-metrics",
+        type=Path,
+        default=DEFAULT_V110_METRICS,
+        help="Path to v110_compat_metrics.json",
+    )
+    parser.add_argument(
         "--inventory",
         type=Path,
         default=DEFAULT_INVENTORY,
@@ -995,6 +1234,11 @@ def main() -> int:
     if not args.metrics.is_file():
         print(f"ERROR: Missing metrics JSON: {args.metrics}", file=sys.stderr)
         return 1
+    if not args.v110_metrics.is_file():
+        print(
+            f"ERROR: Missing v1.1.0 metrics JSON: {args.v110_metrics}", file=sys.stderr
+        )
+        return 1
     if not args.inventory.is_file():
         print(f"ERROR: Missing inventory TSV: {args.inventory}", file=sys.stderr)
         return 1
@@ -1006,7 +1250,8 @@ def main() -> int:
         return 1
 
     doc = json.loads(args.metrics.read_text(encoding="utf-8"))
-    macros = build_macro_context(doc)
+    v110_doc = json.loads(args.v110_metrics.read_text(encoding="utf-8"))
+    macros = build_macro_context(doc, v110_doc)
 
     ms_compiled = compile_template(
         ms_tmpl_path.read_text(encoding="utf-8"),

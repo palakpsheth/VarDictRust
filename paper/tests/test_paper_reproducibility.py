@@ -45,6 +45,14 @@ FORBIDDEN_TEMPLATE_EMPIRICAL_STRINGS = {
     "760.96",
     "12,668",
     "54,448",
+    "11,612",
+    "13,148",
+    "13,152",
+    "455,937",
+    "0.6389",
+    "0.6429",
+    "0.5610",
+    "0.8780",
 }
 
 EXPECTED_FIGURE_IDS = [
@@ -56,6 +64,7 @@ EXPECTED_FIGURE_IDS = [
     "fig6_cross_platform_and_ga4gh",
     "fig7_nextgen_truth_v50q_cmrg_mosaic",
     "fig8_modern_callers_and_low_vaf",
+    "fig9_v110_compat_and_presets",
 ]
 
 EXPECTED_TABLE_IDS = [
@@ -67,6 +76,7 @@ EXPECTED_TABLE_IDS = [
     "table6_cross_platform_chr20",
     "table7_v50q_cmrg_mosaic_and_hg008_v04",
     "table8_supply_chain_and_divergences",
+    "table9_v110_compat_and_presets",
 ]
 
 EXPECTED_SUPP_TABLE_IDS = [
@@ -76,6 +86,7 @@ EXPECTED_SUPP_TABLE_IDS = [
     "supp_table4_qual_roc_and_noise_floor",
     "supp_table5_ga4gh_70cell_matrix",
     "supp_table6_sv_and_amplicon_splice",
+    "supp_table7_compat_32switches_catalog",
 ]
 
 
@@ -106,11 +117,11 @@ class TestPaperReproducibility(unittest.TestCase):
             cid = r["cell_id"]
             self.assertIn(cid, combined, f"Cell {cid} missing from manuscript+supplement")
 
-        # 3. All 8 Figures, 8 Main Tables, and 6 Supplementary Tables referenced
-        for i in range(1, 9):
+        # 3. All 9 Figures, 9 Main Tables, and 7 Supplementary Tables referenced
+        for i in range(1, 10):
             self.assertIn(f"Figure {i}", ms_text)
             self.assertIn(f"Table {i}", ms_text)
-        for i in range(1, 7):
+        for i in range(1, 8):
             self.assertIn(f"Table S{i}", combined)
 
         # 4. Required Genome Biology / Bioinformatics sections & disclosures present
@@ -118,14 +129,19 @@ class TestPaperReproducibility(unittest.TestCase):
             "### Background",
             "### Results",
             "### Conclusions",
-            "## Availability of data and materials",
+            "### Availability of data and materials",
+            "### AI-assisted development and transparency disclosure",
+            "Joachim Wolff",
+            "10.1038/s41597-022-01359-6",
             "--nosv",
         ):
             self.assertIn(req, ms_text, f"Missing required token/section in manuscript.md: {req}")
         for sup_req in (
             "5865a2a0b24a8c17",
             "c490c36317b8f25b",
+            "b18477ae0a7b07c1",
             "Liss_lab",
+            "10.1038/s41597-022-01359-6",
         ):
             self.assertIn(sup_req, sup_text, f"Missing required provenance token in supplement.md: {sup_req}")
 
@@ -174,16 +190,16 @@ class TestPaperReproducibility(unittest.TestCase):
                 f"Forbidden token {m.group(0) if m else ''!r} found in {doc_path.name}",
             )
 
-    def test_all_8_figures_and_14_tables_referenced(self) -> None:
+    def test_all_9_figures_and_16_tables_referenced(self) -> None:
         ms_text = MANUSCRIPT.read_text(encoding="utf-8")
         sup_text = SUPPLEMENT.read_text(encoding="utf-8")
         combined = ms_text + "\n" + sup_text
 
-        for i in range(1, 9):
+        for i in range(1, 10):
             self.assertIn(f"Figure {i}", ms_text)
             self.assertIn(f"figures/fig{i}.svg", ms_text)
             self.assertIn(f"Table {i}", ms_text)
-        for i in range(1, 7):
+        for i in range(1, 8):
             self.assertIn(f"Table S{i}", combined)
 
         for fid in EXPECTED_FIGURE_IDS:
@@ -192,6 +208,45 @@ class TestPaperReproducibility(unittest.TestCase):
             self.assertIn(tid, combined, f"Missing main table identifier {tid}")
         for stid in EXPECTED_SUPP_TABLE_IDS:
             self.assertIn(stid, combined, f"Missing supplementary table identifier {stid}")
+
+    def test_structured_abstract_word_count_and_key_points(self) -> None:
+        ms_text = MANUSCRIPT.read_text(encoding="utf-8")
+        m_abs = re.search(
+            r"^## Abstract\s*\n([\s\S]+?)\n\*\*Keywords:\*\*",
+            ms_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(m_abs, "Could not locate ## Abstract ... **Keywords:** block in manuscript.md")
+        assert m_abs is not None
+        abs_lines = [
+            ln.strip()
+            for ln in m_abs.group(1).splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        ]
+        abs_words = " ".join(abs_lines).split()
+        self.assertLessEqual(
+            len(abs_words),
+            350,
+            f"Structured Abstract exceeds 350-word Genome Biology limit: {len(abs_words)} words",
+        )
+        self.assertGreaterEqual(
+            len(abs_words),
+            200,
+            f"Structured Abstract unexpectedly short: {len(abs_words)} words",
+        )
+
+        m_kp = re.search(
+            r"^>\s*\*\*Key Points\*\*\s*\n((?:>.*\n)+)",
+            ms_text,
+            re.MULTILINE,
+        )
+        self.assertIsNotNone(m_kp, "Missing > **Key Points** callout box in manuscript.md")
+        assert m_kp is not None
+        kp_bullets = [
+            ln for ln in m_kp.group(1).splitlines() if re.match(r"^>\s*-\s+", ln)
+        ]
+        self.assertGreaterEqual(len(kp_bullets), 3, "Key Points box must contain >= 3 bullets")
+        self.assertLessEqual(len(kp_bullets), 5, f"Key Points box exceeds 5 bullets: {len(kp_bullets)}")
 
     def test_all_60_cells_referenced_across_manuscript_and_supplement(self) -> None:
         ms_text = MANUSCRIPT.read_text(encoding="utf-8")
@@ -222,6 +277,18 @@ class TestPaperReproducibility(unittest.TestCase):
             "Stage 4",
             "Stage 5",
             "Stage 6",
+            "s1_",
+            "s2_",
+            "s3_",
+            "s4_",
+            "s5_",
+            "s6_",
+            "arm1_",
+            "arm2_",
+            "arm3_",
+            "arm4_",
+            "arm5_",
+            "arm6_",
         ]
         for term in forbidden_jargon:
             self.assertNotIn(
@@ -255,6 +322,8 @@ class TestPaperReproducibility(unittest.TestCase):
             "github.com/rewrites-bio",
             "rewrites.bio) Initiative",
             "rewrites.bio) initiative",
+            "Lukas Wolff",
+            "10.1038/s41597-022-01359-2",
         ]
         for phrase in banned_ai_phrases:
             self.assertNotIn(
@@ -305,6 +374,17 @@ class TestPaperReproducibility(unittest.TestCase):
                 phrase,
                 sup_text,
                 f"Missing required provenance disclosure in supplement.md: {phrase!r}",
+            )
+
+        bare_issue_re = re.compile(r"(?<![A-Za-z0-9_/-])#\d+\b")
+        for tmpl_path in (MANUSCRIPT_TMPL, SUPPLEMENT_TMPL):
+            raw_txt = tmpl_path.read_text(encoding="utf-8")
+            no_fenced = re.sub(r"```[\s\S]*?```", "", raw_txt)
+            body_lines = [ln for ln in no_fenced.splitlines() if not ln.lstrip().startswith("#")]
+            m_bare = bare_issue_re.search("\n".join(body_lines))
+            self.assertIsNone(
+                m_bare,
+                f"Bare #N issue reference {m_bare.group(0) if m_bare else ''!r} found in {tmpl_path.name}; repo-qualify as owner/repo#N",
             )
 
     def test_build_manuscript_script_has_no_hardcoded_empirical_strings(self) -> None:

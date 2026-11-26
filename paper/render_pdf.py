@@ -155,7 +155,7 @@ def preprocess_markdown_for_html(md_text: str, base_dir: Path) -> str:
 
     text = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", _replace_image, text)
 
-    # 6. Sanitize raw '<' / '<=' / '>=' / '->' in Markdown table rows and ensure blank lines before lists
+    # 6. Sanitize raw '<' / '<=' / '>=' / '->' in Markdown table rows and prose/footnotes, and ensure blank lines before lists
     processed_lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -171,6 +171,14 @@ def preprocess_markdown_for_html(md_text: str, base_dir: Path) -> str:
                 line = re.sub(
                     r"<(?!(?:  |/?(?:span|sub|sup|i|code|strong|em|a)\b))", "&lt;", line
                 )
+        else:
+            # Escape raw '<' on non-table prose/footnote lines that is NOT a valid HTML tag we emitted or allowed
+            line = line.replace("<=", "&le;")
+            line = re.sub(
+                r"<(?!(?:figure\b|/figure>|img\b|div\b|/div>|span\b|/span>|sub\b|/sub>|sup\b|/sup>|i\b|/i>|a\s|/a>|br\b))",
+                "&lt;",
+                line,
+            )
         # Ensure blank line before list items (- ... or 1. ...) so Python-Markdown starts a list block
         if re.match(r"^\s*(?:-\s+|\d+\.\s+)", line):
             if processed_lines and processed_lines[-1].strip() != "":
@@ -452,10 +460,17 @@ blockquote ul {
 """
 
 
-def _build_print_css(cargo_toml_path: Path | None = None) -> str:
+def _build_print_css(
+    cargo_toml_path: Path | None = None, title: str = "VarDictRust Manuscript"
+) -> str:
     ver = _read_workspace_version(cargo_toml_path)
+    doc_kind = (
+        "Supplementary Material"
+        if "Supplement" in title
+        else "Empirical Validation & Architectural Manuscript"
+    )
     footer_left = (
-        f"VarDictRust v{ver} (v1.0.6 GCP Study) — Empirical Validation & Architectural Manuscript"
+        f"VarDictRust v{ver} (v1.0.6 Cloud & v1.1.0 Clinical Study) — {doc_kind}"
     )
     return _PRINT_CSS_TEMPLATE.replace("@@FOOTER_LEFT@@", footer_left)
 
@@ -516,7 +531,7 @@ def markdown_to_html_document(md_text: str, base_dir: Path, title: str) -> str:
         extensions=["tables", "fenced_code", "sane_lists"],
     )
     body_html = _postprocess_body_html(body_html)
-    print_css = _build_print_css()
+    print_css = _build_print_css(title=title)
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
@@ -579,11 +594,20 @@ def render_markdown_to_pdf(
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-crash-reporter",
+            "--no-first-run",
+            "--disable-extensions",
             "--no-pdf-header-footer",
             f"--print-to-pdf={tmp_pdf}",
             tmp_html.as_uri(),
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
         if not tmp_pdf.is_file() or tmp_pdf.stat().st_size == 0:
             raise RuntimeError(f"Chrome failed to produce PDF at {tmp_pdf}")
 
@@ -599,7 +623,12 @@ def render_markdown_to_pdf(
                 f"-sOutputFile={opt_pdf}",
                 str(tmp_pdf),
             ]
-            res = subprocess.run(gs_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            res = subprocess.run(
+                gs_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            )
             if res.returncode == 0 and opt_pdf.is_file() and opt_pdf.stat().st_size > 0:
                 shutil.copyfile(opt_pdf, pdf_path)
                 return

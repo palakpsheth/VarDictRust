@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Reproduce all VarDictRust v1.0.6 paper figures, tables, manuscript text, and LinkedIn carousel.
-# Default mode is 100% offline using git-tracked benchmarks/gcp-study-v106/.
-# Usage: bash paper/reproduce_all.sh [--sync-gcs] [--require-head-fingerprint]
+# Reproduce all VarDictRust v1.0.6 cloud & v1.1.0 clinical paper figures, tables, manuscript/supplement PDFs, and LinkedIn carousel.
+# Default mode is 100% offline using git-tracked benchmarks/gcp-study-v106/ and benchmarks/v110-compat-study/.
+# Usage: bash paper/reproduce_all.sh [--sync-gcs] [--run-v110-eval] [--require-head-fingerprint]
 #   --sync-gcs                  Re-pull raw cell outputs from gs://vardict-paper-trial-results/cells-v106/.
+#   --run-v110-eval             Re-execute all 6 deterministic v1.1.0 --compat=off & --preset domains locally.
 #   --require-head-fingerprint  Enforce live HEAD engine fingerprint parity in check_release_consistency.py
 #                               (also enabled automatically on release/* branches/PRs and refs/tags/v*).
 set -euo pipefail
@@ -14,11 +15,15 @@ export PATH="$HOME/.local/bin:$PATH"
 UV_BIN="${UV_BIN:-$(command -v uv 2>/dev/null || echo "$HOME/.local/bin/uv")}"
 
 SYNC_GCS=0
+RUN_V110_EVAL=0
 REQUIRE_HEAD_FP=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --sync-gcs)
       SYNC_GCS=1
+      ;;
+    --run-v110-eval)
+      RUN_V110_EVAL=1
       ;;
     --require-head-fingerprint)
       REQUIRE_HEAD_FP=1
@@ -84,7 +89,15 @@ else
   "$PY" paper/aggregate_gcp_study.py --verify
 fi
 
-echo "Regenerating 8 Main Figures, 8 Main Tables, and 6 Supplementary Tables..."
+if [[ "$RUN_V110_EVAL" -eq 1 ]]; then
+  echo "Collecting deterministic v1.1.0 --compat=off & --preset metrics..."
+  "$PY" paper/collect_v110_compat_metrics.py --run
+else
+  echo "Verifying committed v1.1.0 study bundle (benchmarks/v110-compat-study/)..."
+  "$PY" paper/collect_v110_compat_metrics.py --verify
+fi
+
+echo "Regenerating 9 Main Figures, 9 Main Tables, and 7 Supplementary Tables..."
 "$PY" paper/build_figures_and_tables.py --input benchmarks/gcp-study-v106/master_gcp_metrics.json
 "$PY" paper/build_figures_and_tables.py --verify
 
@@ -111,4 +124,4 @@ fi
 bash harness/gcp_paper_runner.sh --plan-check
 "$PY" harness/sync_evidence_docs.py --check
 
-echo "PASS: All 60 cells, 8 figures, 14 tables, manuscript, supplement, and 10 carousel slides reproduced."
+echo "PASS: All 60 cells + 6 v1.1.0 domains, 9 figures, 16 tables, manuscript, supplement, and 10 carousel slides reproduced."
