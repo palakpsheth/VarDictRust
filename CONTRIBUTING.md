@@ -407,8 +407,10 @@ Push `release/vX.Y.Z` and open a pull request to `main` via `gh pr create`, comp
    python3 .agents/skills/vardictrust-release/scripts/check_release_consistency.py --version X.Y.Z --phase post-nfcore
    ```
    Once the upstream `nf-core/modules` PR passes all CI checks (`conda`, `docker`, `singularity`, `nf-core lint`, `pre-commit`) and `copilot-pull-request-reviewer[bot]` review, **do NOT** mass-ping `@nf-core/maintainers` or request `"team_reviewers":["maintainers"]` on routine `nf-core/modules` version-bump PRs (per `@famosab` on `nf-core/modules#13830`). Instead: (1) apply the `"Ready for Review"` and `"update module"` labels (`gh api repos/nf-core/modules/issues/<nfcore-pr>/labels -X POST --input - <<< '{"labels":["Ready for Review","update module"]}'`), and (2) request review in the `nf-core` Slack `#request-review` channel (or request a specific prior module maintainer such as `@nvnieuwk` or `@SPPearce` individually only when appropriate, without `@nf-core/maintainers`), then enqueue into the merge queue once approved (`gh api graphql -f query='mutation($id: ID!) { enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { id state position } } }' -f id="$(gh api repos/nf-core/modules/pulls/<nfcore-pr> --jq '.node_id')"`).
-3. **Trigger ReadTheDocs Documentation Build:**
+3. **Sync ReadTheDocs Tags & Trigger `stable` + `latest` Documentation Builds:**
    ```bash
+   bash harness/trigger_rtd.sh sync vardictrust vX.Y.Z
+   bash harness/trigger_rtd.sh build vardictrust stable
    bash harness/trigger_rtd.sh build vardictrust latest
    bash harness/trigger_rtd.sh builds vardictrust
    ```

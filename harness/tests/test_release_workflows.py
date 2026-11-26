@@ -1516,6 +1516,125 @@ esac
                 or "packaging/nf-core/modules/vardictrust/" in e
             ]
             self.assertEqual(pkg_errs_clean, [], f"Expected 0 recipe license errors on pure MIT 1.1.0: {pkg_errs_clean}")
+        self._verify_trigger_rtd_sync_polls_stable_ref_and_validates_inputs()
+
+    def _verify_trigger_rtd_sync_polls_stable_ref_and_validates_inputs(self) -> None:
+        """Verify harness/trigger_rtd.sh sync [slug] [tag] polls /versions/stable/, handles 204, and rejects bad slugs."""
+        rtd_script = ROOT_DIR / "harness" / "trigger_rtd.sh"
+        self.assertTrue(rtd_script.is_file(), f"Missing {rtd_script}")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = pathlib.Path(tmpdir)
+            mock_bin = tmp_path / "bin"
+            mock_bin.mkdir()
+            state_file = tmp_path / "poll_count.txt"
+            state_file.write_text("0", encoding="utf-8")
+
+            mock_curl = mock_bin / "curl"
+            mock_curl.write_text(
+                f"#!{sys.executable}\n"
+                "import pathlib, sys\n"
+                "args = sys.argv[1:]\n"
+                "auth = sys.stdin.read()\n"
+                "if 'Authorization: Token test-rtd-tok' not in auth:\n"
+                "    sys.exit(22)\n"
+                "url = args[-1]\n"
+                "mode = pathlib.Path(r'" + str(tmp_path / "mode.txt") + "').read_text().strip()\n"
+                "cnt_p = pathlib.Path(r'" + str(state_file) + "')\n"
+                "if url.endswith('/sync-versions/'):\n"
+                "    if mode == '204':\n"
+                "        sys.stdout.write('\\nHTTP_STATUS:204')\n"
+                "    elif mode == '500':\n"
+                "        sys.stdout.write('{\"detail\":\"boom\"}\\nHTTP_STATUS:500')\n"
+                "    else:\n"
+                "        sys.stdout.write('{\"triggered\":true}\\nHTTP_STATUS:202')\n"
+                "elif url.endswith('/versions/stable/'):\n"
+                "    n = int(cnt_p.read_text()) + 1\n"
+                "    cnt_p.write_text(str(n))\n"
+                "    ref = 'v1.0.10' if n < 2 else 'v1.1.0'\n"
+                "    sys.stdout.write('{\"ref\":\"' + ref + '\"}\\nHTTP_STATUS:200')\n"
+                "elif url.endswith('/versions/stable/builds/'):\n"
+                "    sys.stdout.write('{\"triggered\":true}\\nHTTP_STATUS:202')\n"
+                "else:\n"
+                "    sys.stdout.write('{\"ok\":true}\\nHTTP_STATUS:200')\n",
+                encoding="utf-8",
+            )
+            mock_curl.chmod(0o755)
+
+            env = dict(os.environ)
+            env["PATH"] = f"{mock_bin}:{env.get('PATH', '')}"
+            env["RTD_TOKEN"] = "test-rtd-tok"
+            env["RTD_SYNC_POLL_SECS"] = "0"
+            env["RTD_SYNC_MAX_ATTEMPTS"] = "4"
+
+            # 1) sync with target tag polls /versions/stable/ until ref == v1.1.0
+            (tmp_path / "mode.txt").write_text("202", encoding="utf-8")
+            r_sync = subprocess.run(
+                ["bash", str(rtd_script), "sync", "vardictrust", "v1.1.0"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(r_sync.returncode, 0, f"sync v1.1.0 failed:\n{r_sync.stderr}\n{r_sync.stdout}")
+            self.assertGreaterEqual(int(state_file.read_text(encoding="utf-8")), 2, "sync must poll /versions/stable/ until ref matches v1.1.0")
+
+            # 2) sync without target tag handles empty-body HTTP 204 cleanly
+            (tmp_path / "mode.txt").write_text("204", encoding="utf-8")
+            r_204 = subprocess.run(
+                ["bash", str(rtd_script), "sync", "vardictrust"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(r_204.returncode, 0, f"sync 204 failed:\n{r_204.stderr}\n{r_204.stdout}")
+
+            # 3) build stable succeeds and HTTP 500 or '..' slug fails loudly
+            r_build = subprocess.run(
+                ["bash", str(rtd_script), "build", "vardictrust", "stable"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(r_build.returncode, 0)
+
+            (tmp_path / "mode.txt").write_text("500", encoding="utf-8")
+            r_500 = subprocess.run(
+                ["bash", str(rtd_script), "sync", "vardictrust"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(r_500.returncode, 0)
+
+            r_bad_slug = subprocess.run(
+                ["bash", str(rtd_script), "status", ".."],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(r_bad_slug.returncode, 0)
+
+            # 4) sync fails loudly if stable never converges to requested tag within max attempts
+            (tmp_path / "mode.txt").write_text("202", encoding="utf-8")
+            r_timeout = subprocess.run(
+                ["bash", str(rtd_script), "sync", "vardictrust", "v9.9.9"],
+                cwd=str(ROOT_DIR),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(r_timeout.returncode, 0)
 
 
 if __name__ == "__main__":

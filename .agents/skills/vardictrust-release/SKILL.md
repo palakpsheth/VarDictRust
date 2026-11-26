@@ -26,7 +26,7 @@ VarDictRust ships across **four binary/package channels** plus **ReadTheDocs**:
 | **Phase 2 (`post-tag`)** | Annotated tag `vX.Y.Z` on `main` | `--phase post-tag` | Push `vX.Y.Z` tag $\to$ `.github/workflows/release.yml` publishes GitHub Release + SLSA provenance + Crates.io (`vardictrust-core`, `vardictrust`). |
 | **Phase 3A (`post-bioconda`)** | Post-GitHub tarball `vX.Y.Z.tar.gz` | `--phase post-bioconda` | Run `bash packaging/bioconda/prepare_bioconda_pr.sh X.Y.Z` + `bash harness/test_bioconda_recipe.sh`, sync `meta.yaml` to `VarDictRust` `main` (`chore/bioconda-vX.Y.Z`), open PR on `bioconda/bioconda-recipes`. |
 | **Phase 3B (`post-nfcore`)** | Post-Anaconda `linux-64` + `linux-aarch64` upload | `--phase post-nfcore` | Once `api.anaconda.org/package/bioconda/vardictrust` lists both `linux-64` and `linux-aarch64` tarballs for `X.Y.Z`, run `bash packaging/nf-core/prepare_nfcore_pr.sh X.Y.Z`, sync `packaging/nf-core/`, and push to `nf-core/modules`. |
-| **Phase 3C (`docs` & portals)** | Post-merge on `main` | `--phase post-nfcore` | Trigger `bash harness/trigger_rtd.sh build vardictrust latest` and verify ReadTheDocs project metadata + ELIXIR `bio.tools` (`biotools:vardictrust`). |
+| **Phase 3C (`docs` & portals)** | Post-merge on `main` | `--phase post-nfcore` | Sync tags and trigger `stable` + `latest` ReadTheDocs builds (`bash harness/trigger_rtd.sh sync vardictrust vX.Y.Z && bash harness/trigger_rtd.sh build vardictrust stable && bash harness/trigger_rtd.sh build vardictrust latest`), and verify ReadTheDocs project metadata + ELIXIR `bio.tools` (`biotools:vardictrust`). |
 
 ---
 
@@ -114,8 +114,8 @@ gh api repos/nf-core/modules/issues/<nfcore-pr>/labels -X POST --input - <<< '{"
 PR_NODE_ID="$(gh api repos/nf-core/modules/pulls/<nfcore-pr> --jq '.node_id')"
 gh api graphql -f query='mutation($id: ID!) { enqueuePullRequest(input: {pullRequestId: $id}) { mergeQueueEntry { id state position } } }' -f id="$PR_NODE_ID"
 
-# Sync ReadTheDocs tags and trigger stable + latest builds, then sync external registry metadata:
-bash harness/trigger_rtd.sh sync vardictrust
+# Sync ReadTheDocs tags (waiting until stable points at vX.Y.Z) and trigger stable + latest builds:
+bash harness/trigger_rtd.sh sync vardictrust vX.Y.Z
 bash harness/trigger_rtd.sh build vardictrust stable
 bash harness/trigger_rtd.sh build vardictrust latest
 # Verify ReadTheDocs admin project metadata (description & project_url) at https://app.readthedocs.org/projects/vardictrust/

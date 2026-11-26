@@ -3,7 +3,7 @@
 #
 # Usage:
 #   bash harness/trigger_rtd.sh status [project_slug]
-#   bash harness/trigger_rtd.sh sync [project_slug]
+#   bash harness/trigger_rtd.sh sync [project_slug] [expected_stable_ref]
 #   bash harness/trigger_rtd.sh build [project_slug] [branch]
 #   bash harness/trigger_rtd.sh builds [project_slug]
 
@@ -12,6 +12,7 @@ set -euo pipefail
 CMD="${1:-status}"
 PROJECT_SLUG="${2:-vardictrust}"
 VERSION="${3:-latest}"
+SYNC_REF="${3:-}"
 
 if [[ "$PROJECT_SLUG" == "." || "$PROJECT_SLUG" == ".." || ! "$PROJECT_SLUG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
     echo "ERROR: Invalid ReadTheDocs project slug '${PROJECT_SLUG}' (allowed: [a-zA-Z0-9._-]+, excluding '.' and '..')." >&2
@@ -67,6 +68,38 @@ case "$CMD" in
             echo "Version sync returned HTTP Status: ${STATUS_CODE}" >&2
             echo "$BODY" | python3 -m json.tool || echo "$BODY"
             exit 1
+        fi
+        if [ -n "$SYNC_REF" ]; then
+            MAX_ATTEMPTS="${RTD_SYNC_MAX_ATTEMPTS:-15}"
+            POLL_SECS="${RTD_SYNC_POLL_SECS:-2}"
+            if [[ ! "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || [[ ! "$POLL_SECS" =~ ^[0-9]+$ ]]; then
+                echo "ERROR: Invalid RTD_SYNC_MAX_ATTEMPTS='${MAX_ATTEMPTS}' or RTD_SYNC_POLL_SECS='${POLL_SECS}'." >&2
+                exit 1
+            fi
+            attempt=1
+            CUR_REF=""
+            while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+                POLL_RESP="$(curl --proto '=https' --tlsv1.2 -s -w "\nHTTP_STATUS:%{http_code}" \
+                    -H @- <<< "Authorization: Token ${RTD_TOKEN}" \
+                    "${BASE_URL}/versions/stable/")"
+                POLL_CODE="$(echo "$POLL_RESP" | grep 'HTTP_STATUS:' | cut -d':' -f2)"
+                POLL_BODY="$(echo "$POLL_RESP" | grep -v 'HTTP_STATUS:')"
+                if [ "$POLL_CODE" -eq 200 ]; then
+                    CUR_REF="$(python3 -c 'import json, sys; d = json.load(sys.stdin); print(d.get("ref") or d.get("identifier") or "")' <<<"$POLL_BODY")"
+                    if [ "$CUR_REF" = "$SYNC_REF" ]; then
+                        echo "Verified ReadTheDocs 'stable' converged to '${SYNC_REF}' (attempt ${attempt}/${MAX_ATTEMPTS})."
+                        break
+                    fi
+                fi
+                if [ "$attempt" -eq "$MAX_ATTEMPTS" ]; then
+                    echo "ERROR: ReadTheDocs 'stable' did not converge to '${SYNC_REF}' after ${MAX_ATTEMPTS} attempts (last ref='${CUR_REF}', HTTP ${POLL_CODE})." >&2
+                    exit 1
+                fi
+                if [ "$POLL_SECS" -gt 0 ]; then
+                    sleep "$POLL_SECS"
+                fi
+                attempt=$((attempt + 1))
+            done
         fi
         ;;
     build)
