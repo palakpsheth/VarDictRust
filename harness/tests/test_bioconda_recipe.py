@@ -762,10 +762,54 @@ class TestBiocondaRecipe(unittest.TestCase):
             )
             txt111 = tmp_meta.read_text(encoding="utf-8")
             self.assertIn('{% set version = "1.1.1" %}', txt111)
+            self.assertIn("  number: 0\n", txt111)
             self.assertIn("  license: MIT\n", txt111)
             self.assertNotIn("GPL", txt111)
 
-            # 4) Reject malformed --offline-sha256 and malformed SemVer
+            # 3b) Explicit --build-number <N> overrides build.number cleanly without hand-editing
+            r111_b1 = subprocess.run(
+                [
+                    "bash",
+                    str(prep_script),
+                    "1.1.1",
+                    "--offline-sha256",
+                    "c3" * 32,
+                    "--build-number",
+                    "1",
+                    "--meta-yaml",
+                    str(tmp_meta),
+                ],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                r111_b1.returncode,
+                0,
+                f"prepare_bioconda_pr.sh --build-number 1 failed:\n{r111_b1.stderr}\n{r111_b1.stdout}",
+            )
+            self.assertIn("  number: 1\n", tmp_meta.read_text(encoding="utf-8"))
+
+            # 4) Reject malformed --offline-sha256, malformed SemVer, and malformed --build-number
+            bad_bnum = subprocess.run(
+                [
+                    "bash",
+                    str(prep_script),
+                    "1.1.0",
+                    "--offline-sha256",
+                    sha_110,
+                    "--build-number",
+                    "abc",
+                    "--meta-yaml",
+                    str(tmp_meta),
+                ],
+                cwd=str(ROOT_DIR),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(bad_bnum.returncode, 0)
             bad_sha = subprocess.run(
                 ["bash", str(prep_script), "1.1.0", "--offline-sha256", "not-a-sha", "--meta-yaml", str(tmp_meta)],
                 cwd=str(ROOT_DIR),
