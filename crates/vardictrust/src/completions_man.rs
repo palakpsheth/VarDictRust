@@ -151,6 +151,7 @@ fn write_bash_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Res
                 | "output"
                 | "stats_json"
                 | "compat"
+                | "preset"
                 | "validation_stringency"
                 | "debug_print"
         ) {
@@ -204,6 +205,13 @@ fn write_bash_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Res
     writeln!(
         out,
         "            COMPREPLY=( $(compgen -W \"vardictjava vardictjava-1.8.3 1.8.3 off\" -- \"${{cur}}\") )"
+    )?;
+    writeln!(out, "            return 0")?;
+    writeln!(out, "            ;;")?;
+    writeln!(out, "        --preset)")?;
+    writeln!(
+        out,
+        "            COMPREPLY=( $(compgen -W \"wgs wes amplicon ctdna\" -- \"${{cur}}\") )"
     )?;
     writeln!(out, "            return 0")?;
     writeln!(out, "            ;;")?;
@@ -274,6 +282,7 @@ fn zsh_value_spec(arg: &clap::Arg) -> String {
         "completions" => "(bash zsh fish)",
         "reference" | "bam" | "output" | "stats_json" => "_files",
         "compat" => "(vardictjava vardictjava-1.8.3 1.8.3 off)",
+        "preset" => "(wgs wes amplicon ctdna)",
         "validation_stringency" => "(SILENT LENIENT)",
         "debug_print" => "(OUT ERR)",
         _ => " ",
@@ -393,6 +402,7 @@ fn write_fish_completions<W: Write>(cmd: &clap::Command, out: &mut W) -> io::Res
         match arg.get_id().as_str() {
             "completions" => line.push_str(" -f -a 'bash zsh fish'"),
             "compat" => line.push_str(" -f -a 'vardictjava vardictjava-1.8.3 1.8.3 off'"),
+            "preset" => line.push_str(" -f -a 'wgs wes amplicon ctdna'"),
             "validation_stringency" => line.push_str(" -f -a 'SILENT LENIENT'"),
             "debug_print" => line.push_str(" -f -a 'OUT ERR'"),
             "reference" | "bam" | "output" | "stats_json" => line.push_str(" -F"),

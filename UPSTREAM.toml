@@ -93,7 +93,7 @@ vardictcpp_cli_aliases = [
 packaging_lineage = [
     "https://github.com/bioconda/bioconda-recipes/pull/67584",
     "https://github.com/bioconda/bioconda-recipes/pull/68008",
-    "https://github.com/bioconda/bioconda-recipes/pull/71636",
+    "https://github.com/bioconda/bioconda-recipes/pull/71875",
     "https://github.com/bioconda/bioconda-recipes/pull/71981",
     "https://github.com/MHH-Bioinformatics-Hematology/galaxytools/pull/12",
     "https://github.com/nf-core/modules/pull/13830",

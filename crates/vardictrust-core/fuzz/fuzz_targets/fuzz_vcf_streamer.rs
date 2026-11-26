@@ -483,7 +483,13 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
     );
 }
 
-fn assert_vcf_header(kind: &str, hdr_bytes: &[u8], expected_chrom_cols: usize, compat_off: bool) {
+fn assert_vcf_header(
+    kind: &str,
+    hdr_bytes: &[u8],
+    expected_chrom_cols: usize,
+    compat_off: bool,
+    preset: Option<vardictrust_core::config::WorkflowPreset>,
+) {
     let hdr_str = std::str::from_utf8(hdr_bytes).expect("VCF header must be valid UTF-8");
     assert!(
         !hdr_str
@@ -530,10 +536,31 @@ fn assert_vcf_header(kind: &str, hdr_bytes: &[u8], expected_chrom_cols: usize, c
             "{kind} must emit ##VarDictRustCompat=off once when compat=off"
         );
         assert_eq!(lines.get(2), Some(&"##VarDictRustCompat=off"));
+        if let Some(p) = preset {
+            let expected_preset_line = format!("##VarDictRustPreset={p}");
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|&&l| l == expected_preset_line.as_str())
+                    .count(),
+                1,
+                "{kind} must emit {expected_preset_line} once when preset={p}"
+            );
+            assert_eq!(lines.get(3), Some(&expected_preset_line.as_str()));
+        } else {
+            assert!(
+                !lines.iter().any(|l| l.starts_with("##VarDictRustPreset=")),
+                "{kind} must not emit ##VarDictRustPreset= when preset is None"
+            );
+        }
     } else {
         assert!(
             !lines.iter().any(|l| l.starts_with("##VarDictRustCompat")),
             "{kind} must not emit ##VarDictRustCompat under default compat"
+        );
+        assert!(
+            !lines.iter().any(|l| l.starts_with("##VarDictRustPreset=")),
+            "{kind} must not emit ##VarDictRustPreset= under default compat"
         );
     }
 }
@@ -692,6 +719,48 @@ fuzz_target!(|data: &[u8]| {
     let enable_unimodal_once = (mode_bits & 0x3f) == 0x3f;
     let unimodal_target_row = usize::from(cur.u8()) % num_rows;
 
+    let fuzz_compat = {
+        let mut compat = if cur.bool() {
+            vardictrust_core::config::COMPAT_OFF
+        } else {
+            vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3
+        };
+        let w3_bits = cur.u8();
+        if (w3_bits & 1) != 0 {
+            compat.reconcile_vd_dp = (w3_bits & 2) != 0;
+            compat.coordinate_sorted_vars = (w3_bits & 4) != 0;
+            compat.exact_35_overlap = (w3_bits & 8) != 0;
+            compat.exact_cigar_dlen_match = (w3_bits & 16) != 0;
+        }
+        let w4_bits = cur.u8();
+        if (w4_bits & 1) != 0 {
+            compat.somatic_continue_after_bad_var = (w4_bits & 2) != 0;
+            compat.adaptor_all_consensus_dirs = (w4_bits & 4) != 0;
+            compat.canonical_sv_vcf_anchoring = (w4_bits & 8) != 0;
+            compat.paired_somatic_amplicon = (w4_bits & 16) != 0;
+        }
+        let w5_bits = cur.u8();
+        if (w5_bits & 1) != 0 {
+            compat.nonnegative_subtracted_means = (w5_bits & 2) != 0;
+            compat.strict_vcf_ad_number_r = (w5_bits & 4) != 0;
+            compat.omit_nonsv_vcf_end = (w5_bits & 8) != 0;
+            compat.canonical_vcf_gt = (w5_bits & 16) != 0;
+        }
+        compat
+    };
+    let fuzz_preset = if fuzz_compat.target == vardictrust_core::config::CompatTarget::Off {
+        use vardictrust_core::config::WorkflowPreset;
+        match cur.u8() % 5 {
+            0 => None,
+            1 => Some(WorkflowPreset::Wgs),
+            2 => Some(WorkflowPreset::Wes),
+            3 => Some(WorkflowPreset::Amplicon),
+            _ => Some(WorkflowPreset::Ctdna),
+        }
+    } else {
+        None
+    };
+
     let config = Config {
         fisher: (mode_bits & 2) != 0,
         vcf_pass_only: (mode_bits & 4) != 0,
@@ -751,35 +820,8 @@ fuzz_target!(|data: &[u8]| {
         vcf_max_nm: cur.opt_float_threshold(12.0),
         vcf_msi: cur.opt_float_threshold(20.0),
         vcf_cluster_dist: cur.opt_int_threshold(50),
-        compat: {
-            let mut compat = if cur.bool() {
-                vardictrust_core::config::COMPAT_OFF
-            } else {
-                vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3
-            };
-            let w3_bits = cur.u8();
-            if (w3_bits & 1) != 0 {
-                compat.reconcile_vd_dp = (w3_bits & 2) != 0;
-                compat.coordinate_sorted_vars = (w3_bits & 4) != 0;
-                compat.exact_35_overlap = (w3_bits & 8) != 0;
-                compat.exact_cigar_dlen_match = (w3_bits & 16) != 0;
-            }
-            let w4_bits = cur.u8();
-            if (w4_bits & 1) != 0 {
-                compat.somatic_continue_after_bad_var = (w4_bits & 2) != 0;
-                compat.adaptor_all_consensus_dirs = (w4_bits & 4) != 0;
-                compat.canonical_sv_vcf_anchoring = (w4_bits & 8) != 0;
-                compat.paired_somatic_amplicon = (w4_bits & 16) != 0;
-            }
-            let w5_bits = cur.u8();
-            if (w5_bits & 1) != 0 {
-                compat.nonnegative_subtracted_means = (w5_bits & 2) != 0;
-                compat.strict_vcf_ad_number_r = (w5_bits & 4) != 0;
-                compat.omit_nonsv_vcf_end = (w5_bits & 8) != 0;
-                compat.canonical_vcf_gt = (w5_bits & 16) != 0;
-            }
-            compat
-        },
+        compat: fuzz_compat,
+        preset: fuzz_preset,
         vcf_all_alleles: cur.bool(),
         ..Default::default()
     };
@@ -1160,7 +1202,13 @@ fuzz_target!(|data: &[u8]| {
     if vardictrust_core::output::vcf::print_vcf_header(&mut hdr_buf, &hdr_cfg, &fuzz_chrom_lengths)
         .is_ok()
     {
-        assert_vcf_header("single_vcf_header", &hdr_buf, 10, compat_off);
+        assert_vcf_header(
+            "single_vcf_header",
+            &hdr_buf,
+            10,
+            compat_off,
+            hdr_cfg.preset,
+        );
     }
     hdr_buf.clear();
     if vardictrust_core::output::vcf::print_paired_vcf_header(
@@ -1170,7 +1218,13 @@ fuzz_target!(|data: &[u8]| {
     )
     .is_ok()
     {
-        assert_vcf_header("paired_vcf_header", &hdr_buf, 11, compat_off);
+        assert_vcf_header(
+            "paired_vcf_header",
+            &hdr_buf,
+            11,
+            compat_off,
+            hdr_cfg.preset,
+        );
     }
 
     // 6. Wave-3 `CompatProfile` (`reconcile_vd_dp` & `coordinate_sorted_vars`) end-to-end

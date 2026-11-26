@@ -4779,9 +4779,30 @@ fn resolve_effective_config(
     let has_region = effective.region.is_some();
     let mut preloaded_bed_lines: Option<Vec<String>> = None;
 
+    if effective.preset.is_some() && effective.compat.target != crate::config::CompatTarget::Off {
+        return Err(VardictError::Parse(
+            "Conflicting configuration: --preset requires --compat=off and cannot be combined with --parity or --compat=vardictjava"
+                .to_string(),
+        ));
+    }
+    if effective.preset == Some(crate::config::WorkflowPreset::Amplicon) && has_region {
+        return Err(VardictError::Parse(
+            "--preset amplicon requires an 8-column amplicon BED file and cannot be combined with -R / --region"
+                .to_string(),
+        ));
+    }
+    if effective.preset == Some(crate::config::WorkflowPreset::Amplicon) && effective.splice {
+        return Err(VardictError::Parse(
+            "--preset amplicon cannot be combined with -i / --splice".to_string(),
+        ));
+    }
+    if has_region && effective.preset.is_some() && !effective.zero_based_defined {
+        effective.zero_based = false;
+    }
+
     if has_region {
         effective.amplicon = None;
-    } else if effective.amplicon.is_none() {
+    } else if effective.amplicon.is_none() && effective.preset.is_none() {
         if let Some(ref bed_path) = effective.bed {
             let is_amplicon = if is_regular_seekable_bed(bed_path) {
                 crate::regions::detect_amplicon_bed(bed_path, &effective.delimiter)?

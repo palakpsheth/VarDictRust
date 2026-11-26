@@ -1122,7 +1122,11 @@ fn finalize_single_region(
     start = start.saturating_sub(config.extension);
     let end = end.saturating_add(config.extension);
 
-    let active_zero_based = config.zero_based;
+    let active_zero_based = if config.preset.is_some() && !config.zero_based_defined {
+        false
+    } else {
+        config.zero_based
+    };
     if active_zero_based && start < end {
         start = start.saturating_add(1);
     }

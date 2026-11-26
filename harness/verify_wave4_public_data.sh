@@ -14,7 +14,7 @@
 #   MHH-Bioinformatics-Hematology/vardictcpp#4 (a689e43877),
 #   MHH-Bioinformatics-Hematology/vardictcpp#1 (4f7e242e0a),
 #   bioconda/bioconda-recipes#68008, bioconda/bioconda-recipes#71981,
-#   bioconda/bioconda-recipes#71636, nf-core/modules#13830,
+#   bioconda/bioconda-recipes#71875, nf-core/modules#13830,
 #   AstraZeneca-NGS/VarDictJava#65, AstraZeneca-NGS/VarDict#155,
 #   palakpsheth/VarDictRust#94, palakpsheth/VarDictRust#92,
 #   palakpsheth/VarDictRust#156.

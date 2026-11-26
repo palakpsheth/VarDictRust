@@ -1,6 +1,7 @@
 //! CLI argument parser - drop-in compatible with VarDictJava v1.8.3 and
-//! `var2vcf_*.pl` flags, dual-mode `--compat=vardictjava|off` profiles, and
-//! native BGZF/Tabix/CSI streaming options.
+//! `var2vcf_*.pl` flags, dual-mode `--compat=vardictjava|off` profiles,
+//! `--preset` clinical workflow presets (`92` CLI options), and native
+//! BGZF/Tabix/CSI streaming options.
 //!
 //! ports Main.java / CmdParser.java / var2vcf_valid.pl / var2vcf_paired.pl
 
@@ -62,6 +63,7 @@ const GNU_ONLY_LONG_FLAGS_SINGLE_DASH: &[&str] = &[
     "-stats-json",
     "-parity",
     "-compat",
+    "-preset",
     "-completions",
     "-manpage",
     "-reference",
@@ -210,13 +212,13 @@ fn classify_short_cluster(arg: &str) -> (Option<char>, bool) {
 }
 
 /// Returns `true` when `arg` is an option token (without `=`) that consumes `args[i + 1]`
-/// as its mandatory argument (`--compat` and `--completions` only consume non-hyphen tokens
-/// so missing-value typos like `--compat -G` do not swallow the next flag).
+/// as its mandatory argument (`--compat`, `--completions`, and `--preset` only consume non-hyphen
+/// tokens so missing-value typos like `--preset -G` do not swallow the next flag).
 fn takes_mandatory_next_token(arg: &str, next: Option<&str>) -> bool {
     if arg.contains('=') {
         return false;
     }
-    if matches!(arg, "--compat" | "--completions") {
+    if matches!(arg, "--compat" | "--completions" | "--preset") {
         return next.is_some_and(|n| !n.starts_with('-'));
     }
     if matches!(
@@ -948,6 +950,15 @@ pub struct Cli {
     )]
     pub compat: Vec<String>,
 
+    /// Clinical workflow preset ('wgs', 'wes', 'amplicon', or 'ctdna'): enables --compat=off (stamping ##VarDictRustCompat=off and ##VarDictRustPreset=<PRESET>), 0-based BED coordinates, and modality-calibrated candidate/VCF FILTER defaults (explicit CLI flags override preset defaults).
+    #[arg(
+        long = "preset",
+        value_name = "PRESET",
+        num_args = 1,
+        help_heading = "Core Inputs & Outputs"
+    )]
+    pub preset: Vec<String>,
+
     /// Emit the intermediate .var table instead of VCF.
     #[arg(long = "emit-intermediate", help_heading = "Core Inputs & Outputs")]
     pub emit_intermediate: bool,
@@ -1638,6 +1649,20 @@ impl Cli {
         rayon_env: Option<&str>,
     ) -> Result<vardictrust_core::config::Config, vardictrust_core::types::VardictError> {
         let _ = (&self.completions, self.manpage);
+        let mut resolved_preset: Option<vardictrust_core::config::WorkflowPreset> = None;
+        for raw_preset in &self.preset {
+            let parsed = vardictrust_core::config::parse_workflow_preset(raw_preset)?;
+            if let Some(prev) = resolved_preset {
+                if prev != parsed {
+                    return Err(vardictrust_core::types::VardictError::Parse(format!(
+                        "Conflicting --preset values: cannot combine '{prev}' and '{parsed}'"
+                    )));
+                }
+            } else {
+                resolved_preset = Some(parsed);
+            }
+        }
+
         let mut saw_vardictjava = false;
         let mut saw_off = false;
         for raw_target in &self.compat {
@@ -1653,7 +1678,7 @@ impl Cli {
                 "Conflicting --compat targets: cannot combine 'vardictjava' and 'off'".to_string(),
             ));
         }
-        let compat_target = if saw_off {
+        let mut compat_target = if saw_off {
             vardictrust_core::config::CompatTarget::Off
         } else {
             vardictrust_core::config::CompatTarget::VardictJava183
@@ -1663,6 +1688,20 @@ impl Cli {
                 "Conflicting flags: --parity cannot be combined with --compat off".to_string(),
             ));
         }
+        if resolved_preset.is_some() {
+            if saw_vardictjava || self.parity {
+                return Err(vardictrust_core::types::VardictError::Parse(
+                    "Conflicting flags: --preset cannot be combined with --parity or --compat=vardictjava"
+                        .to_string(),
+                ));
+            }
+            compat_target = vardictrust_core::config::CompatTarget::Off;
+        }
+
+        let base = resolved_preset.map_or_else(
+            vardictrust_core::config::Config::default,
+            vardictrust_core::config::Config::from_preset,
+        );
 
         if let Some(raw) = self.validation_stringency.first() {
             if raw.eq_ignore_ascii_case("SILENT") || raw.eq_ignore_ascii_case("LENIENT") {
@@ -1744,7 +1783,12 @@ impl Cli {
                 let af_thr = if parsed == 0.0 { 0.0 } else { parsed };
                 (parsed, af_thr, truthy_zero, af_raw)
             } else {
-                (0.01, 0.01, false, None)
+                (
+                    base.freq,
+                    base.af_threshold,
+                    base.af_threshold_truthy_zero,
+                    base.af_threshold_raw,
+                )
             };
 
         let sample_regexp = match self.sample_regexp.first() {
@@ -1755,6 +1799,19 @@ impl Cli {
         };
         let bam_str = self.bam.first().cloned().unwrap_or_default();
         let region_opt = self.region.first().cloned();
+        if resolved_preset == Some(vardictrust_core::config::WorkflowPreset::Amplicon) {
+            if region_opt.is_some() {
+                return Err(vardictrust_core::types::VardictError::Parse(
+                    "--preset amplicon requires an 8-column amplicon BED file and cannot be combined with -R / --region"
+                        .to_string(),
+                ));
+            }
+            if self.splice {
+                return Err(vardictrust_core::types::VardictError::Parse(
+                    "--preset amplicon cannot be combined with -i / --splice".to_string(),
+                ));
+            }
+        }
         let explicit_sample = self.sample.first().map(String::as_str);
         let sample_explicit = explicit_sample.is_some();
         let sample = vardictrust_core::config::resolve_sample_names(
@@ -1788,14 +1845,74 @@ impl Cli {
             }
         }
 
-        let amplicon = self.amplicon.first().map(|raw| {
-            if let Some((d_str, o_str)) = raw.split_once(':') {
-                if d_str.parse::<i32>().is_ok() && o_str.parse::<f64>().is_ok() {
-                    return raw.clone();
+        let resolved_col_chr = col_chr.map(|c| c.saturating_sub(1)).unwrap_or(base.col_chr);
+        let resolved_col_start = col_start
+            .map(|s| s.saturating_sub(1))
+            .unwrap_or(base.col_start);
+        let resolved_col_end = col_end.map(|e| e.saturating_sub(1)).unwrap_or(base.col_end);
+        let resolved_col_seg_start = col_seg_start
+            .map(|s| s.saturating_sub(1))
+            .or_else(|| col_start.map(|s| s.saturating_sub(1)))
+            .unwrap_or(base.col_seg_start);
+        let resolved_col_seg_end = col_seg_end
+            .map(|e| e.saturating_sub(1))
+            .or_else(|| col_end.map(|e| e.saturating_sub(1)))
+            .unwrap_or(base.col_seg_end);
+        let any_custom_coord_col = col_chr.is_some()
+            || col_start.is_some()
+            || col_end.is_some()
+            || col_seg_start.is_some()
+            || col_seg_end.is_some();
+        let resolved_col_gene = match col_gene {
+            Some(g) => {
+                if g > 0 {
+                    Some(g.saturating_sub(1))
+                } else {
+                    None
                 }
             }
-            "10:0.95".to_string()
-        });
+            None => {
+                if matches!(
+                    resolved_preset,
+                    Some(
+                        vardictrust_core::config::WorkflowPreset::Wgs
+                            | vardictrust_core::config::WorkflowPreset::Wes
+                            | vardictrust_core::config::WorkflowPreset::Ctdna
+                    )
+                ) && any_custom_coord_col
+                    && [
+                        resolved_col_chr,
+                        resolved_col_start,
+                        resolved_col_end,
+                        resolved_col_seg_start,
+                        resolved_col_seg_end,
+                    ]
+                    .contains(&3)
+                {
+                    Some(12)
+                } else {
+                    base.col_gene
+                }
+            }
+        };
+        let resolved_column_for_chromosome = col_chr
+            .map(|c| c.saturating_sub(1))
+            .or(base.column_for_chromosome);
+
+        let amplicon = if let Some(raw) = self.amplicon.first() {
+            let parsed = if let Some((d_str, o_str)) = raw.split_once(':') {
+                if d_str.parse::<i32>().is_ok() && o_str.parse::<f64>().is_ok() {
+                    raw.clone()
+                } else {
+                    "10:0.95".to_string()
+                }
+            } else {
+                "10:0.95".to_string()
+            };
+            Some(parsed)
+        } else {
+            base.amplicon
+        };
         if self.amplicon_single_primer
             && (region_opt.is_some() || (amplicon.is_none() && self.bed.is_none()))
         {
@@ -1805,14 +1922,22 @@ impl Cli {
             ));
         }
 
+        let (zero_based, zero_based_defined) = if !self.zero_based.is_empty() {
+            (self.zero_based.first().is_some_and(|&v| v == 1), true)
+        } else if region_opt.is_some() {
+            (false, false)
+        } else {
+            (base.zero_based, base.zero_based_defined)
+        };
+
         let (vcf_pval, vcf_pval_raw) = match self.vcf_pval.first() {
             Some((val, raw)) => (*val, Some(raw.clone())),
-            None => (0.05, None),
+            None => (base.vcf_pval, base.vcf_pval_raw),
         };
 
         let mut cfg = vardictrust_core::config::Config {
-            exception_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            reference: self.reference.first().cloned().unwrap_or_default(),
+            exception_counter: base.exception_counter,
+            reference: self.reference.first().cloned().unwrap_or(base.reference),
             bam: bam_str,
             freq: parsed_freq,
             // The writer's $Freq is the literal -f value even under -p (perl
@@ -1824,32 +1949,14 @@ impl Cli {
             sample_explicit,
             region: region_opt,
             bed: self.bed.clone(),
-            delimiter: self
-                .delimiter
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "\t".to_string()),
-            col_chr: col_chr.map(|c| c.saturating_sub(1)).unwrap_or(2),
-            col_start: col_start.map(|s| s.saturating_sub(1)).unwrap_or(6),
-            col_end: col_end.map(|e| e.saturating_sub(1)).unwrap_or(7),
-            col_seg_start: col_seg_start
-                .map(|s| s.saturating_sub(1))
-                .or_else(|| col_start.map(|s| s.saturating_sub(1)))
-                .unwrap_or(9),
-            col_seg_end: col_seg_end
-                .map(|e| e.saturating_sub(1))
-                .or_else(|| col_end.map(|e| e.saturating_sub(1)))
-                .unwrap_or(10),
-            col_gene: col_gene
-                .map(|g| {
-                    if g > 0 {
-                        Some(g.saturating_sub(1))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(Some(12)),
-            column_for_chromosome: col_chr.map(|c| c.saturating_sub(1)),
+            delimiter: self.delimiter.first().cloned().unwrap_or(base.delimiter),
+            col_chr: resolved_col_chr,
+            col_start: resolved_col_start,
+            col_end: resolved_col_end,
+            col_seg_start: resolved_col_seg_start,
+            col_seg_end: resolved_col_seg_end,
+            col_gene: resolved_col_gene,
+            column_for_chromosome: resolved_column_for_chromosome,
             // Java: bare -th → availableProcessors (CmdParser.java:621-623),
             // -th N (incl. explicit 0) → max(N,1) (:162). Absent flag consults
             // valid RAYON_NUM_THREADS (>= 1) when provided, else all-cores.
@@ -1861,96 +1968,160 @@ impl Cli {
                 Some(n) if n == usize::MAX => all_cores(),
                 Some(n) => n.max(1),
             },
-            realign: match self.realign.first().copied().unwrap_or(1) {
-                1 => 1,
-                _ => 0,
+            realign: match self.realign.first().copied() {
+                Some(1) => 1,
+                Some(_) => 0,
+                None => base.realign,
             },
-            min_reads: self.min_reads.first().copied().unwrap_or(2),
-            base_qual: self.base_qual.first().copied().unwrap_or(22.5),
-            map_qual: self.map_qual.first().copied(),
-            read_pos: self.read_pos.first().copied().unwrap_or(5) as f64,
-            max_mismatches: self.max_mismatches.first().copied().unwrap_or(8),
-            minmatch: self.minmatch.first().copied().unwrap_or(0),
-            lofreq: self.min_normal_af.first().copied().unwrap_or(0.05),
-            no_sv: self.no_sv,
-            sv_min_len: self.sv_min_len.first().copied().unwrap_or(1000),
-            emit_intermediate: self.emit_intermediate,
-            fisher: self.fisher,
-            tile_size,
+            min_reads: self.min_reads.first().copied().unwrap_or(base.min_reads),
+            base_qual: self.base_qual.first().copied().unwrap_or(base.base_qual),
+            map_qual: self.map_qual.first().copied().or(base.map_qual),
+            read_pos: self
+                .read_pos
+                .first()
+                .map_or(base.read_pos, |&v| f64::from(v)),
+            max_mismatches: self
+                .max_mismatches
+                .first()
+                .copied()
+                .unwrap_or(base.max_mismatches),
+            minmatch: self.minmatch.first().copied().unwrap_or(base.minmatch),
+            lofreq: self.min_normal_af.first().copied().unwrap_or(base.lofreq),
+            no_sv: self.no_sv || base.no_sv,
+            sv_min_len: self.sv_min_len.first().copied().unwrap_or(base.sv_min_len),
+            emit_intermediate: self.emit_intermediate || base.emit_intermediate,
+            fisher: self.fisher || base.fisher,
+            tile_size: tile_size.or(base.tile_size),
             amplicon,
-            amplicon_single_primer: self.amplicon_single_primer,
-            extension: self.extension.first().copied().unwrap_or(0),
-            extension_nuc: self.extension_nuc.first().copied().unwrap_or(2),
-            three_prime: self.three_prime,
-            min_reads_bias: self.min_reads_bias.first().copied().unwrap_or(2),
-            qratio: self.qratio.first().copied().unwrap_or(1.5),
-            out_mapq: self.out_mapq.first().copied().unwrap_or(0.0),
-            indel_size: self.indel_size.first().copied().unwrap_or(50),
-            zero_based: self.zero_based.first().is_some_and(|&v| v == 1),
-            zero_based_defined: !self.zero_based.is_empty(),
+            amplicon_single_primer: self.amplicon_single_primer || base.amplicon_single_primer,
+            extension: self.extension.first().copied().unwrap_or(base.extension),
+            extension_nuc: self
+                .extension_nuc
+                .first()
+                .copied()
+                .unwrap_or(base.extension_nuc),
+            three_prime: self.three_prime || base.three_prime,
+            min_reads_bias: self
+                .min_reads_bias
+                .first()
+                .copied()
+                .unwrap_or(base.min_reads_bias),
+            qratio: self.qratio.first().copied().unwrap_or(base.qratio),
+            out_mapq: self.out_mapq.first().copied().unwrap_or(base.out_mapq),
+            indel_size: self.indel_size.first().copied().unwrap_or(base.indel_size),
+            zero_based,
+            zero_based_defined,
             flag_filter,
             samfilter_raw: flag_filter_raw.to_string(),
-            sv_read_len: self.sv_read_len.first().copied().unwrap_or(300),
-            sv_flanking: self.sv_flanking.first().copied().unwrap_or(100),
-            sv_min_af: self.sv_min_af.first().copied().unwrap_or(4),
-            max_region_len: self.max_region_len.first().copied().unwrap_or(1200),
-            mfreq: self.mfreq.first().copied().unwrap_or(0.25),
-            nmfreq: self.nmfreq.first().copied().unwrap_or(0.1),
-            chimeric: self.chimeric,
-            deldupvar: self.deldupvar,
-            splice: self.splice,
-            pileup: self.pileup,
-            debug: self.debug,
+            sv_read_len: self
+                .sv_read_len
+                .first()
+                .copied()
+                .unwrap_or(base.sv_read_len),
+            sv_flanking: self
+                .sv_flanking
+                .first()
+                .copied()
+                .unwrap_or(base.sv_flanking),
+            sv_min_af: self.sv_min_af.first().copied().unwrap_or(base.sv_min_af),
+            max_region_len: self
+                .max_region_len
+                .first()
+                .copied()
+                .unwrap_or(base.max_region_len),
+            mfreq: self.mfreq.first().copied().unwrap_or(base.mfreq),
+            nmfreq: self.nmfreq.first().copied().unwrap_or(base.nmfreq),
+            chimeric: self.chimeric || base.chimeric,
+            deldupvar: self.deldupvar || base.deldupvar,
+            splice: self.splice || base.splice,
+            pileup: self.pileup || base.pileup,
+            debug: self.debug || base.debug,
             // ports CmdParser.java:171-176: bare -DP → "OUT"; unknown
             // values silently fall back to "OUT" (only ERR is honored).
-            debug_print: self.debug_print.first().map(|v| {
-                if v == "ERR" {
-                    v.clone()
-                } else {
-                    "OUT".to_string()
-                }
-            }),
-            crispr_cutting_site: self.crispr_cutting_site.first().copied(),
-            crispr_flanking_size: self.crispr_flanking_size.first().copied(),
-            column_header: self.column_header,
-            dedup: self.dedup,
+            debug_print: self
+                .debug_print
+                .first()
+                .map(|v| {
+                    if v == "ERR" {
+                        v.clone()
+                    } else {
+                        "OUT".to_string()
+                    }
+                })
+                .or(base.debug_print),
+            crispr_cutting_site: self
+                .crispr_cutting_site
+                .first()
+                .copied()
+                .or(base.crispr_cutting_site),
+            crispr_flanking_size: self
+                .crispr_flanking_size
+                .first()
+                .copied()
+                .or(base.crispr_flanking_size),
+            column_header: self.column_header || base.column_header,
+            dedup: self.dedup || base.dedup,
             adaptor: self
                 .adaptor
                 .first()
                 .map(|s| s.split(',').map(|x| x.to_string()).collect())
-                .unwrap_or_default(),
-            verbose: self.verbose,
-            unique_mode_alignment_enabled: self.unique_mode_alignment_enabled,
-            unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled,
+                .unwrap_or(base.adaptor),
+            verbose: self.verbose || base.verbose,
+            unique_mode_alignment_enabled: self.unique_mode_alignment_enabled
+                || base.unique_mode_alignment_enabled,
+            unique_mode_second_in_pair_enabled: self.unique_mode_second_in_pair_enabled
+                || base.unique_mode_second_in_pair_enabled,
             omit_end_tag: self.no_end || !self.col_end.is_empty(),
-            vcf_no_end_explicit: self.no_end,
-            include_n: self.include_n,
-            output_path: self.output.first().cloned(),
-            index_output: self.tbi,
-            stats_json_path: self.stats_json.first().cloned(),
-            trim_bases_after: self.trim_bases_after.first().copied().unwrap_or(0),
+            vcf_no_end_explicit: self.no_end || base.vcf_no_end_explicit,
+            include_n: self.include_n || base.include_n,
+            output_path: self.output.first().cloned().or(base.output_path),
+            index_output: self.tbi || base.index_output,
+            stats_json_path: self.stats_json.first().cloned().or(base.stats_json_path),
+            trim_bases_after: self
+                .trim_bases_after
+                .first()
+                .copied()
+                .unwrap_or(base.trim_bases_after),
             sample_regexp,
-            index_csi: self.index_csi,
-            vcf_pass_only: self.pass_only,
-            vcf_paired_strict: self.paired_strict,
+            index_csi: self.index_csi || base.index_csi,
+            vcf_pass_only: self.pass_only || base.vcf_pass_only,
+            vcf_paired_strict: self.paired_strict || base.vcf_paired_strict,
             vcf_pval,
             vcf_pval_raw,
-            vcf_min_splitreads: self.min_splitreads.first().copied().unwrap_or(1),
-            vcf_min_splitreads_explicit: !self.min_splitreads.is_empty(),
-            vcf_pstd_filter: !self.no_pstd_filter,
-            vcf_af: self.vcf_af.first().cloned(),
-            vcf_min_depth: self.vcf_min_depth.first().cloned(),
-            vcf_min_vd: self.vcf_min_vd.first().cloned(),
-            vcf_qmean: self.vcf_qmean.first().cloned(),
-            vcf_mapq: self.vcf_mapq.first().cloned(),
-            vcf_pmean: self.vcf_pmean.first().cloned(),
-            vcf_sn: self.vcf_sn.first().cloned(),
-            vcf_max_nm: self.vcf_max_nm.first().cloned(),
-            vcf_gt_freq: self.vcf_gt_freq.first().copied(),
-            vcf_msi: self.vcf_msi.first().cloned(),
-            vcf_cluster_dist: self.vcf_cluster_dist.first().cloned(),
+            vcf_min_splitreads: self
+                .min_splitreads
+                .first()
+                .copied()
+                .unwrap_or(base.vcf_min_splitreads),
+            vcf_min_splitreads_explicit: !self.min_splitreads.is_empty()
+                || base.vcf_min_splitreads_explicit,
+            vcf_pstd_filter: if self.no_pstd_filter {
+                false
+            } else {
+                base.vcf_pstd_filter
+            },
+            vcf_af: self.vcf_af.first().cloned().or(if self.freq.is_empty() {
+                base.vcf_af
+            } else {
+                None
+            }),
+            vcf_min_depth: self.vcf_min_depth.first().cloned().or(base.vcf_min_depth),
+            vcf_min_vd: self.vcf_min_vd.first().cloned().or(base.vcf_min_vd),
+            vcf_qmean: self.vcf_qmean.first().cloned().or(base.vcf_qmean),
+            vcf_mapq: self.vcf_mapq.first().cloned().or(base.vcf_mapq),
+            vcf_pmean: self.vcf_pmean.first().cloned().or(base.vcf_pmean),
+            vcf_sn: self.vcf_sn.first().cloned().or(base.vcf_sn),
+            vcf_max_nm: self.vcf_max_nm.first().cloned().or(base.vcf_max_nm),
+            vcf_gt_freq: self.vcf_gt_freq.first().copied().or(base.vcf_gt_freq),
+            vcf_msi: self.vcf_msi.first().cloned().or(base.vcf_msi),
+            vcf_cluster_dist: self
+                .vcf_cluster_dist
+                .first()
+                .cloned()
+                .or(base.vcf_cluster_dist),
             compat: compat_target.profile(),
-            vcf_all_alleles: self.vcf_all_alleles,
+            preset: resolved_preset,
+            vcf_all_alleles: self.vcf_all_alleles || base.vcf_all_alleles,
         };
         cfg.apply_pileup_overrides();
         cfg.validate_vcf_thresholds()?;
@@ -2161,7 +2332,7 @@ mod tests {
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
 
         let mut cmd = Cli::command();
-        assert_eq!(cmd.get_arguments().count(), 91);
+        assert_eq!(cmd.get_arguments().count(), 92);
         let short_about = cmd
             .get_about()
             .expect("Cli::command() must define short about")
@@ -4476,7 +4647,7 @@ mod tests {
         use clap::CommandFactory;
         use vardictrust_core::config::{COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
 
-        assert_eq!(Cli::command().get_arguments().count(), 91);
+        assert_eq!(Cli::command().get_arguments().count(), 92);
 
         let parse_cfg = |raw_flags: &[&str]| -> vardictrust_core::config::Config {
             let norm = normalize_args(&args(raw_flags));
@@ -4694,9 +4865,9 @@ mod tests {
             "8-col amplicon BED must auto-satisfy -sp without -a, got: {run_err_8}"
         );
 
-        // 3. Hidden vardictcpp v2..v4 aliases (--vcfall, --noend, --vcfpass, --vcf) keeping count == 91
+        // 3. Hidden vardictcpp v2..v4 aliases (--vcfall, --noend, --vcfpass, --vcf) keeping count == 92
         let mut cmd = Cli::command();
-        assert_eq!(cmd.get_arguments().count(), 91);
+        assert_eq!(cmd.get_arguments().count(), 92);
         let short_help = cmd.render_help().to_string();
         let long_help = cmd.render_long_help().to_string();
         for hidden_alias in ["--vcfall", "--noend", "--vcfpass"] {
@@ -4923,5 +5094,315 @@ mod tests {
                 "unexpected error for -f {non_finite}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn workflow_preset_cli_precedence_and_completions_contract() {
+        use vardictrust_core::config::{VcfThreshold, WorkflowPreset, COMPAT_OFF};
+        use vardictrust_core::types::VardictError;
+
+        let parse_res =
+            |raw_flags: &[&str]| -> Result<vardictrust_core::config::Config, VardictError> {
+                let norm = normalize_args(&args(raw_flags));
+                check_unsupported(&norm)?;
+                let cli =
+                    Cli::try_parse_from(&norm).map_err(|e| VardictError::Parse(e.to_string()))?;
+                cli.to_config()
+            };
+
+        // 1. All 4 presets + case-insensitivity + idempotent duplicates + --compat=off
+        let wgs = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wgs",
+            "--preset=WGS",
+            "--compat=off",
+            "targets.bed",
+        ])
+        .unwrap();
+        assert_eq!(wgs.preset, Some(WorkflowPreset::Wgs));
+        assert_eq!(wgs.compat, COMPAT_OFF);
+        assert!(wgs.zero_based);
+        assert!(!wgs.zero_based_defined);
+        assert_eq!(wgs.column_for_chromosome, Some(0));
+        assert_eq!(wgs.col_gene, Some(3));
+        assert!(!wgs.omit_end_tag);
+        assert_eq!(wgs.vcf_af, Some(VcfThreshold::new(0.05)));
+
+        let wes =
+            parse_res(&["-G", "r.fa", "-b", "a.bam", "--preset", "WES", "exome.bed"]).unwrap();
+        assert_eq!(wes.preset, Some(WorkflowPreset::Wes));
+        assert!((wes.freq - 0.01).abs() < f64::EPSILON);
+        assert_eq!(wes.vcf_af, Some(VcfThreshold::new(0.02)));
+        assert_eq!(wes.vcf_min_depth, Some(VcfThreshold::new(20)));
+        assert_eq!(wes.vcf_min_vd, Some(VcfThreshold::new(4)));
+
+        // --preset amplicon with -sp (no explicit -a needed!)
+        let amp_sp = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "amplicon",
+            "-sp",
+            "panel8.bed",
+        ])
+        .unwrap();
+        assert_eq!(amp_sp.preset, Some(WorkflowPreset::Amplicon));
+        assert_eq!(amp_sp.amplicon.as_deref(), Some("10:0.95"));
+        assert!(amp_sp.amplicon_single_primer);
+        assert_eq!(amp_sp.column_for_chromosome, None);
+
+        let ctdna =
+            parse_res(&["-G", "r.fa", "-b", "a.bam", "--preset=ctDNA", "cfdna.bed"]).unwrap();
+        assert_eq!(ctdna.preset, Some(WorkflowPreset::Ctdna));
+        assert!((ctdna.freq - 0.001).abs() < f64::EPSILON);
+        assert_eq!(ctdna.min_reads, 3);
+        assert_eq!(ctdna.vcf_af, Some(VcfThreshold::new(0.002)));
+        assert_eq!(ctdna.vcf_min_depth, Some(VcfThreshold::new(100)));
+        assert_eq!(ctdna.vcf_qmean, Some(VcfThreshold::new(25.0)));
+
+        // 2. Explicit -f clears preset vcf_af unless --vcf-af is also explicitly passed (AR-10)
+        let wgs_f = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wgs",
+            "-f",
+            "0.01",
+            "targets.bed",
+        ])
+        .unwrap();
+        assert!((wgs_f.freq - 0.01).abs() < f64::EPSILON);
+        assert!((wgs_f.af_threshold - 0.01).abs() < f64::EPSILON);
+        assert_eq!(wgs_f.af_threshold_raw.as_deref(), Some("0.01"));
+        assert_eq!(wgs_f.vcf_af, None);
+
+        let wgs_f_vcfaf = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wgs",
+            "-f",
+            "0.01",
+            "--vcf-af",
+            "0.03",
+            "targets.bed",
+        ])
+        .unwrap();
+        assert_eq!(
+            wgs_f_vcfaf.vcf_af,
+            Some(VcfThreshold::with_raw(0.03, "0.03".to_string()))
+        );
+
+        // 3. Pileup -p overrides freq=-1.0 & min_reads=0 after preset defaults
+        let wgs_p = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wgs",
+            "-p",
+            "targets.bed",
+        ])
+        .unwrap();
+        assert_eq!(wgs_p.freq, -1.0);
+        assert_eq!(wgs_p.min_reads, 0);
+        assert!((wgs_p.af_threshold - 0.05).abs() < f64::EPSILON);
+
+        // 4. Custom BED column collision fallback on col_gene (AR-20) + -R / -z interaction
+        let custom_cols = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wgs",
+            "-c",
+            "2",
+            "-S",
+            "3",
+            "-E",
+            "4",
+            "custom.tsv",
+        ])
+        .unwrap();
+        assert_eq!(
+            (
+                custom_cols.col_chr,
+                custom_cols.col_start,
+                custom_cols.col_end,
+                custom_cols.col_gene
+            ),
+            (1, 2, 3, Some(12))
+        );
+        assert!(custom_cols.omit_end_tag);
+
+        let wgs_reg_1b = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wgs",
+            "-R",
+            "chr1:100-200",
+        ])
+        .unwrap();
+        assert!(!wgs_reg_1b.zero_based);
+        assert!(!wgs_reg_1b.zero_based_defined);
+
+        let wgs_reg_0b = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wgs",
+            "-R",
+            "chr1:100-200",
+            "-z",
+        ])
+        .unwrap();
+        assert!(wgs_reg_0b.zero_based);
+        assert!(wgs_reg_0b.zero_based_defined);
+
+        // 5. Rejections: -preset, --preset -G, hifi/ont, --parity, --compat=vardictjava, conflicting presets, amplicon + -R / -i
+        let single_dash_err =
+            parse_res(&["-G", "r.fa", "-b", "a.bam", "-preset", "wgs"]).unwrap_err();
+        assert!(single_dash_err
+            .to_string()
+            .contains("did you mean '--preset'?"));
+        let sample_named_preset = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "-N",
+            "-preset",
+        ])
+        .unwrap();
+        assert_eq!(sample_named_preset.sample, "-preset");
+
+        let missing_val_err =
+            parse_res(&["--preset", "-G", "r.fa", "-b", "a.bam", "-R", "chr1:1-10"]).unwrap_err();
+        assert!(matches!(missing_val_err, VardictError::Parse(_)));
+
+        let hifi_err = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-R",
+            "chr1:1-10",
+            "--preset",
+            "hifi",
+        ])
+        .unwrap_err();
+        assert!(matches!(hifi_err, VardictError::Unsupported(_)));
+
+        for bad_combo in [
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--preset",
+                "wgs",
+                "--parity",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--preset",
+                "wgs",
+                "--compat=vardictjava",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--preset",
+                "wgs",
+                "--preset",
+                "wes",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "-R",
+                "chr1:1-10",
+                "--preset",
+                "amplicon",
+            ][..],
+            &[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "--preset",
+                "amplicon",
+                "-i",
+                "panel8.bed",
+            ][..],
+        ] {
+            let err = parse_res(bad_combo).expect_err(&format!("expected Err on {bad_combo:?}"));
+            assert!(matches!(err, VardictError::Parse(_)), "got {err:?}");
+        }
+
+        // 6. Completions & manpage include --preset and wgs wes amplicon ctdna
+        let mut bash_buf = Vec::new();
+        completions_man::write_completions(CompletionShell::Bash, &mut bash_buf).unwrap();
+        let bash_txt = String::from_utf8(bash_buf).unwrap();
+        assert!(
+            bash_txt.contains("--preset)") && bash_txt.contains("\"wgs wes amplicon ctdna\""),
+            "bash completions missing --preset arm:\n{bash_txt}"
+        );
+
+        let mut zsh_buf = Vec::new();
+        completions_man::write_completions(CompletionShell::Zsh, &mut zsh_buf).unwrap();
+        let zsh_txt = String::from_utf8(zsh_buf).unwrap();
+        assert!(
+            zsh_txt.contains("--preset[") && zsh_txt.contains(":PRESET:(wgs wes amplicon ctdna)"),
+            "zsh completions missing --preset spec:\n{zsh_txt}"
+        );
+
+        let mut fish_buf = Vec::new();
+        completions_man::write_completions(CompletionShell::Fish, &mut fish_buf).unwrap();
+        let fish_txt = String::from_utf8(fish_buf).unwrap();
+        assert!(
+            fish_txt.contains("-l preset -r -f -a 'wgs wes amplicon ctdna'"),
+            "fish completions missing --preset spec:\n{fish_txt}"
+        );
+
+        let mut man_buf = Vec::new();
+        completions_man::write_manpage(&mut man_buf).unwrap();
+        let man_txt = String::from_utf8(man_buf).unwrap();
+        assert!(
+            man_txt.contains("\\-\\-preset <PRESET>"),
+            "manpage missing --preset synopsis:\n{man_txt}"
+        );
     }
 }

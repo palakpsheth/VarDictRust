@@ -250,6 +250,70 @@ pub fn parse_compat_target(raw: &str) -> Result<CompatTarget, crate::types::Vard
     }
 }
 
+/// Clinical short-read workflow preset selector (`--preset <PRESET>`, Issue #94).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WorkflowPreset {
+    /// 30x-100x germline or paired tumor-normal whole-genome sequencing (`--preset wgs`).
+    Wgs,
+    /// 100x-500x germline or somatic whole-exome / broad capture sequencing (`--preset wes`).
+    Wes,
+    /// Targeted PCR or single-primer extension amplicon panels (`--preset amplicon`).
+    Amplicon,
+    /// 1,000x-50,000x liquid biopsy / cfDNA hybrid capture & UMI consensus (`--preset ctdna`).
+    Ctdna,
+}
+
+impl std::fmt::Display for WorkflowPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Wgs => f.write_str("wgs"),
+            Self::Wes => f.write_str("wes"),
+            Self::Amplicon => f.write_str("amplicon"),
+            Self::Ctdna => f.write_str("ctdna"),
+        }
+    }
+}
+
+/// Parse a `--preset <PRESET>` string into [`WorkflowPreset`] (`AR-11`).
+///
+/// # Errors
+///
+/// - Returns [`crate::types::VardictError::Unsupported`] for deferred long-read presets (`hifi`, `ont`).
+/// - Returns [`crate::types::VardictError::Parse`] if `raw` contains ASCII control characters
+///   (`< 0x20` or `0x7F`) or is not one of `wgs`, `wes`, `amplicon`, or `ctdna`.
+pub fn parse_workflow_preset(raw: &str) -> Result<WorkflowPreset, crate::types::VardictError> {
+    if raw.bytes().any(|b| b < 0x20 || b == 0x7F) {
+        let sanitized =
+            crate::util::SanitizedBytes(raw.as_bytes().get(..64).unwrap_or(raw.as_bytes()));
+        return Err(crate::types::VardictError::Parse(format!(
+            "Invalid --preset '{sanitized}': expected 'wgs', 'wes', 'amplicon', or 'ctdna'"
+        )));
+    }
+    let trimmed = raw.trim_matches(' ');
+    if trimmed.eq_ignore_ascii_case("wgs") {
+        Ok(WorkflowPreset::Wgs)
+    } else if trimmed.eq_ignore_ascii_case("wes") {
+        Ok(WorkflowPreset::Wes)
+    } else if trimmed.eq_ignore_ascii_case("amplicon") {
+        Ok(WorkflowPreset::Amplicon)
+    } else if trimmed.eq_ignore_ascii_case("ctdna") {
+        Ok(WorkflowPreset::Ctdna)
+    } else if trimmed.eq_ignore_ascii_case("hifi") || trimmed.eq_ignore_ascii_case("ont") {
+        let sanitized =
+            crate::util::SanitizedBytes(trimmed.as_bytes().get(..64).unwrap_or(trimmed.as_bytes()));
+        Err(crate::types::VardictError::Unsupported(format!(
+            "--preset {sanitized} not implemented in VarDictRust v1.x (supported: wgs, wes, amplicon, ctdna; PacBio HiFi and ONT long-read presets are tracked in Issue #96)"
+        )))
+    } else {
+        let sanitized =
+            crate::util::SanitizedBytes(raw.as_bytes().get(..64).unwrap_or(raw.as_bytes()));
+        Err(crate::types::VardictError::Parse(format!(
+            "Invalid --preset '{sanitized}': expected 'wgs', 'wes', 'amplicon', or 'ctdna'"
+        )))
+    }
+}
+
 /// Central engine and `var2vcf` post-filter configuration struct.
 ///
 /// Preserves all VarDictJava v1.8.3 (`Configuration.java`) and `var2vcf_*.pl` defaults;
@@ -444,6 +508,8 @@ pub struct Config {
     pub vcf_cluster_dist: Option<VcfThreshold<i32>>,
     /// Compatibility profile (`--compat=vardictjava|off`; default: [`COMPAT_VARDICTJAVA_1_8_3`]).
     pub compat: CompatProfile,
+    /// Optional clinical workflow preset (`--preset wgs|wes|amplicon|ctdna`).
+    pub preset: Option<WorkflowPreset>,
     /// Emit all alleles passing filters at the same locus in VCF output (`--vcf-all-alleles` / `--all-alleles`, ports `var2vcf_valid.pl` / `var2vcf_paired.pl -A`).
     pub vcf_all_alleles: bool,
 }
@@ -545,6 +611,7 @@ impl Default for Config {
             vcf_msi: None,
             vcf_cluster_dist: None,
             compat: COMPAT_VARDICTJAVA_1_8_3,
+            preset: None,
             vcf_all_alleles: false,
         }
     }
@@ -622,6 +689,79 @@ fn validate_opt_vcf_i32_threshold(
 }
 
 impl Config {
+    /// Construct a [`Config`] seeded with modality-calibrated defaults for `preset` (`Issue #94`).
+    pub fn from_preset(preset: WorkflowPreset) -> Self {
+        let mut cfg = Self::default();
+        cfg.preset = Some(preset);
+        cfg.compat = COMPAT_OFF;
+        cfg.zero_based = true;
+        cfg.zero_based_defined = false;
+        cfg.af_threshold_raw = None;
+        match preset {
+            WorkflowPreset::Wgs => {
+                cfg.col_chr = 0;
+                cfg.col_start = 1;
+                cfg.col_end = 2;
+                cfg.col_seg_start = 1;
+                cfg.col_seg_end = 2;
+                cfg.col_gene = Some(3);
+                cfg.column_for_chromosome = Some(0);
+                cfg.freq = 0.05;
+                cfg.af_threshold = 0.05;
+                cfg.min_reads = 2;
+                cfg.vcf_af = Some(VcfThreshold::new(0.05));
+                cfg.vcf_min_depth = Some(VcfThreshold::new(10));
+                cfg.vcf_min_vd = Some(VcfThreshold::new(3));
+                cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
+            }
+            WorkflowPreset::Wes => {
+                cfg.col_chr = 0;
+                cfg.col_start = 1;
+                cfg.col_end = 2;
+                cfg.col_seg_start = 1;
+                cfg.col_seg_end = 2;
+                cfg.col_gene = Some(3);
+                cfg.column_for_chromosome = Some(0);
+                cfg.freq = 0.01;
+                cfg.af_threshold = 0.01;
+                cfg.min_reads = 2;
+                cfg.vcf_af = Some(VcfThreshold::new(0.02));
+                cfg.vcf_min_depth = Some(VcfThreshold::new(20));
+                cfg.vcf_min_vd = Some(VcfThreshold::new(4));
+                cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
+            }
+            WorkflowPreset::Amplicon => {
+                cfg.amplicon = Some("10:0.95".to_string());
+                cfg.dedup = false;
+                cfg.freq = 0.01;
+                cfg.af_threshold = 0.01;
+                cfg.min_reads = 2;
+                cfg.vcf_af = Some(VcfThreshold::new(0.01));
+                cfg.vcf_min_depth = Some(VcfThreshold::new(50));
+                cfg.vcf_min_vd = Some(VcfThreshold::new(5));
+                cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
+            }
+            WorkflowPreset::Ctdna => {
+                cfg.col_chr = 0;
+                cfg.col_start = 1;
+                cfg.col_end = 2;
+                cfg.col_seg_start = 1;
+                cfg.col_seg_end = 2;
+                cfg.col_gene = Some(3);
+                cfg.column_for_chromosome = Some(0);
+                cfg.freq = 0.001;
+                cfg.af_threshold = 0.001;
+                cfg.min_reads = 3;
+                cfg.vcf_af = Some(VcfThreshold::new(0.002));
+                cfg.vcf_min_depth = Some(VcfThreshold::new(100));
+                cfg.vcf_min_vd = Some(VcfThreshold::new(4));
+                cfg.vcf_qmean = Some(VcfThreshold::new(25.0));
+                cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
+            }
+        }
+        cfg
+    }
+
     /// Apply pileup mode (`-p`) parameter overrides matching `Configuration.java:162-165`.
     pub fn apply_pileup_overrides(&mut self) {
         if self.pileup {
@@ -1896,5 +2036,146 @@ mod tests {
             ..Config::default()
         };
         assert!(bad_af_inject.validate_vcf_thresholds().is_err());
+    }
+
+    #[test]
+    fn workflow_preset_display_parse_and_from_preset_contract() {
+        use crate::types::VardictError;
+
+        assert_eq!(Config::default().preset, None);
+        assert_eq!(WorkflowPreset::Wgs.to_string(), "wgs");
+        assert_eq!(WorkflowPreset::Wes.to_string(), "wes");
+        assert_eq!(WorkflowPreset::Amplicon.to_string(), "amplicon");
+        assert_eq!(WorkflowPreset::Ctdna.to_string(), "ctdna");
+
+        for (raw, exp) in [
+            ("wgs", WorkflowPreset::Wgs),
+            ("WGS", WorkflowPreset::Wgs),
+            ("  wgs  ", WorkflowPreset::Wgs),
+            ("wes", WorkflowPreset::Wes),
+            ("WES", WorkflowPreset::Wes),
+            ("amplicon", WorkflowPreset::Amplicon),
+            ("Amplicon", WorkflowPreset::Amplicon),
+            ("ctdna", WorkflowPreset::Ctdna),
+            ("ctDNA", WorkflowPreset::Ctdna),
+        ] {
+            assert_eq!(
+                parse_workflow_preset(raw).unwrap(),
+                exp,
+                "failed for {raw:?}"
+            );
+        }
+
+        for long_read in ["hifi", "HiFi", " hifi ", "ont", "ONT"] {
+            let err = parse_workflow_preset(long_read)
+                .expect_err("long-read preset must return Unsupported");
+            assert!(
+                matches!(err, VardictError::Unsupported(_)),
+                "expected Unsupported for {long_read:?}, got {err:?}"
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("not implemented in VarDictRust v1.x") && msg.contains("Issue #96"),
+                "unexpected Unsupported msg: {msg}"
+            );
+        }
+
+        for bad in [
+            "",
+            "   ",
+            "unknown",
+            "-G",
+            "wgs\n",
+            "\twgs",
+            "wgs\r",
+            "wgs\x7f",
+            "\x1b]52;c;dGVzdA==\x07",
+            &"x".repeat(120),
+        ] {
+            let err = parse_workflow_preset(bad).expect_err("invalid preset must return Parse");
+            assert!(
+                matches!(err, VardictError::Parse(_)),
+                "expected Parse for {bad:?}, got {err:?}"
+            );
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Invalid --preset") && !msg.bytes().any(|b| b < 0x20 || b == 0x7F),
+                "error message must be sanitized and free of control chars: {msg:?}"
+            );
+        }
+
+        for preset in [
+            WorkflowPreset::Wgs,
+            WorkflowPreset::Wes,
+            WorkflowPreset::Amplicon,
+            WorkflowPreset::Ctdna,
+        ] {
+            let mut cfg = Config::from_preset(preset);
+            assert_eq!(cfg.preset, Some(preset));
+            assert_eq!(cfg.compat, COMPAT_OFF);
+            assert!(cfg.zero_based);
+            assert!(!cfg.zero_based_defined);
+            assert!(cfg.af_threshold_raw.is_none());
+            cfg.validate_vcf_thresholds()
+                .expect("preset thresholds must validate");
+        }
+
+        let wgs = Config::from_preset(WorkflowPreset::Wgs);
+        assert_eq!(
+            (
+                wgs.col_chr,
+                wgs.col_start,
+                wgs.col_end,
+                wgs.col_seg_start,
+                wgs.col_seg_end,
+                wgs.col_gene,
+                wgs.column_for_chromosome
+            ),
+            (0, 1, 2, 1, 2, Some(3), Some(0))
+        );
+        assert!((wgs.freq - 0.05).abs() < f64::EPSILON);
+        assert!((wgs.af_threshold - 0.05).abs() < f64::EPSILON);
+        assert_eq!(wgs.min_reads, 2);
+        assert_eq!(wgs.vcf_af, Some(VcfThreshold::new(0.05)));
+        assert_eq!(wgs.vcf_min_depth, Some(VcfThreshold::new(10)));
+        assert_eq!(wgs.vcf_min_vd, Some(VcfThreshold::new(3)));
+        assert_eq!(wgs.vcf_qmean, None);
+        assert_eq!(wgs.vcf_mapq, Some(VcfThreshold::new(20.0)));
+        assert_eq!(wgs.amplicon, None);
+
+        let wes = Config::from_preset(WorkflowPreset::Wes);
+        assert_eq!(wes.column_for_chromosome, Some(0));
+        assert!((wes.freq - 0.01).abs() < f64::EPSILON);
+        assert!((wes.af_threshold - 0.01).abs() < f64::EPSILON);
+        assert_eq!(wes.min_reads, 2);
+        assert_eq!(wes.vcf_af, Some(VcfThreshold::new(0.02)));
+        assert_eq!(wes.vcf_min_depth, Some(VcfThreshold::new(20)));
+        assert_eq!(wes.vcf_min_vd, Some(VcfThreshold::new(4)));
+        assert_eq!(wes.vcf_qmean, None);
+        assert_eq!(wes.vcf_mapq, Some(VcfThreshold::new(20.0)));
+
+        let amp = Config::from_preset(WorkflowPreset::Amplicon);
+        assert_eq!(amp.column_for_chromosome, None);
+        assert_eq!(amp.amplicon.as_deref(), Some("10:0.95"));
+        assert!(!amp.dedup);
+        assert!((amp.freq - 0.01).abs() < f64::EPSILON);
+        assert!((amp.af_threshold - 0.01).abs() < f64::EPSILON);
+        assert_eq!(amp.min_reads, 2);
+        assert_eq!(amp.vcf_af, Some(VcfThreshold::new(0.01)));
+        assert_eq!(amp.vcf_min_depth, Some(VcfThreshold::new(50)));
+        assert_eq!(amp.vcf_min_vd, Some(VcfThreshold::new(5)));
+        assert_eq!(amp.vcf_qmean, None);
+        assert_eq!(amp.vcf_mapq, Some(VcfThreshold::new(20.0)));
+
+        let ctdna = Config::from_preset(WorkflowPreset::Ctdna);
+        assert_eq!(ctdna.column_for_chromosome, Some(0));
+        assert!((ctdna.freq - 0.001).abs() < f64::EPSILON);
+        assert!((ctdna.af_threshold - 0.001).abs() < f64::EPSILON);
+        assert_eq!(ctdna.min_reads, 3);
+        assert_eq!(ctdna.vcf_af, Some(VcfThreshold::new(0.002)));
+        assert_eq!(ctdna.vcf_min_depth, Some(VcfThreshold::new(100)));
+        assert_eq!(ctdna.vcf_min_vd, Some(VcfThreshold::new(4)));
+        assert_eq!(ctdna.vcf_qmean, Some(VcfThreshold::new(25.0)));
+        assert_eq!(ctdna.vcf_mapq, Some(VcfThreshold::new(20.0)));
     }
 }
