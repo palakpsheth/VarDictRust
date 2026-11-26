@@ -8262,6 +8262,21 @@ mod vcf_all_alleles_and_compat_off {
             "unexpected error: {err_amp_splice}"
         );
 
+        let mut bad_ctdna_sp = Config::from_preset(WorkflowPreset::Ctdna);
+        bad_ctdna_sp.reference = fa_path.to_string_lossy().into_owned();
+        bad_ctdna_sp.bam = tumor_bam.to_string_lossy().into_owned();
+        bad_ctdna_sp.bed = Some(bed8_path.to_string_lossy().into_owned());
+        bad_ctdna_sp.amplicon_single_primer = true;
+        let err_ctdna_sp =
+            run_core_var(&bad_ctdna_sp).expect_err("Ctdna + -sp without -a must fail");
+        assert!(
+            matches!(err_ctdna_sp, VardictError::Parse(_))
+                && err_ctdna_sp
+                    .to_string()
+                    .contains("requires explicit -a (or use --preset amplicon)"),
+            "unexpected error: {err_ctdna_sp}"
+        );
+
         // 5. Paired somatic Q20 single-tag deduplication (AR-04)
         let bam_pair = format!("{}|{}", tumor_bam.display(), normal_bam.display());
         let mut som_wgs = Config::from_preset(WorkflowPreset::Wgs);

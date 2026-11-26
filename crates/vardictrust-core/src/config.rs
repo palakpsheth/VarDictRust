@@ -283,12 +283,15 @@ impl std::fmt::Display for WorkflowPreset {
 /// - Returns [`crate::types::VardictError::Parse`] if `raw` contains ASCII control characters
 ///   (`< 0x20` or `0x7F`) or is not one of `wgs`, `wes`, `amplicon`, or `ctdna`.
 pub fn parse_workflow_preset(raw: &str) -> Result<WorkflowPreset, crate::types::VardictError> {
-    if raw.bytes().any(|b| b < 0x20 || b == 0x7F) {
+    let invalid_preset_err = |input: &str| {
         let sanitized =
-            crate::util::SanitizedBytes(raw.as_bytes().get(..64).unwrap_or(raw.as_bytes()));
-        return Err(crate::types::VardictError::Parse(format!(
+            crate::util::SanitizedBytes(input.as_bytes().get(..64).unwrap_or(input.as_bytes()));
+        crate::types::VardictError::Parse(format!(
             "Invalid --preset '{sanitized}': expected 'wgs', 'wes', 'amplicon', or 'ctdna'"
-        )));
+        ))
+    };
+    if raw.bytes().any(|b| b < 0x20 || b == 0x7F) {
+        return Err(invalid_preset_err(raw));
     }
     let trimmed = raw.trim_matches(' ');
     if trimmed.eq_ignore_ascii_case("wgs") {
@@ -306,11 +309,7 @@ pub fn parse_workflow_preset(raw: &str) -> Result<WorkflowPreset, crate::types::
             "--preset {sanitized} not implemented in VarDictRust v1.x (supported: wgs, wes, amplicon, ctdna; PacBio HiFi and ONT long-read presets are tracked in Issue #96)"
         )))
     } else {
-        let sanitized =
-            crate::util::SanitizedBytes(raw.as_bytes().get(..64).unwrap_or(raw.as_bytes()));
-        Err(crate::types::VardictError::Parse(format!(
-            "Invalid --preset '{sanitized}': expected 'wgs', 'wes', 'amplicon', or 'ctdna'"
-        )))
+        Err(invalid_preset_err(raw))
     }
 }
 
@@ -695,60 +694,36 @@ impl Config {
         cfg.preset = Some(preset);
         cfg.compat = COMPAT_OFF;
         cfg.zero_based = true;
-        cfg.zero_based_defined = false;
-        cfg.af_threshold_raw = None;
+        cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
+        if preset != WorkflowPreset::Amplicon {
+            cfg.col_chr = 0;
+            cfg.col_start = 1;
+            cfg.col_end = 2;
+            cfg.col_seg_start = 1;
+            cfg.col_seg_end = 2;
+            cfg.col_gene = Some(3);
+            cfg.column_for_chromosome = Some(0);
+        }
         match preset {
             WorkflowPreset::Wgs => {
-                cfg.col_chr = 0;
-                cfg.col_start = 1;
-                cfg.col_end = 2;
-                cfg.col_seg_start = 1;
-                cfg.col_seg_end = 2;
-                cfg.col_gene = Some(3);
-                cfg.column_for_chromosome = Some(0);
                 cfg.freq = 0.05;
                 cfg.af_threshold = 0.05;
-                cfg.min_reads = 2;
                 cfg.vcf_af = Some(VcfThreshold::new(0.05));
                 cfg.vcf_min_depth = Some(VcfThreshold::new(10));
                 cfg.vcf_min_vd = Some(VcfThreshold::new(3));
-                cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
             }
             WorkflowPreset::Wes => {
-                cfg.col_chr = 0;
-                cfg.col_start = 1;
-                cfg.col_end = 2;
-                cfg.col_seg_start = 1;
-                cfg.col_seg_end = 2;
-                cfg.col_gene = Some(3);
-                cfg.column_for_chromosome = Some(0);
-                cfg.freq = 0.01;
-                cfg.af_threshold = 0.01;
-                cfg.min_reads = 2;
                 cfg.vcf_af = Some(VcfThreshold::new(0.02));
                 cfg.vcf_min_depth = Some(VcfThreshold::new(20));
                 cfg.vcf_min_vd = Some(VcfThreshold::new(4));
-                cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
             }
             WorkflowPreset::Amplicon => {
                 cfg.amplicon = Some("10:0.95".to_string());
-                cfg.dedup = false;
-                cfg.freq = 0.01;
-                cfg.af_threshold = 0.01;
-                cfg.min_reads = 2;
                 cfg.vcf_af = Some(VcfThreshold::new(0.01));
                 cfg.vcf_min_depth = Some(VcfThreshold::new(50));
                 cfg.vcf_min_vd = Some(VcfThreshold::new(5));
-                cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
             }
             WorkflowPreset::Ctdna => {
-                cfg.col_chr = 0;
-                cfg.col_start = 1;
-                cfg.col_end = 2;
-                cfg.col_seg_start = 1;
-                cfg.col_seg_end = 2;
-                cfg.col_gene = Some(3);
-                cfg.column_for_chromosome = Some(0);
                 cfg.freq = 0.001;
                 cfg.af_threshold = 0.001;
                 cfg.min_reads = 3;
@@ -756,7 +731,6 @@ impl Config {
                 cfg.vcf_min_depth = Some(VcfThreshold::new(100));
                 cfg.vcf_min_vd = Some(VcfThreshold::new(4));
                 cfg.vcf_qmean = Some(VcfThreshold::new(25.0));
-                cfg.vcf_mapq = Some(VcfThreshold::new(20.0));
             }
         }
         cfg

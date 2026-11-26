@@ -1858,42 +1858,27 @@ impl Cli {
             .map(|e| e.saturating_sub(1))
             .or_else(|| col_end.map(|e| e.saturating_sub(1)))
             .unwrap_or(base.col_seg_end);
-        let any_custom_coord_col = col_chr.is_some()
-            || col_start.is_some()
-            || col_end.is_some()
-            || col_seg_start.is_some()
-            || col_seg_end.is_some();
+        // M-DOCUMENTED-MAGIC: Non-amplicon presets seed standard BED4 gene column 4 (0-based 3).
+        // When custom coordinate flags switch away from standard BED columns (0, 1, 2) or assign
+        // column 4 (index 3) to a segment bound without explicit `-g`, fall back to
+        // Configuration.java's 13-column UCSC refGene geneName2 default (`Some(12)`).
         let resolved_col_gene = match col_gene {
-            Some(g) => {
-                if g > 0 {
-                    Some(g.saturating_sub(1))
-                } else {
-                    None
-                }
+            Some(g) => (g > 0).then(|| g.saturating_sub(1)),
+            None if matches!(
+                resolved_preset,
+                Some(
+                    vardictrust_core::config::WorkflowPreset::Wgs
+                        | vardictrust_core::config::WorkflowPreset::Wes
+                        | vardictrust_core::config::WorkflowPreset::Ctdna
+                )
+            ) && ((resolved_col_chr, resolved_col_start, resolved_col_end)
+                != (0, 1, 2)
+                || resolved_col_seg_start == 3
+                || resolved_col_seg_end == 3) =>
+            {
+                vardictrust_core::config::Config::default().col_gene
             }
-            None => {
-                if matches!(
-                    resolved_preset,
-                    Some(
-                        vardictrust_core::config::WorkflowPreset::Wgs
-                            | vardictrust_core::config::WorkflowPreset::Wes
-                            | vardictrust_core::config::WorkflowPreset::Ctdna
-                    )
-                ) && any_custom_coord_col
-                    && [
-                        resolved_col_chr,
-                        resolved_col_start,
-                        resolved_col_end,
-                        resolved_col_seg_start,
-                        resolved_col_seg_end,
-                    ]
-                    .contains(&3)
-                {
-                    Some(12)
-                } else {
-                    base.col_gene
-                }
-            }
+            None => base.col_gene,
         };
         let resolved_column_for_chromosome = col_chr
             .map(|c| c.saturating_sub(1))
@@ -1913,6 +1898,16 @@ impl Cli {
         } else {
             base.amplicon
         };
+        if self.amplicon_single_primer
+            && amplicon.is_none()
+            && resolved_preset.is_some()
+            && region_opt.is_none()
+        {
+            return Err(vardictrust_core::types::VardictError::Parse(
+                "--amplicon-single-primer (-sp) with --preset wgs|wes|ctdna requires explicit -a (or use --preset amplicon)"
+                    .to_string(),
+            ));
+        }
         if self.amplicon_single_primer
             && (region_opt.is_some() || (amplicon.is_none() && self.bed.is_none()))
         {
@@ -5246,6 +5241,64 @@ mod tests {
             (1, 2, 3, Some(12))
         );
         assert!(custom_cols.omit_end_tag);
+
+        let refgene_cols = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wes",
+            "-c",
+            "3",
+            "-S",
+            "7",
+            "-E",
+            "8",
+            "-s",
+            "10",
+            "-e",
+            "11",
+            "refGene.txt",
+        ])
+        .unwrap();
+        assert_eq!(refgene_cols.col_gene, Some(12));
+
+        let redundant_bed_cols = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "wes",
+            "-c",
+            "1",
+            "-S",
+            "2",
+            "-E",
+            "3",
+            "panel4.bed",
+        ])
+        .unwrap();
+        assert_eq!(redundant_bed_cols.col_gene, Some(3));
+
+        let ctdna_sp_err = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "ctdna",
+            "-sp",
+            "qiaseq.amp8.bed",
+        ])
+        .unwrap_err();
+        assert!(
+            ctdna_sp_err
+                .to_string()
+                .contains("requires explicit -a (or use --preset amplicon)"),
+            "unexpected error: {ctdna_sp_err}"
+        );
 
         let wgs_reg_1b = parse_res(&[
             "-G",

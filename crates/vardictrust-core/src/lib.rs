@@ -4824,10 +4824,12 @@ fn resolve_effective_config(
     }
 
     if effective.amplicon_single_primer && effective.amplicon.is_none() {
-        return Err(VardictError::Parse(
+        let msg = if effective.preset.is_some() && !has_region {
+            "--amplicon-single-primer (-sp) with --preset wgs|wes|ctdna requires explicit -a (or use --preset amplicon)"
+        } else {
             "--amplicon-single-primer (-sp) requires amplicon mode (-a or an 8-column amplicon BED)"
-                .to_string(),
-        ));
+        };
+        return Err(VardictError::Parse(msg.to_string()));
     }
 
     let mode = resolve_mode(

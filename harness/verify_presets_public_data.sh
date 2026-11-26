@@ -41,7 +41,7 @@ for _conda_env in "${CONDA_ROOT:-${HOME:-}/miniconda3}/envs/g4-tools/bin" \
 done
 unset _conda_env
 
-for _req_tool in samtools bcftools tabix awk python3 gzip; do
+for _req_tool in samtools bcftools tabix python3 gzip; do
     if ! command -v "$_req_tool" >/dev/null 2>&1; then
         echo "ERROR: required tool '$_req_tool' not found on PATH ($PATH)" >&2
         exit 1
@@ -450,19 +450,19 @@ target_chr = "chr12"
 target_pos = 120999311
 win_reg = "chr12:120999050-120999600"
 
-# Replicate wild-type SampleB_QGN1.bam alignments 11x with unique read names via samtools view + awk
+# Replicate wild-type SampleB_QGN1.bam alignments 11x with unique read names in a single pass
 wt_sam = os.path.join(tmp, "ctdna_titration.sam")
+wt_records = subprocess.check_output(
+    ["samtools", "view", "-F", "0xF04", bam_b, win_reg], text=True
+).splitlines()
 with open(wt_sam, "w", encoding="utf-8") as hdr_fh:
     subprocess.run(["samtools", "view", "-H", bam_b, win_reg], stdout=hdr_fh, check=True)
-for rep_idx in range(1, 12):
-    awk_prog = f'BEGIN {{OFS="\\t"}} {{ $1 = "wt_r{rep_idx}_" $1; print }}'
-    view_p = subprocess.Popen(["samtools", "view", "-F", "0xF04", bam_b, win_reg], stdout=subprocess.PIPE, text=True)
-    with open(wt_sam, "a", encoding="utf-8") as out_fh:
-        subprocess.run(["awk", awk_prog], stdin=view_p.stdout, stdout=out_fh, check=True)
-    if view_p.stdout:
-        view_p.stdout.close()
-    if view_p.wait() != 0:
-        raise AssertionError("samtools view failed on SampleB_QGN1.bam")
+    hdr_fh.flush()
+    for rep_idx in range(1, 12):
+        prefix = f"wt_r{rep_idx}_"
+        for rec in wt_records:
+            if rec:
+                hdr_fh.write(prefix + rec + "\n")
 
 # Deterministically select 6 real variant-supporting (G>A) reads (3 forward + 3 reverse with distinct
 # alignment positions so PSTD=1, PMEAN>=12, BIAS=2:2, QUAL>=30, MQ>=40) from SampleA_QGN1.bam!
