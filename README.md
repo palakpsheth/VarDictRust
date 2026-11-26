@@ -334,7 +334,7 @@ The `v1.0.6` cloud benchmark study and `v1.1.0` clinical `--compat=off` and `--p
 - **Cross-platform generalization** — 10 chemistries and the 70-cell GA4GH stratification ([Table 6](paper/tables/table6.md), [Figure 6](paper/figures/fig6.svg)).
 - **New-biology discovery** — GIAB v5.0q/CMRG/Mosaic via unchunked calling ([Table 7](paper/tables/table7.md), [Figure 7](paper/figures/fig7.svg)).
 - **Caller landscape & hardening** — deep-learning/commercial comparison, low-VAF titration, supply-chain ([Table 8](paper/tables/table8.md), [Figure 8](paper/figures/fig8.svg)).
-- **Opt-in clinical fixes & presets** — VCFv4.2/v4.3 schema compliance, diploid subclonal somatic truth recovery, and workflow presets ([Table 9](paper/tables/table9.md), [Figure 9](paper/figures/fig9.svg)).
+- **Opt-in clinical fixes & presets** — targeted VCFv4.2/v4.3 schema/canonicalization fixes, diploid subclonal somatic truth recovery, and workflow presets ([Table 9](paper/tables/table9.md), [Figure 9](paper/figures/fig9.svg)).
 
 Figures ([`fig1..fig9`](paper/figures/)) and tables ([main 1–9 and supplementary S1–S7](paper/tables/)) regenerate deterministically via the [paper reproducibility package](paper/README.md) (`bash paper/reproduce_all.sh`).
 

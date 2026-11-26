@@ -335,6 +335,10 @@ class TestPaperReproducibility(unittest.TestCase):
             "matching --preset wes's",
             "We thank",
             "Table 9,&",
+            "strict VCF schema",
+            "strict VCFv4.2/v4.3 schema compliance",
+            "strict VCFv4.2/v4.3 schema defects",
+            "Every entry is verified",
         ]
         for phrase in banned_ai_phrases:
             self.assertNotIn(
@@ -474,8 +478,59 @@ class TestPaperReproducibility(unittest.TestCase):
 
         self.assertIn("--reaggregate-gcp", readme_txt)
         self.assertIn("+31.7 pp", readme_txt)
-        for stale_str in ("Landscape", "ecosystem", "121` Conda", "3.46 MB", "38.2×", "110.2×"):
+        for stale_str in (
+            "Landscape",
+            "ecosystem",
+            "121` Conda",
+            "3.46 MB",
+            "38.2×",
+            "110.2×",
+            "strict VCF schema",
+            "strict VCFv4.2/v4.3 schema-validator",
+        ):
             self.assertNotIn(stale_str, readme_txt, f"Stale/banned string {stale_str!r} in paper/README.md")
+
+    def test_reproduce_all_reaggregate_gcp_fails_fast_when_raw_cells_incomplete(self) -> None:
+        import os as _os
+        import shutil as _shutil
+        import tempfile as _tempfile
+
+        with _tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir) / "repo"
+            (tmp_root / "paper").mkdir(parents=True)
+            (tmp_root / ".venv" / "bin").mkdir(parents=True)
+            (tmp_root / "benchmarks" / "gcp-study-v106").mkdir(parents=True)
+            (tmp_root / "benchmarks" / "gcp-study-v106" / "SHA256SUMS.tsv").write_text(
+                "sha256\tpath\tsize_bytes\n", encoding="utf-8"
+            )
+            # Only 2 raw cell dirs (< 60)
+            for idx in range(2):
+                (tmp_root / "benchmarks" / "data" / "gcp-study-v106" / f"cell_{idx:02d}").mkdir(parents=True)
+
+            copied_repro = tmp_root / "paper" / "reproduce_all.sh"
+            _shutil.copy2(ROOT / "paper" / "reproduce_all.sh", copied_repro)
+            copied_repro.chmod(0o755)
+            for tool_stub in ("python", "pytest"):
+                sp = tmp_root / ".venv" / "bin" / tool_stub
+                sp.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+                sp.chmod(0o755)
+
+            run_env = dict(_os.environ)
+            run_env["PAPER_ALLOW_STALE_PDF"] = "1"
+            res = subprocess.run(
+                ["bash", str(copied_repro), "--reaggregate-gcp"],
+                cwd=str(tmp_root),
+                env=run_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(
+                res.returncode,
+                0,
+                "Expected --reaggregate-gcp with < 60 raw cells to fail fast instead of falling back to offline verify",
+            )
+            self.assertIn("explicit GCP reaggregation requested", res.stderr)
 
     def test_stage5_rss_sync_aggregate_verify_fail_closed_and_pdf_zwsp(self) -> None:
         import tempfile as _tempfile

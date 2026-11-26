@@ -85,7 +85,18 @@ if [[ "$SYNC_GCS" -eq 1 ]]; then
 fi
 
 RAW_CELLS_DIR="$ROOT/benchmarks/data/gcp-study-v106"
-if [[ ( "$SYNC_GCS" -eq 1 || "$REAGGREGATE_GCP" -eq 1 || ! -f "$ROOT/benchmarks/gcp-study-v106/SHA256SUMS.tsv" ) && -d "$RAW_CELLS_DIR" ]] && [[ $(find "$RAW_CELLS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l) -ge 60 ]]; then
+RAW_CELL_COUNT=0
+if [[ -d "$RAW_CELLS_DIR" ]]; then
+  RAW_CELL_COUNT="$(find "$RAW_CELLS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d '[:space:]')"
+fi
+if [[ "$SYNC_GCS" -eq 1 || "$REAGGREGATE_GCP" -eq 1 ]]; then
+  if [[ "$RAW_CELL_COUNT" -lt 60 ]]; then
+    echo "ERROR: explicit GCP reaggregation requested (--reaggregate-gcp / --sync-gcs), but '$RAW_CELLS_DIR' contains $RAW_CELL_COUNT raw cell directories (need >= 60)." >&2
+    exit 1
+  fi
+  echo "Aggregating 60 raw GCP study cells from $RAW_CELLS_DIR..."
+  "$PY" paper/aggregate_gcp_study.py --raw-dir "$RAW_CELLS_DIR" --out-dir benchmarks/gcp-study-v106
+elif [[ ! -f "$ROOT/benchmarks/gcp-study-v106/SHA256SUMS.tsv" && "$RAW_CELL_COUNT" -ge 60 ]]; then
   echo "Aggregating 60 raw GCP study cells from $RAW_CELLS_DIR..."
   "$PY" paper/aggregate_gcp_study.py --raw-dir "$RAW_CELLS_DIR" --out-dir benchmarks/gcp-study-v106
 else

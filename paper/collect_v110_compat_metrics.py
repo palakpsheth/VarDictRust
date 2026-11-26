@@ -630,10 +630,16 @@ def audit_vcf_schema(vcf_text: str, check_ref_ok: bool) -> tuple[int, dict[str, 
             if len(ad_parts) != (1 + n_alt):
                 ad_bad = True
             gt_val = vals["GT"]
+            gt_tokens = re.split(r"[/|]", gt_val)
             if gt_val == "1/0":
                 gt_bad = True
-            if "1" in gt_val:
-                any_alt_gt = True
+            for gt_tok in gt_tokens:
+                if gt_tok == ".":
+                    continue
+                if not gt_tok.isdigit() or int(gt_tok) > n_alt:
+                    gt_bad = True
+                elif int(gt_tok) >= 1:
+                    any_alt_gt = True
             dp = int(vals["DP"])
             vd = int(vals["VD"])
             if vd > 0:
@@ -2104,9 +2110,9 @@ def run_collection(out_dir: Path) -> None:
                 "tabix_version": tool_versions["tabix_version"],
                 "samtools_version": tool_versions["samtools_version"],
                 "scope_note": (
-                    "Host-independent deterministic callset, VCFv4.2/v4.3 strict schema-validator, "
-                    "bcftools norm --check-ref e FASTA concordance, and diploid rtg vcfeval metrics "
-                    "(zero host-dependent wall-clock/RSS timings)."
+                    "Host-independent deterministic callset, targeted CompatProfile VCFv4.2/v4.3 "
+                    "schema/canonicalization/accounting audit, bcftools norm --check-ref e FASTA "
+                    "concordance, and diploid rtg vcfeval metrics (zero host-dependent wall-clock/RSS timings)."
                 ),
             },
             "arms": {
@@ -2123,14 +2129,14 @@ def run_collection(out_dir: Path) -> None:
         tsv_rows: list[dict[str, str]] = [
             {
                 "arm_id": "Arm 1",
-                "arm_title": "Strict VCFv4.2/v4.3 Schema & FASTA Reference Concordance",
+                "arm_title": "Targeted VCF Schema, Canonicalization & FASTA Reference Concordance",
                 "cohort_scope": f"{arm1_data['total_callsets']} callsets across {arm1_data['distinct_bams']} BAMs (17 wet-lab public BAM slices + 1 synthetic contig-start SV BAM vartovcf_sv_contig1 + synthetic 17-bp periodic IUPAC chr20 FASTA fixture)",
                 "provenance_type": "17 wet-lab public BAM slices + 1 synthetic contig-start SV BAM (vartovcf_sv_contig1) + synthetic 17-bp periodic IUPAC chr20 FASTA fixture",
-                "vardictjava_result": f"{arm1_data['total_defects_vj']} schema defects; {arm1_data['bcftools_norm_check_ref_vj_passed']}/{arm1_data['total_callsets']} bcftools norm --check-ref e",
-                "compat_off_result": f"{arm1_data['total_defects_off']} schema defects; {arm1_data['bcftools_norm_check_ref_off_passed']}/{arm1_data['bcftools_norm_check_ref_off_total']} bcftools norm --check-ref e",
+                "vardictjava_result": f"{arm1_data['total_defects_vj']} targeted VCF audit findings; {arm1_data['bcftools_norm_check_ref_vj_passed']}/{arm1_data['total_callsets']} bcftools norm --check-ref e",
+                "compat_off_result": f"{arm1_data['total_defects_off']} targeted VCF audit findings; {arm1_data['bcftools_norm_check_ref_off_passed']}/{arm1_data['bcftools_norm_check_ref_off_total']} bcftools norm --check-ref e",
                 "verdict": "PASS",
                 "sanitized_cmd": sanitize_text(
-                    "vardictrust --compat=off -G $REPO_ROOT/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -b $TUMOR_BAM|$NORMAL_BAM -z -c 1 -S 2 -E 3 -g 4 --output $WORK_TMP/out.vcf",
+                    'vardictrust --compat=off -G $REPO_ROOT/scratch/g4/ref/d1vd1/GRCh38.d1.vd1.fa -b "$TUMOR_BAM|$NORMAL_BAM" -z -c 1 -S 2 -E 3 -g 4 --output $WORK_TMP/out.vcf',
                     tmpdir,
                     data_root,
                     ROOT,
@@ -2174,7 +2180,7 @@ def run_collection(out_dir: Path) -> None:
                 "compat_off_result": f"{arm3_data['off_recovered_pairs']}/{arm3_data['distinct_bam_pairs']} pairs ({arm3_data['off_recovered_runs']}/{arm3_data['total_runs']} runs) secondary alleles; MUC19={arm3_data['muc19_variants']} calls (0 VD>DP); SEQC2 TP={seqc2_hc_off['tp']}/{seqc2_hc_off['truth_total']} (FP={seqc2_hc_off['fp']}); HG008 TP={hg008_v04_off['tp']}/{hg008_v04_off['truth_total']} (FP={hg008_v04_off['fp']})",
                 "verdict": "PASS",
                 "sanitized_cmd": sanitize_text(
-                    "vardictrust --compat=off --vcf-all-alleles -G $REPO_ROOT/VarDictJava/testdata/fastas/hg19.fa -b $TUMOR_BAM|$NORMAL_BAM -v",
+                    'vardictrust --compat=off --vcf-all-alleles -G $REPO_ROOT/VarDictJava/testdata/fastas/hg19.fa -b "$TUMOR_BAM|$NORMAL_BAM" -v',
                     tmpdir,
                     data_root,
                     ROOT,

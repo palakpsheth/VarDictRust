@@ -8,6 +8,7 @@ import csv
 import importlib.util
 import json
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -168,6 +169,19 @@ class TestCollectV110CompatMetrics(unittest.TestCase):
                 row["verdict"].startswith("PASS"),
                 f"Expected PASS prefix in verdict, got {row['verdict']!r}",
             )
+            tokens = shlex.split(row["sanitized_cmd"], posix=True)
+            for idx_t, tok in enumerate(tokens):
+                if idx_t > 0 and tokens[idx_t - 1] == "-b":
+                    continue
+                self.assertNotIn(
+                    "|",
+                    tok,
+                    f"Unquoted shell pipe '|' in {row['arm_id']} sanitized_cmd: {row['sanitized_cmd']!r}",
+                )
+        self.assertIn('-b "$TUMOR_BAM|$NORMAL_BAM"', tsv_rows[0]["sanitized_cmd"])
+        self.assertIn('-b "$TUMOR_BAM|$NORMAL_BAM"', tsv_rows[2]["sanitized_cmd"])
+        self.assertNotIn("Strict VCFv4.2/v4.3 Schema", tsv_rows[0]["arm_title"])
+        self.assertNotIn("strict schema-validator", doc["meta"]["scope_note"])
 
         # Arm 1 provenance clarity: 17 wet-lab BAM slices vs 1 synthetic SV BAM + IUPAC fixture
         self.assertIn("17", tsv_rows[0]["provenance_type"])
@@ -296,6 +310,11 @@ class TestCollectV110CompatMetrics(unittest.TestCase):
         self.assertEqual(n_all, 7)
         for k in mod.DEFECT_KEYS:
             self.assertEqual(def_all[k], 1, f"Expected exactly 1 defect in {k}, got {def_all}")
+
+        # Out-of-range genotype allele index (e.g., 1/2 on biallelic n_alt=1) must be flagged
+        bad_gt_rec = "chr1\t70\t.\tA\tG\t50\tPASS\tTYPE=SNV\tGT:DP:VD:AD:AF:ALD\t1/2:20:5:15,5:0.25:3,2\n"
+        _, def_bad_gt = mod.audit_vcf_schema(vcf_hdr + bad_gt_rec, check_ref_ok=True)
+        self.assertEqual(def_bad_gt["noncanonical_gt"], 1)
 
         # Test intersect_beds and count_bgzf_blocks on synthetic inputs
         with tempfile.TemporaryDirectory() as tmpdir:

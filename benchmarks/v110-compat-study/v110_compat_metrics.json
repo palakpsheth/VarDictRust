@@ -207,7 +207,7 @@
     "preset_count": 4,
     "rtg_version": "3.13",
     "samtools_version": "1.24",
-    "scope_note": "Host-independent deterministic callset, VCFv4.2/v4.3 strict schema-validator, bcftools norm --check-ref e FASTA concordance, and diploid rtg vcfeval metrics (zero host-dependent wall-clock/RSS timings).",
+    "scope_note": "Host-independent deterministic callset, targeted CompatProfile VCFv4.2/v4.3 schema/canonicalization/accounting audit, bcftools norm --check-ref e FASTA concordance, and diploid rtg vcfeval metrics (zero host-dependent wall-clock/RSS timings).",
     "study_fingerprint": "b18477ae0a7b07c1",
     "study_id": "v110-compat-and-presets",
     "study_perf_fingerprint": "5c41be8047133842",

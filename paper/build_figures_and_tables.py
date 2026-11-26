@@ -1914,9 +1914,9 @@ def build_fig9(v110_doc: dict[str, Any], fig_dir: Path) -> None:
     ax_a.set_xticklabels(
         [lbl for _, lbl in defect_specs], rotation=18, ha="right", fontsize=7.4
     )
-    ax_a.set_ylabel("Schema Defect Count (symlog scale)")
+    ax_a.set_ylabel("Targeted VCF Audit Findings (symlog scale)")
     ax_a.set_title(
-        f"A. Strict VCF Schema Defects ({a1['total_callsets']} Callsets)",
+        f"A. Targeted VCF Audit Findings ({a1['total_callsets']} Callsets)",
         loc="left",
         fontsize=9.1,
     )
@@ -4071,11 +4071,11 @@ def build_all_tables(
     )
     t9_rows: list[list[Any]] = [
         [
-            "1. Strict VCFv4.2/v4.3 Schema & FASTA Reference Concordance [1, 10, 13, 19]<sup>a,b</sup>",
+            "1. Targeted VCF Schema, Canonicalization & FASTA Concordance [1, 10, 13, 19]<sup>a,b</sup>",
             f"{a1['total_callsets']} callsets across {a1['distinct_bams']} BAMs (17 wet-lab public BAM slices + 1 synthetic contig-start SV BAM + synthetic 17-bp periodic IUPAC chr20 FASTA fixture)",
-            f"{a1['total_defects_vj']:,} schema defects across {a1['total_records_vj']:,} records (INFO/END={d_vj['nonsv_info_end']:,}, GT={d_vj['noncanonical_gt']:,}, DP/AF/TYPE/IUPAC/-3={d_vj['accounting_type_iupac_shift3']}, SV={d_vj['noncanonical_sv']}, AD={d_vj['ad_number_r_mismatch']}); {a1['bcftools_norm_check_ref_vj_passed']}/{a1['total_callsets']} bcftools norm --check-ref e",
-            f"{a1['total_defects_off']} schema defects across {a1['total_records_off']:,} records (0 across all 5 defect classes); {a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']} bcftools norm --check-ref e",
-            f"100% strict VCFv4.2/v4.3 schema & bcftools norm [26] compliance ({a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']})<sup>b</sup>",
+            f"{a1['total_defects_vj']:,} audit findings across {a1['total_records_vj']:,} records (INFO/END={d_vj['nonsv_info_end']:,}, GT={d_vj['noncanonical_gt']:,}, DP/AF/TYPE/IUPAC/-3={d_vj['accounting_type_iupac_shift3']}, SV={d_vj['noncanonical_sv']}, AD={d_vj['ad_number_r_mismatch']}); {a1['bcftools_norm_check_ref_vj_passed']}/{a1['total_callsets']} bcftools norm --check-ref e",
+            f"{a1['total_defects_off']} audit findings across {a1['total_records_off']:,} records (0 across all {len(d_vj)} audit classes); {a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']} bcftools norm --check-ref e",
+            f"0/{len(d_vj)} CompatProfile VCF audit classes & {a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']} bcftools norm [26] pass<sup>b</sup>",
         ],
         [
             "2. Diploid SEQC2 Subclonal Somatic rtg vcfeval [10, 12]<sup>a,c</sup>",
@@ -4120,7 +4120,7 @@ def build_all_tables(
         t9_headers,
         t9_rows,
         f"<sup>a</sup>Host-independent deterministic callset, validator, and rtg vcfeval [12] (v{v_meta['rtg_version']}) evaluation pinned to VarDictRust v{v_meta['study_version']} ({v_meta['study_fingerprint']}); all runtime and peak RSS benchmarks remain locked to the 60-experiment GCP n2-standard-32 study (Tables 1–8). "
-        f"<sup>b</sup>Evaluates 17 wet-lab public BAM slices alongside 1 synthetic contig-start SV BAM (clintval/vartovcf) and a synthetic 17-bp periodic IUPAC chr20 FASTA fixture, distinguishing strict VCFv4.2/v4.3 schema-validator rules (FORMAT/AD Number=R, non-SV INFO/END omission, canonical GT, 1-bp SV anchoring + signed SVLEN; note var2vcf_valid.pl -E / --no-end suppresses INFO/END globally at the cost of stripping mandatory INFO/END from symbolic SVs per clintval/vartovcf#105) from bcftools norm --check-ref e [26] (v{v_meta['bcftools_version']}) FASTA reference-base concordance ({a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']} callsets pass). "
+        f"<sup>b</sup>Evaluates 17 wet-lab public BAM slices alongside 1 synthetic contig-start SV BAM (clintval/vartovcf) and a synthetic 17-bp periodic IUPAC chr20 FASTA fixture across {len(d_vj)} targeted CompatProfile VCF schema, canonicalization, and accounting invariants (FORMAT/AD Number=R cardinality, non-SV INFO/END omission flagged by GATK ValidateVariants/bcftools where var2vcf_valid.pl -E / --no-end strips mandatory INFO/END from symbolic SVs per clintval/vartovcf#105, canonical 0/1 GT ordering + non-0/0 carrier genotypes + valid allele indices, 1-bp SV anchoring + signed SVLEN + ##ALT headers, and VD <= DP / TYPE / IUPAC / -3 accounting) alongside bcftools norm --check-ref e [26] (v{v_meta['bcftools_version']}) FASTA reference-base concordance ({a1['bcftools_norm_check_ref_off_passed']}/{a1['bcftools_norm_check_ref_off_total']} callsets pass). "
         f"<sup>c</sup>Domain 2 evaluates SEQC2 HCC1395 / HCC1395BL [10] across {len(a2['target_contigs'])} target contigs (slices.bed intersected with eval.bed) under split discovery -f {a2['discovery_af']:.2f} --vcf-af {a2['vcf_af']:.2f} (StrongSomatic/LikelySomatic with FILTER in PASS or f{a2['vcf_af']:.2f}) against diploid truth genotypes projected from INFO/TVAF (0/1 below {a2['gt_proj_tvaf_threshold']:.2f}, 1/1 at or above {a2['gt_proj_tvaf_threshold']:.2f}) using rtg vcfeval --all-records [12] without --squash-ploidy; exact 95% Clopper-Pearson recall CIs span {a2_vj['tp_baseline']}/{a2['truth_total']} ({cp_a2_vj_u}) -> {a2_off['tp_baseline']}/{a2['truth_total']} ({cp_a2_off_u}) unthresholded and {a2_vj['best_tp_baseline']}/{a2['truth_total']} ({cp_a2_vj_b}) -> {a2_off['best_tp_baseline']}/{a2['truth_total']} ({cp_a2_off_b}) at optimal QUAL. "
         f"<sup>d</sup>Multi-allelic somatic continuation evaluates {a3['total_runs']} runs across {a3['distinct_bam_pairs']} distinct tumor-normal BAM pairs (both arms invoked with --vcf-all-alleles, matching var2vcf_paired.pl -A) alongside normalized high-confidence slices on SEQC2 [10] ({a3['seqc2_hc']['compat_off']['tp']}/{a3['seqc2_hc']['compat_off']['truth_total']}, 95% Clopper-Pearson recall CI {cp_a3_seq}) and GIAB HG008 v0.4 [19] ({a3['hg008_v04']['compat_off']['tp']}/{a3['hg008_v04']['compat_off']['truth_total']}, 95% CI {cp_a3_h8}; FP={a3['hg008_v04']['compat_off']['fp']} vs. {a3['hg008_v04']['vardictjava']['fp']}). "
         f"<sup>e</sup>Clinical presets evaluate GIAB HG002 [13, 18] (60 kbp chr20), GIAB HG008 [19], SEQC2 [10] ({wes_kbp_approx} kbp), paired 2-primer somatic amplicon, wet-lab QIAseq V3 SPE (--preset amplicon -UN with vs. without -sp on SampleA_QGN1 & SampleAC5_QGN1 [27]; 95% Clopper-Pearson recall CIs: DP >= 50 {a5['qiaseq_spe_dp50_no_sp_known_pos_tp']}/{a5['qiaseq_spe_known_pos_total']} [{cp_q_d50_vj}] -> {a5['qiaseq_spe_dp50_known_pos_tp']}/{a5['qiaseq_spe_known_pos_total']} [{cp_q_d50_sp}], full panel {a5['qiaseq_spe_no_sp_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']} [{cp_q_p_vj}] -> {a5['qiaseq_spe_known_pos_tp']}/{a5['qiaseq_spe_panel_known_pos_unmasked']} [{cp_q_p_sp}]), and a semi-synthetic in silico {a5['spikein_target_vaf_pct']:.1f}% VAF ctDNA spike-in ({a5['admixture_wt_copies']} read-replicated copies of SampleB_QGN1 yielding ~{wt_bg_dp:,}x WT background + {a5['admixture_alt_reads']} SampleA_QGN1 {a5['spikein_chrom']} variant reads) [27]. "
@@ -4138,7 +4138,7 @@ def build_all_tables(
         "Upstream Lineage & Source Citations [1]",
         "Default --compat=vardictjava [1] Behavior",
         f"Opt-In --compat=off / CLI (v{v_meta['study_version']}) Behavior",
-        "Empirical Verification Domain [10, 12, 26, 27]<sup>c</sup>",
+        "Associated Study Domain & Test Coverage [10, 12, 26, 27]<sup>c</sup>",
     ]
     s7_rows: list[list[Any]] = []
     for entry in catalog:
@@ -4159,12 +4159,12 @@ def build_all_tables(
     write_dual_table(
         tab_dir,
         "supp_table7",
-        f"Supplementary Table S7. Complete {len(catalog)}-Entry VarDictRust v{v_meta['study_version']} CompatProfile ({v_meta['compat_switch_count']} Switches) and Opt-In CLI Capability Empirical Verification Catalog",
+        f"Supplementary Table S7. Complete {len(catalog)}-Entry VarDictRust v{v_meta['study_version']} CompatProfile ({v_meta['compat_switch_count']} Switches) and Opt-In CLI Capability Catalog",
         s7_headers,
         s7_rows,
         f"<sup>a</sup>Entries 1–{v_meta['compat_switch_count']} correspond in exact declaration order to the {v_meta['compat_switch_count']} boolean fields of CompatProfile in crates/vardictrust-core/src/config.rs, activated together by --compat=off (stamping ##VarDictRustCompat=off in VCF headers) while remaining disabled under default --compat=vardictjava (--parity) to preserve 100% valid-input parity with VarDictJava v1.8.3 [1]; `UB-1`..`UB-7` denote cataloged upstream VarDictJava v1.8.3 parity behaviors (`docs/upstream-bugs.md`). "
         f"<sup>b</sup>Entries {v_meta['compat_switch_count'] + 1}–{len(catalog)} document explicit opt-in v{v_meta['study_version']} CLI capabilities (`--vcf-all-alleles`, `--amplicon-single-primer` / `-sp` [27], and `--preset` across `wgs`, `wes`, `amplicon`, and `ctdna` alongside {v_meta['var2vcf_flag_count']} consolidated native `var2vcf` flags). "
-        f"<sup>c</sup>Every entry is verified against deterministic benchmark callsets across Empirical Domains 1–{v_meta['total_arms']} (Table 9) using strict VCFv4.2/v4.3 schema auditing, bcftools norm --check-ref e [26], tabix --csi [26], SEQC2 [10] and QIAseq V3 [27] truth cohorts, and diploid rtg vcfeval [12] (benchmarks/v110-compat-study/v110_compat_metrics.json, source fingerprint {v_meta['study_fingerprint']}).",
+        f"<sup>c</sup>Maps each entry to its associated Table 9 evaluation domain (Domains 1–{v_meta['total_arms']}, benchmarks/v110-compat-study/v110_compat_metrics.json, source fingerprint {v_meta['study_fingerprint']}; executed end-to-end under --compat=off across targeted VCF schema/canonicalization/accounting checks, bcftools norm --check-ref e [26], tabix --csi [26], SEQC2 [10] and QIAseq V3 [27] truth cohorts, and diploid rtg vcfeval [12]); switch-isolated behavioral assertions for all {v_meta['compat_switch_count']} switches (including INFO/SAMPLE escaping, INFO/DUPRATE, mixed sex contigs, =/X CIGAR length, and IEEE-754 tie rounding) are enforced by dedicated diff-confinement tests in the Cargo workspace test suite.",
     )
 
 

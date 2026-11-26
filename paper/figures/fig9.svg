@@ -212,7 +212,7 @@ L 322.021328 28.302207
      </g>
     </g>
     <g id="text_13">
-     <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #262626" x="17.638594" y="139.778578" transform="rotate(-90 17.638594 139.778578)">Schema Defect Count (symlog scale)</text>
+     <text style="font-size: 9px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #262626" x="17.638594" y="139.778578" transform="rotate(-90 17.638594 139.778578)">Targeted VCF Audit Findings (symlog scale)</text>
     </g>
    </g>
    <g id="patch_3">
@@ -363,7 +363,7 @@ z
     <text style="font-size: 6.9px; font-family: 'DejaVu Sans'; fill: #262626" transform="translate(212.216688 98.283341)">bcftools norm: 17/19 -&gt; 19/19</text>
    </g>
    <g id="text_25">
-    <text style="font-weight: 700; font-size: 9.1px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="47.380703" y="17.714578" transform="rotate(-0 47.380703 17.714578)">A. Strict VCF Schema Defects (19 Callsets)</text>
+    <text style="font-weight: 700; font-size: 9.1px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #262626" x="47.380703" y="17.714578" transform="rotate(-0 47.380703 17.714578)">A. Targeted VCF Audit Findings (19 Callsets)</text>
    </g>
    <g id="legend_1">
     <g id="patch_18">

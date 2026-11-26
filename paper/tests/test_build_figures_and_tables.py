@@ -441,6 +441,9 @@ class TestBuildFiguresAndTables(unittest.TestCase):
         self.assertIn("24/91", t9_data_rows[4])
         self.assertIn("+31.7 pp", t9_md)
         self.assertNotIn("+31.7%", t9_md)
+        self.assertNotIn("100% strict VCFv4.2/v4.3 schema", t9_md)
+        self.assertNotIn("Strict VCFv4.2/v4.3 Schema", t9_md)
+        self.assertNotIn("Strict VCF Schema Defects", fig9_svg)
         for req_ci in (
             "39.75%–71.53%",
             "73.80%–95.92%",
@@ -464,6 +467,12 @@ class TestBuildFiguresAndTables(unittest.TestCase):
             self.assertIn(f"<sup>{sup_letter}</sup>", s7_md, f"Missing <sup>{sup_letter}</sup> in supp_table7.md")
         for ref_num in ("1", "10", "12", "26", "27"):
             self.assertRegex(s7_md, rf"\[[^\]]*\b{ref_num}\b[^\]]*\]", f"Missing citation [{ref_num}] in supp_table7.md")
+        s7_tex = (TAB_DIR / "supp_table7.tex").read_text(encoding="utf-8")
+        for txt_s7 in (s7_md, s7_tex):
+            self.assertNotIn("Every entry is verified", txt_s7)
+            self.assertNotIn("Empirical Verification Domain", txt_s7)
+        self.assertIn("Associated Study Domain", s7_md)
+        self.assertIn("Cargo workspace test suite", s7_md)
 
         bare_issue_re = re.compile(r"(?<![A-Za-z0-9_/-])#\d+\b")
         all_16_stems = [f"table{i}" for i in range(1, 10)] + [f"supp_table{i}" for i in range(1, 8)]
