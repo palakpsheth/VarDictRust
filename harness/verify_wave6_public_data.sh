@@ -70,7 +70,9 @@ fi
 
 for _req_file in "$GRCH38_REF" "${GRCH38_REF}.fai" "$GIAB_REF" "${GIAB_REF}.fai" \
                  "$G4_DIR/hg002/HG002.chr20.bam" \
+                 "$G4_DIR/hg002/eval.bed" "$G4_DIR/hg002/truth/truth.vcf.gz" \
                  "$G4_DIR/seqc2/HCC1395.bam" "$G4_DIR/seqc2/HCC1395BL.bam" \
+                 "$G4_DIR/seqc2/slices.bed" "$G4_DIR/seqc2/eval.bed" \
                  "$G4_DIR/seqc2/truth/truth.vcf.gz"; do
     if [ ! -s "$_req_file" ]; then
         echo "ERROR: missing Wave-6 public dataset prerequisite: '$_req_file'" >&2
@@ -368,7 +370,7 @@ for label, ref_fa, bam_p, args in u_cases:
         vd = int(vals["VD"])
         if vd >= 4 and (ald[0] == 0 or ald[1] == 0):
             vj_one_strand_ge4 += 1
-        vj_map[(c[0], int(c[1]), c[3], c[4])] = (int(vals["DP"]), vd, tuple(ald))
+        vj_map[(c[0], int(c[1]), c[3], c[4])] = tuple(ald)
 
     for line in off_vcf.splitlines():
         if line.startswith("#") or not line.strip():
@@ -386,7 +388,7 @@ for label, ref_fa, bam_p, args in u_cases:
             off_one_strand_ge4 += 1
         key = (c[0], int(c[1]), c[3], c[4])
         if key in vj_map:
-            vj_dp, vj_vd, vj_ald = vj_map[key]
+            vj_ald = vj_map[key]
             if vj_ald != tuple(ald) and ald[0] > 0 and ald[1] > 0:
                 rebalanced_loci += 1
 
@@ -409,9 +411,7 @@ PY
 # =============================================================================
 echo "[5/5] Running rtg vcfeval truth concordance on SEQC2, GIAB HG008 v0.4, & GIAB HG002..."
 nice -n 19 python3 - "$VARDICTRUST_BIN" "$GRCH38_REF" "$GIAB_REF" "$G4_DIR" "$WORK_TMP" <<'PY'
-import gzip
 import os
-import re
 import subprocess
 import sys
 
@@ -505,7 +505,8 @@ seqc2_truth_raw = subprocess.check_output(
     ["bcftools", "view", "-R", seqc2_slices, os.path.join(g4_dir, "seqc2", "truth", "truth.vcf.gz")],
     text=True,
 )
-seqc2_lens = {l.split("\t")[0]: int(l.split("\t")[1]) for l in open(seqc2_fa + ".fai", encoding="utf-8")}
+with open(seqc2_fa + ".fai", encoding="utf-8") as fai_fh:
+    seqc2_lens = {l.split("\t")[0]: int(l.split("\t")[1]) for l in fai_fh}
 seqc2_truth_vcf = os.path.join(tmp, "seqc2_truth.vcf")
 with open(seqc2_truth_vcf, "w", encoding="utf-8") as out:
     out.write("##fileformat=VCFv4.2\n")
@@ -603,7 +604,8 @@ if os.path.isfile(hg8_truth_v04) and os.path.isfile(hg8_bed_v04) and os.path.isf
     hg8_eval_bed = os.path.join(tmp, "hg008_v04_eval.bed")
     hg8_contigs = intersect_beds(hg8_slices, hg8_bed_v04, hg8_eval_bed, max_a_lines=40)
     hg8_fa, hg8_sdf = build_scoped_sdf(giab_ref, hg8_contigs, "hg008_v04")
-    hg8_lens = {l.split("\t")[0]: int(l.split("\t")[1]) for l in open(hg8_fa + ".fai", encoding="utf-8")}
+    with open(hg8_fa + ".fai", encoding="utf-8") as fai_fh:
+        hg8_lens = {l.split("\t")[0]: int(l.split("\t")[1]) for l in fai_fh}
     hg8_raw = subprocess.check_output(["bcftools", "view", "-f", ".,PASS", "-R", hg8_eval_bed, hg8_truth_v04], text=True)
     hg8_truth_vcf = os.path.join(tmp, "hg008_v04_scoped.vcf")
     with open(hg8_truth_vcf, "w", encoding="utf-8") as out:

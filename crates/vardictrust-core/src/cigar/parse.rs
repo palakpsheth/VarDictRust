@@ -417,6 +417,27 @@ impl<'a> CigarParser<'a> {
         self.live_read_counts = Some((total_reads, duplicate_reads));
     }
 
+    /// Clear in-flight overlapping mate-pair tracking between distinct BAM streams so
+    /// identical `QNAME`s or mate coordinates from an earlier BAM cannot pair with or
+    /// poison eviction watermarks in a subsequent BAM.
+    pub(crate) fn reset_for_next_bam(&mut self) {
+        if !self.pending_overlap_mates.is_empty() {
+            let pool = &mut self.overlap_mate_pool;
+            for (_, bucket) in self.pending_overlap_mates.drain() {
+                for mut mate in bucket {
+                    if pool.len() < MAX_PENDING_OVERLAP_MATES {
+                        mate.clear();
+                        pool.push(mate);
+                    }
+                }
+            }
+        }
+        self.pending_overlap_count = 0;
+        self.min_pending_expected_mate_pos = i32::MAX;
+        self.max_pending_expected_mate_pos = i32::MIN;
+        self.evict_watermark = MAX_PENDING_OVERLAP_MATES;
+    }
+
     #[inline]
     fn get_ref_base(&self, pos: u32) -> Option<u8> {
         if let Some(offset) = pos.checked_sub(self.primary_ref_start) {
@@ -876,13 +897,28 @@ impl<'a> CigarParser<'a> {
                         .iter()
                         .any(|m| m.is_skipped_fwd && m.qname == record.name)
                 });
+        let has_pending_rev = rebalance_u_enabled
+            && overlap_u
+            && mate_alignment_start < read_start
+            && !self.pending_overlap_mates.is_empty()
+            && self
+                .pending_overlap_mates
+                .get(&pair_key)
+                .is_some_and(|bucket| {
+                    bucket
+                        .iter()
+                        .any(|m| !m.is_skipped_fwd && m.qname == record.name)
+                });
+        let allow_u_rebalance = rebalance_u_enabled
+            && overlap_u
+            && (mate_alignment_start >= read_start || has_pending_rev);
         let track_paired_rev = rebalance_u_enabled
             && direction
             && paired_same_chr
             && (has_pending_fwd
                 || (mate_alignment_start >= read_start && read_end >= mate_alignment_start));
         let mut in_u_rebalance = false;
-        if rebalance_u_enabled && (overlap_u || track_paired_rev) {
+        if allow_u_rebalance || track_paired_rev {
             self.scratch_overlap_snv.clear();
             self.scratch_clean_snv.clear();
             self.scratch_overlap_desc.clear();
@@ -903,7 +939,11 @@ impl<'a> CigarParser<'a> {
                     break;
                 }
                 if overlap_u && start >= mate_alignment_start {
-                    in_u_rebalance = true;
+                    if allow_u_rebalance {
+                        in_u_rebalance = true;
+                    } else {
+                        break;
+                    }
                 }
             }
             let Some(&(cigar_element_len, raw_operator)) = cigar_elements.get(ci) else {
@@ -1510,7 +1550,12 @@ impl<'a> CigarParser<'a> {
                                 break;
                             }
                             if overlap_u && start >= mate_alignment_start {
-                                in_u_rebalance = true;
+                                if allow_u_rebalance {
+                                    in_u_rebalance = true;
+                                } else {
+                                    should_break = true;
+                                    break;
+                                }
                             }
                             if in_u_rebalance && start > region_end.saturating_add(1) {
                                 should_break = true;
@@ -1540,8 +1585,7 @@ impl<'a> CigarParser<'a> {
             }
         }
 
-        if rebalance_u_enabled
-            && (overlap_u || track_paired_rev)
+        if (allow_u_rebalance || track_paired_rev)
             && (!self.scratch_overlap_snv.is_empty()
                 || !self.scratch_overlap_desc.is_empty()
                 || (!self.pending_overlap_mates.is_empty()
@@ -2218,7 +2262,12 @@ impl<'a> CigarParser<'a> {
             return;
         }
 
-        if !self.scratch_clean_snv.is_empty() || !self.scratch_overlap_desc.is_empty() {
+        let read_start = record
+            .alignment_start
+            .map_or(0, |p| i32::try_from(p.0).unwrap_or(i32::MAX));
+        if mate_alignment_start >= read_start
+            && (!self.scratch_clean_snv.is_empty() || !self.scratch_overlap_desc.is_empty())
+        {
             let mut mate = self
                 .overlap_mate_pool
                 .pop()
@@ -2241,6 +2290,10 @@ impl<'a> CigarParser<'a> {
             if mate_alignment_start > self.max_pending_expected_mate_pos {
                 self.max_pending_expected_mate_pos = mate_alignment_start;
             }
+        } else {
+            self.scratch_clean_snv.clear();
+            self.scratch_overlap_desc.clear();
+            self.scratch_overlap_desc_buf.clear();
         }
     }
 
@@ -11209,6 +11262,139 @@ mod tests {
                 un_i_reb.overlap_agreed_pairs,
             ),
             (un_i_def.cnt, un_i_def.fwd, un_i_def.rev, 0)
+        );
+    }
+
+    #[test]
+    fn test_mate_overlap_reset_for_next_bam_and_unmatched_upstream_mate_fwd_skip() {
+        let mut ref_seq = Vec::with_capacity(320);
+        for i in 0..320usize {
+            ref_seq.push(b"ACGT"[(i * 7 + 3) % 4]);
+        }
+        ref_seq[139] = b'C'; // Pos1(140) = 'C'
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 320,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(300),
+            gene: "T".to_string(),
+            amplicon: None,
+        };
+        let mut cfg = Config::default();
+        cfg.unique_mode_alignment_enabled = true;
+        cfg.compat.mate_overlap_both_strands = true;
+
+        // (a) `reset_for_next_bam()` clears pending_overlap_mates, recycles buffers to pool,
+        //     resets watermarks, and prevents cross-BAM QNAME pairing!
+        let mut parser = CigarParser::new(&reference, &region, &cfg, false, 0, 0, 80);
+        for idx in 0..2usize {
+            let mut s1 = ref_seq[99..179].to_vec();
+            s1[40] = b'A'; // 'C' -> 'A' at Pos1(140)
+            let r1_bam1 = SamRecord {
+                name: format!("shared_qname_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x20 | 0x40,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(100)),
+                alignment_end: Some(Pos1(179)),
+                mapping_quality: Some(60),
+                cigar: vec![(80, CigarKind::Match)],
+                sequence: s1,
+                quality_scores: vec![37 + 33; 80],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(110)),
+                template_length: 90,
+                nm: Some(1),
+                ..SamRecord::default()
+            };
+            parser.parse_cigar(&r1_bam1).unwrap();
+        }
+        assert_eq!(parser.pending_overlap_count, 2);
+        assert_eq!(parser.min_pending_expected_mate_pos, 110);
+
+        parser.reset_for_next_bam();
+        assert_eq!(parser.pending_overlap_count, 0);
+        assert!(parser.pending_overlap_mates.is_empty());
+        assert_eq!(parser.overlap_mate_pool.len(), 2);
+        assert_eq!(parser.min_pending_expected_mate_pos, i32::MAX);
+        assert_eq!(parser.max_pending_expected_mate_pos, i32::MIN);
+        assert_eq!(parser.evict_watermark, MAX_PENDING_OVERLAP_MATES);
+
+        // BAM2 has orphan R- reads with the SAME QNAMEs and coordinates (`110`, `mate=100`):
+        // because `reset_for_next_bam()` cleared BAM1's pending F+ mates, BAM2's orphan R-
+        // reads MUST stay reverse-only (`fwd=0, rev=2`) and NEVER falsely pair across BAMs!
+        for idx in 0..2usize {
+            let mut s2 = ref_seq[109..189].to_vec();
+            s2[30] = b'A'; // Pos1(140) = 'A'
+            let r2_bam2 = SamRecord {
+                name: format!("shared_qname_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x10 | 0x80,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(110)),
+                alignment_end: Some(Pos1(189)),
+                mapping_quality: Some(60),
+                cigar: vec![(80, CigarKind::Match)],
+                sequence: s2,
+                quality_scores: vec![37 + 33; 80],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(100)),
+                template_length: -90,
+                nm: Some(1),
+                ..SamRecord::default()
+            };
+            parser.parse_cigar(&r2_bam2).unwrap();
+        }
+        let hv = &parser.non_insertion_variants.get(&140).unwrap().map["A"];
+        assert_eq!(
+            (hv.cnt, hv.fwd, hv.rev, hv.overlap_agreed_pairs),
+            (2, 0, 2, 0),
+            "reset_for_next_bam must prevent cross-BAM QNAME pairing"
+        );
+
+        // (b) Outward-facing RF / orphan F+ read (`!direction`, `mate_alignment_start = 120 < read_start = 200`)
+        //     with no pending R- mate breaks at `ci = 0` without inserting dead PendingOverlapMate or poisoning watermarks!
+        let mut s_rf = ref_seq[199..279].to_vec();
+        s_rf[10] = if s_rf[10] == b'A' { b'C' } else { b'A' };
+        let orphan_fwd = SamRecord {
+            name: b"outward_rf_fwd".to_vec(),
+            flags: 0x1 | 0x20 | 0x40,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(200)),
+            alignment_end: Some(Pos1(279)),
+            mapping_quality: Some(60),
+            cigar: vec![(80, CigarKind::Match)],
+            sequence: s_rf,
+            quality_scores: vec![38 + 33; 80],
+            mate_reference_name: Some("chr1".to_string()),
+            mate_alignment_start: Some(Pos1(120)),
+            template_length: -160,
+            nm: Some(1),
+            ..SamRecord::default()
+        };
+        parser.parse_cigar(&orphan_fwd).unwrap();
+        assert_eq!(
+            parser.pending_overlap_count, 0,
+            "unmatched F+ with mate_alignment_start < read_start must not insert into pending_overlap_mates"
+        );
+        assert!(parser.pending_overlap_mates.is_empty());
+        assert_eq!(
+            parser.min_pending_expected_mate_pos,
+            i32::MAX,
+            "min_pending_expected_mate_pos must not be poisoned by upstream mate_alignment_start"
+        );
+        assert!(
+            !parser.ref_coverage.contains_key(&210),
+            "outward F+ read under -u must break at ci=0 without adding coverage"
         );
     }
 }

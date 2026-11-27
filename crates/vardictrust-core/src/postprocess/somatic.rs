@@ -72,6 +72,25 @@ pub struct SomaticVariant {
     pub tumor_amplicon: Option<crate::config::AmpliconConcordance>,
     /// Amplicon concordance for BAM2 (normal) when paired somatic amplicon mode is active (`AstraZeneca-NGS/VarDictJava#378`).
     pub normal_amplicon: Option<crate::config::AmpliconConcordance>,
+    /// Normal-sample locus reference variant retained only when `CompatProfile::somatic_reconcile_split_alleles`
+    /// (`Switch 36`) is active (`None` under default `--compat=vardictjava`) so cross-position
+    /// `determinate_type` preserves `is_good_var` mapping-quality checks against `v2.ref_variant`.
+    pub v2_ref_variant: Option<Box<Variant>>,
+}
+
+impl SomaticVariant {
+    #[inline]
+    pub(crate) fn approx_heap_bytes(&self) -> usize {
+        self.variant1
+            .approx_heap_bytes()
+            .saturating_add(self.variant2.as_ref().map_or(0, Variant::approx_heap_bytes))
+            .saturating_add(self.status.capacity())
+            .saturating_add(self.sv1.capacity())
+            .saturating_add(self.sv2.capacity())
+            .saturating_add(self.v2_ref_variant.as_deref().map_or(0, |v| {
+                std::mem::size_of::<Variant>().saturating_add(v.approx_heap_bytes())
+            }))
+    }
 }
 
 #[inline]
@@ -117,6 +136,12 @@ fn collect_sorted_region_positions(
 
 type RefCtx<'a> = Option<(&'a crate::reference::Reference, &'a str, i32)>;
 type NormAlleleKey = (i32, String, String);
+
+#[inline]
+fn norm_keys_contains(keys: &[NormAlleleKey], pos: i32, ref_a: &str, var_a: &str) -> bool {
+    keys.iter()
+        .any(|(p, r, v)| *p == pos && r.as_str() == ref_a && v.as_str() == var_a)
+}
 
 fn dispatch_somatic_position(
     config: &Config,
@@ -457,7 +482,7 @@ fn reconcile_variant_dp(
 
 /// Region-level post-normalization passes for `Switch 36` (cross-position / cross-class
 /// split-allele reconciliation) and `Ruling 3` (same-sample-class collision deduplication).
-fn finalize_somatic_post_passes(
+pub(crate) fn finalize_somatic_post_passes(
     config: &Config,
     splice: &rustc_hash::FxHashSet<String>,
     results: &mut Vec<SomaticVariant>,
@@ -472,14 +497,9 @@ fn finalize_somatic_post_passes(
     //    Key by sample-presence class (`0 = paired`, `1 = tumor-only`, `2 = normal-only`)
     //    so a normal-absent row never clobbers a paired row when `Switch 36` is off.
     if do_left_align {
-        let old = std::mem::take(results);
-        let mut deduped: Vec<SomaticVariant> = Vec::with_capacity(old.len());
-        let mut seen: rustc_hash::FxHashMap<(u8, i32, String, String), usize> =
-            rustc_hash::FxHashMap::default();
-        for sv in old {
+        crate::variations::dedup_post_norm_vec(results, |sv| {
             if sv.variant1.null_record {
-                deduped.push(sv);
-                continue;
+                return None;
             }
             let has_t = sv.variant1.pos_coverage > 0;
             let has_n = sv.variant2.as_ref().is_some_and(|v2| v2.pos_coverage > 0);
@@ -488,38 +508,13 @@ fn finalize_somatic_post_passes(
                 (true, false) => 1,
                 _ => 2,
             };
-            let key = (
-                presence_class,
-                sv.variant1.start_pos,
-                sv.variant1.ref_allele.clone(),
-                sv.variant1.var_allele.clone(),
-            );
-            match seen.entry(key) {
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(deduped.len());
-                    deduped.push(sv);
-                }
-                std::collections::hash_map::Entry::Occupied(e) => {
-                    let idx = *e.get();
-                    if let Some(cur) = deduped.get_mut(idx) {
-                        let cand_var = if presence_class == 2 {
-                            sv.variant2.as_ref().unwrap_or(&sv.variant1)
-                        } else {
-                            &sv.variant1
-                        };
-                        let cur_var = if presence_class == 2 {
-                            cur.variant2.as_ref().unwrap_or(&cur.variant1)
-                        } else {
-                            &cur.variant1
-                        };
-                        if crate::variations::post_norm_candidate_beats(cand_var, cur_var) {
-                            *cur = sv;
-                        }
-                    }
-                }
-            }
-        }
-        *results = deduped;
+            let score_var = if presence_class == 2 {
+                sv.variant2.as_ref().unwrap_or(&sv.variant1)
+            } else {
+                &sv.variant1
+            };
+            Some((presence_class, &sv.variant1, score_var))
+        });
     }
 
     // 2. Cross-position / cross-class split-allele reconciliation (`Switch 36`,
@@ -533,26 +528,35 @@ fn finalize_somatic_post_passes(
     //    the earliest row index and drop all shadow rows for that key.
     if config.compat.somatic_reconcile_split_alleles && results.len() > 1 {
         let len = results.len();
-        let mut drop_flags = vec![false; len];
-        let mut groups: indexmap::IndexMap<NormAlleleKey, Vec<usize>> = indexmap::IndexMap::new();
-
-        for (idx, sv) in results.iter().enumerate() {
-            if sv.variant1.null_record {
-                continue;
-            }
-            let key = (
-                sv.variant1.start_pos,
-                sv.variant1.ref_allele.clone(),
-                sv.variant1.var_allele.clone(),
+        let multi_groups: Vec<Vec<usize>> = {
+            let mut groups: indexmap::IndexMap<
+                (i32, &str, &str),
+                Vec<usize>,
+                crate::variations::FxBuildHasher,
+            > = indexmap::IndexMap::with_capacity_and_hasher(
+                len,
+                crate::variations::FxBuildHasher::default(),
             );
-            groups.entry(key).or_default().push(idx);
+            for (idx, sv) in results.iter().enumerate() {
+                if sv.variant1.null_record || sv.variant1.var_allele.contains('<') {
+                    continue;
+                }
+                let key = (
+                    sv.variant1.start_pos,
+                    sv.variant1.ref_allele.as_str(),
+                    sv.variant1.var_allele.as_str(),
+                );
+                groups.entry(key).or_default().push(idx);
+            }
+            groups.into_values().filter(|idxs| idxs.len() > 1).collect()
+        };
+        if multi_groups.is_empty() {
+            return;
         }
 
+        let mut drop_flags = vec![false; len];
         let indel_only_shift3 = config.compat.indel_only_shift3;
-        for (_, idxs) in groups {
-            if idxs.len() <= 1 {
-                continue;
-            }
+        for idxs in multi_groups {
             let mut best_t_idx: Option<usize> = None;
             let mut best_n_idx: Option<usize> = None;
             for &i in &idxs {
@@ -601,6 +605,7 @@ fn finalize_somatic_post_passes(
             let Some(mut v2_matched) = n_sv.variant2.clone() else {
                 continue;
             };
+            let n_v2_ref = n_sv.v2_ref_variant.clone();
             let n_end_is_variant2 = n_sv.end_is_variant2;
             let mut v1_matched = t_sv.variant1.clone();
             if v1_matched.var_type.is_empty() {
@@ -663,7 +668,13 @@ fn finalize_somatic_post_passes(
                     n_sv.status.clone()
                 }
             } else {
-                determinate_type(config, None, &v1_matched, &mut v2_matched, splice)
+                determinate_type(
+                    config,
+                    n_v2_ref.as_deref(),
+                    &v1_matched,
+                    &mut v2_matched,
+                    splice,
+                )
             };
             if let Some(slot) = results.get_mut(keep_idx) {
                 *slot = SomaticVariant {
@@ -675,6 +686,7 @@ fn finalize_somatic_post_passes(
                     end_is_variant2: n_end_is_variant2,
                     tumor_amplicon,
                     normal_amplicon,
+                    v2_ref_variant: n_v2_ref,
                 };
             }
             for &rm_idx in idxs.iter().skip(1) {
@@ -704,6 +716,9 @@ fn find_reconciled_candidate(
     config: &Config,
     ref_ctx: RefCtx<'_>,
 ) -> Option<(String, Variant)> {
+    if target_var.var_allele.contains('<') {
+        return None;
+    }
     let do_left_align = crate::variations::canonical_left_align_enabled(config);
     let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
     let indel_only_shift3 = config.compat.indel_only_shift3;
@@ -711,7 +726,10 @@ fn find_reconciled_candidate(
 
     let mut best: Option<(String, Variant)> = None;
     for cand in &vars.variants {
-        if cand.description == exclude_desc || cand.ref_allele == cand.var_allele {
+        if cand.description == exclude_desc
+            || cand.ref_allele == cand.var_allele
+            || cand.var_allele.contains('<')
+        {
             continue;
         }
         let mut norm = cand.clone();
@@ -757,6 +775,7 @@ fn calling_for_one_sample(
     let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
     let do_left_align = crate::variations::canonical_left_align_enabled(config);
     let indel_only_shift3 = config.compat.indel_only_shift3;
+    let reconcile_split = config.compat.somatic_reconcile_split_alleles;
     let (ref_var_cow, var_iter, sv_cow) = super::unpack_cow_vars(variants);
 
     let start_idx = results.len();
@@ -802,6 +821,11 @@ fn calling_for_one_sample(
                 end_is_variant2: true,
                 tumor_amplicon: None,
                 normal_amplicon: None,
+                v2_ref_variant: if reconcile_split {
+                    ref_var_cow.as_deref().cloned().map(Box::new)
+                } else {
+                    None
+                },
             });
         } else {
             // Only BAM1 has coverage → SampleSpecific
@@ -814,6 +838,7 @@ fn calling_for_one_sample(
                 end_is_variant2: false,
                 tumor_amplicon: None,
                 normal_amplicon: None,
+                v2_ref_variant: None,
             });
         }
     }
@@ -979,7 +1004,7 @@ fn emit_v2_loh_fallback_with_ref<'a>(
     v2: std::borrow::Cow<'a, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
     called_from_first_sample: Option<&rustc_hash::FxHashSet<String>>,
-    called_norm_keys: Option<&rustc_hash::FxHashSet<NormAlleleKey>>,
+    called_norm_keys: Option<&[NormAlleleKey]>,
     ref_ctx: RefCtx<'_>,
     results: &mut Vec<SomaticVariant>,
 ) -> std::borrow::Cow<'a, str> {
@@ -1050,11 +1075,12 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                 }
             }
             if called_norm_keys.is_some_and(|keys| {
-                keys.contains(&(
+                norm_keys_contains(
+                    keys,
                     v1nt_out.start_pos,
-                    v1nt_out.ref_allele.clone(),
-                    v1nt_out.var_allele.clone(),
-                ))
+                    &v1nt_out.ref_allele,
+                    &v1nt_out.var_allele,
+                )
             }) {
                 continue;
             }
@@ -1067,6 +1093,11 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                 end_is_variant2: true,
                 tumor_amplicon: None,
                 normal_amplicon: None,
+                v2_ref_variant: if reconcile_split {
+                    v2_ref_cow.as_deref().cloned().map(Box::new)
+                } else {
+                    None
+                },
             });
         } else {
             if v2var.ref_allele == v2var.var_allele {
@@ -1078,11 +1109,12 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                 continue;
             }
             if called_norm_keys.is_some_and(|keys| {
-                keys.contains(&(
+                norm_keys_contains(
+                    keys,
                     v2var_out.start_pos,
-                    v2var_out.ref_allele.clone(),
-                    v2var_out.var_allele.clone(),
-                ))
+                    &v2var_out.ref_allele,
+                    &v2var_out.var_allele,
+                )
             }) {
                 continue;
             }
@@ -1109,6 +1141,7 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                         end_is_variant2: true,
                         tumor_amplicon: None,
                         normal_amplicon: None,
+                        v2_ref_variant: v2_ref_cow.as_deref().cloned().map(Box::new),
                     });
                     continue;
                 }
@@ -1141,6 +1174,11 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                 end_is_variant2: true,
                 tumor_amplicon: None,
                 normal_amplicon: None,
+                v2_ref_variant: if reconcile_split {
+                    v2_ref_cow.as_deref().cloned().map(Box::new)
+                } else {
+                    None
+                },
             });
         }
     }
@@ -1227,8 +1265,7 @@ fn print_variations_from_first_sample_inner_with_ref(
     let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
     let do_left_align = crate::variations::canonical_left_align_enabled(config);
     let indel_only_shift3 = config.compat.indel_only_shift3;
-    let mut called_norm_keys: rustc_hash::FxHashSet<NormAlleleKey> =
-        rustc_hash::FxHashSet::default();
+    let mut called_norm_keys: Vec<NormAlleleKey> = Vec::new();
     // Keep `v1` unconsumed until `entry_passes` succeeds so the LOH-only early return
     // preserves `v1.variant_by_desc`, `v1.variants.first()`, `v1.ref_variant`, and `v1.sv`.
     // Under `somatic_continue_after_bad_var` (`joachimwolff/VarDictJava#4`), scan all
@@ -1321,7 +1358,13 @@ fn print_variations_from_first_sample_inner_with_ref(
                 vref.var_type.clear();
                 vref.var_type.push_str(&vartype_check);
             }
+            // Capture post-`adj_complex` / pre-`canonical_left_align` coordinate span so
+            // `combine_analysis` stays centered on `position` even when `Switch 35` rolls a
+            // repeat indel upstream by `> max_read_length` bp.
+            let pre_left_align_bounds = do_left_align.then(|| vref.post_adj_complex_bounds());
             vref.normalize_postprocess(ref_ctx, do_left_align, refresh_vt, indel_only_shift3);
+            let (combine_win_start, combine_win_end) =
+                pre_left_align_bounds.unwrap_or((vref.start_pos, vref.end_pos));
             if skip_eq_non_pileup && vref.ref_allele == vref.var_allele {
                 continue;
             }
@@ -1358,8 +1401,16 @@ fn print_variations_from_first_sample_inner_with_ref(
             };
 
             if let Some(mut v2nt_var) = v2nt {
-                if reconcile_split {
-                    called_norm_keys.insert((
+                if reconcile_split
+                    && run_trailing_v2
+                    && !norm_keys_contains(
+                        &called_norm_keys,
+                        vref.start_pos,
+                        &vref.ref_allele,
+                        &vref.var_allele,
+                    )
+                {
+                    called_norm_keys.push((
                         vref.start_pos,
                         vref.ref_allele.clone(),
                         vref.var_allele.clone(),
@@ -1392,17 +1443,30 @@ fn print_variations_from_first_sample_inner_with_ref(
                     end_is_variant2: true,
                     tumor_amplicon: None,
                     normal_amplicon: None,
+                    v2_ref_variant: if reconcile_split {
+                        v2.ref_variant.as_ref().cloned().map(Box::new)
+                    } else {
+                        None
+                    },
                 });
             } else if let Some((matched_desc, mut v2_matched)) = reconcile_split
                 .then(|| find_reconciled_candidate(&v2, nt, &vref, config, ref_ctx))
                 .flatten()
             {
-                called_from_first_sample.insert(matched_desc.clone());
-                called_norm_keys.insert((
-                    vref.start_pos,
-                    vref.ref_allele.clone(),
-                    vref.var_allele.clone(),
-                ));
+                if run_trailing_v2
+                    && !norm_keys_contains(
+                        &called_norm_keys,
+                        vref.start_pos,
+                        &vref.ref_allele,
+                        &vref.var_allele,
+                    )
+                {
+                    called_norm_keys.push((
+                        vref.start_pos,
+                        vref.ref_allele.clone(),
+                        vref.var_allele.clone(),
+                    ));
+                }
                 let type_str = determinate_type(
                     config,
                     v2.ref_variant.as_ref(),
@@ -1414,6 +1478,7 @@ fn print_variations_from_first_sample_inner_with_ref(
                     v2.to_mut()
                         .update_variant_by_desc(&matched_desc, v2_matched.clone());
                 }
+                called_from_first_sample.insert(matched_desc);
                 if indel_only_shift3
                     && !vref.var_allele.starts_with('<')
                     && vref.ref_allele.len() == vref.var_allele.len()
@@ -1429,6 +1494,7 @@ fn print_variations_from_first_sample_inner_with_ref(
                     end_is_variant2: true,
                     tumor_amplicon: None,
                     normal_amplicon: None,
+                    v2_ref_variant: v2.ref_variant.as_ref().cloned().map(Box::new),
                 });
             } else {
                 // sample 1 only, should be strong somatic (SomaticPostProcessModule.java:177)
@@ -1444,10 +1510,12 @@ fn print_variations_from_first_sample_inner_with_ref(
                     && !nt.contains('<')
                 {
                     if let Some(pipeline_fn) = pipeline {
-                        match combine_analysis(
+                        match combine_analysis_with_bounds(
                             config,
                             pipeline_fn,
                             &vref,
+                            combine_win_start,
+                            combine_win_end,
                             chr,
                             position,
                             splice,
@@ -1466,8 +1534,16 @@ fn print_variations_from_first_sample_inner_with_ref(
                     }
                 }
 
-                if reconcile_split {
-                    called_norm_keys.insert((
+                if reconcile_split
+                    && run_trailing_v2
+                    && !norm_keys_contains(
+                        &called_norm_keys,
+                        vref.start_pos,
+                        &vref.ref_allele,
+                        &vref.var_allele,
+                    )
+                {
+                    called_norm_keys.push((
                         vref.start_pos,
                         vref.ref_allele.clone(),
                         vref.var_allele.clone(),
@@ -1509,6 +1585,7 @@ fn print_variations_from_first_sample_inner_with_ref(
                         end_is_variant2: false,
                         tumor_amplicon: None,
                         normal_amplicon: None,
+                        v2_ref_variant: None,
                     });
                 } else {
                     // SomaticOutputVariant(vref, vref, vref, v2nt, …) (:215): header and
@@ -1523,6 +1600,7 @@ fn print_variations_from_first_sample_inner_with_ref(
                         end_is_variant2: false,
                         tumor_amplicon: None,
                         normal_amplicon: None,
+                        v2_ref_variant: None,
                     });
                 }
             }
@@ -1540,7 +1618,7 @@ fn print_variations_from_first_sample_inner_with_ref(
             v2,
             splice,
             Some(called_from_first_sample),
-            reconcile_split.then_some(&called_norm_keys),
+            reconcile_split.then_some(called_norm_keys.as_slice()),
             ref_ctx,
             results,
         ),
@@ -1570,6 +1648,7 @@ fn print_variations_from_second_sample(
 ) {
     let do_left_align = crate::variations::canonical_left_align_enabled(config);
     let indel_only_shift3 = config.compat.indel_only_shift3;
+    let reconcile_split = config.compat.somatic_reconcile_split_alleles;
     let mut v1_ref_cow: Option<std::borrow::Cow<'_, Variant>> = match v1 {
         std::borrow::Cow::Borrowed(vars) => {
             vars.ref_variant.as_ref().map(std::borrow::Cow::Borrowed)
@@ -1605,10 +1684,12 @@ fn print_variations_from_second_sample(
         let mut tumor_from_combine: Option<Variant> = None;
         if should_combine {
             if let Some(pipeline_fn) = pipeline {
-                match combine_analysis(
+                match combine_analysis_with_bounds(
                     config,
                     pipeline_fn,
                     &v2var,
+                    v2var.start_pos,
+                    v2var.end_pos,
                     chr,
                     position,
                     splice,
@@ -1703,6 +1784,11 @@ fn print_variations_from_second_sample(
             end_is_variant2: true,
             tumor_amplicon: None,
             normal_amplicon: None,
+            v2_ref_variant: if reconcile_split {
+                v2_ref_cow.as_deref().cloned().map(Box::new)
+            } else {
+                None
+            },
         });
     }
 
@@ -1738,10 +1824,35 @@ enum CombineVerdict {
 /// position key the caller is processing — the combined result is looked up by that key
 /// and the description string (Java getVarMaybe(vars, position, varn, descriptionString),
 /// :408), NOT by the variant's own start_pos.
+#[cfg(test)]
 fn combine_analysis(
     config: &Config,
     pipeline: &PositionPipelineFn<'_>,
     variant1: &Variant,
+    chr: &str,
+    position: i32,
+    splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
+    max_read_length: &mut i32,
+) -> CombineVerdict {
+    combine_analysis_with_bounds(
+        config,
+        pipeline,
+        variant1,
+        variant1.start_pos,
+        variant1.end_pos,
+        chr,
+        position,
+        splice,
+        max_read_length,
+    )
+}
+
+fn combine_analysis_with_bounds(
+    config: &Config,
+    pipeline: &PositionPipelineFn<'_>,
+    variant1: &Variant,
+    win_start: i32,
+    win_end: i32,
     chr: &str,
     position: i32,
     splice: &mut std::borrow::Cow<'_, rustc_hash::FxHashSet<String>>,
@@ -1755,15 +1866,15 @@ fn combine_analysis(
         );
     }
     // Don't do it for structural variants (:394)
-    if i64::from(variant1.end_pos) - i64::from(variant1.start_pos) > i64::from(config.sv_min_len) {
+    if i64::from(win_end) - i64::from(win_start) > i64::from(config.sv_min_len) {
         return CombineVerdict::Keep;
     }
 
-    // Region spans the variant ± maxReadLength (:398)
+    // Region spans the unshifted post-adj_complex variant ± maxReadLength (:398)
     let region = Region {
         chr: chr.to_string(),
-        start: crate::types::Pos1(variant1.start_pos.saturating_sub(*max_read_length).max(1) as u32),
-        end: crate::types::Pos1(variant1.end_pos.saturating_add(*max_read_length).max(1) as u32),
+        start: crate::types::Pos1(win_start.saturating_sub(*max_read_length).max(1) as u32),
+        end: crate::types::Pos1(win_end.saturating_add(*max_read_length).max(1) as u32),
         gene: String::new(),
         amplicon: None,
     };
@@ -3564,6 +3675,7 @@ mod tests {
                     end_is_variant2,
                     tumor_amplicon,
                     normal_amplicon,
+                    v2_ref_variant: _,
                 } = got;
                 assert_variant_eq(variant1, &want.variant1);
                 assert_eq!(variant2.is_some(), want.variant2.is_some());
@@ -5841,5 +5953,187 @@ mod tests {
         assert_eq!(rows_g2b[0].variant1.pos_coverage, 19);
         assert_eq!(rows_g2b[0].variant1.msi, 13.0);
         assert_eq!(rows_g2b[0].variant2.as_ref().unwrap().pos_coverage, 9);
+    }
+
+    #[test]
+    fn test_wave6_switch35_left_align_beyond_max_rl_keeps_combine_analysis_window_on_position() {
+        // Low-depth tumor-only `-10` deletion (`minus_num_num_find("-10")`, `pos_coverage = 3 < min_reads + 3`)
+        // at pileup `position = 300` (`start_pos = 299..=309`) inside a 250-bp poly-'A' homopolymer
+        // (`51..=320` == 'A', preceded by 'C' at `pos = 50`) with `max_read_length = 80`:
+        // `Switch 35` rolls `vref` upstream by `249 bp > max_read_length` to `start_pos = 50` (`50..=60`).
+        // `combine_analysis` MUST still center `combine_region` on unshifted `[299 - 80 ..= 309 + 80]`
+        // (`[219..=389]`) covering `target_pos = 300`, rather than `[1..=140]` which would miss `300`
+        // and falsely return `CombineVerdict::Skip`!
+        let mut seq = vec![b'G'; 49];
+        seq.push(b'C'); // 1-based pos 50 = 'C'
+        seq.extend_from_slice(&[b'A'; 270]); // 51..=320 = 'A'
+        seq.extend_from_slice(&[b'T'; 80]); // 321..=400 = 'T'
+
+        let mut ref_genome = crate::reference::Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: seq.len() as u32,
+            });
+        ref_genome.region_sequences.push(seq.clone());
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(400),
+            gene: "MSI".to_string(),
+            amplicon: None,
+        };
+        let splice = rustc_hash::FxHashSet::default();
+
+        let mut bam1 = crate::javamap::JavaHashMap::new();
+        let mut v1_300 = Vars::new();
+        let mut t_del10 = make_good_variant("-10", "AAAAAAAAAAA", "A", 0.15);
+        t_del10.start_pos = 299;
+        t_del10.end_pos = 309;
+        t_del10.pos_coverage = 3; // < min_reads (2) + 3 -> triggers combine_analysis
+        t_del10.hicnt = 3;
+        t_del10.total_pos_cov = 20;
+        v1_300.variants.push(t_del10);
+        bam1.insert(300, v1_300);
+
+        let mut bam2 = crate::javamap::JavaHashMap::new();
+        let mut v2_300 = Vars::new();
+        let mut rv2 = Variant::new();
+        rv2.total_pos_cov = 25;
+        rv2.ref_fwd_cov = 13;
+        rv2.ref_rev_cov = 12;
+        v2_300.ref_variant = Some(rv2);
+        bam2.insert(300, v2_300);
+
+        let mut cfg = test_config();
+        cfg.compat.canonical_vcf_complex_left_align = true;
+
+        let seen_windows: std::cell::RefCell<Vec<(u32, u32, i32)>> =
+            std::cell::RefCell::new(Vec::new());
+        let combine_pipe = |comb_reg: &Region,
+                            _sp: &mut rustc_hash::FxHashSet<String>,
+                            _max_rl: &mut i32,
+                            target_pos: i32|
+         -> Result<Option<Vars>, crate::types::VardictError> {
+            seen_windows
+                .borrow_mut()
+                .push((comb_reg.start.0, comb_reg.end.0, target_pos));
+            // Simulate real `run_somatic` `pipeline_fn`: only positions inside `comb_reg` are piled up!
+            if (target_pos as u32) < comb_reg.start.0 || (target_pos as u32) > comb_reg.end.0 {
+                return Ok(None);
+            }
+            let mut cv = Vars::new();
+            let mut comb_v = make_good_variant("-10", "AAAAAAAAAAA", "A", 3.0 / 45.0);
+            comb_v.start_pos = 299;
+            comb_v.end_pos = 309;
+            comb_v.pos_coverage = 3;
+            comb_v.hicnt = 3;
+            comb_v.total_pos_cov = 45;
+            cv.variants.push(comb_v);
+            Ok(Some(cv))
+        };
+
+        let out = somatic_post_process_owned_with_bounds_and_ref(
+            &cfg,
+            &region,
+            bam1,
+            bam2,
+            &splice,
+            Some(&combine_pipe),
+            80,
+            None,
+            Some((&ref_genome, seq.len() as i32)),
+        );
+        assert_eq!(
+            *seen_windows.borrow(),
+            vec![(219, 389, 300)],
+            "combine_analysis window must stay centered on pre-left-aligned [299..=309] +/- 80"
+        );
+        assert_eq!(
+            out.len(),
+            1,
+            "low-depth somatic MSI -10 deletion must NOT be dropped by shifted combine_analysis window"
+        );
+        assert_eq!(out[0].status, "StrongSomatic");
+        assert_eq!(out[0].variant1.start_pos, 50);
+        assert_eq!(out[0].variant1.ref_allele, "CAAAAAAAAAA");
+        assert_eq!(out[0].variant1.var_allele, "C");
+    }
+
+    #[test]
+    fn test_wave6_switch36_preserves_normal_v2_ref_variant_mapq_rejection_as_afdiff() {
+        // Tumor has high-confidence `StrongSomatic` `-4^T` -> `(100, "TCAG", "T")` (`VD=14, AF=0.35`)
+        // at pileup key `100`, while key `101` has paired `-3` -> `(100, "TCAG", "T")` where Normal
+        // carries low-MAPQ multimappers (`mqmean = 1.0`, `AF = 0.20`, `VD = 6`) against a clean
+        // `v2.ref_variant` (`mqmean = 60.0`, `hicnt = 24 > min_reads`).
+        // Same-position `determinate_type` rejects `v2` via `v2.ref_variant` MQ check -> `AFDiff`;
+        // cross-position `Switch 36` reconciliation MUST preserve `v2.ref_variant` and classify the
+        // reconciled row as `AFDiff` (never misclassifying multimapper noise as `Germline`)!
+        let region = test_region(); // chr1:100-200
+        let splice = rustc_hash::FxHashSet::default();
+
+        let mut bam1 = crate::javamap::JavaHashMap::new();
+        let mut v1_100 = Vars::new();
+        let mut t100 = make_good_variant("-4^T", "TCAG", "T", 0.35);
+        t100.start_pos = 100;
+        t100.end_pos = 103;
+        t100.pos_coverage = 14;
+        t100.hicnt = 14;
+        t100.total_pos_cov = 40;
+        v1_100.variants.push(t100);
+        bam1.insert(100, v1_100);
+
+        let mut v1_101 = Vars::new();
+        let mut t101 = make_good_variant("-3", "TCAG", "T", 0.20);
+        t101.start_pos = 100;
+        t101.end_pos = 103;
+        t101.pos_coverage = 6;
+        t101.hicnt = 6;
+        t101.total_pos_cov = 30;
+        v1_101.variants.push(t101);
+        bam1.insert(101, v1_101);
+
+        let mut bam2 = crate::javamap::JavaHashMap::new();
+        let mut v2_100 = Vars::new();
+        let mut rv2_100 = Variant::new();
+        rv2_100.total_pos_cov = 30;
+        rv2_100.ref_fwd_cov = 15;
+        rv2_100.ref_rev_cov = 15;
+        v2_100.ref_variant = Some(rv2_100);
+        bam2.insert(100, v2_100);
+
+        let mut v2_101 = Vars::new();
+        let mut rv2_101 = Variant::new();
+        rv2_101.total_pos_cov = 30;
+        rv2_101.pos_coverage = 24;
+        rv2_101.hicnt = 24;
+        rv2_101.mean_mapping_quality = 60.0;
+        v2_101.ref_variant = Some(rv2_101);
+        let mut n101 = make_good_variant("-3", "TCAG", "T", 0.20);
+        n101.start_pos = 100;
+        n101.end_pos = 103;
+        n101.pos_coverage = 6;
+        n101.hicnt = 6;
+        n101.total_pos_cov = 30;
+        n101.mean_mapping_quality = 1.0; // passes out_mapq (0.0) alone, fails v2.ref_variant MQ ratio!
+        v2_101.variants.push(n101);
+        bam2.insert(101, v2_101);
+
+        let mut cfg = test_config();
+        cfg.compat.somatic_reconcile_split_alleles = true;
+        let rows = somatic_post_process_at(&cfg, &region, &bam1, &bam2, &splice, None, 100);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].status, "AFDiff",
+            "Switch 36 must preserve v2.ref_variant MQ rejection (AFDiff, not Germline)"
+        );
+        assert_eq!(rows[0].variant1.pos_coverage, 14);
+        assert_eq!(rows[0].variant2.as_ref().unwrap().pos_coverage, 6);
     }
 }

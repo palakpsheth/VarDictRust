@@ -14,6 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub type FxBuildHasher = std::hash::BuildHasherDefault<rustc_hash::FxHasher>;
 
+/// Flanking reference sequence window (`20 bp`, `M-DOCUMENTED-MAGIC`) written to `LSEQ` / `RSEQ`
+/// (`ToVarsBuilder.java:395-404`).
+const VAR_FLANK_SEQ_BP: i32 = 20;
+
 pub mod util;
 
 /// Intermediate variant accumulator — stores running sums (NOT means) of
@@ -665,6 +669,61 @@ impl Variant {
         }
     }
 
+    /// Compute `(start_pos, end_pos)` as produced by [`Self::adj_complex`] when
+    /// `self.var_type == "Complex"` (or `(self.start_pos, self.end_pos)` otherwise)
+    /// without mutating alleles or flanking sequences.
+    pub(crate) fn post_adj_complex_bounds(&self) -> (i32, i32) {
+        if self.var_type != "Complex" || self.var_allele.starts_with('<') {
+            return (self.start_pos, self.end_pos);
+        }
+        let mut s = self.start_pos;
+        let mut e = self.end_pos;
+        let ref_bytes = self.ref_allele.as_bytes();
+        let var_bytes = self.var_allele.as_bytes();
+
+        let mut n_pre = 0usize;
+        while ref_bytes.len().saturating_sub(n_pre) > 1
+            && var_bytes.len().saturating_sub(n_pre) > 1
+            && ref_bytes.get(n_pre) == var_bytes.get(n_pre)
+        {
+            n_pre += 1;
+        }
+        let (r_rem, v_rem, r_off, v_off) = if n_pre > 0
+            && self.ref_allele.is_char_boundary(n_pre)
+            && self.var_allele.is_char_boundary(n_pre)
+        {
+            s = s.saturating_add(n_pre.min(i32::MAX as usize) as i32);
+            (
+                ref_bytes.len().saturating_sub(n_pre),
+                var_bytes.len().saturating_sub(n_pre),
+                n_pre,
+                n_pre,
+            )
+        } else {
+            (ref_bytes.len(), var_bytes.len(), 0usize, 0usize)
+        };
+
+        let mut n_suf = 1usize;
+        while r_rem.saturating_sub(n_suf) >= 1
+            && v_rem.saturating_sub(n_suf) >= 1
+            && ref_bytes.get(r_off.saturating_add(r_rem - n_suf))
+                == var_bytes.get(v_off.saturating_add(v_rem - n_suf))
+        {
+            n_suf += 1;
+        }
+        if n_suf > 1 {
+            let trim = n_suf - 1;
+            let new_r_end = r_off.saturating_add(r_rem.saturating_sub(trim));
+            let new_v_end = v_off.saturating_add(v_rem.saturating_sub(trim));
+            if self.ref_allele.is_char_boundary(new_r_end)
+                && self.var_allele.is_char_boundary(new_v_end)
+            {
+                e = e.saturating_sub(trim.min(i32::MAX as usize) as i32);
+            }
+        }
+        (s, e)
+    }
+
     /// Apply Tan et al. (2015) parsimonious 5' left-alignment (`CompatProfile::canonical_vcf_complex_left_align`,
     /// `AstraZeneca-NGS/VarDictJava#264`, `AstraZeneca-NGS/VarDict#134`, `mskcc/vcf2maf#279`,
     /// `samtools/bcftools#1379`).
@@ -754,12 +813,14 @@ impl Variant {
             None
         };
 
-        let mut ref_b: Vec<u8> = ref_init_bytes.to_vec();
-        let mut alt_b: Vec<u8> = alt_init_bytes.to_vec();
+        let mut ref_b: std::collections::VecDeque<u8> =
+            std::collections::VecDeque::from(ref_init_bytes.to_vec());
+        let mut alt_b: std::collections::VecDeque<u8> =
+            std::collections::VecDeque::from(alt_init_bytes.to_vec());
         let mut pos = init_start;
 
-        // Tan et al. (2015) Algorithm 1 Step 1: trim shared 3' suffix and roll 5' left.
-        while let (Some(&r_last), Some(&a_last)) = (ref_b.last(), alt_b.last()) {
+        // Tan et al. (2015) Algorithm 1 Step 1: trim shared 3' suffix and roll 5' left in O(L + shift).
+        while let (Some(&r_last), Some(&a_last)) = (ref_b.back(), alt_b.back()) {
             if r_last != a_last {
                 break;
             }
@@ -767,44 +828,39 @@ impl Variant {
                 let Some(b_prev) = (pos > 1).then(|| lookup_base(pos - 1)).flatten() else {
                     break;
                 };
-                ref_b.pop();
-                alt_b.pop();
-                ref_b.insert(0, b_prev);
-                alt_b.insert(0, b_prev);
+                ref_b.pop_back();
+                alt_b.pop_back();
+                ref_b.push_front(b_prev);
+                alt_b.push_front(b_prev);
                 pos -= 1;
             } else {
-                ref_b.pop();
-                alt_b.pop();
+                ref_b.pop_back();
+                alt_b.pop_back();
             }
         }
 
         // Tan et al. (2015) Algorithm 1 Step 3: trim redundant 5' prefix bases while both > 1 bp.
-        let mut prefix_trim = 0usize;
-        while ref_b.len().saturating_sub(prefix_trim) > 1
-            && alt_b.len().saturating_sub(prefix_trim) > 1
-            && ref_b.get(prefix_trim) == alt_b.get(prefix_trim)
-        {
-            prefix_trim += 1;
-        }
-        if prefix_trim > 0 {
-            ref_b.drain(..prefix_trim);
-            alt_b.drain(..prefix_trim);
-            pos = pos.saturating_add(prefix_trim.min(i32::MAX as usize) as i32);
+        while ref_b.len() > 1 && alt_b.len() > 1 && ref_b.front() == alt_b.front() {
+            ref_b.pop_front();
+            alt_b.pop_front();
+            pos = pos.saturating_add(1);
         }
 
+        let ref_vec: Vec<u8> = Vec::from(ref_b);
+        let alt_vec: Vec<u8> = Vec::from(alt_b);
         let new_end =
-            pos.saturating_add((ref_b.len().min(i32::MAX as usize) as i32).saturating_sub(1));
+            pos.saturating_add((ref_vec.len().min(i32::MAX as usize) as i32).saturating_sub(1));
         let changed = pos != init_start
             || new_end != init_end
-            || ref_b.as_slice() != ref_init_bytes
-            || alt_b.as_slice() != alt_init_bytes;
+            || ref_vec.as_slice() != ref_init_bytes
+            || alt_vec.as_slice() != alt_init_bytes;
 
         self.start_pos = pos;
         self.end_pos = new_end;
-        if let Ok(new_ref) = String::from_utf8(ref_b) {
+        if let Ok(new_ref) = String::from_utf8(ref_vec) {
             self.ref_allele = new_ref;
         }
-        if let Ok(new_alt) = String::from_utf8(alt_b) {
+        if let Ok(new_alt) = String::from_utf8(alt_vec) {
             self.var_allele = new_alt;
         }
 
@@ -815,14 +871,14 @@ impl Variant {
                         &mut self.left_seq,
                         reference,
                         chr,
-                        std::cmp::max(pos.saturating_sub(20), 1),
+                        std::cmp::max(pos.saturating_sub(VAR_FLANK_SEQ_BP), 1),
                         pos.saturating_sub(1),
                     );
                     if let Some(right_start) = new_end.checked_add(1) {
                         let right_end = if chr_len > 0 {
-                            std::cmp::min(new_end.saturating_add(20), chr_len)
+                            std::cmp::min(new_end.saturating_add(VAR_FLANK_SEQ_BP), chr_len)
                         } else {
-                            new_end.saturating_add(20)
+                            new_end.saturating_add(VAR_FLANK_SEQ_BP)
                         };
                         crate::util::ref_bases_into(
                             &mut self.right_seq,
@@ -837,7 +893,7 @@ impl Variant {
                 }
             } else if let Some((win_start, ref win)) = fallback_window {
                 self.left_seq.clear();
-                let l_lo = std::cmp::max(pos.saturating_sub(20), 1);
+                let l_lo = std::cmp::max(pos.saturating_sub(VAR_FLANK_SEQ_BP), 1);
                 let l_hi = pos.saturating_sub(1);
                 if l_lo <= l_hi {
                     for p in l_lo..=l_hi {
@@ -852,7 +908,7 @@ impl Variant {
                 }
                 self.right_seq.clear();
                 if let Some(r_lo) = new_end.checked_add(1) {
-                    let r_hi = new_end.saturating_add(20);
+                    let r_hi = new_end.saturating_add(VAR_FLANK_SEQ_BP);
                     for p in r_lo..=r_hi {
                         if let Ok(off) = usize::try_from(i64::from(p) - win_start) {
                             if let Some(&b) = win.get(off) {
@@ -1118,6 +1174,88 @@ pub(crate) fn post_norm_candidate_beats(cand: &Variant, cur: &Variant) -> bool {
             }
         }
     }
+}
+
+enum PostNormIdxSlot {
+    One(usize),
+    More(Vec<usize>),
+}
+
+impl PostNormIdxSlot {
+    #[inline]
+    fn as_slice(&self) -> &[usize] {
+        match self {
+            Self::One(idx) => std::slice::from_ref(idx),
+            Self::More(idxs) => idxs.as_slice(),
+        }
+    }
+}
+
+/// Shared Ruling 3 post-normalization collision deduplication across `simple`, `amplicon`,
+/// and `somatic` post-processors (`M-FAST-HASHER`, `M-INITIAL-CAPACITY`, `M-MEM-REUSE`).
+///
+/// `classify(item)` returns `Some((group_tag, allele_var, score_var))` for deduplicable rows
+/// (or `None` for sentinel / `null_record` rows that bypass deduplication). Keying by
+/// `(group_tag, allele_var.start_pos)` into output `Vec` indices borrows `ref_allele` and
+/// `var_allele` directly from `out` without cloning `String`s on non-colliding variants.
+pub(crate) fn dedup_post_norm_vec<T, F>(items: &mut Vec<T>, classify: F)
+where
+    F: Fn(&T) -> Option<(u8, &Variant, &Variant)>,
+{
+    if items.len() <= 1 {
+        return;
+    }
+    let old = std::mem::take(items);
+    let mut out: Vec<T> = Vec::with_capacity(old.len());
+    let mut buckets: rustc_hash::FxHashMap<(u8, i32), PostNormIdxSlot> =
+        rustc_hash::FxHashMap::with_capacity_and_hasher(old.len(), rustc_hash::FxBuildHasher);
+
+    for cand in old {
+        let Some((group_tag, cand_allele, cand_score)) = classify(&cand) else {
+            out.push(cand);
+            continue;
+        };
+        let key = (group_tag, cand_allele.start_pos);
+        let hit: Option<(usize, bool)> = buckets.get(&key).and_then(|slot| {
+            for &idx in slot.as_slice() {
+                if let Some(cur) = out.get(idx) {
+                    if let Some((_, cur_allele, cur_score)) = classify(cur) {
+                        if cur_allele.ref_allele == cand_allele.ref_allele
+                            && cur_allele.var_allele == cand_allele.var_allele
+                        {
+                            return Some((idx, post_norm_candidate_beats(cand_score, cur_score)));
+                        }
+                    }
+                }
+            }
+            None
+        });
+        if let Some((idx, beats)) = hit {
+            if beats {
+                if let Some(slot_mut) = out.get_mut(idx) {
+                    *slot_mut = cand;
+                }
+            }
+        } else {
+            let new_idx = out.len();
+            out.push(cand);
+            match buckets.entry(key) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(PostNormIdxSlot::One(new_idx));
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => match e.get_mut() {
+                    PostNormIdxSlot::One(prev) => {
+                        let first = *prev;
+                        *e.get_mut() = PostNormIdxSlot::More(vec![first, new_idx]);
+                    }
+                    PostNormIdxSlot::More(list) => {
+                        list.push(new_idx);
+                    }
+                },
+            }
+        }
+    }
+    *items = out;
 }
 
 /// Write an `f64` into `out` matching Java's `Double.toString(double)` (`FloatingDecimal` /
@@ -2832,5 +2970,52 @@ mod debug_tests {
             ),
             (7, 8, "AG", "G")
         );
+
+        // (d) Large explicit tandem duplication (4,096 bp rolled across 2,048 bp repeat via VecDeque in O(L + shift))
+        //     and post_adj_complex_bounds exact parity with adj_complex():
+        let mut big_seq = vec![b'C'; 200];
+        let unit = b"ACGT";
+        for _ in 0..1_536 {
+            big_seq.extend_from_slice(unit); // 6,144 bp of ACGT starting at 1-based pos 201 ('C' anchor at 200)
+        }
+        big_seq.extend_from_slice(&[b'T'; 64]);
+        let mut big_ref = crate::reference::Reference::new();
+        big_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: big_seq.len() as u32,
+        });
+        big_ref.region_sequences.push(big_seq.clone());
+        big_ref
+            .reference_sequences
+            .insert("chr1".to_string(), big_seq.clone());
+
+        let mut v_big_dup = Variant::new();
+        v_big_dup.start_pos = 2_248; // 1-based 'T' inside ACGT tract (200 + 2048 = 2248)
+        v_big_dup.end_pos = 2_248;
+        let mut alt_dup = Vec::with_capacity(1 + 4_096);
+        alt_dup.push(b'T');
+        for _ in 0..1_024 {
+            alt_dup.extend_from_slice(b"ACGT");
+        }
+        v_big_dup.ref_allele = "T".to_string();
+        v_big_dup.var_allele = String::from_utf8(alt_dup).unwrap();
+        v_big_dup.var_type = "Insertion".to_string();
+        v_big_dup.canonical_left_align(Some((&big_ref, "chr1", big_seq.len() as i32)), true, true);
+        assert_eq!(v_big_dup.start_pos, 200);
+        assert_eq!(v_big_dup.end_pos, 200);
+        assert_eq!(v_big_dup.ref_allele, "C");
+        assert_eq!(v_big_dup.var_allele.len(), 1 + 4_096);
+        assert!(v_big_dup.var_allele.starts_with("CACGT"));
+
+        let mut v_cpx = Variant::new();
+        v_cpx.start_pos = 310;
+        v_cpx.end_pos = 317;
+        v_cpx.ref_allele = "AACGTTGG".to_string();
+        v_cpx.var_allele = "AACTGG".to_string();
+        v_cpx.var_type = "Complex".to_string();
+        let bounds = v_cpx.post_adj_complex_bounds();
+        v_cpx.adj_complex();
+        assert_eq!(bounds, (v_cpx.start_pos, v_cpx.end_pos));
     }
 }

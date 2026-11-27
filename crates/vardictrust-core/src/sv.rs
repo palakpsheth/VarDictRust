@@ -4883,6 +4883,7 @@ fn partial_pipeline_paths(
             let mut r = crate::bam::SamRecord::new();
             for (idx, mut feed) in feeds.into_iter().enumerate() {
                 preprocessor.reset_for_next_bam();
+                parser.reset_for_next_bam();
                 let mut any_passed = false;
                 while feed.next_into(&mut r)? {
                     if preprocessor.preprocess_record(&r, config) {

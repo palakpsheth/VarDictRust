@@ -5837,6 +5837,7 @@ fn partial_pipeline(
     );
     for (idx, bam) in bams.iter().enumerate() {
         preprocessor.reset_for_next_bam();
+        parser.reset_for_next_bam();
         let bam_path = std::path::Path::new(bam);
         let mut feed = crate::bam::query_region_iter(
             bam_path,

@@ -58,6 +58,7 @@ pub fn simple_post_process(
             splice,
             strict_bounds,
             None,
+            false,
         )
     } else {
         simple_post_process_core(
@@ -69,6 +70,7 @@ pub fn simple_post_process(
             splice,
             strict_bounds,
             None,
+            false,
         )
     }
 }
@@ -118,10 +120,49 @@ pub(crate) fn simple_post_process_owned_with_bounds(
 pub(crate) fn simple_post_process_owned_with_bounds_and_ref(
     config: &Config,
     region: &Region,
+    aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    strict_bounds: Option<&[(i32, i32)]>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
+) -> Vec<Variant> {
+    simple_post_process_owned_with_bounds_and_ref_opts(
+        config,
+        region,
+        aligned_variants,
+        splice,
+        strict_bounds,
+        ref_info,
+        false,
+    )
+}
+
+pub(crate) fn simple_post_process_owned_unbucketed_with_bounds_and_ref(
+    config: &Config,
+    region: &Region,
+    aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    strict_bounds: Option<&[(i32, i32)]>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
+) -> Vec<Variant> {
+    simple_post_process_owned_with_bounds_and_ref_opts(
+        config,
+        region,
+        aligned_variants,
+        splice,
+        strict_bounds,
+        ref_info,
+        true,
+    )
+}
+
+fn simple_post_process_owned_with_bounds_and_ref_opts(
+    config: &Config,
+    region: &Region,
     mut aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
     strict_bounds: Option<&[(i32, i32)]>,
     ref_info: Option<(&crate::reference::Reference, i32)>,
+    skip_vcf_bucketing: bool,
 ) -> Vec<Variant> {
     if config.compat.coordinate_sorted_vars {
         let mut keys: Vec<i32> = aligned_variants.keys().copied().collect();
@@ -137,6 +178,7 @@ pub(crate) fn simple_post_process_owned_with_bounds_and_ref(
             splice,
             strict_bounds,
             ref_info,
+            skip_vcf_bucketing,
         )
     } else {
         simple_post_process_core(
@@ -148,40 +190,14 @@ pub(crate) fn simple_post_process_owned_with_bounds_and_ref(
             splice,
             strict_bounds,
             ref_info,
+            skip_vcf_bucketing,
         )
     }
 }
 
+#[inline]
 fn dedup_normalized_simple_variants(vrefs: &mut Vec<Variant>) {
-    if vrefs.len() <= 1 {
-        return;
-    }
-    let old = std::mem::take(vrefs);
-    let mut out: Vec<Variant> = Vec::with_capacity(old.len());
-    let mut seen: rustc_hash::FxHashMap<(i32, String, String), usize> =
-        rustc_hash::FxHashMap::default();
-    for v in old {
-        if v.null_record {
-            out.push(v);
-            continue;
-        }
-        let key = (v.start_pos, v.ref_allele.clone(), v.var_allele.clone());
-        match seen.entry(key) {
-            std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert(out.len());
-                out.push(v);
-            }
-            std::collections::hash_map::Entry::Occupied(e) => {
-                let idx = *e.get();
-                if let Some(cur) = out.get_mut(idx) {
-                    if crate::variations::post_norm_candidate_beats(&v, cur) {
-                        *cur = v;
-                    }
-                }
-            }
-        }
-    }
-    *vrefs = out;
+    crate::variations::dedup_post_norm_vec(vrefs, |v| (!v.null_record).then_some((0u8, v, v)));
 }
 
 fn simple_post_process_core<'a>(
@@ -191,6 +207,7 @@ fn simple_post_process_core<'a>(
     splice: &rustc_hash::FxHashSet<String>,
     strict_bounds: Option<&[(i32, i32)]>,
     ref_info: Option<(&crate::reference::Reference, i32)>,
+    skip_vcf_bucketing: bool,
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
@@ -379,7 +396,7 @@ fn simple_post_process_core<'a>(
     // Bucketing must use the raw start (what simple_36 writes), NOT the
     // ToVarsBuilder position key: indels and SNVs can share one key while
     // having different raw starts, and different keys can share a raw start.
-    if !config.emit_intermediate && !config.vcf_all_alleles {
+    if !skip_vcf_bucketing && !config.emit_intermediate && !config.vcf_all_alleles {
         let exact_tie = config.compat.exact_binary_half_even;
         let mut buckets: BTreeMap<i32, Variant> = BTreeMap::new();
         for v in vrefs {

@@ -2032,6 +2032,7 @@ mod tests {
             end_is_variant2: false,
             tumor_amplicon: Some(amp_a),
             normal_amplicon: None,
+            v2_ref_variant: None,
         };
         assert_eq!(som.tumor_amplicon, Some(amp_a));
         assert!(som.normal_amplicon.is_none());

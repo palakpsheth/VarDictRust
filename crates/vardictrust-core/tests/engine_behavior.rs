@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`43` tests).
+//! First-class functional engine behavior integration suite (`44` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs,
@@ -8497,7 +8497,7 @@ mod vcf_all_alleles_and_compat_off {
         // - At `pos = 140` (`C -> A`): 14 agreed FR molecules (`pair_0..pair_13`, R1+ @ 100..=179, R2- @ 110..=189)
         //   plus 10 non-overlapping WT reads (`5` fwd + `5` rev) so `REFBIAS` is bidirectional (`2`).
         // - At `pos = 160` (`T -> G`, Review Focus #1): 6 discordant FR molecules where R1+ carries REF `'T'`
-        //   and R2- carries sequencing-error `'G'` -> must remain strand-biased (`ALD=0,6`, `BIAS=2:1`)!
+        //   and R2- carries sequencing-error `'G'` -> must remain strand-biased (`ALD=0,6`, `BIAS=2:0`)!
         // =====================================================================
         let mut ref34 = non_rep_ref(0x3434_0002_2026_2222, 320);
         ref34[135..147].copy_from_slice(b"GTAGCTGATCGA"); // 1-based 140 (idx 139) == 'C'; non-repetitive -> SHIFT3=0
@@ -8807,9 +8807,8 @@ mod vcf_all_alleles_and_compat_off {
         //   but `seq[2..=3]=="TT" != ref[152..=153]=="GA"`).
         //   Legacy (`Switch 37 = false`): lifts chimeric soft-clip -> `VD=8`.
         //   Isolated `Switch 37 = true`: rejects partial-flank soft-clip -> `VD=4`!
-        // - At `pos = 210` (`G -> T` on `"CTAGCGATCAGT"`): 4 spanning `60M` variant reads +
-        //   4 full-flank-matching `4S` 3' soft-clipped reads (`"TCGA"` where `seq[1..=3]=="CGA" == ref[211..=213]`)
-        //   -> rescued to `VD=8` in BOTH legacy and `Switch 37 = true`!
+        // - At `pos = 210` (`G -> T` on `"CTAGCGATCAGT"`): 4 spanning `120M` variant reads without
+        //   adjacent soft-clips -> control locus preserved untouched at `VD=4` in BOTH legacy and `Switch 37 = true`!
         // =====================================================================
         let mut ref37 = non_rep_ref(0x3737_0005_2026_5555, 320);
         ref37[146..158].copy_from_slice(b"CTGTCGATACGA"); // 150 (idx 149) == 'T', 151..=153 == "CGA"
@@ -8873,15 +8872,6 @@ mod vcf_all_alleles_and_compat_off {
                 vec![38u8; m_c1 + 4],
                 None,
             ));
-
-            // Valid full-flank 5' soft-clip `4S` at pos 211 (`start = 211`, covering SNV `'T'` at 210
-            // and matching `ref[207..=209]` backwards: `209='A', 208='T', 207='C'` -> clip in BAM = `"CTAT"`,
-            // reversed in `sclip5` = `"TATC"` where `seq[0]=='T'` and `seq[1..=3]=="ATC"` matches `209,208,207`!
-            // Wait: 1 mismatch in 4S would be rescued by `combine_dig_s_dig_m` unless we block rescue with Phred or use `1S` noise at a 3rd site;
-            // let's check: at pos 180 (`ref[180]=='C'`), 1-bp `1S` soft-clip `"A"` with Phred=20? No, `sclip` needs >=1 HQ base!
-            // With `combine_dig_s_dig_m`, 1 mismatch in 4S IS rescued into `M` by `CigarModifier` directly!
-            // That's why genuine read-end SNVs already rescue in `CigarModifier`, while `adj_snv` rescues when an adjacent
-            // indel/clip prevented `CigarModifier`! We already verify pos 210 stays `VD=4` untouched!)
         }
         recs37.sort_by_key(|r| r.alignment_start().unwrap().get());
         write_multi_contig_bam(&bam37, &[("chr1", ref37.len())], recs37).expect("bam37");
@@ -9161,7 +9151,7 @@ mod vcf_all_alleles_and_compat_off {
             .find(|l| l.starts_with("chr1\t160\t.\tT\tG\t"))
             .expect("Switch 34 pos 160");
         // Verify DP and VD unchanged vs legacy, ALD rebalanced to 7,7 (BIAS=2:2, SBF=1) on agreed pair,
-        // and discordant R2-only error at 160 untouched at ALD=0,4 (BIAS=2:1)!
+        // and discordant R2-only error at 160 untouched at ALD=0,6 (BIAS=2:0)!
         let parse_dp_vd_ald = |row: &str| -> (i32, i32, String) {
             let smp = row.split('\t').nth(9).unwrap();
             let f: Vec<&str> = smp.split(':').collect();
@@ -9434,6 +9424,329 @@ mod vcf_all_alleles_and_compat_off {
                     && p_rows[0].contains("STATUS=Germline;"),
                 "--preset {preset} must compose Wave-6 somatic split reconciliation cleanly, got:\n{p_vcf}"
             );
+        }
+    }
+
+    #[test]
+    fn compat_wave6_split_tile_1_1mbp_seam_parity_switches_35_and_36() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::Flags;
+        use vardictrust_core::config::COMPAT_OFF;
+
+        // `1,100,000 bp` (> `DEFAULT_UNTILED_SPAN_MAX = 1_000_000`) synthetic contig so default
+        // `effective_tile_size` splits `[1, 1_100_000]` into 11 `100 kbp` tiles (`[1, 100_000]`,
+        // `[100_001, 200_000]`, ..., `[1_000_001, 1_100_000]`) with a live tile seam at
+        // `100_000 | 100_001`, while `[99_500, 100_500]` (`1,001 bp <= 1 Mbp`) runs untiled (`AGENTS.md §10`).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let contig_len = 1_100_000usize;
+        let mut s = 0x5EA4_2026_0111_6666_u64;
+        let mut ref_seq = Vec::with_capacity(contig_len);
+        let mut prev1 = 0u8;
+        let mut prev2 = 0u8;
+        for _ in 0..contig_len {
+            loop {
+                s = s
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let b = b"ACGT"[((s >> 62) & 3) as usize];
+                if b != prev1 && b != prev2 {
+                    prev2 = prev1;
+                    prev1 = b;
+                    ref_seq.push(b);
+                    break;
+                }
+            }
+        }
+
+        // Locus A (`Switch 35` repeat indel collision across `100_000 | 100_001`):
+        // Place `"GCTAAGAAGAAGAAGCTGA"` starting at 1-based `99_993` (`idx = 99_992`):
+        // - `99_995` (`idx 99_994`) = `'T'`
+        // - `99_996..=100_007` (`idx 99_995..100_007`) = `"AAGAAGAAGAAG"` (4x `"AAG"` spanning `100_000 | 100_001`!)
+        // Reads deleting `99_999..=100_001` (4 reads, pileup key `99_999 <= 100_000` in tile 0) and
+        // reads deleting `100_005..=100_007` (10 reads, pileup key `100_005 >= 100_001` in tile 1)
+        // BOTH left-align to `(chr1, 99_995, TAAG, T)` -> Ruling 3 must retain the `VD=10` winner across the seam!
+        ref_seq[99_992..100_011].copy_from_slice(b"GCTAAGAAGAAGAAGCTGA");
+
+        // Locus B (`Switch 36` split tumor/normal germline deletion across `100_000 | 100_001` on a second
+        // `200_000 | 200_001` seam, AND also right across `100_000 | 100_001` in a dedicated paired BAM):
+        // Place `"CGATCAGCTA"` at `99_997..=100_006` (`idx 99_996..100_006`) on a second contig `chr2` (`1_100_000 bp`)
+        // OR place Locus A across `200_000 | 200_001` (`tile 1 | tile 2`) and Locus B across `100_000 | 100_001` (`tile 0 | tile 1`)
+        // on the SAME `1_100_000 bp` `chr1` contig so ONE run tests BOTH seams simultaneously!
+        // Let's place Locus B right at `100_000 | 100_001` and Locus A right at `200_000 | 200_001` (AND compare
+        // `[1, 1_100_000]` tiled against `[99_500, 200_500]` `101,001 bp <= 1 Mbp` untiled!):
+        // Reset `99_992..100_011` cleanly for Locus B at `100_000 | 100_001`, and put Locus A at `200_000 | 200_001`!
+        ref_seq[99_996..100_006].copy_from_slice(b"CGATCAGCTA"); // 100_000='T', 100_001..=100_003="CAG" -> (100_000, "TCAG", "T")
+        ref_seq[199_992..200_011].copy_from_slice(b"GCTAAGAAGAAGAAGCTGA"); // 199_995='T', 199_996..=200_007="AAGAAGAAGAAG"
+
+        let fa = write_multi_contig_fasta(dir.path(), "w6_seam_1_1m", &[("chr1", &ref_seq)]);
+        let bam_t = dir.path().join("w6_seam_t.bam");
+        let bam_n = dir.path().join("w6_seam_n.bam");
+        let mut recs_t = Vec::new();
+        let mut recs_n = Vec::new();
+
+        // 1) At seam `100_000 | 100_001` (`Switch 36`):
+        //    - Tumor: 12 WT reads + 12 `4D1I` (`-4^T` at key `100_000` in tile 0 -> `(100_000, TCAG, T)`)
+        //    - Normal: 12 WT reads + 12 `3D` (`-3` at key `100_001` in tile 1 -> `(100_000, TCAG, T)`)
+        for i in 0..12usize {
+            let s_pos = 99_972 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt_seq = ref_seq[s_pos - 1..s_pos - 1 + 65].to_vec();
+            let wt_q = vec![38u8; 65];
+            recs_t.push(mk_contig_rec(
+                &format!("s36_twt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(65, Kind::Match)],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            recs_n.push(mk_contig_rec(
+                &format!("s36_nwt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(65, Kind::Match)],
+                wt_seq,
+                wt_q,
+                None,
+            ));
+
+            // Tumor `4D1I` at 100_000..=100_003:
+            let left_t = 100_000 - s_pos;
+            let right_m = 28usize;
+            let mut t_seq = ref_seq[s_pos - 1..99_999].to_vec();
+            t_seq.push(b'T');
+            t_seq.extend_from_slice(&ref_seq[100_003..100_003 + right_m]);
+            let mut t_q = vec![37 + (i % 3) as u8; left_t + 1 + right_m];
+            t_q[left_t - 2] = 20;
+            t_q[left_t - 1] = 20;
+            recs_t.push(mk_contig_rec(
+                &format!("s36_tvar_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_t, Kind::Match),
+                    (4, Kind::Deletion),
+                    (1, Kind::Insertion),
+                    (right_m, Kind::Match),
+                ],
+                t_seq,
+                t_q,
+                None,
+            ));
+
+            // Normal `3D` at 100_001..=100_003:
+            let left_n = 100_001 - s_pos;
+            let mut n_seq = ref_seq[s_pos - 1..100_000].to_vec();
+            n_seq.extend_from_slice(&ref_seq[100_003..100_003 + right_m]);
+            let mut n_q = vec![37 + (i % 3) as u8; left_n + right_m];
+            n_q[left_n - 2] = 20;
+            n_q[left_n - 1] = 20;
+            recs_n.push(mk_contig_rec(
+                &format!("s36_nvar_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_n, Kind::Match),
+                    (3, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                n_seq,
+                n_q,
+                None,
+            ));
+        }
+
+        // 2) At seam `200_000 | 200_001` (`Switch 35` Ruling 3 repeat indel collision under default `realign = 1`):
+        //    - 12 WT reads in both Tumor & Normal
+        //    - 4 Tumor reads with `3D` at `199_996..=199_998` (pileup key `199_995 <= 200_000` in tile `[100_001, 200_000]`, `(199_995, TAAG, T)`, VD=4)
+        //    - 10 Tumor reads with `4D1I` (`-4^G`) at `200_004..=200_007` (pileup key `200_004 >= 200_001` in tile `[200_001, 300_000]`, which `adj_complex` + `Switch 35` left-aligns across the seam to `(199_995, TAAG, T)`, VD=10)
+        for i in 0..12usize {
+            let s_pos = 199_970 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt_seq = ref_seq[s_pos - 1..s_pos - 1 + 70].to_vec();
+            let wt_q = vec![38u8; 70];
+            recs_t.push(mk_contig_rec(
+                &format!("s35_twt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(70, Kind::Match)],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            recs_n.push(mk_contig_rec(
+                &format!("s35_nwt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(70, Kind::Match)],
+                wt_seq,
+                wt_q,
+                None,
+            ));
+        }
+        for i in 0..4usize {
+            let s_pos = 199_970 + (i % 3);
+            let left_m = 199_996 - s_pos; // 3D deletes 199_996..=199_998 ("AAG") -> key 199_995
+            let right_m = 30usize;
+            let mut seq = ref_seq[s_pos - 1..199_995].to_vec();
+            seq.extend_from_slice(&ref_seq[199_998..199_998 + right_m]);
+            let mut q = vec![36u8; left_m + right_m];
+            q[left_m - 2] = 20;
+            q[left_m - 1] = 20;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs_t.push(mk_contig_rec(
+                &format!("s35_t_left_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_m, Kind::Match),
+                    (3, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                seq,
+                q,
+                None,
+            ));
+        }
+        for i in 0..10usize {
+            let s_pos = 199_976 + (i % 3);
+            let left_m = 200_004 - s_pos; // 4D1I deletes 200_004..=200_007 ("GAAG") + inserts 'G' -> key 200_004
+            let right_m = 28usize;
+            let mut seq = ref_seq[s_pos - 1..200_003].to_vec();
+            seq.push(b'G');
+            seq.extend_from_slice(&ref_seq[200_007..200_007 + right_m]);
+            let mut q = vec![39u8; left_m + 1 + right_m];
+            q[left_m - 2] = 20;
+            q[left_m - 1] = 20;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs_t.push(mk_contig_rec(
+                &format!("s35_t_right_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_m, Kind::Match),
+                    (4, Kind::Deletion),
+                    (1, Kind::Insertion),
+                    (right_m, Kind::Match),
+                ],
+                seq,
+                q,
+                None,
+            ));
+        }
+
+        recs_t.sort_by_key(|r| r.alignment_start().unwrap().get());
+        recs_n.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam_t, &[("chr1", contig_len)], recs_t).expect("bam_t");
+        write_multi_contig_bam(&bam_n, &[("chr1", contig_len)], recs_n).expect("bam_n");
+
+        let bed_tiled = dir.path().join("tiled_1_1m.bed");
+        let bed_untiled = dir.path().join("untiled_101k.bed");
+        std::fs::write(&bed_tiled, "chr1\t0\t1100000\tSEAM_GENE\n").expect("bed_tiled");
+        std::fs::write(&bed_untiled, "chr1\t99499\t200500\tSEAM_GENE\n").expect("bed_untiled");
+
+        // Verify BOTH (1) Single-sample Simple mode AND (2) Paired Somatic mode across VCF ($ALL=1 & --vcf-all-alleles) and .var!
+        for is_paired in [false, true] {
+            for vcf_all in [false, true] {
+                for emit_inter in [false, true] {
+                    if emit_inter && vcf_all {
+                        continue;
+                    }
+                    let make_cfg = |bed_path: &std::path::Path| Config {
+                        reference: fa.to_string_lossy().into_owned(),
+                        bam: if is_paired {
+                            format!("{}|{}", bam_t.display(), bam_n.display())
+                        } else {
+                            bam_t.to_string_lossy().into_owned()
+                        },
+                        sample: if is_paired {
+                            "SEAM_T|SEAM_N".to_string()
+                        } else {
+                            "SEAM_T".to_string()
+                        },
+                        sample_explicit: true,
+                        bed: Some(bed_path.to_string_lossy().into_owned()),
+                        col_chr: 0,
+                        col_start: 1,
+                        col_end: 2,
+                        col_seg_start: 1,
+                        col_seg_end: 2,
+                        col_gene: Some(3),
+                        column_for_chromosome: Some(0),
+                        zero_based: true,
+                        zero_based_defined: true,
+                        freq: 0.01,
+                        af_threshold: 0.01,
+                        vcf_all_alleles: vcf_all,
+                        emit_intermediate: emit_inter,
+                        fisher: true,
+                        threads: 2,
+                        compat: COMPAT_OFF,
+                        ..Config::default()
+                    };
+
+                    let out_tiled = run_core_vcf(&make_cfg(&bed_tiled)).expect("tiled 1.1M run");
+                    let out_untiled =
+                        run_core_vcf(&make_cfg(&bed_untiled)).expect("untiled 101k run");
+                    assert_eq!(
+                        out_tiled, out_untiled,
+                        "1.1 Mbp 100 kbp-tiled output MUST be byte-identical to untiled single-region output (paired={is_paired}, all_alleles={vcf_all}, intermediate={emit_inter})"
+                    );
+
+                    if !emit_inter {
+                        let rows = extract_variants(&out_tiled);
+                        assert_eq!(
+                            rows.len(),
+                            2,
+                            "expected exact 2 reconciled/deduplicated records across both seams, got:\n{}",
+                            rows.join("\n")
+                        );
+                        assert!(
+                            rows[0].starts_with("chr1\t100000\t.\tTCAG\tT\t"),
+                            "expected seam 100000|100001 locus at chr1:100000 TCAG->T, got: {}",
+                            rows[0]
+                        );
+                        if is_paired {
+                            assert!(
+                                rows[0].contains("STATUS=Germline;"),
+                                "paired Switch 36 across 100000|100001 seam must reconcile into STATUS=Germline, got: {}",
+                                rows[0]
+                            );
+                        }
+                        assert!(
+                            rows[1].starts_with("chr1\t199995\t.\tTAAG\tT\t")
+                                && (rows[1].contains(";VD=10;") || rows[1].contains(":10:")),
+                            "Switch 35 Ruling 3 across 200000|200001 seam must select VD=10 winner at chr1:199995 TAAG->T, got: {}",
+                            rows[1]
+                        );
+                    }
+                }
+            }
         }
     }
 }

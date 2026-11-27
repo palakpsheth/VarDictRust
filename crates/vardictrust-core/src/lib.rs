@@ -11,7 +11,7 @@
 //!   ([`config::CompatTarget::VardictJava183`]) reproduces VarDictJava v1.8.3 + `var2vcf_*.pl`
 //!   intermediate `.var` and `VCFv4.2` output across valid inputs.
 //! - **Opt-in corrections (`--compat=off`):** [`config::COMPAT_OFF`]
-//!   ([`config::CompatTarget::Off`]) enables all 32 [`config::CompatProfile`] accuracy,
+//!   ([`config::CompatTarget::Off`]) enables all 38 [`config::CompatProfile`] accuracy,
 //!   bounded-scale, `VD <= DP` reconciliation, coordinate-sorted `.var` order, exact realignment
 //!   overlap/`dlen` matching, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), and `=`/`X` (`--eqx`)
 //!   CIGAR fixes, and stamps `##VarDictRustCompat=off` in the VCF header; full 18/18 `var2vcf`
@@ -94,6 +94,67 @@ pub const MAX_TILE_SIZE: u32 = 500_000_000;
 /// as tiles advance monotonically, keeping deduplication continuously active across
 /// whole-chromosome split runs without an arbitrary row-count cutoff.
 const SPLIT_VAR_RETENTION_WINDOW_BP: i32 = 200_000;
+
+/// Coordinate seam halo (`10,024 bp`, `M-DOCUMENTED-MAGIC`) buffered across contiguous
+/// `100 kbp` split sub-tiles of a `> 1 Mbp` parent region when `Switch 35`
+/// (`canonical_vcf_complex_left_align`) or `Switch 36` (`somatic_reconcile_split_alleles`)
+/// is active so cross-seam left-aligned indels and split tumor/normal alleles reconcile
+/// and deduplicate identically to an untiled single-region run (`AGENTS.md §10`).
+const SPLIT_TILE_SEAM_HALO_BP: i32 = 10_024;
+
+fn ensure_split_tile_left_align_ref<'a, I>(
+    reference: &mut crate::reference::Reference,
+    chr: &str,
+    tile_start: crate::types::Pos1,
+    original_start: crate::types::Pos1,
+    aligned_maps: I,
+    config: &config::Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Result<(), VardictError>
+where
+    I: IntoIterator<Item = &'a crate::javamap::JavaHashMap<i32, crate::variations::Vars>>,
+{
+    if !crate::variations::canonical_left_align_enabled(config)
+        || tile_start.0 <= original_start.0
+        || config.reference.is_empty()
+    {
+        return Ok(());
+    }
+    let want_lo = tile_start
+        .0
+        .saturating_sub(SPLIT_TILE_SEAM_HALO_BP as u32)
+        .max(1);
+    if reference
+        .loaded_span_bounds(chr)
+        .is_some_and(|(min_s, _)| min_s <= want_lo)
+    {
+        return Ok(());
+    }
+    let has_unequal = aligned_maps.into_iter().any(|m| {
+        m.iter().any(|(_, vars)| {
+            vars.variants
+                .iter()
+                .any(|v| v.ref_allele.len() != v.var_allele.len())
+        })
+    });
+    if !has_unequal {
+        return Ok(());
+    }
+    let ext_reg = crate::regions::Region {
+        chr: chr.to_string(),
+        start: crate::types::Pos1(want_lo),
+        end: tile_start,
+        gene: String::new(),
+        amplicon: None,
+    };
+    crate::reference::get_reference(
+        &ext_reg,
+        config.max_region_len,
+        chromosomes_lengths,
+        config,
+        reference,
+    )
+}
 
 /// Merge 1-based closed genomic intervals `(lo, hi)`, clamping `lo >= 1` and discarding
 /// degenerate intervals (`hi < 1` or `lo > hi`), into sorted disjoint non-adjacent ranges.
@@ -656,6 +717,7 @@ fn run_pipeline_on_records_ext(
         .take(parent_active_bam_limit.unwrap_or(usize::MAX))
     {
         preprocessor.reset_for_next_bam();
+        parser.reset_for_next_bam();
         while let Some(step) = max_rl_steps.get(step_cursor) {
             if step.bam_idx < idx {
                 parser.max_read_length = parser.max_read_length.max(step.new_max);
@@ -6170,6 +6232,14 @@ fn run_with_writer_inner<W: EngineWriter>(
             original_start: crate::types::Pos1,
             original_end: crate::types::Pos1,
         },
+        SeamSplit {
+            region: crate::regions::Region,
+            variants: Vec<crate::variations::Variant>,
+            tile_start: crate::types::Pos1,
+            tile_end: crate::types::Pos1,
+            original_start: crate::types::Pos1,
+            original_end: crate::types::Pos1,
+        },
     }
 
     impl SimpleTileOutput {
@@ -6214,15 +6284,201 @@ fn run_with_writer_inner<W: EngineWriter>(
                                 .fold(0usize, usize::saturating_add),
                         )
                 }
+                Self::SeamSplit {
+                    region, variants, ..
+                } => region
+                    .chr
+                    .capacity()
+                    .saturating_add(region.gene.capacity())
+                    .saturating_add(
+                        variants
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<crate::variations::Variant>()),
+                    )
+                    .saturating_add(
+                        variants
+                            .iter()
+                            .map(crate::variations::Variant::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    ),
             }
         }
     }
 
+    let seam_reconcile_simple =
+        !config.splice && !config.pileup && crate::variations::canonical_left_align_enabled(config);
     let mut vcf_acc: SpillableVcfAccumulator<RawVcfCandidate> =
         SpillableVcfAccumulator::from_config(config);
     let mut split_var_deduper: SplitVarDeduper<String> = SplitVarDeduper::default();
     let mut vcf_tile_deduper: SplitVarDeduper<Option<RawVcfCandidate>> = SplitVarDeduper::default();
     let mut cur_vcf_dedup_chr: Option<String> = None;
+    let mut simple_seam: Option<(
+        crate::regions::Region,
+        Vec<crate::variations::Variant>,
+        crate::types::Pos1,
+    )> = None;
+
+    let emit_simple_seam_batch = |region: &crate::regions::Region,
+                                  variants: Vec<crate::variations::Variant>,
+                                  tile_start: crate::types::Pos1,
+                                  tile_end: crate::types::Pos1,
+                                  original_start: crate::types::Pos1,
+                                  original_end: crate::types::Pos1,
+                                  writer: &mut W,
+                                  split_var_deduper: &mut SplitVarDeduper<String>,
+                                  vcf_tile_deduper: &mut SplitVarDeduper<
+        Option<RawVcfCandidate>,
+    >,
+                                  cur_vcf_dedup_chr: &mut Option<String>,
+                                  vcf_acc: &mut SpillableVcfAccumulator<RawVcfCandidate>|
+     -> Result<(), VardictError> {
+        let exact_tie = config.compat.exact_binary_half_even;
+        if config.emit_intermediate {
+            let mut rows = Vec::with_capacity(variants.len());
+            let ids = build_simple_split_var_identities(&variants, true);
+            for (v, id) in variants.into_iter().zip(ids) {
+                let mut line = String::new();
+                crate::output::table::simple_row_into_compat(
+                    &mut line,
+                    &v,
+                    region,
+                    &config.sample,
+                    &v.sv,
+                    config.fisher,
+                    exact_tie,
+                );
+                if config.crispr_cutting_site.unwrap_or(0) != 0 {
+                    line.push('\t');
+                    crate::util::push_i32(&mut line, v.crispr);
+                }
+                if config.debug {
+                    line.push('\t');
+                    line.push_str(&v.debug);
+                }
+                let is_sv = !v.sv.is_empty() || v.var_allele.contains('<');
+                rows.push(SplitVarRow {
+                    id,
+                    is_sv,
+                    payload: line,
+                });
+            }
+            split_var_deduper.accept_tile(
+                rows,
+                true,
+                tile_start,
+                tile_end,
+                original_start,
+                original_end,
+                |line| write_output_line(writer, &line),
+            )
+        } else if config.vcf_all_alleles {
+            let mut scratch = String::with_capacity(512);
+            let ids = build_simple_split_var_identities(&variants, true);
+            let mut rows = Vec::with_capacity(variants.len());
+            for (v, id) in variants.into_iter().zip(ids) {
+                let is_sv = !v.sv.is_empty() || v.var_allele.contains('<');
+                let payload = if crate::output::vcf::perl_row_skipped(&v.ref_allele) {
+                    None
+                } else {
+                    let start_pos = v.start_pos;
+                    let af_4dp = canonical_af_4dp(v.frequency, exact_tie);
+                    let event = crate::output::vcf::build_single_vcf_event(
+                        &mut scratch,
+                        &v,
+                        region,
+                        config,
+                        None,
+                    );
+                    let all_alleles = Some(AllAllelesMeta::from_owned_boxed(
+                        v.end_pos,
+                        v.ref_allele,
+                        v.var_allele,
+                        0,
+                    ));
+                    Some(RawVcfCandidate {
+                        start_pos,
+                        af_4dp,
+                        event,
+                        all_alleles,
+                    })
+                };
+                rows.push(SplitVarRow { id, is_sv, payload });
+            }
+            if cur_vcf_dedup_chr.as_deref() != Some(region.chr.as_str()) {
+                if let Some(prev_chr) = cur_vcf_dedup_chr.take() {
+                    vcf_tile_deduper.flush_before_unsplit_tile(|maybe_cand| {
+                        if let Some(cand) = maybe_cand {
+                            vcf_acc.insert(&prev_chr, cand)?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                *cur_vcf_dedup_chr = Some(region.chr.clone());
+            }
+            vcf_tile_deduper.accept_tile(
+                rows,
+                true,
+                tile_start,
+                tile_end,
+                original_start,
+                original_end,
+                |maybe_cand| {
+                    if let Some(cand) = maybe_cand {
+                        vcf_acc.insert(&region.chr, cand)?;
+                    }
+                    Ok(())
+                },
+            )
+        } else {
+            if let Some(prev_chr) = cur_vcf_dedup_chr.take() {
+                vcf_tile_deduper.flush_before_unsplit_tile(|maybe_cand| {
+                    if let Some(cand) = maybe_cand {
+                        vcf_acc.insert(&prev_chr, cand)?;
+                    }
+                    Ok(())
+                })?;
+            }
+            let mut buckets: std::collections::BTreeMap<i32, crate::variations::Variant> =
+                std::collections::BTreeMap::new();
+            for v in variants {
+                let v_af = crate::types::round_half_even_compat(v.frequency, 4, exact_tie);
+                match buckets.entry(v.start_pos) {
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        e.insert(v);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut e) => {
+                        let cur_af =
+                            crate::types::round_half_even_compat(e.get().frequency, 4, exact_tie);
+                        if v_af > cur_af {
+                            e.insert(v);
+                        }
+                    }
+                }
+            }
+            let mut scratch = String::with_capacity(512);
+            for v in buckets.into_values() {
+                let start_pos = v.start_pos;
+                let af_4dp = crate::types::round_half_even_compat(v.frequency, 4, exact_tie);
+                let event = crate::output::vcf::build_single_vcf_event(
+                    &mut scratch,
+                    &v,
+                    region,
+                    config,
+                    None,
+                );
+                vcf_acc.insert(
+                    &region.chr,
+                    RawVcfCandidate {
+                        start_pos,
+                        af_4dp,
+                        event,
+                        all_alleles: None,
+                    },
+                )?;
+            }
+            Ok(())
+        }
+    };
 
     // Process tiles in parallel, print variants in deterministic index order
     crate::runner::run_parallel_batched_for_bam_weighted(
@@ -6373,6 +6629,33 @@ fn run_with_writer_inner<W: EngineWriter>(
             let chr_len_i32 = chromosomes_lengths_clone
                 .get(&builder_region.chr)
                 .map_or(0, |&len| len.min(i32::MAX as usize) as i32);
+            if seam_reconcile_simple && is_split_tile {
+                ensure_split_tile_left_align_ref(
+                    &mut reference,
+                    &builder_region.chr,
+                    tile.start,
+                    tile.original_start,
+                    [&aligned_variants],
+                    &config_clone,
+                    &chromosomes_lengths_clone,
+                )?;
+                let variants = crate::postprocess::simple::simple_post_process_owned_unbucketed_with_bounds_and_ref(
+                    &config_clone,
+                    &builder_region,
+                    aligned_variants,
+                    &var_data.splice,
+                    chr_strict_slice,
+                    Some((&reference, chr_len_i32)),
+                );
+                return Ok(SimpleTileOutput::SeamSplit {
+                    region: builder_region,
+                    variants,
+                    tile_start: tile.start,
+                    tile_end: tile.end,
+                    original_start: tile.original_start,
+                    original_end: tile.original_end,
+                });
+            }
             let variants =
                 crate::postprocess::simple::simple_post_process_owned_with_bounds_and_ref(
                     &config_clone,
@@ -6531,7 +6814,103 @@ fn run_with_writer_inner<W: EngineWriter>(
             }
         },
         |output| {
+            if !matches!(output, SimpleTileOutput::SeamSplit { .. }) {
+                if let Some((prev_reg, prev_held, prev_ts)) = simple_seam.take() {
+                    emit_simple_seam_batch(
+                        &prev_reg,
+                        prev_held,
+                        prev_ts,
+                        prev_reg.end,
+                        prev_reg.start,
+                        prev_reg.end,
+                        writer,
+                        &mut split_var_deduper,
+                        &mut vcf_tile_deduper,
+                        &mut cur_vcf_dedup_chr,
+                        &mut vcf_acc,
+                    )?;
+                }
+            }
             match output {
+                SimpleTileOutput::SeamSplit {
+                    region,
+                    variants,
+                    tile_start,
+                    tile_end,
+                    original_start,
+                    original_end,
+                } => {
+                    if tile_start == original_start
+                        || simple_seam.as_ref().is_some_and(|(pr, _, _)| pr != &region)
+                    {
+                        if let Some((prev_reg, prev_held, prev_ts)) = simple_seam.take() {
+                            emit_simple_seam_batch(
+                                &prev_reg,
+                                prev_held,
+                                prev_ts,
+                                prev_reg.end,
+                                prev_reg.start,
+                                prev_reg.end,
+                                writer,
+                                &mut split_var_deduper,
+                                &mut vcf_tile_deduper,
+                                &mut cur_vcf_dedup_chr,
+                                &mut vcf_acc,
+                            )?;
+                        }
+                    }
+                    let mut combined = match simple_seam.take() {
+                        Some((_, mut held, _)) => {
+                            held.reserve(variants.len());
+                            held.extend(variants);
+                            held
+                        }
+                        None => variants,
+                    };
+                    crate::variations::dedup_post_norm_vec(&mut combined, |v| {
+                        (!v.null_record).then_some((0u8, v, v))
+                    });
+                    if tile_end == original_end {
+                        emit_simple_seam_batch(
+                            &region,
+                            combined,
+                            tile_start,
+                            tile_end,
+                            original_start,
+                            original_end,
+                            writer,
+                            &mut split_var_deduper,
+                            &mut vcf_tile_deduper,
+                            &mut cur_vcf_dedup_chr,
+                            &mut vcf_acc,
+                        )?;
+                    } else {
+                        let hold_from = (tile_end.0 as i32).saturating_sub(SPLIT_TILE_SEAM_HALO_BP);
+                        let mut ready = Vec::with_capacity(combined.len());
+                        let mut next_held = Vec::new();
+                        for v in combined {
+                            if v.start_pos >= hold_from {
+                                next_held.push(v);
+                            } else {
+                                ready.push(v);
+                            }
+                        }
+                        emit_simple_seam_batch(
+                            &region,
+                            ready,
+                            tile_start,
+                            tile_end,
+                            original_start,
+                            original_end,
+                            writer,
+                            &mut split_var_deduper,
+                            &mut vcf_tile_deduper,
+                            &mut cur_vcf_dedup_chr,
+                            &mut vcf_acc,
+                        )?;
+                        simple_seam = Some((region, next_held, tile_start));
+                    }
+                }
                 SimpleTileOutput::UnSplitVarBlock(block) => {
                     split_var_deduper
                         .flush_before_unsplit_tile(|line| write_output_line(&mut writer, &line))?;
@@ -6611,6 +6990,21 @@ fn run_with_writer_inner<W: EngineWriter>(
         },
         SimpleTileOutput::approx_heap_bytes,
     )?;
+    if let Some((prev_reg, prev_held, prev_ts)) = simple_seam.take() {
+        emit_simple_seam_batch(
+            &prev_reg,
+            prev_held,
+            prev_ts,
+            prev_reg.end,
+            prev_reg.start,
+            prev_reg.end,
+            writer,
+            &mut split_var_deduper,
+            &mut vcf_tile_deduper,
+            &mut cur_vcf_dedup_chr,
+            &mut vcf_acc,
+        )?;
+    }
     split_var_deduper.flush_all_pending(|line| write_output_line(&mut writer, &line))?;
     if let Some(last_chr) = cur_vcf_dedup_chr.take() {
         vcf_tile_deduper.flush_all_pending(|maybe_cand| {
@@ -6747,10 +7141,21 @@ std::thread_local! {
 
 fn load_amplicon_segment_postprocess_ref(
     segment: &[crate::regions::Region],
+    vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, crate::variations::Vars>],
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Option<(crate::reference::Reference, i32)> {
     if !crate::variations::canonical_left_align_enabled(config) || config.reference.is_empty() {
+        return None;
+    }
+    let has_unequal_allele = vars_per_amplicon.iter().any(|vm| {
+        vm.iter().any(|(_, vars)| {
+            vars.variants
+                .iter()
+                .any(|v| v.ref_allele.len() != v.var_allele.len())
+        })
+    });
+    if !has_unequal_allele {
         return None;
     }
     let first = segment.first()?;
@@ -6976,6 +7381,7 @@ fn run_amplicon<W: EngineWriter>(
                 .and_then(|m| m.get(&current_region.chr));
             let seg_post_ref = load_amplicon_segment_postprocess_ref(
                 &segment,
+                &vars_per_amplicon,
                 &config_clone,
                 &chromosomes_lengths_clone,
             );
@@ -7104,6 +7510,7 @@ fn run_amplicon<W: EngineWriter>(
                     // per-base BTreeMap held, in the same ascending order.
                     let seg_post_ref = load_amplicon_segment_postprocess_ref(
                         &segment,
+                        &vars_per_amplicon,
                         config,
                         chromosomes_lengths,
                     );
@@ -7305,6 +7712,15 @@ fn run_somatic<W: EngineWriter>(
             original_start: crate::types::Pos1,
             original_end: crate::types::Pos1,
         },
+        SeamSplit {
+            region: crate::regions::Region,
+            somatic_variants: Vec<crate::postprocess::somatic::SomaticVariant>,
+            splice: rustc_hash::FxHashSet<String>,
+            tile_start: crate::types::Pos1,
+            tile_end: crate::types::Pos1,
+            original_start: crate::types::Pos1,
+            original_end: crate::types::Pos1,
+        },
     }
 
     impl SomaticTileOutput {
@@ -7348,16 +7764,199 @@ fn run_somatic<W: EngineWriter>(
                             })
                             .fold(0usize, usize::saturating_add),
                     ),
+                Self::SeamSplit {
+                    region,
+                    somatic_variants,
+                    splice,
+                    ..
+                } => region
+                    .chr
+                    .capacity()
+                    .saturating_add(region.gene.capacity())
+                    .saturating_add(somatic_variants.capacity().saturating_mul(
+                        std::mem::size_of::<crate::postprocess::somatic::SomaticVariant>(),
+                    ))
+                    .saturating_add(
+                        somatic_variants
+                            .iter()
+                            .map(crate::postprocess::somatic::SomaticVariant::approx_heap_bytes)
+                            .fold(0usize, usize::saturating_add),
+                    )
+                    .saturating_add(
+                        splice
+                            .capacity()
+                            .saturating_mul(std::mem::size_of::<String>()),
+                    )
+                    .saturating_add(
+                        splice
+                            .iter()
+                            .map(String::capacity)
+                            .fold(0usize, usize::saturating_add),
+                    ),
             }
         }
     }
 
+    let seam_reconcile_somatic = !config.pileup
+        && (crate::variations::canonical_left_align_enabled(config)
+            || config.compat.somatic_reconcile_split_alleles);
     let mut vcf_acc: SpillableVcfAccumulator<SomaticVcfCandidate> =
         SpillableVcfAccumulator::from_config(config);
     let mut split_var_deduper: SplitVarDeduper<String> = SplitVarDeduper::default();
     let mut vcf_tile_deduper: SplitVarDeduper<Option<SomaticVcfCandidate>> =
         SplitVarDeduper::default();
     let mut cur_vcf_dedup_chr: Option<String> = None;
+    let mut somatic_seam: Option<(
+        crate::regions::Region,
+        Vec<crate::postprocess::somatic::SomaticVariant>,
+        rustc_hash::FxHashSet<String>,
+        crate::types::Pos1,
+    )> = None;
+
+    let emit_somatic_seam_batch =
+        |region: &crate::regions::Region,
+         somatic_variants: Vec<crate::postprocess::somatic::SomaticVariant>,
+         tile_start: crate::types::Pos1,
+         tile_end: crate::types::Pos1,
+         original_start: crate::types::Pos1,
+         original_end: crate::types::Pos1,
+         writer: &mut W,
+         split_var_deduper: &mut SplitVarDeduper<String>,
+         vcf_tile_deduper: &mut SplitVarDeduper<Option<SomaticVcfCandidate>>,
+         cur_vcf_dedup_chr: &mut Option<String>,
+         vcf_acc: &mut SpillableVcfAccumulator<SomaticVcfCandidate>|
+         -> Result<(), VardictError> {
+            let exact_tie = config.compat.exact_binary_half_even;
+            if config.emit_intermediate {
+                let mut rows = Vec::with_capacity(somatic_variants.len());
+                for sv in somatic_variants {
+                    let mut line = String::new();
+                    crate::output::table::somatic_row_into_compat(
+                        &mut line,
+                        &sv.variant1,
+                        sv.variant2.as_ref(),
+                        region,
+                        &config.sample,
+                        &sv.status,
+                        &sv.sv1,
+                        &sv.sv2,
+                        sv.end_is_variant2,
+                        config.fisher,
+                        exact_tie,
+                    );
+                    if config.debug {
+                        line.push('\t');
+                        line.push_str(&sv.variant1.debug);
+                    }
+                    let id = SplitVarIdentity {
+                        origin_pos: sv.variant1.start_pos,
+                        start_pos: sv.variant1.start_pos,
+                        end_pos: sv.variant1.end_pos,
+                        ref_allele: sv.variant1.ref_allele.clone(),
+                        var_allele: sv.variant1.var_allele.clone(),
+                        null_record: sv.variant1.null_record,
+                        companion_kind: 0,
+                    };
+                    let is_sv = !sv.sv1.is_empty()
+                        || !sv.sv2.is_empty()
+                        || sv.variant1.var_allele.contains('<');
+                    rows.push(SplitVarRow {
+                        id,
+                        is_sv,
+                        payload: line,
+                    });
+                }
+                split_var_deduper.accept_tile(
+                    rows,
+                    true,
+                    tile_start,
+                    tile_end,
+                    original_start,
+                    original_end,
+                    |line| write_output_line(writer, &line),
+                )
+            } else if config.vcf_all_alleles {
+                let mut rows = Vec::with_capacity(somatic_variants.len());
+                for sv in somatic_variants {
+                    let id = SplitVarIdentity {
+                        origin_pos: sv.variant1.start_pos,
+                        start_pos: sv.variant1.start_pos,
+                        end_pos: sv.variant1.end_pos,
+                        ref_allele: sv.variant1.ref_allele.clone(),
+                        var_allele: sv.variant1.var_allele.clone(),
+                        null_record: sv.variant1.null_record,
+                        companion_kind: 0,
+                    };
+                    let is_sv = !sv.sv1.is_empty()
+                        || !sv.sv2.is_empty()
+                        || sv.variant1.var_allele.contains('<');
+                    let payload = if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
+                        None
+                    } else {
+                        let start_pos = sv.variant1.start_pos;
+                        let af_4dp = canonical_af_4dp(sv.variant1.frequency, exact_tie);
+                        let record = Some(crate::output::vcf::format_paired_vcf_record(
+                            &sv,
+                            &region.chr,
+                            config,
+                        ));
+                        let all_alleles = Some(AllAllelesMeta::from_owned_boxed(
+                            sv.variant1.end_pos,
+                            sv.variant1.ref_allele,
+                            sv.variant1.var_allele,
+                            0,
+                        ));
+                        Some(SomaticVcfCandidate {
+                            start_pos,
+                            af_4dp,
+                            record,
+                            all_alleles,
+                        })
+                    };
+                    rows.push(SplitVarRow { id, is_sv, payload });
+                }
+                if cur_vcf_dedup_chr.as_deref() != Some(region.chr.as_str()) {
+                    if let Some(prev_chr) = cur_vcf_dedup_chr.take() {
+                        vcf_tile_deduper.flush_before_unsplit_tile(|maybe_cand| {
+                            if let Some(cand) = maybe_cand {
+                                vcf_acc.insert(&prev_chr, cand)?;
+                            }
+                            Ok(())
+                        })?;
+                    }
+                    *cur_vcf_dedup_chr = Some(region.chr.clone());
+                }
+                vcf_tile_deduper.accept_tile(
+                    rows,
+                    true,
+                    tile_start,
+                    tile_end,
+                    original_start,
+                    original_end,
+                    |maybe_cand| {
+                        if let Some(cand) = maybe_cand {
+                            vcf_acc.insert(&region.chr, cand)?;
+                        }
+                        Ok(())
+                    },
+                )
+            } else {
+                if let Some(prev_chr) = cur_vcf_dedup_chr.take() {
+                    vcf_tile_deduper.flush_before_unsplit_tile(|maybe_cand| {
+                        if let Some(cand) = maybe_cand {
+                            vcf_acc.insert(&prev_chr, cand)?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                let candidates =
+                    build_unsplit_somatic_vcf_candidates(somatic_variants, &region.chr, config);
+                for cand in candidates {
+                    vcf_acc.insert(&region.chr, cand)?;
+                }
+                Ok(())
+            }
+        };
 
     // Process tiles: run both BAMs through pipeline, then somatic postprocess
     crate::runner::run_parallel_batched_for_bam_weighted(
@@ -7617,6 +8216,38 @@ fn run_somatic<W: EngineWriter>(
             let chr_len_i32 = chromosomes_lengths_clone
                 .get(&builder_region.chr)
                 .map_or(0, |&len| len.min(i32::MAX as usize) as i32);
+            if seam_reconcile_somatic && is_split_tile {
+                ensure_split_tile_left_align_ref(
+                    &mut reference,
+                    &builder_region.chr,
+                    tile.start,
+                    tile.original_start,
+                    [&aligned1, &aligned2],
+                    &config_clone,
+                    &chromosomes_lengths_clone,
+                )?;
+                let somatic_variants =
+                    crate::postprocess::somatic::somatic_post_process_owned_with_bounds_and_ref(
+                        &config_clone,
+                        &builder_region,
+                        aligned1,
+                        aligned2,
+                        &splice,
+                        Some(&pipeline_fn),
+                        combined_max_rl,
+                        chr_strict_slice,
+                        Some((&reference, chr_len_i32)),
+                    );
+                return Ok(SomaticTileOutput::SeamSplit {
+                    region: builder_region,
+                    somatic_variants,
+                    splice,
+                    tile_start: tile.start,
+                    tile_end: tile.end,
+                    original_start: tile.original_start,
+                    original_end: tile.original_end,
+                });
+            }
             let somatic_variants =
                 crate::postprocess::somatic::somatic_post_process_owned_with_bounds_and_ref(
                     &config_clone,
@@ -7752,7 +8383,124 @@ fn run_somatic<W: EngineWriter>(
             }
         },
         |output| {
+            if !matches!(output, SomaticTileOutput::SeamSplit { .. }) {
+                if let Some((prev_reg, prev_held, _, prev_ts)) = somatic_seam.take() {
+                    emit_somatic_seam_batch(
+                        &prev_reg,
+                        prev_held,
+                        prev_ts,
+                        prev_reg.end,
+                        prev_reg.start,
+                        prev_reg.end,
+                        writer,
+                        &mut split_var_deduper,
+                        &mut vcf_tile_deduper,
+                        &mut cur_vcf_dedup_chr,
+                        &mut vcf_acc,
+                    )?;
+                }
+            }
             match output {
+                SomaticTileOutput::SeamSplit {
+                    region,
+                    somatic_variants,
+                    splice,
+                    tile_start,
+                    tile_end,
+                    original_start,
+                    original_end,
+                } => {
+                    if tile_start == original_start
+                        || somatic_seam
+                            .as_ref()
+                            .is_some_and(|(pr, _, _, _)| pr != &region)
+                    {
+                        if let Some((prev_reg, prev_held, _, prev_ts)) = somatic_seam.take() {
+                            emit_somatic_seam_batch(
+                                &prev_reg,
+                                prev_held,
+                                prev_ts,
+                                prev_reg.end,
+                                prev_reg.start,
+                                prev_reg.end,
+                                writer,
+                                &mut split_var_deduper,
+                                &mut vcf_tile_deduper,
+                                &mut cur_vcf_dedup_chr,
+                                &mut vcf_acc,
+                            )?;
+                        }
+                    }
+                    let (mut combined, prev_splice) = match somatic_seam.take() {
+                        Some((_, mut held, prev_sp, _)) => {
+                            held.reserve(somatic_variants.len());
+                            held.extend(somatic_variants);
+                            (held, prev_sp)
+                        }
+                        None => (somatic_variants, rustc_hash::FxHashSet::default()),
+                    };
+                    if prev_splice.is_empty() {
+                        crate::postprocess::somatic::finalize_somatic_post_passes(
+                            config,
+                            &splice,
+                            &mut combined,
+                        );
+                    } else if splice.is_empty() {
+                        crate::postprocess::somatic::finalize_somatic_post_passes(
+                            config,
+                            &prev_splice,
+                            &mut combined,
+                        );
+                    } else {
+                        let mut merged_splice = prev_splice;
+                        merged_splice.extend(splice.iter().cloned());
+                        crate::postprocess::somatic::finalize_somatic_post_passes(
+                            config,
+                            &merged_splice,
+                            &mut combined,
+                        );
+                    }
+                    if tile_end == original_end {
+                        emit_somatic_seam_batch(
+                            &region,
+                            combined,
+                            tile_start,
+                            tile_end,
+                            original_start,
+                            original_end,
+                            writer,
+                            &mut split_var_deduper,
+                            &mut vcf_tile_deduper,
+                            &mut cur_vcf_dedup_chr,
+                            &mut vcf_acc,
+                        )?;
+                    } else {
+                        let hold_from = (tile_end.0 as i32).saturating_sub(SPLIT_TILE_SEAM_HALO_BP);
+                        let mut ready = Vec::with_capacity(combined.len());
+                        let mut next_held = Vec::new();
+                        for sv in combined {
+                            if sv.variant1.start_pos >= hold_from {
+                                next_held.push(sv);
+                            } else {
+                                ready.push(sv);
+                            }
+                        }
+                        emit_somatic_seam_batch(
+                            &region,
+                            ready,
+                            tile_start,
+                            tile_end,
+                            original_start,
+                            original_end,
+                            writer,
+                            &mut split_var_deduper,
+                            &mut vcf_tile_deduper,
+                            &mut cur_vcf_dedup_chr,
+                            &mut vcf_acc,
+                        )?;
+                        somatic_seam = Some((region, next_held, splice, tile_start));
+                    }
+                }
                 SomaticTileOutput::UnSplitVarBlock(block) => {
                     split_var_deduper
                         .flush_before_unsplit_tile(|line| write_output_line(writer, &line))?;
@@ -7832,6 +8580,21 @@ fn run_somatic<W: EngineWriter>(
         },
         SomaticTileOutput::approx_heap_bytes,
     )?;
+    if let Some((prev_reg, prev_held, _, prev_ts)) = somatic_seam.take() {
+        emit_somatic_seam_batch(
+            &prev_reg,
+            prev_held,
+            prev_ts,
+            prev_reg.end,
+            prev_reg.start,
+            prev_reg.end,
+            writer,
+            &mut split_var_deduper,
+            &mut vcf_tile_deduper,
+            &mut cur_vcf_dedup_chr,
+            &mut vcf_acc,
+        )?;
+    }
     split_var_deduper.flush_all_pending(|line| write_output_line(writer, &line))?;
     if let Some(last_chr) = cur_vcf_dedup_chr.take() {
         vcf_tile_deduper.flush_all_pending(|maybe_cand| {
@@ -8056,7 +8819,7 @@ fn compute_somatic_amplicon_segment_variants(
     //    drop `vars_per_amplicon_bam1` immediately before starting BAM2!
     let mut max_rl_per_amplicon: Vec<i32> = Vec::with_capacity(segment.len());
     let mut combined_max_rl: i32 = 0;
-    let (aligned1, tumor_concordance, splice1, seg_post_ref) = {
+    let (aligned1, tumor_concordance, splice1, mut seg_post_ref) = {
         #[cfg(test)]
         let _bam1_guard = {
             LIVE_BAM1_VARS_LISTS.with(|c| c.set(c.get().saturating_add(1)));
@@ -8080,8 +8843,12 @@ fn compute_somatic_amplicon_segment_variants(
             vars_per_amplicon_bam1.push(aligned);
             splice = next_splice;
         }
-        let seg_post_ref =
-            load_amplicon_segment_postprocess_ref(segment, config, chromosomes_lengths);
+        let seg_post_ref = load_amplicon_segment_postprocess_ref(
+            segment,
+            &vars_per_amplicon_bam1,
+            config,
+            chromosomes_lengths,
+        );
         let (agg1, conc1) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars_with_ref(
             config,
             segment,
@@ -8118,6 +8885,14 @@ fn compute_somatic_amplicon_segment_variants(
             combined_max_rl = combined_max_rl.max(max_rl);
             vars_per_amplicon_bam2.push(aligned);
             splice = next_splice;
+        }
+        if seg_post_ref.is_none() {
+            seg_post_ref = load_amplicon_segment_postprocess_ref(
+                segment,
+                &vars_per_amplicon_bam2,
+                config,
+                chromosomes_lengths,
+            );
         }
         let (agg2, conc2) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars_with_ref(
             config,
@@ -8556,6 +9331,7 @@ mod tests {
             end_is_variant2: false,
             tumor_amplicon: None,
             normal_amplicon: None,
+            v2_ref_variant: None,
         }
     }
 
@@ -10316,6 +11092,7 @@ mod tests {
                 end_is_variant2: false,
                 tumor_amplicon: None,
                 normal_amplicon: None,
+                v2_ref_variant: None,
             };
             SomaticVcfCandidate {
                 start_pos: pos,
@@ -14834,6 +15611,87 @@ mod tests {
         assert_eq!(
             cur_max, 140,
             "outer 25H/10P must be trimmed before CigarModifier under COMPAT_OFF"
+        );
+    }
+
+    #[test]
+    fn test_load_amplicon_segment_postprocess_ref_skips_fasta_on_snv_only_segments() {
+        let seg = vec![crate::regions::Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(100),
+            end: crate::types::Pos1(200),
+            gene: "AMP1".to_string(),
+            amplicon: Some(crate::regions::AmpliconInfo {
+                insert_start: crate::types::Pos1(115),
+                insert_end: crate::types::Pos1(185),
+            }),
+        }];
+        let mut cfg = config::Config {
+            // Deliberately non-existent FASTA path: if `load_amplicon_segment_postprocess_ref`
+            // opens the FASTA file, `SharedFastaMeta` would hit disk I/O; we also check
+            // against a real temp FASTA with `reset_get_base_calls` / `Some` on indels.
+            reference: "/nonexistent_dir_wave6/missing_ref.fa".to_string(),
+            compat: config::COMPAT_OFF,
+            ..config::Config::default()
+        };
+        let mut chr_lens = HashMap::new();
+        chr_lens.insert("chr1".to_string(), 500usize);
+
+        // 1. Empty segment map -> returns `None` immediately without touching disk
+        let empty_maps = vec![crate::javamap::JavaHashMap::new()];
+        assert!(
+            load_amplicon_segment_postprocess_ref(&seg, &empty_maps, &cfg, &chr_lens).is_none()
+        );
+
+        // 2. SNV / equal-length MNV-only segment -> returns `None` without opening FASTA
+        let mut snv_map = crate::javamap::JavaHashMap::new();
+        let mut vars_snv = crate::variations::Vars::new();
+        let mut snv = crate::variations::Variant::new();
+        snv.start_pos = 140;
+        snv.end_pos = 140;
+        snv.ref_allele = "A".to_string();
+        snv.var_allele = "G".to_string();
+        vars_snv.variants.push(snv);
+        let mut mnv = crate::variations::Variant::new();
+        mnv.start_pos = 150;
+        mnv.end_pos = 151;
+        mnv.ref_allele = "AC".to_string();
+        mnv.var_allele = "TG".to_string();
+        vars_snv.variants.push(mnv);
+        snv_map.insert(140, vars_snv);
+        let snv_maps = vec![snv_map];
+        assert!(load_amplicon_segment_postprocess_ref(&seg, &snv_maps, &cfg, &chr_lens).is_none());
+
+        // 3. Indel candidate on valid FASTA -> loads reference cleanly (`Some`)
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fa = dir.path().join("amp.fa");
+        let fai = dir.path().join("amp.fa.fai");
+        let seq = b"ACGT".repeat(125); // 500 bp
+        std::fs::write(
+            &fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&seq).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(&fai, "chr1\t500\t6\t500\t501\n").unwrap();
+        cfg.reference = fa.to_string_lossy().into_owned();
+        assert!(
+            load_amplicon_segment_postprocess_ref(&seg, &snv_maps, &cfg, &chr_lens).is_none(),
+            "even with a valid FASTA on disk, SNV/MNV-only segments must skip FASTA loading"
+        );
+
+        let mut indel_map = crate::javamap::JavaHashMap::new();
+        let mut vars_indel = crate::variations::Vars::new();
+        let mut del = crate::variations::Variant::new();
+        del.start_pos = 140;
+        del.end_pos = 142;
+        del.ref_allele = "ACG".to_string();
+        del.var_allele = "A".to_string();
+        vars_indel.variants.push(del);
+        indel_map.insert(141, vars_indel);
+        let loaded = load_amplicon_segment_postprocess_ref(&seg, &[indel_map], &cfg, &chr_lens);
+        assert!(
+            loaded.is_some(),
+            "segment containing an unequal-length allele must load segment FASTA for Switch 35"
         );
     }
 }

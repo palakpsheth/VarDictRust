@@ -462,8 +462,6 @@ pub(crate) fn amplicon_post_process_streaming_with_ref<
     let ref_ctx = ref_info.map(|(r, len)| (r, region.chr.as_str(), len));
     let dedup_non_pileup = do_left_align && !config.pileup;
     let mut buffered_dedup: Vec<AmpliconVariant> = Vec::new();
-    let mut dedup_seen: rustc_hash::FxHashMap<(i32, String, String), usize> =
-        rustc_hash::FxHashMap::default();
     // Per-amplicon cached `chr:start-end` strings formatted at most once per segment.
     let mut region_tags: Vec<String> = vec![String::new(); vars_per_amplicon.len()];
     // Scratch collections reused across positions to avoid per-base allocations.
@@ -791,32 +789,7 @@ pub(crate) fn amplicon_post_process_streaming_with_ref<
                 bad_variants: debug_bad,
             };
             if dedup_non_pileup {
-                if av.variant.null_record {
-                    buffered_dedup.push(av);
-                } else {
-                    let key = (
-                        av.variant.start_pos,
-                        av.variant.ref_allele.clone(),
-                        av.variant.var_allele.clone(),
-                    );
-                    match dedup_seen.entry(key) {
-                        std::collections::hash_map::Entry::Vacant(e) => {
-                            e.insert(buffered_dedup.len());
-                            buffered_dedup.push(av);
-                        }
-                        std::collections::hash_map::Entry::Occupied(e) => {
-                            let idx = *e.get();
-                            if let Some(cur) = buffered_dedup.get_mut(idx) {
-                                if crate::variations::post_norm_candidate_beats(
-                                    &av.variant,
-                                    &cur.variant,
-                                ) {
-                                    *cur = av;
-                                }
-                            }
-                        }
-                    }
-                }
+                buffered_dedup.push(av);
             } else {
                 emit(av)?;
             }
@@ -824,6 +797,9 @@ pub(crate) fn amplicon_post_process_streaming_with_ref<
     }
 
     if dedup_non_pileup {
+        crate::variations::dedup_post_norm_vec(&mut buffered_dedup, |av| {
+            (!av.variant.null_record).then_some((0u8, &av.variant, &av.variant))
+        });
         for av in buffered_dedup {
             emit(av)?;
         }
