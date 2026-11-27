@@ -665,6 +665,254 @@ impl Variant {
         }
     }
 
+    /// Apply Tan et al. (2015) parsimonious 5' left-alignment (`CompatProfile::canonical_vcf_complex_left_align`,
+    /// `AstraZeneca-NGS/VarDictJava#264`, `AstraZeneca-NGS/VarDict#134`, `mskcc/vcf2maf#279`,
+    /// `samtools/bcftools#1379`).
+    pub(crate) fn canonical_left_align(
+        &mut self,
+        ref_ctx: Option<(&crate::reference::Reference, &str, i32)>,
+        refresh_var_type: bool,
+        indel_only_shift3: bool,
+    ) {
+        if self.null_record
+            || self.ref_allele.is_empty()
+            || self.var_allele.is_empty()
+            || self.var_allele == "."
+            || self.var_allele.contains('<')
+        {
+            return;
+        }
+        if self.ref_allele.len() == self.var_allele.len() {
+            if indel_only_shift3 && !self.var_allele.starts_with('<') {
+                self.shift3 = 0;
+            }
+            return;
+        }
+        if self.start_pos < 1 || !self.ref_allele.is_ascii() || !self.var_allele.is_ascii() {
+            return;
+        }
+
+        let init_start = self.start_pos;
+        let init_end = self.end_pos;
+        let ref_init_bytes = self.ref_allele.as_bytes();
+        let alt_init_bytes = self.var_allele.as_bytes();
+        let has_loaded_ref = ref_ctx
+            .as_ref()
+            .is_some_and(|(r, chr, _)| r.loaded_span_bounds(chr).is_some());
+
+        // O(1) zero-allocation fast-path when alleles are already parsimonious and 5'-anchored.
+        if ref_init_bytes.last() != alt_init_bytes.last()
+            && (ref_init_bytes.len() == 1
+                || alt_init_bytes.len() == 1
+                || ref_init_bytes.first() != alt_init_bytes.first())
+        {
+            let expected_end = init_start.saturating_add(
+                (ref_init_bytes.len().min(i32::MAX as usize) as i32).saturating_sub(1),
+            );
+            self.end_pos = expected_end;
+            if refresh_var_type {
+                let vt = self.var_type_cow();
+                if self.var_type != vt.as_ref() {
+                    self.var_type.clear();
+                    self.var_type.push_str(&vt);
+                }
+            }
+            return;
+        }
+
+        let fallback_window: Option<(i64, Vec<u8>)> = (!has_loaded_ref).then(|| {
+            let left_b = self.left_seq.as_bytes();
+            let right_b = self.right_seq.as_bytes();
+            let win_start = i64::from(init_start) - (left_b.len() as i64);
+            let mut win = Vec::with_capacity(left_b.len() + ref_init_bytes.len() + right_b.len());
+            win.extend_from_slice(left_b);
+            win.extend_from_slice(ref_init_bytes);
+            win.extend_from_slice(right_b);
+            (win_start, win)
+        });
+
+        let lookup_base = |p: i32| -> Option<u8> {
+            if p < 1 {
+                return None;
+            }
+            if has_loaded_ref {
+                if let Some((reference, chr, chr_len)) = ref_ctx {
+                    if chr_len > 0 && p > chr_len {
+                        return None;
+                    }
+                    let raw = u32::try_from(p)
+                        .ok()
+                        .and_then(|pu| reference.get_base(chr, pu))?;
+                    return normalize_fasta_anchor_byte(raw);
+                }
+            }
+            if let Some((win_start, ref win)) = fallback_window {
+                let off = usize::try_from(i64::from(p) - win_start).ok()?;
+                let raw = *win.get(off)?;
+                return normalize_fasta_anchor_byte(raw);
+            }
+            None
+        };
+
+        let mut ref_b: Vec<u8> = ref_init_bytes.to_vec();
+        let mut alt_b: Vec<u8> = alt_init_bytes.to_vec();
+        let mut pos = init_start;
+
+        // Tan et al. (2015) Algorithm 1 Step 1: trim shared 3' suffix and roll 5' left.
+        while let (Some(&r_last), Some(&a_last)) = (ref_b.last(), alt_b.last()) {
+            if r_last != a_last {
+                break;
+            }
+            if ref_b.len() == 1 || alt_b.len() == 1 {
+                let Some(b_prev) = (pos > 1).then(|| lookup_base(pos - 1)).flatten() else {
+                    break;
+                };
+                ref_b.pop();
+                alt_b.pop();
+                ref_b.insert(0, b_prev);
+                alt_b.insert(0, b_prev);
+                pos -= 1;
+            } else {
+                ref_b.pop();
+                alt_b.pop();
+            }
+        }
+
+        // Tan et al. (2015) Algorithm 1 Step 3: trim redundant 5' prefix bases while both > 1 bp.
+        let mut prefix_trim = 0usize;
+        while ref_b.len().saturating_sub(prefix_trim) > 1
+            && alt_b.len().saturating_sub(prefix_trim) > 1
+            && ref_b.get(prefix_trim) == alt_b.get(prefix_trim)
+        {
+            prefix_trim += 1;
+        }
+        if prefix_trim > 0 {
+            ref_b.drain(..prefix_trim);
+            alt_b.drain(..prefix_trim);
+            pos = pos.saturating_add(prefix_trim.min(i32::MAX as usize) as i32);
+        }
+
+        let new_end =
+            pos.saturating_add((ref_b.len().min(i32::MAX as usize) as i32).saturating_sub(1));
+        let changed = pos != init_start
+            || new_end != init_end
+            || ref_b.as_slice() != ref_init_bytes
+            || alt_b.as_slice() != alt_init_bytes;
+
+        self.start_pos = pos;
+        self.end_pos = new_end;
+        if let Ok(new_ref) = String::from_utf8(ref_b) {
+            self.ref_allele = new_ref;
+        }
+        if let Ok(new_alt) = String::from_utf8(alt_b) {
+            self.var_allele = new_alt;
+        }
+
+        if changed {
+            if has_loaded_ref {
+                if let Some((reference, chr, chr_len)) = ref_ctx {
+                    crate::util::ref_bases_into(
+                        &mut self.left_seq,
+                        reference,
+                        chr,
+                        std::cmp::max(pos.saturating_sub(20), 1),
+                        pos.saturating_sub(1),
+                    );
+                    if let Some(right_start) = new_end.checked_add(1) {
+                        let right_end = if chr_len > 0 {
+                            std::cmp::min(new_end.saturating_add(20), chr_len)
+                        } else {
+                            new_end.saturating_add(20)
+                        };
+                        crate::util::ref_bases_into(
+                            &mut self.right_seq,
+                            reference,
+                            chr,
+                            right_start,
+                            right_end,
+                        );
+                    } else {
+                        self.right_seq.clear();
+                    }
+                }
+            } else if let Some((win_start, ref win)) = fallback_window {
+                self.left_seq.clear();
+                let l_lo = std::cmp::max(pos.saturating_sub(20), 1);
+                let l_hi = pos.saturating_sub(1);
+                if l_lo <= l_hi {
+                    for p in l_lo..=l_hi {
+                        if let Ok(off) = usize::try_from(i64::from(p) - win_start) {
+                            if let Some(&b) = win.get(off) {
+                                if b.is_ascii() {
+                                    self.left_seq.push(b as char);
+                                }
+                            }
+                        }
+                    }
+                }
+                self.right_seq.clear();
+                if let Some(r_lo) = new_end.checked_add(1) {
+                    let r_hi = new_end.saturating_add(20);
+                    for p in r_lo..=r_hi {
+                        if let Ok(off) = usize::try_from(i64::from(p) - win_start) {
+                            if let Some(&b) = win.get(off) {
+                                if b.is_ascii() {
+                                    self.right_seq.push(b as char);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if refresh_var_type {
+            let vt = self.var_type_cow();
+            if self.var_type != vt.as_ref() {
+                self.var_type.clear();
+                self.var_type.push_str(&vt);
+            }
+        }
+        if indel_only_shift3
+            && !self.var_allele.starts_with('<')
+            && self.ref_allele.len() == self.var_allele.len()
+        {
+            self.shift3 = 0;
+        }
+    }
+
+    /// Unified post-processing allele normalization combining `adj_complex_compat`,
+    /// optional `canonical_left_align` (`Switch 35`), and `indel_only_shift3` (`Switch 38`).
+    #[inline]
+    pub(crate) fn normalize_postprocess(
+        &mut self,
+        ref_ctx: Option<(&crate::reference::Reference, &str, i32)>,
+        do_left_align: bool,
+        refresh_var_type: bool,
+        indel_only_shift3: bool,
+    ) {
+        if do_left_align
+            && !self.null_record
+            && !self.ref_allele.is_empty()
+            && !self.var_allele.is_empty()
+            && self.var_allele != "."
+            && !self.var_allele.contains('<')
+            && self.ref_allele.len() != self.var_allele.len()
+        {
+            self.canonical_left_align(ref_ctx, true, indel_only_shift3);
+        } else if self.var_type == "Complex" {
+            self.adj_complex_compat(refresh_var_type);
+        }
+        if indel_only_shift3
+            && !self.null_record
+            && !self.ref_allele.is_empty()
+            && !self.var_allele.contains('<')
+            && self.ref_allele.len() == self.var_allele.len()
+        {
+            self.shift3 = 0;
+        }
+    }
+
     /// Find variant type based on ref and var alleles without heap allocation for standard types (`L7`).
     pub fn var_type_cow(&self) -> std::borrow::Cow<'static, str> {
         use std::borrow::Cow;
@@ -829,6 +1077,46 @@ impl Variant {
 impl Default for Variant {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[inline]
+fn normalize_fasta_anchor_byte(b: u8) -> Option<u8> {
+    let up = b.to_ascii_uppercase();
+    match up {
+        b'A' | b'C' | b'G' | b'T' => Some(up),
+        b'M' | b'R' | b'W' | b'V' | b'H' | b'D' => Some(b'A'),
+        b'S' | b'Y' | b'B' => Some(b'C'),
+        b'K' => Some(b'G'),
+        _ => None,
+    }
+}
+
+/// Returns `true` when `Switch 35` (`CompatProfile::canonical_vcf_complex_left_align`) is active
+/// and neither `-3` (`three_prime`) nor CRISPR (`crispr_cutting_site != 0`) mode is enabled.
+#[inline]
+pub(crate) fn canonical_left_align_enabled(config: &crate::config::Config) -> bool {
+    config.compat.canonical_vcf_complex_left_align
+        && !config.three_prime
+        && config.crispr_cutting_site.unwrap_or(0) == 0
+}
+
+/// Ruling 3 candidate tie-breaker: returns `true` iff `cand` strictly beats `cur` on
+/// `(pos_coverage as f64 * mean_quality, pos_coverage)`, keeping the earlier entry on ties.
+#[inline]
+pub(crate) fn post_norm_candidate_beats(cand: &Variant, cur: &Variant) -> bool {
+    let cand_score = f64::from(cand.pos_coverage) * cand.mean_quality;
+    let cur_score = f64::from(cur.pos_coverage) * cur.mean_quality;
+    match cand_score.partial_cmp(&cur_score) {
+        Some(std::cmp::Ordering::Greater) => true,
+        Some(std::cmp::Ordering::Less) => false,
+        Some(std::cmp::Ordering::Equal) | None => {
+            if cand_score.is_nan() != cur_score.is_nan() {
+                !cand_score.is_nan()
+            } else {
+                cand.pos_coverage > cur.pos_coverage
+            }
+        }
     }
 }
 
@@ -2441,6 +2729,108 @@ mod debug_tests {
         assert_eq!(
             v.debug_variants_content_compat(true),
             "T:1:F-1:R-0:0.0001:0;1:12.2:0:34.2:1:0.0001:60.0:0.001"
+        );
+    }
+
+    #[test]
+    fn test_wave6_switch35_canonical_left_align_tan2015_and_boundaries() {
+        let mut ref_genome = crate::reference::Reference::new();
+        // 1-based chr1: 1..=130:
+        // 1..=5: "AGCTA", 6: 'N', 7..=8: "AG", 9..=82: 'C' * 74,
+        // 83..=102: "CGTACGTACGTACGTACGTA" (20 bp upstream of 103),
+        // 103..=112: "TAAGAGAGAA", 113..=132: "TGACTGACTGACTGACTGAC"
+        let mut seq = Vec::new();
+        seq.extend_from_slice(b"AGCTANAG"); // 1..=8 (pos 6 is 'N', pos 7..=8 is "AG")
+        seq.extend_from_slice(&[b'C'; 74]); // 9..=82
+        seq.extend_from_slice(b"CGTACGTACGTACGTACGTA"); // 83..=102 (20 bp)
+        seq.extend_from_slice(b"TAAGAGAGAA"); // 103..=112: 103=T, 104=A, 105=A, 106=G, 107=A, 108=G, 109=A, 110=G, 111=A, 112=A
+        seq.extend_from_slice(b"TGACTGACTGACTGACTGAC"); // 113..=132 (20 bp)
+        let chr_len = seq.len() as i32;
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: seq.len() as u32,
+            });
+        ref_genome.region_sequences.push(seq);
+
+        // (a) Repeat-shifted complex delins at pos=105: ref="AGAGA", alt="GA"
+        let mut v_legacy = Variant::new();
+        v_legacy.start_pos = 105;
+        v_legacy.end_pos = 109;
+        v_legacy.ref_allele = "AGAGA".to_string();
+        v_legacy.var_allele = "GA".to_string();
+        v_legacy.var_type = "Complex".to_string();
+        v_legacy.left_seq = "GTACGTACGTACGTACGTATA".get(1..).unwrap().to_string(); // 85..=104 (20 bp ending in TA)
+        v_legacy.right_seq = "GAAGTGACTGACTGACTGAC".to_string(); // 110..=129 (20 bp)
+
+        let mut v_with_ref = v_legacy.clone();
+        let mut v_fallback = v_legacy.clone();
+
+        v_legacy.adj_complex();
+        assert_eq!(
+            (
+                v_legacy.start_pos,
+                v_legacy.ref_allele.as_str(),
+                v_legacy.var_allele.as_str()
+            ),
+            (105, "AGAG", "G"),
+            "legacy adj_complex leaves unanchored right-shifted allele"
+        );
+
+        v_with_ref.canonical_left_align(Some((&ref_genome, "chr1", chr_len)), true, true);
+        assert_eq!(v_with_ref.start_pos, 103);
+        assert_eq!(v_with_ref.end_pos, 106);
+        assert_eq!(v_with_ref.ref_allele, "TAAG");
+        assert_eq!(v_with_ref.var_allele, "T");
+        assert_eq!(v_with_ref.var_type, "Deletion");
+        assert_eq!(v_with_ref.left_seq, "CGTACGTACGTACGTACGTA"); // exact 83..=102 (20 bp)
+        assert_eq!(v_with_ref.right_seq, "AGAGAATGACTGACTGACTG"); // exact 107..=126 (20 bp)
+
+        // Fallback without Reference (`ref_ctx = None`) shifts from initial left_seq / right_seq:
+        v_fallback.canonical_left_align(None, true, true);
+        assert_eq!(v_fallback.start_pos, 103);
+        assert_eq!(v_fallback.end_pos, 106);
+        assert_eq!(v_fallback.ref_allele, "TAAG");
+        assert_eq!(v_fallback.var_allele, "T");
+        assert_eq!(v_fallback.var_type, "Deletion");
+        assert_eq!(v_fallback.left_seq, "TACGTACGTACGTACGTA"); // 85..=102 (available 18 bp)
+
+        // (c1) Contig-start pos=1 ("AG" -> "G") stays pos=1, ref="AG", alt="G":
+        let mut v_pos1 = Variant::new();
+        v_pos1.start_pos = 1;
+        v_pos1.end_pos = 2;
+        v_pos1.ref_allele = "AG".to_string();
+        v_pos1.var_allele = "G".to_string();
+        v_pos1.var_type = "Complex".to_string();
+        v_pos1.canonical_left_align(Some((&ref_genome, "chr1", chr_len)), true, true);
+        assert_eq!(
+            (
+                v_pos1.start_pos,
+                v_pos1.end_pos,
+                v_pos1.ref_allele.as_str(),
+                v_pos1.var_allele.as_str()
+            ),
+            (1, 2, "AG", "G")
+        );
+
+        // (c2) Upstream 'N' boundary at pos=7 (pos 6 is 'N'): stays pos=7, ref="AG", alt="G" without 'N' anchor:
+        let mut v_n_bound = Variant::new();
+        v_n_bound.start_pos = 7;
+        v_n_bound.end_pos = 8;
+        v_n_bound.ref_allele = "AG".to_string();
+        v_n_bound.var_allele = "G".to_string();
+        v_n_bound.var_type = "Complex".to_string();
+        v_n_bound.canonical_left_align(Some((&ref_genome, "chr1", chr_len)), true, true);
+        assert_eq!(
+            (
+                v_n_bound.start_pos,
+                v_n_bound.end_pos,
+                v_n_bound.ref_allele.as_str(),
+                v_n_bound.var_allele.as_str()
+            ),
+            (7, 8, "AG", "G")
         );
     }
 }
