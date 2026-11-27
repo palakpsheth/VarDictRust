@@ -601,18 +601,23 @@ fn finalize_somatic_post_passes(
             let Some(mut v2_matched) = n_sv.variant2.clone() else {
                 continue;
             };
+            let n_end_is_variant2 = n_sv.end_is_variant2;
             let mut v1_matched = t_sv.variant1.clone();
             if v1_matched.var_type.is_empty() {
                 v1_matched.var_type = v1_matched.var_type();
             }
-            v2_matched.start_pos = v1_matched.start_pos;
-            v2_matched.end_pos = v1_matched.end_pos;
+            if n_end_is_variant2 {
+                v2_matched.start_pos = v1_matched.start_pos;
+                v2_matched.end_pos = v1_matched.end_pos;
+            }
             if indel_only_shift3
                 && !v1_matched.var_allele.contains('<')
                 && v1_matched.ref_allele.len() == v1_matched.var_allele.len()
             {
                 v1_matched.shift3 = 0;
-                v2_matched.shift3 = 0;
+                if n_end_is_variant2 {
+                    v2_matched.shift3 = 0;
+                }
             }
             let sv1 = if !t_sv.sv1.is_empty() {
                 t_sv.sv1.clone()
@@ -648,6 +653,15 @@ fn finalize_somatic_post_passes(
             });
             let type_str = if t_idx == n_idx {
                 t_sv.status.clone()
+            } else if !n_end_is_variant2 || v2_matched.ref_allele.is_empty() {
+                if v1_matched.frequency > 1.0 - config.lofreq
+                    && v2_matched.frequency < 0.8
+                    && v2_matched.frequency > 0.2
+                {
+                    LIKELY_LOH.to_string()
+                } else {
+                    n_sv.status.clone()
+                }
             } else {
                 determinate_type(config, None, &v1_matched, &mut v2_matched, splice)
             };
@@ -658,7 +672,7 @@ fn finalize_somatic_post_passes(
                     status: type_str,
                     sv1,
                     sv2,
-                    end_is_variant2: true,
+                    end_is_variant2: n_end_is_variant2,
                     tumor_amplicon,
                     normal_amplicon,
                 };
@@ -5691,5 +5705,141 @@ mod tests {
         assert_eq!(rows_f_on[0].status, "Germline");
         assert_eq!(rows_f_on[0].variant1.pos_coverage, 12);
         assert_eq!(rows_f_on[0].variant2.as_ref().unwrap().pos_coverage, 15);
+        assert!(rows_f_on[0].end_is_variant2);
+
+        // Case G: `CombineVerdict::Germline` (`end_is_variant2 == false`, subtracted `variant2.ref_allele == ""`,
+        // `variant2.msi == 0.0`) colliding with a split `StrongSomatic` shadow row:
+        // - Subcase G1 (`t_idx == n_idx`): lower-scoring split `StrongSomatic` (`T=2, N=0`) at key 105
+        //   collides with `CombineVerdict::Germline` (`T=4, N=9`, `variant1.msi = 13.0`) at key 104 ->
+        //   preserves `end_is_variant2 == false`, `status == "Germline"`, and `variant1.msi == 13.0`.
+        // - Subcase G2 (`t_idx != n_idx`): higher-scoring split `StrongSomatic` (`T=10, N=0`) at key 105
+        //   collides with `CombineVerdict::Germline` (`T=4, N=9, N_AF=0.45`) at key 104 ->
+        //   preserves `end_is_variant2 == false` and classifies `status == "Germline"` (or `"LikelyLOH"`
+        //   when `v1.frequency > 1.0 - config.lofreq`), NEVER `"AFDiff"`.
+        let combine_pipe = |_reg: &Region,
+                            _sp: &mut rustc_hash::FxHashSet<String>,
+                            _max_rl: &mut i32,
+                            target_pos: i32|
+         -> Result<Option<Vars>, crate::types::VardictError> {
+            if target_pos != 104 {
+                return Ok(None);
+            }
+            let mut cv = Vars::new();
+            let mut comb_v = make_good_variant("-12", "TAAG", "T", 13.0 / 34.0);
+            comb_v.start_pos = 103;
+            comb_v.end_pos = 106;
+            comb_v.pos_coverage = 13; // 4 (tumor) + 9 (normal)
+            comb_v.hicnt = 13;
+            comb_v.fwd = 7;
+            comb_v.rev = 6;
+            comb_v.total_pos_cov = 34; // 14 (tumor) + 20 (normal) -> subtracted normal DP=20, VD=9, AF=0.45
+            cv.variants.push(comb_v);
+            Ok(Some(cv))
+        };
+
+        let build_combine_collision = |t105_cov: i32, t105_af: f64| {
+            let mut bam1_g = crate::javamap::JavaHashMap::new();
+            let mut v1_g104 = Vars::new();
+            // Triggers combine_analysis: minus_num_num ("-12") and pos_coverage (4) < min_reads (2) + 3
+            let mut t_g104 = make_good_variant("-12", "TAAG", "T", 4.0 / 14.0);
+            t_g104.start_pos = 103;
+            t_g104.end_pos = 106;
+            t_g104.pos_coverage = 4;
+            t_g104.hicnt = 4;
+            t_g104.fwd = 2;
+            t_g104.rev = 2;
+            t_g104.total_pos_cov = 14;
+            t_g104.msi = 13.0;
+            t_g104.msint = 1;
+            t_g104.shift3 = 5;
+            t_g104.left_seq = "GGGGGG".to_string();
+            t_g104.right_seq = "AGAGAAG".to_string();
+            v1_g104.variants.push(t_g104);
+            bam1_g.insert(104, v1_g104);
+
+            let mut v1_g105 = Vars::new();
+            // Short complex description ("-4#A^G") or high coverage skips combine_analysis -> StrongSomatic (N=0)
+            let mut t_g105 = make_good_variant("-4#A^G", "AGAGA", "GA", t105_af);
+            t_g105.start_pos = 105;
+            t_g105.end_pos = 109;
+            t_g105.pos_coverage = t105_cov;
+            t_g105.hicnt = t105_cov;
+            t_g105.total_pos_cov = 20;
+            t_g105.msi = 13.0;
+            t_g105.msint = 1;
+            t_g105.shift3 = 5;
+            t_g105.left_seq = "GGGGGGTA".to_string();
+            t_g105.right_seq = "GAAG".to_string();
+            v1_g105.variants.push(t_g105);
+            bam1_g.insert(105, v1_g105);
+
+            let mut bam2_g = crate::javamap::JavaHashMap::new();
+            for pos in [104, 105] {
+                let mut ref_only = Vars::new();
+                let mut rv = Variant::new();
+                rv.total_pos_cov = 20;
+                rv.ref_fwd_cov = 10;
+                rv.ref_rev_cov = 10;
+                ref_only.ref_variant = Some(rv);
+                bam2_g.insert(pos, ref_only);
+            }
+            (bam1_g, bam2_g)
+        };
+
+        // G1: t_idx == n_idx (t105_cov = 2 < t104_cov = 4)
+        let (bam1_g1, bam2_g1) = build_combine_collision(2, 0.25);
+        let rows_g1 = somatic_post_process_at(
+            &cfg_sw36,
+            &region,
+            &bam1_g1,
+            &bam2_g1,
+            &splice,
+            Some(&combine_pipe),
+            100,
+        );
+        assert_eq!(rows_g1.len(), 1);
+        assert!(!rows_g1[0].end_is_variant2);
+        assert_eq!(rows_g1[0].status, "Germline");
+        assert_eq!(rows_g1[0].variant1.pos_coverage, 4);
+        assert_eq!(rows_g1[0].variant1.msi, 13.0);
+        assert_eq!(rows_g1[0].variant2.as_ref().unwrap().ref_allele, "");
+        assert_eq!(rows_g1[0].variant2.as_ref().unwrap().pos_coverage, 9);
+
+        // G2a: t_idx != n_idx with Germline tumor AF (t105_cov = 10 > t104_cov = 4, t105_af = 0.50)
+        let (bam1_g2a, bam2_g2a) = build_combine_collision(10, 0.50);
+        let rows_g2a = somatic_post_process_at(
+            &cfg_sw36,
+            &region,
+            &bam1_g2a,
+            &bam2_g2a,
+            &splice,
+            Some(&combine_pipe),
+            100,
+        );
+        assert_eq!(rows_g2a.len(), 1);
+        assert!(!rows_g2a[0].end_is_variant2);
+        assert_eq!(rows_g2a[0].status, "Germline");
+        assert_eq!(rows_g2a[0].variant1.pos_coverage, 10);
+        assert_eq!(rows_g2a[0].variant1.msi, 13.0);
+        assert_eq!(rows_g2a[0].variant2.as_ref().unwrap().ref_allele, "");
+        assert_eq!(rows_g2a[0].variant2.as_ref().unwrap().pos_coverage, 9);
+
+        // G2b: t_idx != n_idx with high tumor AF > 1.0 - lofreq (t105_cov = 19, t105_af = 0.98 > 0.95, v2.af = 0.45) -> LikelyLOH
+        let (bam1_g2b, bam2_g2b) = build_combine_collision(19, 0.98);
+        let rows_g2b = somatic_post_process_at(
+            &cfg_sw36,
+            &region,
+            &bam1_g2b,
+            &bam2_g2b,
+            &splice,
+            Some(&combine_pipe),
+            100,
+        );
+        assert_eq!(rows_g2b.len(), 1);
+        assert!(!rows_g2b[0].end_is_variant2);
+        assert_eq!(rows_g2b[0].status, "LikelyLOH");
+        assert_eq!(rows_g2b[0].variant1.pos_coverage, 19);
+        assert_eq!(rows_g2b[0].variant1.msi, 13.0);
+        assert_eq!(rows_g2b[0].variant2.as_ref().unwrap().pos_coverage, 9);
     }
 }
