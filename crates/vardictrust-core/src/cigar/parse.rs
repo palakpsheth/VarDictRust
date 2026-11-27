@@ -146,6 +146,17 @@ pub struct CigarParser<'a> {
     pub scratch_f4_qual: Vec<u8>,
     pub scratch_f4_seg1: String,
     pub scratch_f4_seg2: Vec<u8>,
+    /// Unmatched `(skipped_fwd, paired_rev)` mate-overlap counts for single-base
+    /// non-insertion alleles `(pos, base_byte)` when `-u` + `mate_overlap_both_strands` is active.
+    overlap_snv_unmatched: rustc_hash::FxHashMap<(i32, u8), (u32, u32)>,
+    /// Unmatched `(skipped_fwd, paired_rev)` mate-overlap counts for multi-base / indel
+    /// descriptions `(pos, is_insertion) -> desc -> (skipped_fwd, paired_rev)`.
+    overlap_desc_unmatched: BTreeMap<(i32, bool), rustc_hash::FxHashMap<String, (u32, u32)>>,
+    /// Per-read scratch for single-base mate-overlap observations `(pos, base_byte, delta)`.
+    scratch_overlap_snv: Vec<(i32, u8, i8)>,
+    /// Per-read scratch `(pos, is_insertion, lo, hi)` slices into `scratch_overlap_desc_buf`.
+    scratch_overlap_desc: Vec<(i32, bool, usize, usize)>,
+    scratch_overlap_desc_buf: String,
 }
 
 /// Zero-alloc single-base allele key for per-base variation lookups.
@@ -274,6 +285,22 @@ fn qual_phred<Q: AsRef<[u8]>>(query_qual: &Q, idx: usize) -> f64 {
         .saturating_sub(33) as f64
 }
 
+/// Rebalances every 2nd agreed overlapping FR mate-pair observation under `-u`
+/// (`CompatProfile::mate_overlap_both_strands`, `Clinical-Genomics/BALSAMIC#1396`,
+/// `AstraZeneca-NGS/VarDictJava#239`) from `rev` (where VarDict's `-u` credits all
+/// overlapping pairs because `!direction` skips the forward mate) to `fwd`,
+/// conserving `fwd + rev == cnt` (`VD` / `RD`) and leaving `DP` untouched.
+#[inline]
+fn rebalance_agreed_overlap_strand(var: &mut Variation) {
+    if var.rev > 0 {
+        var.overlap_agreed_pairs = var.overlap_agreed_pairs.saturating_add(1);
+        if var.overlap_agreed_pairs.is_multiple_of(2) {
+            var.rev -= 1;
+            var.fwd = var.fwd.saturating_add(1);
+        }
+    }
+}
+
 impl<'a> CigarParser<'a> {
     /// Create a new CigarParser with given reference, region, and config.
     /// Ports `CigarParser.java:61-68`.
@@ -326,6 +353,11 @@ impl<'a> CigarParser<'a> {
             scratch_f4_qual: Vec::new(),
             scratch_f4_seg1: String::new(),
             scratch_f4_seg2: Vec::new(),
+            overlap_snv_unmatched: rustc_hash::FxHashMap::default(),
+            overlap_desc_unmatched: BTreeMap::new(),
+            scratch_overlap_snv: Vec::new(),
+            scratch_overlap_desc: Vec::new(),
+            scratch_overlap_desc_buf: String::new(),
         }
     }
 
@@ -757,20 +789,40 @@ impl<'a> CigarParser<'a> {
             }
         };
         let has_overlap_gate = overlap_u || overlap_second_end_i64.is_some();
-        let skip_overlapping = |cur_start: i32| -> bool {
-            (overlap_u && cur_start >= mate_alignment_start)
-                || overlap_second_end_i64.is_some_and(|max_s| {
-                    cur_start >= mate_alignment_start && i64::from(cur_start) <= max_s
-                })
+        let skip_overlap_second = |cur_start: i32| -> bool {
+            overlap_second_end_i64.is_some_and(|max_s| {
+                cur_start >= mate_alignment_start && i64::from(cur_start) <= max_s
+            })
         };
+        let skip_overlapping = |cur_start: i32| -> bool {
+            (overlap_u && cur_start >= mate_alignment_start) || skip_overlap_second(cur_start)
+        };
+        let rebalance_u_enabled = self.config.unique_mode_alignment_enabled
+            && self.config.compat.mate_overlap_both_strands;
+        let track_paired_rev = rebalance_u_enabled && direction && paired_same_chr;
+        let mut in_u_rebalance = false;
+        if rebalance_u_enabled && paired_same_chr {
+            self.scratch_overlap_snv.clear();
+            self.scratch_overlap_desc.clear();
+            self.scratch_overlap_desc_buf.clear();
+        }
 
         let mut buf_s = std::mem::take(&mut self.scratch_s);
         let mut buf_ss = std::mem::take(&mut self.scratch_ss);
         let mut scratch_splice_key = std::mem::take(&mut self.scratch_splice_key);
 
         while ci < cigar_elements.len() {
-            if has_overlap_gate && skip_overlapping(start) {
-                break;
+            if !rebalance_u_enabled {
+                if has_overlap_gate && skip_overlapping(start) {
+                    break;
+                }
+            } else {
+                if skip_overlap_second(start) {
+                    break;
+                }
+                if overlap_u && start >= mate_alignment_start {
+                    in_u_rebalance = true;
+                }
             }
             let Some(&(cigar_element_len, raw_operator)) = cigar_elements.get(ci) else {
                 break;
@@ -785,22 +837,25 @@ impl<'a> CigarParser<'a> {
 
             match operator {
                 CigarKind::Skip => {
-                    // Reused key buffer + borrowed lookup: zero alloc for
-                    // repeat junctions (the common case); two inserts only for
-                    // a new junction. Set/count contents identical to the old
-                    // clone+entry shape.
-                    scratch_splice_key.clear();
-                    let _ = write!(
-                        scratch_splice_key,
-                        "{}-{}",
-                        i64::from(start) - 1,
-                        i64::from(start) + i64::from(cigar_element_len) - 1
-                    );
-                    if let Some([cnt]) = self.splice_count.get_mut(scratch_splice_key.as_str()) {
-                        *cnt = cnt.saturating_add(1);
-                    } else {
-                        self.splice.insert(scratch_splice_key.clone());
-                        self.splice_count.insert(scratch_splice_key.clone(), [1]);
+                    if !in_u_rebalance {
+                        // Reused key buffer + borrowed lookup: zero alloc for
+                        // repeat junctions (the common case); two inserts only for
+                        // a new junction. Set/count contents identical to the old
+                        // clone+entry shape.
+                        scratch_splice_key.clear();
+                        let _ = write!(
+                            scratch_splice_key,
+                            "{}-{}",
+                            i64::from(start) - 1,
+                            i64::from(start) + i64::from(cigar_element_len) - 1
+                        );
+                        if let Some([cnt]) = self.splice_count.get_mut(scratch_splice_key.as_str())
+                        {
+                            *cnt = cnt.saturating_add(1);
+                        } else {
+                            self.splice.insert(scratch_splice_key.clone());
+                            self.splice_count.insert(scratch_splice_key.clone(), [1]);
+                        }
                     }
                     start =
                         start.saturating_add(i32::try_from(cigar_element_len).unwrap_or(i32::MAX));
@@ -808,22 +863,29 @@ impl<'a> CigarParser<'a> {
                     offset = 0;
                 }
                 CigarKind::SoftClip => {
-                    self.process_soft_clip(
-                        record,
-                        query_seq,
-                        query_qual,
-                        &cigar_elements,
-                        direction,
-                        read_len_match_ins_i32,
-                        total_length_including_soft_clipped,
-                        adjusted_nm,
-                        ci,
-                        &mut start,
-                        &mut read_pos_inc,
-                        &mut read_pos_exc,
-                        &mut offset,
-                        start_pos,
-                    );
+                    if in_u_rebalance {
+                        read_pos_inc += cigar_element_len as usize;
+                        offset = 0;
+                        start = start_pos;
+                    } else {
+                        self.process_soft_clip(
+                            record,
+                            query_seq,
+                            query_qual,
+                            &cigar_elements,
+                            direction,
+                            read_len_match_ins_i32,
+                            total_length_including_soft_clipped,
+                            adjusted_nm,
+                            ci,
+                            &mut start,
+                            &mut read_pos_inc,
+                            &mut read_pos_exc,
+                            &mut offset,
+                            start_pos,
+                            track_paired_rev,
+                        );
+                    }
                     ci += 1;
                 }
                 CigarKind::HardClip => {
@@ -851,6 +913,9 @@ impl<'a> CigarParser<'a> {
                         &mut read_pos_exc,
                         &mut offset,
                         start_pos,
+                        in_u_rebalance,
+                        track_paired_rev,
+                        mate_alignment_start,
                     );
                     ci += 1;
                 }
@@ -869,6 +934,8 @@ impl<'a> CigarParser<'a> {
                         &mut read_pos_inc,
                         &mut read_pos_exc,
                         &mut offset,
+                        in_u_rebalance,
+                        track_paired_rev,
                     );
                     ci += 1;
                 }
@@ -955,7 +1022,7 @@ impl<'a> CigarParser<'a> {
                         };
 
                         if ch1 == b'N' || ch1 == b'n' {
-                            if self.config.include_n {
+                            if !in_u_rebalance && self.config.include_n {
                                 inc_cnt(&mut self.ref_coverage, start, 1);
                             }
                             start = start.saturating_add(1);
@@ -1169,17 +1236,19 @@ impl<'a> CigarParser<'a> {
                                             qibases = qibases.saturating_add(1);
                                         }
                                     }
-                                    for osi in 0..moffset {
-                                        let cov_entry = self
-                                            .ref_coverage
-                                            .entry(
-                                                start
-                                                    .saturating_add(ddlen)
-                                                    .saturating_add(1)
-                                                    .saturating_add(osi),
-                                            )
-                                            .or_default();
-                                        *cov_entry = cov_entry.saturating_add(1);
+                                    if !in_u_rebalance {
+                                        for osi in 0..moffset {
+                                            let cov_entry = self
+                                                .ref_coverage
+                                                .entry(
+                                                    start
+                                                        .saturating_add(ddlen)
+                                                        .saturating_add(1)
+                                                        .saturating_add(osi),
+                                                )
+                                                .or_default();
+                                            *cov_entry = cov_entry.saturating_add(1);
+                                        }
                                     }
                                 }
                             }
@@ -1257,54 +1326,81 @@ impl<'a> CigarParser<'a> {
                                         .copied()
                                         .unwrap_or("N");
                                     if s != "N" {
-                                        if ch1 != b'+' {
-                                            self.add_single_base_match_variation(
-                                                mapping_quality_i32,
-                                                adjusted_nm,
-                                                direction,
-                                                read_len_match_ins_i32,
-                                                nmoff,
-                                                s,
-                                                q,
-                                                pos,
-                                                read_pos_exc as i32,
-                                            );
-                                        } else {
-                                            self.add_variation_for_matching_part(
-                                                mapping_quality_i32,
-                                                adjusted_nm,
-                                                direction,
-                                                read_len_match_ins_i32,
-                                                nmoff,
-                                                s,
-                                                false,
-                                                q,
-                                                qbases,
-                                                qibases,
-                                                ddlen,
-                                                pos,
-                                                read_pos_exc as i32,
-                                                start,
-                                            );
+                                        if !in_u_rebalance {
+                                            if ch1 != b'+' {
+                                                self.add_single_base_match_variation(
+                                                    mapping_quality_i32,
+                                                    adjusted_nm,
+                                                    direction,
+                                                    read_len_match_ins_i32,
+                                                    nmoff,
+                                                    s,
+                                                    q,
+                                                    pos,
+                                                    read_pos_exc as i32,
+                                                );
+                                            } else {
+                                                self.add_variation_for_matching_part(
+                                                    mapping_quality_i32,
+                                                    adjusted_nm,
+                                                    direction,
+                                                    read_len_match_ins_i32,
+                                                    nmoff,
+                                                    s,
+                                                    false,
+                                                    q,
+                                                    qbases,
+                                                    qibases,
+                                                    ddlen,
+                                                    pos,
+                                                    read_pos_exc as i32,
+                                                    start,
+                                                );
+                                            }
+                                        }
+                                        if in_u_rebalance || track_paired_rev {
+                                            let is_ref = u32::try_from(pos)
+                                                .ok()
+                                                .and_then(|p| self.get_ref_base(p))
+                                                .is_some_and(|rb| rb == ch1);
+                                            if is_ref || q >= self.config.base_qual {
+                                                if ch1 != b'+' {
+                                                    self.record_overlap_snv(pos, ch1, 1);
+                                                } else {
+                                                    self.record_overlap_desc(pos, true, s);
+                                                }
+                                            }
                                         }
                                     }
                                 } else if !buf_s.contains('N') && !buf_s.contains('n') {
-                                    self.add_variation_for_matching_part(
-                                        mapping_quality_i32,
-                                        adjusted_nm,
-                                        direction,
-                                        read_len_match_ins_i32,
-                                        nmoff,
-                                        &buf_s,
-                                        start_with_deletion,
-                                        q,
-                                        qbases,
-                                        qibases,
-                                        ddlen,
-                                        pos,
-                                        read_pos_exc as i32,
-                                        start,
-                                    );
+                                    if !in_u_rebalance {
+                                        self.add_variation_for_matching_part(
+                                            mapping_quality_i32,
+                                            adjusted_nm,
+                                            direction,
+                                            read_len_match_ins_i32,
+                                            nmoff,
+                                            &buf_s,
+                                            start_with_deletion,
+                                            q,
+                                            qbases,
+                                            qibases,
+                                            ddlen,
+                                            pos,
+                                            read_pos_exc as i32,
+                                            start,
+                                        );
+                                    }
+                                    if in_u_rebalance || track_paired_rev {
+                                        let mean_q = q / (qbases.saturating_add(qibases)) as f64;
+                                        if mean_q >= self.config.base_qual {
+                                            self.record_overlap_desc(
+                                                pos,
+                                                buf_s.starts_with('+'),
+                                                &buf_s,
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1321,9 +1417,23 @@ impl<'a> CigarParser<'a> {
                             read_pos_exc += 1;
                         }
 
-                        if has_overlap_gate && skip_overlapping(start) {
-                            should_break = true;
-                            break;
+                        if !rebalance_u_enabled {
+                            if has_overlap_gate && skip_overlapping(start) {
+                                should_break = true;
+                                break;
+                            }
+                        } else {
+                            if skip_overlap_second(start) {
+                                should_break = true;
+                                break;
+                            }
+                            if overlap_u && start >= mate_alignment_start {
+                                in_u_rebalance = true;
+                            }
+                            if in_u_rebalance && start > region_end.saturating_add(1) {
+                                should_break = true;
+                                break;
+                            }
                         }
 
                         i += 1;
@@ -1346,6 +1456,13 @@ impl<'a> CigarParser<'a> {
             if start > region_end {
                 break;
             }
+        }
+
+        if rebalance_u_enabled
+            && paired_same_chr
+            && (!self.scratch_overlap_snv.is_empty() || !self.scratch_overlap_desc.is_empty())
+        {
+            self.commit_read_overlap_observations(!direction);
         }
 
         // Reclaim per-read buffers into parser scratch for the next read.
@@ -1803,6 +1920,136 @@ impl<'a> CigarParser<'a> {
         }
     }
 
+    #[inline]
+    fn record_overlap_snv(&mut self, pos: i32, base: u8, delta: i8) {
+        self.scratch_overlap_snv.push((pos, base, delta));
+    }
+
+    #[inline]
+    fn record_overlap_desc(&mut self, pos: i32, is_insertion: bool, desc: &str) {
+        let lo = self.scratch_overlap_desc_buf.len();
+        self.scratch_overlap_desc_buf.push_str(desc);
+        let hi = self.scratch_overlap_desc_buf.len();
+        self.scratch_overlap_desc.push((pos, is_insertion, lo, hi));
+    }
+
+    fn commit_read_overlap_observations(&mut self, is_skipped_fwd: bool) {
+        let snv_len = self.scratch_overlap_snv.len();
+        for idx in 0..snv_len {
+            let Some(&(pos, base, delta)) = self.scratch_overlap_snv.get(idx) else {
+                break;
+            };
+            if delta < 0 {
+                let mut canceled = false;
+                for prev_idx in (0..idx).rev() {
+                    if let Some((p, b, pd)) = self.scratch_overlap_snv.get_mut(prev_idx) {
+                        if *p == pos && *b == base && *pd > 0 {
+                            *pd = 0;
+                            canceled = true;
+                            break;
+                        }
+                    }
+                }
+                if let Some((_, _, cur_d)) = self.scratch_overlap_snv.get_mut(idx) {
+                    *cur_d = 0;
+                }
+                if !canceled && !is_skipped_fwd {
+                    if let Some((_, rev_u)) = self.overlap_snv_unmatched.get_mut(&(pos, base)) {
+                        *rev_u = rev_u.saturating_sub(1);
+                    }
+                }
+            }
+        }
+
+        for idx in 0..snv_len {
+            let Some(&(pos, base, delta)) = self.scratch_overlap_snv.get(idx) else {
+                break;
+            };
+            if delta <= 0 {
+                continue;
+            }
+            let (fwd_u, rev_u) = self
+                .overlap_snv_unmatched
+                .entry((pos, base))
+                .or_insert((0, 0));
+            let matched = if is_skipped_fwd {
+                if *rev_u > 0 {
+                    *rev_u -= 1;
+                    true
+                } else {
+                    *fwd_u = fwd_u.saturating_add(1);
+                    false
+                }
+            } else if *fwd_u > 0 {
+                *fwd_u -= 1;
+                true
+            } else {
+                *rev_u = rev_u.saturating_add(1);
+                false
+            };
+            if matched {
+                let mut buf = [0u8; 4];
+                let key = allele_key(base, &mut buf);
+                if let Some(hv) = self
+                    .non_insertion_variants
+                    .get_mut(&pos)
+                    .and_then(|vm| vm.map.get_mut(key))
+                {
+                    rebalance_agreed_overlap_strand(hv);
+                }
+            }
+        }
+
+        let desc_len = self.scratch_overlap_desc.len();
+        for idx in 0..desc_len {
+            let Some(&(pos, is_insertion, lo, hi)) = self.scratch_overlap_desc.get(idx) else {
+                break;
+            };
+            let Some(desc) = self.scratch_overlap_desc_buf.get(lo..hi) else {
+                continue;
+            };
+            let desc_map = self
+                .overlap_desc_unmatched
+                .entry((pos, is_insertion))
+                .or_default();
+            let matched = if let Some((fwd_u, rev_u)) = desc_map.get_mut(desc) {
+                if is_skipped_fwd {
+                    if *rev_u > 0 {
+                        *rev_u -= 1;
+                        true
+                    } else {
+                        *fwd_u = fwd_u.saturating_add(1);
+                        false
+                    }
+                } else if *fwd_u > 0 {
+                    *fwd_u -= 1;
+                    true
+                } else {
+                    *rev_u = rev_u.saturating_add(1);
+                    false
+                }
+            } else {
+                let init = if is_skipped_fwd { (1, 0) } else { (0, 1) };
+                desc_map.insert(desc.to_owned(), init);
+                false
+            };
+            if matched {
+                let target_map = if is_insertion {
+                    &mut self.insertion_variants
+                } else {
+                    &mut self.non_insertion_variants
+                };
+                if let Some(hv) = target_map.get_mut(&pos).and_then(|vm| vm.map.get_mut(desc)) {
+                    rebalance_agreed_overlap_strand(hv);
+                }
+            }
+        }
+
+        self.scratch_overlap_snv.clear();
+        self.scratch_overlap_desc.clear();
+        self.scratch_overlap_desc_buf.clear();
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "per-operator pileup helper borrows split CigarParser fields"
@@ -1821,6 +2068,8 @@ impl<'a> CigarParser<'a> {
         read_pos_inc: &mut usize,
         read_pos_exc: &mut usize,
         offset: &mut u32,
+        in_u_rebalance: bool,
+        track_paired_rev: bool,
     ) -> usize {
         let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
         let cel_i32 = i32::try_from(cigar_element_len).unwrap_or(i32::MAX);
@@ -2080,18 +2329,32 @@ impl<'a> CigarParser<'a> {
         let region_start = i32::try_from(self.region.start.0).unwrap_or(i32::MAX);
         let region_end = i32::try_from(self.region.end.0).unwrap_or(i32::MAX);
         if *start >= region_start && *start <= region_end {
-            self.add_variation_for_deletion(
-                record.mapping_quality.unwrap_or(0) as i32,
-                adjusted_nm,
-                direction,
-                read_len_match_ins,
-                &desc_string,
-                &quality_of_segment,
-                nmoff,
-                *start,
-                *read_pos_exc as i32,
-                cigar_element_len,
-            );
+            if !in_u_rebalance {
+                self.add_variation_for_deletion(
+                    record.mapping_quality.unwrap_or(0) as i32,
+                    adjusted_nm,
+                    direction,
+                    read_len_match_ins,
+                    &desc_string,
+                    &quality_of_segment,
+                    nmoff,
+                    *start,
+                    *read_pos_exc as i32,
+                    cigar_element_len,
+                );
+            }
+            if in_u_rebalance || track_paired_rev {
+                let mut tmpq = 0.0;
+                if !quality_of_segment.is_empty() {
+                    for &b in &quality_of_segment {
+                        tmpq += b.saturating_sub(33) as f64;
+                    }
+                    tmpq /= quality_of_segment.len() as f64;
+                }
+                if tmpq >= self.config.base_qual {
+                    self.record_overlap_desc(*start, false, &desc_string);
+                }
+            }
         }
 
         *start = start
@@ -2129,6 +2392,9 @@ impl<'a> CigarParser<'a> {
         read_pos_exc: &mut usize,
         offset: &mut u32,
         position: i32,
+        in_u_rebalance: bool,
+        track_paired_rev: bool,
+        mate_alignment_start: i32,
     ) -> usize {
         let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
         if self.skip_indel_next_to_intron(cigar_elements, ci) {
@@ -2215,12 +2481,14 @@ impl<'a> CigarParser<'a> {
                     {
                         quality_string.extend_from_slice(sub);
                     }
-                    for osi in 0..(found_offset as i32) {
-                        inc_cnt(
-                            &mut self.ref_coverage,
-                            start.saturating_add(multoffs_i32).saturating_add(osi),
-                            1,
-                        );
+                    if !in_u_rebalance {
+                        for osi in 0..(found_offset as i32) {
+                            inc_cnt(
+                                &mut self.ref_coverage,
+                                start.saturating_add(multoffs_i32).saturating_add(osi),
+                                1,
+                            );
+                        }
                     }
                 }
             }
@@ -2277,12 +2545,14 @@ impl<'a> CigarParser<'a> {
                         ) {
                             quality_string.extend_from_slice(sub);
                         }
-                        for osi in 0..current_offset {
-                            inc_cnt(
-                                &mut self.ref_coverage,
-                                start.saturating_add(i32::try_from(osi).unwrap_or(i32::MAX)),
-                                1,
-                            );
+                        if !in_u_rebalance {
+                            for osi in 0..current_offset {
+                                inc_cnt(
+                                    &mut self.ref_coverage,
+                                    start.saturating_add(i32::try_from(osi).unwrap_or(i32::MAX)),
+                                    1,
+                                );
+                            }
                         }
                     }
                 }
@@ -2337,26 +2607,6 @@ impl<'a> CigarParser<'a> {
             ss.clear();
             ss.push('+');
             ss.push_str(&desc_string);
-            increment(
-                &mut self.position_to_insertion_count,
-                insertion_position,
-                ss.as_str(),
-            );
-
-            let hv = get_variation(
-                &mut self.insertion_variants,
-                insertion_position,
-                ss.as_str(),
-            );
-            hv.inc_dir(direction);
-            hv.cnt = hv.cnt.saturating_add(1);
-
-            let rpe = *read_pos_exc as i32;
-            let tp = if rpe < read_len_match_ins - rpe {
-                rpe + 1
-            } else {
-                read_len_match_ins - rpe
-            };
 
             let mut tmpq = 0.0;
             if !quality_string.is_empty() {
@@ -2366,86 +2616,147 @@ impl<'a> CigarParser<'a> {
                 tmpq /= quality_string.len() as f64;
             }
 
-            if !hv.pstd && hv.pp != 0 && tp != hv.pp {
-                hv.pstd = true;
-            }
-            if !hv.qstd && hv.pq != 0.0 && tmpq != hv.pq {
-                hv.qstd = true;
-            }
-            hv.pmean += tp as f64;
-            hv.qmean += tmpq;
-            hv.mqmean += record.mapping_quality.unwrap_or(0) as f64;
-            hv.pp = tp;
-            hv.pq = tmpq;
-            if tmpq >= self.config.base_qual {
-                hv.hicnt = hv.hicnt.saturating_add(1);
-            } else {
-                hv.locnt = hv.locnt.saturating_add(1);
-            }
-            hv.nm += adjusted_nm.saturating_sub(nmoff) as f64;
-            let (hv_pstd, hv_qstd) = (hv.pstd, hv.qstd);
-
-            let index_of_insertion_in_query_sequence = (*read_pos_inc as i64)
-                - 1
-                - (i64::from(*start) - 1 - i64::from(insertion_position));
-            if insertion_position > position {
-                if let Ok(ins_q_idx) = usize::try_from(index_of_insertion_in_query_sequence) {
-                    if let Some(sub_base) = query_seq.get(ins_q_idx).copied() {
-                        if let Some(ref_ch) = u32::try_from(insertion_position)
-                            .ok()
-                            .and_then(|pos| self.get_ref_base(pos))
-                        {
-                            if sub_base == ref_ch {
-                                let base_qual_val = query_qual
-                                    .get(ins_q_idx)
-                                    .copied()
-                                    .unwrap_or(33)
-                                    .saturating_sub(33)
-                                    as f64;
-                                if let Some(tv) = get_variation_maybe(
-                                    &mut self.non_insertion_variants,
-                                    insertion_position,
-                                    Some(sub_base),
-                                ) {
-                                    tv.sub_cnt(
-                                        direction,
-                                        tp,
-                                        base_qual_val,
-                                        record.mapping_quality.unwrap_or(0) as i32,
-                                        adjusted_nm.saturating_sub(nmoff) as f64,
-                                        self.config.base_qual,
-                                    );
+            if in_u_rebalance {
+                if tmpq >= self.config.base_qual {
+                    self.record_overlap_desc(insertion_position, true, ss.as_str());
+                }
+                let index_of_insertion_in_query_sequence = (*read_pos_inc as i64)
+                    - 1
+                    - (i64::from(*start) - 1 - i64::from(insertion_position));
+                if insertion_position > position && insertion_position >= mate_alignment_start {
+                    if let Ok(ins_q_idx) = usize::try_from(index_of_insertion_in_query_sequence) {
+                        if let Some(sub_base) = query_seq.get(ins_q_idx).copied() {
+                            if let Some(ref_ch) = u32::try_from(insertion_position)
+                                .ok()
+                                .and_then(|pos| self.get_ref_base(pos))
+                            {
+                                if sub_base == ref_ch && sub_base != b'+' {
+                                    self.record_overlap_snv(insertion_position, sub_base, -1);
                                 }
                             }
                         }
                     }
                 }
-            }
+            } else {
+                increment(
+                    &mut self.position_to_insertion_count,
+                    insertion_position,
+                    ss.as_str(),
+                );
 
-            if ci == 1
-                && cigar_elements
-                    .first()
-                    .is_some_and(|&(_, k)| k == CigarKind::SoftClip || k == CigarKind::HardClip)
-            {
-                if let Some(ref_base_char) = self.get_ref_base(insertion_position as u32) {
-                    let mut buf = [0u8; 4];
-                    let ref_base_str = allele_key(ref_base_char, &mut buf);
-                    let ttref = get_variation(
-                        &mut self.non_insertion_variants,
-                        insertion_position,
-                        ref_base_str,
-                    );
-                    ttref.inc_dir(direction);
-                    ttref.cnt = ttref.cnt.saturating_add(1);
-                    ttref.pstd = hv_pstd;
-                    ttref.qstd = hv_qstd;
-                    ttref.pmean += tp as f64;
-                    ttref.qmean += tmpq;
-                    ttref.mqmean += record.mapping_quality.unwrap_or(0) as f64;
-                    ttref.pp = tp;
-                    ttref.pq = tmpq;
-                    ttref.nm += adjusted_nm.saturating_sub(nmoff) as f64;
-                    inc_cnt(&mut self.ref_coverage, insertion_position, 1);
+                let hv = get_variation(
+                    &mut self.insertion_variants,
+                    insertion_position,
+                    ss.as_str(),
+                );
+                hv.inc_dir(direction);
+                hv.cnt = hv.cnt.saturating_add(1);
+
+                let rpe = *read_pos_exc as i32;
+                let tp = if rpe < read_len_match_ins - rpe {
+                    rpe + 1
+                } else {
+                    read_len_match_ins - rpe
+                };
+
+                if !hv.pstd && hv.pp != 0 && tp != hv.pp {
+                    hv.pstd = true;
+                }
+                if !hv.qstd && hv.pq != 0.0 && tmpq != hv.pq {
+                    hv.qstd = true;
+                }
+                hv.pmean += tp as f64;
+                hv.qmean += tmpq;
+                hv.mqmean += record.mapping_quality.unwrap_or(0) as f64;
+                hv.pp = tp;
+                hv.pq = tmpq;
+                if tmpq >= self.config.base_qual {
+                    hv.hicnt = hv.hicnt.saturating_add(1);
+                } else {
+                    hv.locnt = hv.locnt.saturating_add(1);
+                }
+                hv.nm += adjusted_nm.saturating_sub(nmoff) as f64;
+                let (hv_pstd, hv_qstd) = (hv.pstd, hv.qstd);
+                if track_paired_rev && tmpq >= self.config.base_qual {
+                    self.record_overlap_desc(insertion_position, true, ss.as_str());
+                }
+
+                let index_of_insertion_in_query_sequence = (*read_pos_inc as i64)
+                    - 1
+                    - (i64::from(*start) - 1 - i64::from(insertion_position));
+                if insertion_position > position {
+                    if let Ok(ins_q_idx) = usize::try_from(index_of_insertion_in_query_sequence) {
+                        if let Some(sub_base) = query_seq.get(ins_q_idx).copied() {
+                            if let Some(ref_ch) = u32::try_from(insertion_position)
+                                .ok()
+                                .and_then(|pos| self.get_ref_base(pos))
+                            {
+                                if sub_base == ref_ch {
+                                    let base_qual_val = query_qual
+                                        .get(ins_q_idx)
+                                        .copied()
+                                        .unwrap_or(33)
+                                        .saturating_sub(33)
+                                        as f64;
+                                    if let Some(tv) = get_variation_maybe(
+                                        &mut self.non_insertion_variants,
+                                        insertion_position,
+                                        Some(sub_base),
+                                    ) {
+                                        tv.sub_cnt(
+                                            direction,
+                                            tp,
+                                            base_qual_val,
+                                            record.mapping_quality.unwrap_or(0) as i32,
+                                            adjusted_nm.saturating_sub(nmoff) as f64,
+                                            self.config.base_qual,
+                                        );
+                                        if track_paired_rev && sub_base != b'+' {
+                                            self.record_overlap_snv(
+                                                insertion_position,
+                                                sub_base,
+                                                -1,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if ci == 1
+                    && cigar_elements
+                        .first()
+                        .is_some_and(|&(_, k)| k == CigarKind::SoftClip || k == CigarKind::HardClip)
+                {
+                    if let Some(ref_base_char) = self.get_ref_base(insertion_position as u32) {
+                        let mut buf = [0u8; 4];
+                        let ref_base_str = allele_key(ref_base_char, &mut buf);
+                        let ttref = get_variation(
+                            &mut self.non_insertion_variants,
+                            insertion_position,
+                            ref_base_str,
+                        );
+                        ttref.inc_dir(direction);
+                        ttref.cnt = ttref.cnt.saturating_add(1);
+                        ttref.pstd = hv_pstd;
+                        ttref.qstd = hv_qstd;
+                        ttref.pmean += tp as f64;
+                        ttref.qmean += tmpq;
+                        ttref.mqmean += record.mapping_quality.unwrap_or(0) as f64;
+                        ttref.pp = tp;
+                        ttref.pq = tmpq;
+                        ttref.nm += adjusted_nm.saturating_sub(nmoff) as f64;
+                        inc_cnt(&mut self.ref_coverage, insertion_position, 1);
+                        if track_paired_rev
+                            && ref_base_char != b'+'
+                            && insertion_position >= region_start
+                            && insertion_position <= region_end
+                        {
+                            self.record_overlap_snv(insertion_position, ref_base_char, 1);
+                        }
+                    }
                 }
             }
         }
@@ -2660,8 +2971,11 @@ impl<'a> CigarParser<'a> {
         read_pos_exc: &mut usize,
         offset: &mut u32,
         position: i32,
+        track_paired_rev: bool,
     ) {
         let cigar_element_len = cigar_elements.get(ci).map_or(0, |&(l, _)| l);
+        let region_start = i32::try_from(self.region.start.0).unwrap_or(i32::MAX);
+        let region_end = i32::try_from(self.region.end.0).unwrap_or(i32::MAX);
 
         if ci == 0 {
             if !self.config.chimeric {
@@ -2746,6 +3060,13 @@ impl<'a> CigarParser<'a> {
                         self.config.base_qual,
                     );
                     inc_cnt(&mut self.ref_coverage, *start - 1, 1);
+                    if track_paired_rev
+                        && ref_base != b'+'
+                        && *start - 1 >= region_start
+                        && *start - 1 <= region_end
+                    {
+                        self.record_overlap_snv(*start - 1, ref_base, 1);
+                    }
                     *start -= 1;
                     element_len -= 1;
                 } else {
@@ -2881,6 +3202,13 @@ impl<'a> CigarParser<'a> {
                         self.config.base_qual,
                     );
                     inc_cnt(&mut self.ref_coverage, *start, 1);
+                    if track_paired_rev
+                        && ref_base != b'+'
+                        && *start >= region_start
+                        && *start <= region_end
+                    {
+                        self.record_overlap_snv(*start, ref_base, 1);
+                    }
                     *read_pos_inc += 1;
                     *start = start.saturating_add(1);
                     element_len -= 1;
@@ -9540,5 +9868,725 @@ mod tests {
             assert_eq!(v.fwd + v.rev, 1, "{name}: fwd + rev");
             assert_eq!(v.hicnt + v.locnt, 1, "{name}: hicnt + locnt");
         }
+    }
+
+    fn build_non_repetitive_ref(len: usize) -> (Reference, Vec<u8>) {
+        let mut ref_seq = Vec::with_capacity(len);
+        let mut state: u32 = 0x9E37_79B9;
+        let bases = *b"ACGT";
+        for _ in 0..len {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            ref_seq.push(bases[(state & 3) as usize]);
+        }
+        // Pin pos 139..=145 (0-based 138..=144) to known non-homopolymer bases "CAGTCGA"
+        // with pos 140 (idx 139) == 'A', pos 141 (idx 140) == 'G', pos 142 (idx 141) == 'T'.
+        if len >= 146 {
+            ref_seq[138..145].copy_from_slice(b"CAGTCGA");
+        }
+        let mut reference = Reference::new();
+        reference
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: len as u32,
+            });
+        reference.region_sequences.push(ref_seq.clone());
+        reference
+            .reference_sequences
+            .insert("chr1".to_string(), ref_seq.clone());
+        reference
+            .seed
+            .index_sequence(&ref_seq, 1, len as u32, len as u32);
+        (reference, ref_seq)
+    }
+
+    #[test]
+    fn mate_overlap_both_strands_snv_and_ref_rescue_is_arrival_order_commutative() {
+        let (reference, ref_seq) = build_non_repetitive_ref(320);
+        assert_eq!(ref_seq[139], b'A'); // Pos1(140) == 'A'
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "NRAS".to_string(),
+            amplicon: None,
+        };
+
+        let mk_fr_snv_pair =
+            |idx: usize, r1_start: u32, r2_start: u32, r1_b: u8, r2_b: u8, q: u8| {
+                let len = 81usize;
+                let mut seq1 =
+                    ref_seq[(r1_start as usize - 1)..(r1_start as usize - 1 + len)].to_vec();
+                let mut seq2 =
+                    ref_seq[(r2_start as usize - 1)..(r2_start as usize - 1 + len)].to_vec();
+                let off1 = (140 - r1_start) as usize;
+                let off2 = (140 - r2_start) as usize;
+                seq1[off1] = r1_b;
+                seq2[off2] = r2_b;
+                let nm1 = i32::from(r1_b != b'A');
+                let nm2 = i32::from(r2_b != b'A');
+                let tlen = (r2_start as i32 + len as i32 - r1_start as i32).max(1);
+                let r1 = SamRecord {
+                    name: format!("pair_{idx}").into_bytes(),
+                    flags: 0x1 | 0x2 | 0x20 | 0x40, // paired, proper, mate_rev, R1 (forward +)
+                    reference_name: Some("chr1".to_string()),
+                    alignment_start: Some(Pos1(r1_start)),
+                    alignment_end: Some(Pos1(r1_start + len as u32 - 1)),
+                    mapping_quality: Some(60),
+                    cigar: vec![(len as u32, CigarKind::Match)],
+                    sequence: seq1,
+                    quality_scores: vec![q + 33; len],
+                    mate_reference_name: Some("chr1".to_string()),
+                    mate_alignment_start: Some(Pos1(r2_start)),
+                    template_length: tlen,
+                    nm: Some(nm1),
+                    ..SamRecord::default()
+                };
+                let r2 = SamRecord {
+                    name: format!("pair_{idx}").into_bytes(),
+                    flags: 0x1 | 0x2 | 0x10 | 0x80, // paired, proper, read_rev, R2 (reverse -)
+                    reference_name: Some("chr1".to_string()),
+                    alignment_start: Some(Pos1(r2_start)),
+                    alignment_end: Some(Pos1(r2_start + len as u32 - 1)),
+                    mapping_quality: Some(60),
+                    cigar: vec![(len as u32, CigarKind::Match)],
+                    sequence: seq2,
+                    quality_scores: vec![q + 33; len],
+                    mate_reference_name: Some("chr1".to_string()),
+                    mate_alignment_start: Some(Pos1(r1_start)),
+                    template_length: -tlen,
+                    nm: Some(nm2),
+                    ..SamRecord::default()
+                };
+                (r1, r2)
+            };
+
+        // 1a. Coordinate-sorted 14 agreed FR pairs (10 ALT='G', 4 REF='A'): R1+ 100..180, R2- 110..190
+        let mut r1s_14 = Vec::new();
+        let mut r2s_14 = Vec::new();
+        for idx in 0..14 {
+            let b = if idx < 10 { b'G' } else { b'A' };
+            let (r1, r2) = mk_fr_snv_pair(idx, 100, 110, b, b, 35);
+            r1s_14.push(r1);
+            r2s_14.push(r2);
+        }
+        let mut coord_sorted_14 = r1s_14;
+        coord_sorted_14.extend(r2s_14);
+
+        let mut cfg_def = Config::default();
+        cfg_def.unique_mode_alignment_enabled = true;
+        let mut cfg_rebal = cfg_def.clone();
+        cfg_rebal.compat.mate_overlap_both_strands = true;
+
+        let vd_def_14 = pileup(
+            &coord_sorted_14,
+            &reference,
+            &region,
+            &cfg_def,
+            false,
+            28,
+            0,
+            81,
+        )
+        .unwrap();
+        let g_def_14 = &vd_def_14.non_insertion_variants.get(&140).unwrap().map["G"];
+        let a_def_14 = &vd_def_14.non_insertion_variants.get(&140).unwrap().map["A"];
+        assert_eq!(vd_def_14.ref_coverage.get(&140), Some(&14));
+        assert_eq!((g_def_14.cnt, g_def_14.fwd, g_def_14.rev), (10, 0, 10));
+        assert_eq!((a_def_14.cnt, a_def_14.fwd, a_def_14.rev), (4, 0, 4));
+        assert_eq!(g_def_14.overlap_agreed_pairs, 0);
+
+        let vd_rebal_14 = pileup(
+            &coord_sorted_14,
+            &reference,
+            &region,
+            &cfg_rebal,
+            false,
+            28,
+            0,
+            81,
+        )
+        .unwrap();
+        let g_rebal_14 = &vd_rebal_14.non_insertion_variants.get(&140).unwrap().map["G"];
+        let a_rebal_14 = &vd_rebal_14.non_insertion_variants.get(&140).unwrap().map["A"];
+        assert_eq!(vd_rebal_14.ref_coverage.get(&140), Some(&14));
+        assert_eq!((g_rebal_14.cnt, g_rebal_14.fwd, g_rebal_14.rev), (10, 5, 5));
+        assert_eq!(g_rebal_14.fwd + g_rebal_14.rev, g_rebal_14.cnt);
+        assert_eq!(g_rebal_14.overlap_agreed_pairs, 10);
+        assert_eq!((a_rebal_14.cnt, a_rebal_14.fwd, a_rebal_14.rev), (4, 2, 2));
+        assert_eq!(a_rebal_14.overlap_agreed_pairs, 4);
+        assert_eq!(g_rebal_14.hicnt, g_def_14.hicnt);
+        assert_eq!(g_rebal_14.locnt, g_def_14.locnt);
+        assert_eq!(g_rebal_14.qmean, g_def_14.qmean);
+        assert_eq!(g_rebal_14.pmean, g_def_14.pmean);
+        assert_eq!(g_rebal_14.mqmean, g_def_14.mqmean);
+        assert_eq!(g_rebal_14.nm, g_def_14.nm);
+        assert_eq!(
+            crate::tovars::strand_bias(g_rebal_14.fwd, g_rebal_14.rev, 2),
+            2
+        );
+        assert_eq!(
+            crate::tovars::strand_bias(a_rebal_14.fwd, a_rebal_14.rev, 2),
+            2
+        );
+
+        // 1b. High-depth >12 ALT reads (14 ALT='G' + 6 REF='A' = 20 pairs) proving strand_bias 1 -> 2
+        //     across all 3 coordinate-sorted arrival orders (all R1+ first, interleaved R1+/R2-, and R2- before R1+ at pos 100).
+        let mut order_r1_first = Vec::new();
+        let mut r2_tail = Vec::new();
+        let mut order_interleaved = Vec::new();
+        let mut order_r2_first = Vec::new();
+        for idx in 0..20 {
+            let b = if idx < 14 { b'G' } else { b'A' };
+            let (r1, r2) = mk_fr_snv_pair(idx, 100, 110, b, b, 35);
+            order_r1_first.push(r1);
+            r2_tail.push(r2);
+
+            let s1 = 100 + (idx as u32);
+            let s2 = s1 + 1;
+            let (ir1, ir2) = mk_fr_snv_pair(idx, s1, s2, b, b, 35);
+            order_interleaved.push(ir1);
+            order_interleaved.push(ir2);
+
+            let (zr1, zr2) = mk_fr_snv_pair(idx, 100, 100, b, b, 35);
+            order_r2_first.push(zr2);
+            order_r2_first.push(zr1);
+        }
+        order_r1_first.extend(r2_tail);
+
+        let vd_def_20 = pileup(
+            &order_r1_first,
+            &reference,
+            &region,
+            &cfg_def,
+            false,
+            40,
+            0,
+            81,
+        )
+        .unwrap();
+        let g_def_20 = &vd_def_20.non_insertion_variants.get(&140).unwrap().map["G"];
+        assert_eq!((g_def_20.cnt, g_def_20.fwd, g_def_20.rev), (14, 0, 14));
+        assert_eq!(
+            crate::tovars::strand_bias(g_def_20.fwd, g_def_20.rev, 2),
+            1,
+            "default -u on 14 overlapping FR pairs must trigger single-strand bias == 1"
+        );
+
+        for (label, recs) in [
+            ("r1_first", &order_r1_first),
+            ("interleaved", &order_interleaved),
+            ("r2_first_same_pos", &order_r2_first),
+        ] {
+            let vd = pileup(recs, &reference, &region, &cfg_rebal, false, 40, 0, 81).unwrap();
+            assert_eq!(vd.ref_coverage.get(&140), Some(&20), "{label}: DP");
+            let g = &vd.non_insertion_variants.get(&140).unwrap().map["G"];
+            let a = &vd.non_insertion_variants.get(&140).unwrap().map["A"];
+            assert_eq!((g.cnt, g.fwd, g.rev), (14, 7, 7), "{label}: G counts");
+            assert_eq!(g.overlap_agreed_pairs, 14, "{label}: G agreed");
+            assert_eq!(
+                crate::tovars::strand_bias(g.fwd, g.rev, 2),
+                2,
+                "{label}: G strand_bias"
+            );
+            assert_eq!((a.cnt, a.fwd, a.rev), (6, 3, 3), "{label}: A counts");
+            assert_eq!(a.overlap_agreed_pairs, 6, "{label}: A agreed");
+        }
+    }
+
+    #[test]
+    fn mate_overlap_both_strands_discordant_and_low_qual_pairs_do_not_rebalance() {
+        let (reference, ref_seq) = build_non_repetitive_ref(320);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "KRAS".to_string(),
+            amplicon: None,
+        };
+        let mut cfg_rebal = Config::default();
+        cfg_rebal.unique_mode_alignment_enabled = true;
+        cfg_rebal.compat.mate_overlap_both_strands = true;
+
+        let mk_pair = |idx: usize, r1_start: u32, r2_start: u32, b1: u8, q1: u8, b2: u8, q2: u8| {
+            let len = 81usize;
+            let mut seq1 = ref_seq[(r1_start as usize - 1)..(r1_start as usize - 1 + len)].to_vec();
+            let mut seq2 = ref_seq[(r2_start as usize - 1)..(r2_start as usize - 1 + len)].to_vec();
+            seq1[(140 - r1_start) as usize] = b1;
+            seq2[(140 - r2_start) as usize] = b2;
+            let mut qv1 = vec![35 + 33; len];
+            let mut qv2 = vec![35 + 33; len];
+            qv1[(140 - r1_start) as usize] = q1 + 33;
+            qv2[(140 - r2_start) as usize] = q2 + 33;
+            let r1 = SamRecord {
+                name: format!("disc_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x20 | 0x40,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(r1_start)),
+                alignment_end: Some(Pos1(r1_start + len as u32 - 1)),
+                mapping_quality: Some(60),
+                cigar: vec![(len as u32, CigarKind::Match)],
+                sequence: seq1,
+                quality_scores: qv1,
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(r2_start)),
+                template_length: 91,
+                nm: Some(i32::from(b1 != b'A')),
+                ..SamRecord::default()
+            };
+            let r2 = SamRecord {
+                name: format!("disc_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x10 | 0x80,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(r2_start)),
+                alignment_end: Some(Pos1(r2_start + len as u32 - 1)),
+                mapping_quality: Some(60),
+                cigar: vec![(len as u32, CigarKind::Match)],
+                sequence: seq2,
+                quality_scores: qv2,
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(r1_start)),
+                template_length: -91,
+                nm: Some(i32::from(b2 != b'A')),
+                ..SamRecord::default()
+            };
+            (r1, r2)
+        };
+
+        // Case A: Single-strand artifact on counted R2- (`R1+ = 'A' Q35`, `R2- = 'G' Q35` on 14 pairs + 6 A/A pairs)
+        // 'G' MUST remain single-strand (`VD = 14, fwd = 0, rev = 14, overlap_agreed_pairs = 0`, `strand_bias == 1`).
+        let mut r1_a = Vec::new();
+        let mut r2_a = Vec::new();
+        for idx in 0..20 {
+            let b2 = if idx < 14 { b'G' } else { b'A' };
+            let (r1, r2) = mk_pair(idx, 100, 110, b'A', 35, b2, 35);
+            r1_a.push(r1);
+            r2_a.push(r2);
+        }
+        r1_a.extend(r2_a);
+        let vd_a = pileup(&r1_a, &reference, &region, &cfg_rebal, false, 40, 0, 81).unwrap();
+        let g_a = &vd_a.non_insertion_variants.get(&140).unwrap().map["G"];
+        let ref_a = &vd_a.non_insertion_variants.get(&140).unwrap().map["A"];
+        assert_eq!((g_a.cnt, g_a.fwd, g_a.rev), (14, 0, 14));
+        assert_eq!(g_a.overlap_agreed_pairs, 0);
+        assert_eq!(crate::tovars::strand_bias(g_a.fwd, g_a.rev, 2), 1);
+        assert_eq!((ref_a.cnt, ref_a.fwd, ref_a.rev), (6, 3, 3));
+        assert_eq!(ref_a.overlap_agreed_pairs, 6);
+
+        // Case B: Single-strand artifact on skipped R1+ (`R1+ = 'G' Q35`, `R2- = 'A' Q35` on 4 overlap pairs + 10 A/A overlap pairs)
+        // 'G' must NOT even be inserted into `non_insertion_variants` (`None`), and 'A' agrees on only 10 pairs (`fwd = 5, rev = 9`).
+        let mut r1_b = Vec::new();
+        let mut r2_b = Vec::new();
+        for idx in 0..14 {
+            let b1 = if idx < 4 { b'G' } else { b'A' };
+            let (r1, r2) = mk_pair(idx, 100, 110, b1, 35, b'A', 35);
+            r1_b.push(r1);
+            r2_b.push(r2);
+        }
+        r1_b.extend(r2_b);
+        let vd_b = pileup(&r1_b, &reference, &region, &cfg_rebal, false, 28, 0, 81).unwrap();
+        assert!(
+            !vd_b
+                .non_insertion_variants
+                .get(&140)
+                .unwrap()
+                .map
+                .contains_key("G"),
+            "skipped discordant R1+ allele must never create a Variation entry"
+        );
+        let ref_b = &vd_b.non_insertion_variants.get(&140).unwrap().map["A"];
+        assert_eq!((ref_b.cnt, ref_b.fwd, ref_b.rev), (14, 5, 9));
+        assert_eq!(ref_b.overlap_agreed_pairs, 10);
+
+        // Case C: Non-overlapping R1+ artifact (`R1+` at 100..180 with `mate_start = 185` > 140) has 4 'G' reads,
+        // plus 10 overlapping A/A pairs: 'G' MUST stay `VD = 4, fwd = 4, rev = 0, overlap_agreed_pairs = 0`.
+        let mut recs_c = Vec::new();
+        for idx in 0..4 {
+            let (mut r1_no_ov, _) = mk_pair(idx, 100, 110, b'G', 35, b'A', 35);
+            r1_no_ov.mate_alignment_start = Some(Pos1(185));
+            recs_c.push(r1_no_ov);
+        }
+        let mut r2_c = Vec::new();
+        for idx in 4..14 {
+            let (r1, r2) = mk_pair(idx, 100, 110, b'A', 35, b'A', 35);
+            recs_c.push(r1);
+            r2_c.push(r2);
+        }
+        recs_c.extend(r2_c);
+        let vd_c = pileup(&recs_c, &reference, &region, &cfg_rebal, false, 24, 0, 81).unwrap();
+        let g_c = &vd_c.non_insertion_variants.get(&140).unwrap().map["G"];
+        assert_eq!((g_c.cnt, g_c.fwd, g_c.rev), (4, 4, 0));
+        assert_eq!(g_c.overlap_agreed_pairs, 0);
+
+        // Case D: Low-quality Q5 base on skipped R1+ (`R1+ = 'G' Q5 < base_qual 22.5`, `R2- = 'G' Q35`)
+        // must NOT validate strand support (`overlap_agreed_pairs == 0, fwd = 0, rev = 4`).
+        let mut r1_lowq = Vec::new();
+        let mut r2_lowq = Vec::new();
+        for idx in 0..4 {
+            let (r1, r2) = mk_pair(idx, 100, 110, b'G', 5, b'G', 35);
+            r1_lowq.push(r1);
+            r2_lowq.push(r2);
+        }
+        r1_lowq.extend(r2_lowq);
+        let vd_lowq = pileup(&r1_lowq, &reference, &region, &cfg_rebal, false, 8, 0, 81).unwrap();
+        let g_lowq = &vd_lowq.non_insertion_variants.get(&140).unwrap().map["G"];
+        assert_eq!((g_lowq.cnt, g_lowq.fwd, g_lowq.rev), (4, 0, 4));
+        assert_eq!(g_lowq.overlap_agreed_pairs, 0);
+    }
+
+    #[test]
+    fn mate_overlap_both_strands_rebalances_indels_and_mnvs_without_inflating_dp() {
+        let (reference, ref_seq) = build_non_repetitive_ref(320);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(100),
+            end: Pos1(200),
+            gene: "EGFR".to_string(),
+            amplicon: None,
+        };
+        let mut cfg_def = Config::default();
+        cfg_def.unique_mode_alignment_enabled = true;
+        let mut cfg_rebal = cfg_def.clone();
+        cfg_rebal.compat.mate_overlap_both_strands = true;
+
+        // 1. 3-bp Deletion `-3` at Pos1(140..=142): R1+ `40M3D41M` @ 100, R2- `30M3D51M` @ 110
+        let mut del_r1s = Vec::new();
+        let mut del_r2s = Vec::new();
+        for idx in 0..14 {
+            let mut s1 = Vec::with_capacity(81);
+            s1.extend_from_slice(&ref_seq[99..139]); // 100..=139 (40M)
+            s1.extend_from_slice(&ref_seq[142..183]); // 143..=183 (41M)
+            let mut s2 = Vec::with_capacity(81);
+            s2.extend_from_slice(&ref_seq[109..139]); // 110..=139 (30M)
+            s2.extend_from_slice(&ref_seq[142..193]); // 143..=193 (51M)
+            del_r1s.push(SamRecord {
+                name: format!("del_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x20 | 0x40,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(100)),
+                alignment_end: Some(Pos1(183)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (40, CigarKind::Match),
+                    (3, CigarKind::Deletion),
+                    (41, CigarKind::Match),
+                ],
+                sequence: s1,
+                quality_scores: vec![35 + 33; 81],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(110)),
+                template_length: 94,
+                nm: Some(3),
+                ..SamRecord::default()
+            });
+            del_r2s.push(SamRecord {
+                name: format!("del_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x10 | 0x80,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(110)),
+                alignment_end: Some(Pos1(193)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (30, CigarKind::Match),
+                    (3, CigarKind::Deletion),
+                    (51, CigarKind::Match),
+                ],
+                sequence: s2,
+                quality_scores: vec![35 + 33; 81],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(100)),
+                template_length: -94,
+                nm: Some(3),
+                ..SamRecord::default()
+            });
+        }
+        del_r1s.extend(del_r2s);
+        let vd_del_def = pileup(&del_r1s, &reference, &region, &cfg_def, false, 28, 0, 81).unwrap();
+        let vd_del_reb =
+            pileup(&del_r1s, &reference, &region, &cfg_rebal, false, 28, 0, 81).unwrap();
+        assert_eq!(vd_del_reb.ref_coverage, vd_del_def.ref_coverage);
+        assert_eq!(
+            vd_del_reb.position_to_deletion_count,
+            vd_del_def.position_to_deletion_count
+        );
+        let d_def = &vd_del_def.non_insertion_variants.get(&140).unwrap().map["-3"];
+        let d_reb = &vd_del_reb.non_insertion_variants.get(&140).unwrap().map["-3"];
+        assert_eq!((d_def.cnt, d_def.fwd, d_def.rev), (14, 0, 14));
+        assert_eq!((d_reb.cnt, d_reb.fwd, d_reb.rev), (14, 7, 7));
+        assert_eq!(d_reb.overlap_agreed_pairs, 14);
+        assert_eq!(crate::tovars::strand_bias(d_reb.fwd, d_reb.rev, 2), 2);
+
+        // 2. 2-bp Insertion `+TG` at Pos1(140): R1+ `41M2I39M` @ 100, R2- `31M2I49M` @ 110
+        let mut ins_r1s = Vec::new();
+        let mut ins_r2s = Vec::new();
+        for idx in 0..14 {
+            let mut s1 = Vec::with_capacity(82);
+            s1.extend_from_slice(&ref_seq[99..140]); // 100..=140 (41M)
+            s1.extend_from_slice(b"TG"); // 2I anchored at 140
+            s1.extend_from_slice(&ref_seq[140..179]); // 141..=179 (39M)
+            let mut s2 = Vec::with_capacity(82);
+            s2.extend_from_slice(&ref_seq[109..140]); // 110..=140 (31M)
+            s2.extend_from_slice(b"TG"); // 2I anchored at 140
+            s2.extend_from_slice(&ref_seq[140..189]); // 141..=189 (49M)
+            ins_r1s.push(SamRecord {
+                name: format!("ins_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x20 | 0x40,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(100)),
+                alignment_end: Some(Pos1(179)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (41, CigarKind::Match),
+                    (2, CigarKind::Insertion),
+                    (39, CigarKind::Match),
+                ],
+                sequence: s1,
+                quality_scores: vec![35 + 33; 82],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(110)),
+                template_length: 90,
+                nm: Some(2),
+                ..SamRecord::default()
+            });
+            ins_r2s.push(SamRecord {
+                name: format!("ins_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x10 | 0x80,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(110)),
+                alignment_end: Some(Pos1(189)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (31, CigarKind::Match),
+                    (2, CigarKind::Insertion),
+                    (49, CigarKind::Match),
+                ],
+                sequence: s2,
+                quality_scores: vec![35 + 33; 82],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(100)),
+                template_length: -90,
+                nm: Some(2),
+                ..SamRecord::default()
+            });
+        }
+        ins_r1s.extend(ins_r2s);
+        let vd_ins_def = pileup(&ins_r1s, &reference, &region, &cfg_def, false, 28, 0, 82).unwrap();
+        let vd_ins_reb =
+            pileup(&ins_r1s, &reference, &region, &cfg_rebal, false, 28, 0, 82).unwrap();
+        assert_eq!(vd_ins_reb.ref_coverage, vd_ins_def.ref_coverage);
+        assert_eq!(
+            vd_ins_reb.position_to_insertion_count,
+            vd_ins_def.position_to_insertion_count
+        );
+        let i_def = &vd_ins_def.insertion_variants.get(&140).unwrap().map["+TG"];
+        let i_reb = &vd_ins_reb.insertion_variants.get(&140).unwrap().map["+TG"];
+        assert_eq!((i_def.cnt, i_def.fwd, i_def.rev), (14, 0, 14));
+        assert_eq!((i_reb.cnt, i_reb.fwd, i_reb.rev), (14, 7, 7));
+        assert_eq!(i_reb.overlap_agreed_pairs, 14);
+        assert_eq!(crate::tovars::strand_bias(i_reb.fwd, i_reb.rev, 2), 2);
+
+        // 3. 2-bp MNV `C&T` at Pos1(140..=141) (ref at 140..=141 is "AG"):
+        //    rebalances `fwd`/`rev` to 7/7 without inflating `DP` or `mnp` counts.
+        let mut mnv_r1s = Vec::new();
+        let mut mnv_r2s = Vec::new();
+        for idx in 0..14 {
+            let mut s1 = ref_seq[99..180].to_vec();
+            let mut s2 = ref_seq[109..190].to_vec();
+            s1[40] = b'C';
+            s1[41] = b'T';
+            s2[30] = b'C';
+            s2[31] = b'T';
+            mnv_r1s.push(SamRecord {
+                name: format!("mnv_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x20 | 0x40,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(100)),
+                alignment_end: Some(Pos1(180)),
+                mapping_quality: Some(60),
+                cigar: vec![(81, CigarKind::Match)],
+                sequence: s1,
+                quality_scores: vec![35 + 33; 81],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(110)),
+                template_length: 91,
+                nm: Some(2),
+                ..SamRecord::default()
+            });
+            mnv_r2s.push(SamRecord {
+                name: format!("mnv_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x10 | 0x80,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(110)),
+                alignment_end: Some(Pos1(190)),
+                mapping_quality: Some(60),
+                cigar: vec![(81, CigarKind::Match)],
+                sequence: s2,
+                quality_scores: vec![35 + 33; 81],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(100)),
+                template_length: -91,
+                nm: Some(2),
+                ..SamRecord::default()
+            });
+        }
+        mnv_r1s.extend(mnv_r2s);
+        let vd_mnv_def = pileup(&mnv_r1s, &reference, &region, &cfg_def, false, 28, 0, 81).unwrap();
+        let vd_mnv_reb =
+            pileup(&mnv_r1s, &reference, &region, &cfg_rebal, false, 28, 0, 81).unwrap();
+        assert_eq!(vd_mnv_reb.ref_coverage, vd_mnv_def.ref_coverage);
+        assert_eq!(vd_mnv_reb.mnp, vd_mnv_def.mnp);
+        let m_def = &vd_mnv_def.non_insertion_variants.get(&140).unwrap().map["C&T"];
+        let m_reb = &vd_mnv_reb.non_insertion_variants.get(&140).unwrap().map["C&T"];
+        assert_eq!((m_def.cnt, m_def.fwd, m_def.rev), (14, 0, 14));
+        assert_eq!((m_reb.cnt, m_reb.fwd, m_reb.rev), (14, 7, 7));
+        assert_eq!(m_reb.overlap_agreed_pairs, 14);
+
+        // 4. Shifted homopolymer insertion (`adj_ins_pos_slice` + `sub_cnt` undo), `'N'` before
+        //    `mate_alignment_start` (`pos 109`), odd `N = 1, 3` counts, and `-UN` invariance.
+        let mut hp_ref_seq = ref_seq.clone();
+        hp_ref_seq[139..144].copy_from_slice(b"AAAAA");
+        let mut hp_ref = Reference::new();
+        hp_ref.loaded_regions.push(crate::reference::LoadedRegion {
+            chr: "chr1".to_string(),
+            sequence_start: 1,
+            sequence_end: 320,
+        });
+        hp_ref.region_sequences.push(hp_ref_seq.clone());
+        hp_ref
+            .reference_sequences
+            .insert("chr1".to_string(), hp_ref_seq.clone());
+        hp_ref.seed.index_sequence(&hp_ref_seq, 1, 320, 320);
+
+        let mut hp_r1s = Vec::new();
+        let mut hp_r2s = Vec::new();
+        for idx in 0..4 {
+            let mut s1 = Vec::with_capacity(82);
+            s1.extend_from_slice(&hp_ref_seq[99..144]);
+            s1[9] = b'N'; // 'N' at Pos1(109) immediately preceding mate_alignment_start = 110
+            s1.extend_from_slice(b"AA");
+            s1.extend_from_slice(&hp_ref_seq[144..179]);
+            let mut s2 = Vec::with_capacity(82);
+            s2.extend_from_slice(&hp_ref_seq[109..144]);
+            s2.extend_from_slice(b"AA");
+            s2.extend_from_slice(&hp_ref_seq[144..189]);
+            hp_r1s.push(SamRecord {
+                name: format!("hp_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x20 | 0x40,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(100)),
+                alignment_end: Some(Pos1(179)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (45, CigarKind::Match),
+                    (2, CigarKind::Insertion),
+                    (35, CigarKind::Match),
+                ],
+                sequence: s1,
+                quality_scores: vec![35 + 33; 82],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(110)),
+                template_length: 90,
+                nm: Some(3),
+                ..SamRecord::default()
+            });
+            hp_r2s.push(SamRecord {
+                name: format!("hp_{idx}").into_bytes(),
+                flags: 0x1 | 0x2 | 0x10 | 0x80,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(110)),
+                alignment_end: Some(Pos1(189)),
+                mapping_quality: Some(60),
+                cigar: vec![
+                    (35, CigarKind::Match),
+                    (2, CigarKind::Insertion),
+                    (45, CigarKind::Match),
+                ],
+                sequence: s2,
+                quality_scores: vec![35 + 33; 82],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(100)),
+                template_length: -90,
+                nm: Some(2),
+                ..SamRecord::default()
+            });
+        }
+        let mut hp_all = hp_r1s.clone();
+        hp_all.extend(hp_r2s.clone());
+        let mut cfg_def_k = cfg_def.clone();
+        cfg_def_k.realign = 0;
+        cfg_def_k.include_n = true;
+        let mut cfg_reb_k = cfg_rebal.clone();
+        cfg_reb_k.realign = 0;
+        cfg_reb_k.include_n = true;
+
+        let vd_hp_def = pileup(&hp_all, &hp_ref, &region, &cfg_def_k, false, 8, 0, 82).unwrap();
+        let vd_hp_reb = pileup(&hp_all, &hp_ref, &region, &cfg_reb_k, false, 8, 0, 82).unwrap();
+        assert_eq!(
+            vd_hp_reb.ref_coverage, vd_hp_def.ref_coverage,
+            "'N' at pos 109 before mate_alignment_start=110 must preserve exact ref_coverage"
+        );
+        let hp_ins_pos = *vd_hp_def.insertion_variants.keys().next().unwrap();
+        let hp_ins_def = &vd_hp_def.insertion_variants.get(&hp_ins_pos).unwrap().map["+AA"];
+        let hp_ins_reb = &vd_hp_reb.insertion_variants.get(&hp_ins_pos).unwrap().map["+AA"];
+        assert_eq!((hp_ins_def.cnt, hp_ins_def.fwd, hp_ins_def.rev), (4, 0, 4));
+        assert_eq!((hp_ins_reb.cnt, hp_ins_reb.fwd, hp_ins_reb.rev), (4, 2, 2));
+        if let Some((_, sub_ref)) = vd_hp_reb
+            .non_insertion_variants
+            .get(&hp_ins_pos)
+            .and_then(|vm| vm.map.iter().next())
+        {
+            assert_eq!(
+                sub_ref.fwd + sub_ref.rev,
+                sub_ref.cnt,
+                "sub_cnt undo on shifted insertion must keep fwd + rev == cnt"
+            );
+        }
+
+        // Odd agreed pair counts: N = 1 -> (1, 0, 1) (strand_bias == 0), N = 3 -> (3, 1, 2) (strand_bias == 2)
+        let one_pair = vec![hp_r1s[0].clone(), hp_r2s[0].clone()];
+        let vd_one = pileup(&one_pair, &hp_ref, &region, &cfg_reb_k, false, 2, 0, 82).unwrap();
+        let ins_one = &vd_one.insertion_variants.get(&hp_ins_pos).unwrap().map["+AA"];
+        assert_eq!((ins_one.cnt, ins_one.fwd, ins_one.rev), (1, 0, 1));
+        assert_eq!(crate::tovars::strand_bias(ins_one.fwd, ins_one.rev, 2), 0);
+
+        let three_pairs = vec![
+            hp_r1s[0].clone(),
+            hp_r1s[1].clone(),
+            hp_r1s[2].clone(),
+            hp_r2s[0].clone(),
+            hp_r2s[1].clone(),
+            hp_r2s[2].clone(),
+        ];
+        let vd_three = pileup(&three_pairs, &hp_ref, &region, &cfg_reb_k, false, 6, 0, 82).unwrap();
+        let ins_three = &vd_three.insertion_variants.get(&hp_ins_pos).unwrap().map["+AA"];
+        assert_eq!((ins_three.cnt, ins_three.fwd, ins_three.rev), (3, 1, 2));
+        assert_eq!(
+            crate::tovars::strand_bias(ins_three.fwd, ins_three.rev, 2),
+            2
+        );
+
+        // -UN (`unique_mode_second_in_pair_enabled`) is 100% untouched by `mate_overlap_both_strands`
+        let mut cfg_un_def = Config::default();
+        cfg_un_def.unique_mode_second_in_pair_enabled = true;
+        let mut cfg_un_reb = cfg_un_def.clone();
+        cfg_un_reb.compat.mate_overlap_both_strands = true;
+        let vd_un_def =
+            pileup(&ins_r1s, &reference, &region, &cfg_un_def, false, 28, 0, 82).unwrap();
+        let vd_un_reb =
+            pileup(&ins_r1s, &reference, &region, &cfg_un_reb, false, 28, 0, 82).unwrap();
+        let un_i_def = &vd_un_def.insertion_variants.get(&140).unwrap().map["+TG"];
+        let un_i_reb = &vd_un_reb.insertion_variants.get(&140).unwrap().map["+TG"];
+        assert_eq!(
+            (
+                un_i_reb.cnt,
+                un_i_reb.fwd,
+                un_i_reb.rev,
+                un_i_reb.overlap_agreed_pairs,
+            ),
+            (un_i_def.cnt, un_i_def.fwd, un_i_def.rev, 0)
+        );
     }
 }
