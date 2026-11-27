@@ -1196,8 +1196,8 @@ impl PostNormIdxSlot {
 ///
 /// `classify(item)` returns `Some((group_tag, allele_var, score_var))` for deduplicable rows
 /// (or `None` for sentinel / `null_record` rows that bypass deduplication). Keying by
-/// `(group_tag, allele_var.start_pos)` into output `Vec` indices borrows `ref_allele` and
-/// `var_allele` directly from `out` without cloning `String`s on non-colliding variants.
+/// `(group_tag, allele_var.start_pos)` into output `Vec` indices matches collisions by
+/// `(end_pos, ref_allele, var_allele)` without cloning `String`s on non-colliding variants.
 pub(crate) fn dedup_post_norm_vec<T, F>(items: &mut Vec<T>, classify: F)
 where
     F: Fn(&T) -> Option<(u8, &Variant, &Variant)>,
@@ -1220,7 +1220,8 @@ where
             for &idx in slot.as_slice() {
                 if let Some(cur) = out.get(idx) {
                     if let Some((_, cur_allele, cur_score)) = classify(cur) {
-                        if cur_allele.ref_allele == cand_allele.ref_allele
+                        if cur_allele.end_pos == cand_allele.end_pos
+                            && cur_allele.ref_allele == cand_allele.ref_allele
                             && cur_allele.var_allele == cand_allele.var_allele
                         {
                             return Some((idx, post_norm_candidate_beats(cand_score, cur_score)));
@@ -2013,6 +2014,7 @@ pub struct VariationData {
     pub splice_count: rustc_hash::FxHashMap<String, [i32; 1]>,
     pub duprate: f64,
     pub sv_structures_filtered: bool,
+    pub(crate) overlap_strand_rebalanced: bool,
     /// Owning tile's active range (pileup region), stamped at pileup time.
     /// Mate-window `partial_pipeline` merges (G3) plant keys outside this
     /// range; the ToVarsBuilder ownership gate drops those planted keys so
@@ -2029,6 +2031,32 @@ pub struct VariationData {
 impl VariationData {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Rebalances agreed `-u` mate-overlap reverse counts onto forward counts once after realignment.
+    ///
+    /// Runs after all pileup `sub_cnt` and local-realignment `sub_dir` subtractions finish,
+    /// guarding via `overlap_strand_rebalanced` so repeated calls are `O(1)` no-ops while
+    /// preserving `var.overlap_agreed_pairs`.
+    pub(crate) fn finalize_overlap_strand_rebalance(&mut self) {
+        if self.overlap_strand_rebalanced {
+            return;
+        }
+        self.overlap_strand_rebalanced = true;
+        for map in [
+            &mut self.non_insertion_variants,
+            &mut self.insertion_variants,
+        ] {
+            map.for_each_val_mut(|vm| {
+                for (_, var) in vm.map.iter_mut() {
+                    if var.overlap_agreed_pairs >= 2 && var.rev > 0 {
+                        let shift = (var.overlap_agreed_pairs / 2).min(var.rev as u32) as i32;
+                        var.rev -= shift;
+                        var.fwd = var.fwd.saturating_add(shift);
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -2399,6 +2427,38 @@ mod tests {
         assert_eq!(compat_var.pp, 18);
         assert_eq!(compat_var.pq, 36.0);
         assert!(compat_var.pre_anchored_dup);
+
+        // Verify VariationData::finalize_overlap_strand_rebalance idempotency while preserving overlap_agreed_pairs:
+        let mut vd_reb = VariationData::new();
+        {
+            let v = get_variation(&mut vd_reb.non_insertion_variants, 100, "A");
+            v.cnt = 6;
+            v.rev = 6;
+            v.overlap_agreed_pairs = 6;
+        }
+        vd_reb.finalize_overlap_strand_rebalance();
+        {
+            let v = vd_reb
+                .non_insertion_variants
+                .get(&100)
+                .unwrap()
+                .map
+                .get("A")
+                .unwrap();
+            assert_eq!((v.fwd, v.rev, v.overlap_agreed_pairs), (3, 3, 6));
+        }
+        // Repeated call is an exact O(1) no-op:
+        vd_reb.finalize_overlap_strand_rebalance();
+        {
+            let v = vd_reb
+                .non_insertion_variants
+                .get(&100)
+                .unwrap()
+                .map
+                .get("A")
+                .unwrap();
+            assert_eq!((v.fwd, v.rev, v.overlap_agreed_pairs), (3, 3, 6));
+        }
 
         // 2. Variant::adj_complex_compat(false) preserves pre-trim var_type;
         //    adj_complex_compat(true) refreshes var_type after trimming

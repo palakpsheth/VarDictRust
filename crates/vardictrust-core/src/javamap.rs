@@ -1957,6 +1957,30 @@ where
         }
     }
 
+    /// Visits every live value mutably in bucket-chain order without altering keys,
+    /// hashes, bucket layout, or tree links.
+    pub(crate) fn for_each_val_mut<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut V),
+    {
+        let mut remaining = self.size;
+        for &head in &self.buckets {
+            let mut curr = head;
+            while curr != NONE && remaining > 0 {
+                let Some(node) = self.nodes.get_mut(curr as usize) else {
+                    return;
+                };
+                let next = node.next;
+                remaining -= 1;
+                f(&mut node.val);
+                curr = next;
+            }
+            if remaining == 0 {
+                break;
+            }
+        }
+    }
+
     pub(crate) fn into_entries(self) -> impl Iterator<Item = (K, V)> {
         IntoEntries {
             buckets: self.buckets,

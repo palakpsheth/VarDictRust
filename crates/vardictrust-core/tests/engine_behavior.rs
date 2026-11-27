@@ -9425,6 +9425,399 @@ mod vcf_all_alleles_and_compat_off {
                 "--preset {preset} must compose Wave-6 somatic split reconciliation cleanly, got:\n{p_vcf}"
             );
         }
+
+        // 5a. Real-Data Bug #1 Regression (`GIAB HG002 chr20` distinct-`END` symbolic `<DUP>` SVs):
+        //     Two distinct long insertions (`> sv_min_len = 50`: `55I` -> `END=205, SVLEN=55` and
+        //     `64I` -> `END=214, SVLEN=64`) anchored at identical `start_pos = 150` emit symbolic
+        //     `ALT = <DUP>` under `COMPAT_OFF`. `dedup_post_norm_vec` MUST key on `end_pos` alongside
+        //     `(start_pos, ref_allele, var_allele)` so BOTH distinct-`END` `<DUP>` SVs survive in
+        //     `--emit-intermediate` and `--vcf-all-alleles` while single-winner VCF retains the `VD=6` winner!
+        let mut ref_dup2 = non_rep_ref(0xD092_2026_0150_ABCD, 340);
+        ref_dup2[149] = b'A'; // 1-based 150 == 'A'
+        ref_dup2[150] = b'G'; // 1-based 151 == 'G'
+        let mut ins55 = non_rep_ref(0x5555_1111_2222_3333, 55);
+        ins55[0] = b'C';
+        ins55[54] = b'C';
+        let mut ins64 = non_rep_ref(0x6464_4444_5555_6666, 64);
+        ins64[0] = b'T';
+        ins64[63] = b'T';
+        let fa_dup2 = write_multi_contig_fasta(dir.path(), "w6_dup_2end", &[("chr1", &ref_dup2)]);
+        let bam_dup2 = dir.path().join("w6_dup_2end.bam");
+        let mut recs_dup2 = Vec::new();
+        for i in 0..10usize {
+            let s = 115 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs_dup2.push(mk_contig_rec(
+                &format!("dup2_wt_{i}"),
+                0,
+                flags,
+                s,
+                &[(80, Kind::Match)],
+                ref_dup2[s - 1..s - 1 + 80].to_vec(),
+                vec![38u8; 80],
+                None,
+            ));
+        }
+        for i in 0..6usize {
+            let s = 118 + (i % 3);
+            let left_m = 151 - s; // covers s..=150 -> insertion anchored at 150
+            let right_m = 32usize;
+            let mut seq = ref_dup2[s - 1..150].to_vec();
+            seq.extend_from_slice(&ins55);
+            seq.extend_from_slice(&ref_dup2[150..150 + right_m]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs_dup2.push(mk_contig_rec(
+                &format!("dup2_55_{i}"),
+                0,
+                flags,
+                s,
+                &[
+                    (left_m, Kind::Match),
+                    (55, Kind::Insertion),
+                    (right_m, Kind::Match),
+                ],
+                seq,
+                vec![39u8; left_m + 55 + right_m],
+                None,
+            ));
+        }
+        for i in 0..4usize {
+            let s = 119 + (i % 2);
+            let left_m = 151 - s;
+            let right_m = 32usize;
+            let mut seq = ref_dup2[s - 1..150].to_vec();
+            seq.extend_from_slice(&ins64);
+            seq.extend_from_slice(&ref_dup2[150..150 + right_m]);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs_dup2.push(mk_contig_rec(
+                &format!("dup2_64_{i}"),
+                0,
+                flags,
+                s,
+                &[
+                    (left_m, Kind::Match),
+                    (64, Kind::Insertion),
+                    (right_m, Kind::Match),
+                ],
+                seq,
+                vec![38u8; left_m + 64 + right_m],
+                None,
+            ));
+        }
+        recs_dup2.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam_dup2, &[("chr1", ref_dup2.len())], recs_dup2)
+            .expect("bam_dup2");
+
+        let mut cfg_dup2 = Config {
+            reference: fa_dup2.to_string_lossy().into_owned(),
+            bam: bam_dup2.to_string_lossy().into_owned(),
+            sample: "DUP2".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:115-240".to_string()),
+            sv_min_len: 50,
+            vcf_min_splitreads: 0,
+            freq: 0.01,
+            af_threshold: 0.01,
+            vcf_all_alleles: true,
+            threads: 1,
+            compat: COMPAT_OFF,
+            ..Config::default()
+        };
+        let dup2_var = run_via_core_run(&cfg_dup2, "dup2_var", true);
+        let dup2_vcf_all = run_via_core_run(&cfg_dup2, "dup2_vcf_all", false);
+        cfg_dup2.vcf_all_alleles = false;
+        let dup2_vcf_one = run_via_core_run(&cfg_dup2, "dup2_vcf_one", false);
+
+        let dup2_var_ends: Vec<&str> = dup2_var
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.split('\t').nth(4).unwrap())
+            .collect();
+        assert_eq!(
+            dup2_var_ends,
+            vec!["205", "214"],
+            "COMPAT_OFF .var must preserve BOTH distinct-END <DUP> SVs at start_pos=150 (END=205 & END=214), got:\n{dup2_var}"
+        );
+        let dup2_all_rows = extract_variants(&dup2_vcf_all);
+        assert_eq!(
+            dup2_all_rows.len(),
+            2,
+            "COMPAT_OFF --vcf-all-alleles must emit BOTH distinct-END <DUP> SVs, got:\n{dup2_vcf_all}"
+        );
+        assert!(
+            dup2_all_rows[0].contains(";END=205;")
+                && dup2_all_rows[0].contains(";SVTYPE=DUP;SVLEN=55")
+                && dup2_all_rows[1].contains(";END=214;")
+                && dup2_all_rows[1].contains(";SVTYPE=DUP;SVLEN=64"),
+            "distinct-END <DUP> rows must retain exact END=205/SVLEN=55 and END=214/SVLEN=64:\n{}",
+            dup2_all_rows.join("\n")
+        );
+        let dup2_one_rows = extract_variants(&dup2_vcf_one);
+        assert!(
+            dup2_one_rows.len() == 1 && dup2_one_rows[0].contains(";END=205;"),
+            "default single-winner VCF without --vcf-all-alleles must select highest-VD END=205 winner, got:\n{dup2_vcf_one}"
+        );
+
+        // 5b. Real-Data Bug #2 Regression (`GIAB HG002` / `SEQC2` `-u` insertion next-position
+        //     reference overlay shortfall subtraction + non-`-u` zero-diff confinement + `adjust_mnp`
+        //     `adj_cnt` `overlap_agreed_pairs` propagation):
+        //     At `pos = 145`, 6 overlapping FR pairs (`36M 1I 43M`) + 2 leading-`1I` reverse reads
+        //     starting at `146` (`1I 55M`, recorded at `145` without incrementing `ref_coverage[145]`)
+        //     yield `cnt.cnt = 8 > ref_coverage[145] = 6` (`extracnt = 0`), while `14` WT reads
+        //     starting at `146` (`1` fwd + `13` rev) yield `ref_coverage[146] = 22` (`8 < 22 - 8 = 14`)
+        //     and `next_var.fwd = 1 < cnt.fwd = 3`, directly executing `tovars.rs` shortfall transfer!
+        let mut ref_u_ins = non_rep_ref(0x3434_1450_2026_9999, 320);
+        ref_u_ins[144] = b'G'; // 1-based 145 == 'G'
+        ref_u_ins[145] = b'T'; // 1-based 146 == 'T' (`next_pos` for insertion `+C` at 145)
+        let fa_u_ins = write_multi_contig_fasta(dir.path(), "w6_u_ins_dp", &[("chr1", &ref_u_ins)]);
+        let bam_u_ins = dir.path().join("w6_u_ins_dp.bam");
+        let mut recs_u_ins = Vec::new();
+        for idx in 0..6usize {
+            let r1_s = 110 + (idx % 3);
+            let r2_s = 116 + (idx % 3);
+            let tlen = (r2_s + 79 - r1_s) as i32;
+            let qname = format!("uins_pair_{idx}");
+            let left1 = 146 - r1_s; // covers r1_s..=145, then 1I ('C') anchored at 145
+            let right1 = 80 - left1 - 1;
+            let mut s1 = ref_u_ins[r1_s - 1..145].to_vec();
+            s1.push(b'C');
+            s1.extend_from_slice(&ref_u_ins[145..145 + right1]);
+            let left2 = 146 - r2_s;
+            let right2 = 80 - left2 - 1;
+            let mut s2 = ref_u_ins[r2_s - 1..145].to_vec();
+            s2.push(b'C');
+            s2.extend_from_slice(&ref_u_ins[145..145 + right2]);
+            recs_u_ins.push(mk_contig_rec(
+                &qname,
+                0,
+                f_flags,
+                r1_s,
+                &[
+                    (left1, Kind::Match),
+                    (1, Kind::Insertion),
+                    (right1, Kind::Match),
+                ],
+                s1,
+                vec![38u8; 80],
+                Some((0, r2_s, tlen)),
+            ));
+            recs_u_ins.push(mk_contig_rec(
+                &qname,
+                0,
+                r_flags,
+                r2_s,
+                &[
+                    (left2, Kind::Match),
+                    (1, Kind::Insertion),
+                    (right2, Kind::Match),
+                ],
+                s2,
+                vec![38u8; 80],
+                Some((0, r1_s, -tlen)),
+            ));
+        }
+        // 2 reverse single-end reads starting at 146 with leading `1I` ('C') + `55M`:
+        // increments `insertion_variants[145]["+C"]` to `cnt = 8` while leaving `ref_coverage[145] = 6`!
+        for i in 0..2usize {
+            let mut seq_lead = vec![b'C'];
+            seq_lead.extend_from_slice(&ref_u_ins[145..200]);
+            recs_u_ins.push(mk_contig_rec(
+                &format!("uins_lead146_{i}"),
+                0,
+                Flags::REVERSE_COMPLEMENTED,
+                146,
+                &[(1, Kind::Insertion), (55, Kind::Match)],
+                seq_lead,
+                vec![38u8; 56],
+                None,
+            ));
+        }
+        // 14 reverse-skewed WT reads starting at 146 (`1` fwd + `13` rev -> `next_var.fwd = 1 < cnt.fwd = 3`)!
+        for i in 0..14usize {
+            let flags = if i == 0 {
+                Flags::empty()
+            } else {
+                Flags::REVERSE_COMPLEMENTED
+            };
+            recs_u_ins.push(mk_contig_rec(
+                &format!("uins_wt146_{i}"),
+                0,
+                flags,
+                146,
+                &[(55, Kind::Match)],
+                ref_u_ins[145..200].to_vec(),
+                vec![38u8; 55],
+                None,
+            ));
+        }
+        // Also add a 2-bp MNP at 175..=176 (`adjust_mnp` merges 4 overlapping FR pairs with 2-bp MNP
+        // + 2 overlapping FR pairs ending at 175 with 1-bp left-SNV via `adj_cnt`, proving `adj_cnt`
+        // propagates `overlap_agreed_pairs` so `ALD` rebalances from `0,6` to `3,3`!)
+        let b175 = if ref_u_ins[174] == b'A' { b'C' } else { b'A' };
+        let b176 = if ref_u_ins[175] == b'G' { b'T' } else { b'G' };
+        for idx in 0..4usize {
+            let r1_s = 148 + (idx % 2);
+            let r2_s = 152 + (idx % 2);
+            let tlen = (r2_s + 52 - r1_s) as i32;
+            let qname = format!("umnp_full_{idx}");
+            let mut s1 = ref_u_ins[r1_s - 1..r1_s - 1 + 52].to_vec();
+            s1[175 - r1_s] = b175;
+            s1[176 - r1_s] = b176;
+            let mut s2 = ref_u_ins[r2_s - 1..r2_s - 1 + 52].to_vec();
+            s2[175 - r2_s] = b175;
+            s2[176 - r2_s] = b176;
+            recs_u_ins.push(mk_contig_rec(
+                &qname,
+                0,
+                f_flags,
+                r1_s,
+                &[(52, Kind::Match)],
+                s1,
+                vec![38u8; 52],
+                Some((0, r2_s, tlen)),
+            ));
+            recs_u_ins.push(mk_contig_rec(
+                &qname,
+                0,
+                r_flags,
+                r2_s,
+                &[(52, Kind::Match)],
+                s2,
+                vec![38u8; 52],
+                Some((0, r1_s, -tlen)),
+            ));
+        }
+        for idx in 0..2usize {
+            let r1_s = 148 + idx;
+            let r2_s = 152 + idx;
+            let tlen = (r2_s + 52 - r1_s) as i32;
+            let qname = format!("umnp_left_{idx}");
+            let mut s1 = ref_u_ins[r1_s - 1..r1_s - 1 + 52].to_vec();
+            s1[176 - r1_s] = b176; // 1-bp right-SNV at 176 (`tref.cnt = 2 < vref.cnt = 4`), absorbed by adjust_mnp RIGHT CHECK via adj_cnt!
+            let mut s2 = ref_u_ins[r2_s - 1..r2_s - 1 + 52].to_vec();
+            s2[176 - r2_s] = b176;
+            recs_u_ins.push(mk_contig_rec(
+                &qname,
+                0,
+                f_flags,
+                r1_s,
+                &[(52, Kind::Match)],
+                s1,
+                vec![38u8; 52],
+                Some((0, r2_s, tlen)),
+            ));
+            recs_u_ins.push(mk_contig_rec(
+                &qname,
+                0,
+                r_flags,
+                r2_s,
+                &[(52, Kind::Match)],
+                s2,
+                vec![38u8; 52],
+                Some((0, r1_s, -tlen)),
+            ));
+        }
+        recs_u_ins.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam_u_ins, &[("chr1", ref_u_ins.len())], recs_u_ins)
+            .expect("bam_u_ins");
+
+        let mut compat_loo34 = COMPAT_OFF;
+        compat_loo34.mate_overlap_both_strands = false;
+        let cfg_uins_loo34 = Config {
+            reference: fa_u_ins.to_string_lossy().into_owned(),
+            bam: bam_u_ins.to_string_lossy().into_owned(),
+            sample: "UINS".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:105-205".to_string()),
+            unique_mode_alignment_enabled: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            threads: 1,
+            compat: compat_loo34,
+            ..Config::default()
+        };
+        let mut cfg_uins_off = cfg_uins_loo34.clone();
+        cfg_uins_off.compat = COMPAT_OFF;
+        let uins_loo_rows = extract_variants(&run_core_vcf(&cfg_uins_loo34).expect("uins loo34"));
+        let uins_off_rows = extract_variants(&run_core_vcf(&cfg_uins_off).expect("uins off"));
+        assert_eq!(
+            uins_loo_rows.len(),
+            2,
+            "expected insertion@145 + MNP@175 in loo34: {uins_loo_rows:?}"
+        );
+        assert_eq!(
+            uins_off_rows.len(),
+            2,
+            "expected insertion@145 + MNP@175 in off: {uins_off_rows:?}"
+        );
+        // Check Locus 1 (`pos = 145` `+C` insertion borrowing `ref_coverage[146]`):
+        let loo_smp: Vec<&str> = uins_loo_rows[0]
+            .split('\t')
+            .nth(9)
+            .unwrap()
+            .split(':')
+            .collect();
+        let off_smp: Vec<&str> = uins_off_rows[0]
+            .split('\t')
+            .nth(9)
+            .unwrap()
+            .split(':')
+            .collect();
+        // FORMAT: GT:DP:VD:AD:AF:RD:ALD
+        assert_eq!(
+            (off_smp[0], off_smp[1], off_smp[2], off_smp[3], off_smp[4]),
+            (loo_smp[0], loo_smp[1], loo_smp[2], loo_smp[3], loo_smp[4]),
+            "Switch 34 deferred rebalancing + shortfall transfer MUST conserve exact GT, DP, VD, AD(RD,VD), and AF on next-pos-borrowing insertions (loo34={:?} vs off={:?})",
+            uins_loo_rows[0],
+            uins_off_rows[0]
+        );
+        assert_eq!(
+            (loo_smp[6], off_smp[6]),
+            ("0,8", "3,5"),
+            "Switch 34 must rebalance insertion ALD from 0,8 to 3,5 while conserving exact AD: {}",
+            uins_off_rows[0]
+        );
+        // Check Locus 2 (`pos = 175` 2-bp MNP with absorbed left-SNV via `adjust_mnp` / `adj_cnt`):
+        let loo_mnp: Vec<&str> = uins_loo_rows[1]
+            .split('\t')
+            .nth(9)
+            .unwrap()
+            .split(':')
+            .collect();
+        let off_mnp: Vec<&str> = uins_off_rows[1]
+            .split('\t')
+            .nth(9)
+            .unwrap()
+            .split(':')
+            .collect();
+        assert_eq!(
+            (loo_mnp[2], off_mnp[2], loo_mnp[6], off_mnp[6]),
+            ("6", "6", "0,6", "3,3"),
+            "adjust_mnp adj_cnt must propagate overlap_agreed_pairs (4 + 2 = 6 -> ALD 3,3): {}",
+            uins_off_rows[1]
+        );
+        // Check non-`-u` (`unique_mode_alignment_enabled = false`) zero-diff confinement:
+        let mut cfg_nou_loo34 = cfg_uins_loo34.clone();
+        cfg_nou_loo34.unique_mode_alignment_enabled = false;
+        let mut cfg_nou_off = cfg_uins_off.clone();
+        cfg_nou_off.unique_mode_alignment_enabled = false;
+        assert_eq!(
+            run_core_vcf(&cfg_nou_off).expect("no-u off"),
+            run_core_vcf(&cfg_nou_loo34).expect("no-u loo34"),
+            "Switch 34 MUST be a 100% byte-identical no-op whenever -u is disabled"
+        );
     }
 
     #[test]

@@ -1424,8 +1424,31 @@ impl<'a> ToVarsBuilder<'a> {
                             }
                             if let Some(next_non_ins) = overlay.get_mut(&next_pos) {
                                 if let Some(next_var) = next_non_ins.map.get_mut(ref_base_str) {
-                                    next_var.fwd = next_var.fwd.saturating_sub(cnt.fwd);
-                                    next_var.rev = next_var.rev.saturating_sub(cnt.rev);
+                                    if self.config.unique_mode_alignment_enabled
+                                        && self.config.compat.mate_overlap_both_strands
+                                    {
+                                        let avail_f = i64::from(next_var.fwd.max(0));
+                                        let avail_r = i64::from(next_var.rev.max(0));
+                                        let sub_f = i64::from(cnt.fwd.max(0));
+                                        let sub_r = i64::from(cnt.rev.max(0));
+                                        if avail_f + avail_r >= sub_f + sub_r {
+                                            let rem_f = (sub_f - avail_f).max(0);
+                                            let rem_r = (sub_r - avail_r).max(0);
+                                            next_var.fwd =
+                                                ((avail_f - sub_f).max(0) - rem_r).max(0) as i32;
+                                            next_var.rev =
+                                                ((avail_r - sub_r).max(0) - rem_f).max(0) as i32;
+                                        } else if self.config.compat.reconcile_strand_and_hq_sums {
+                                            next_var.fwd = 0;
+                                            next_var.rev = 0;
+                                        } else {
+                                            next_var.fwd = next_var.fwd.saturating_sub(cnt.fwd);
+                                            next_var.rev = next_var.rev.saturating_sub(cnt.rev);
+                                        }
+                                    } else {
+                                        next_var.fwd = next_var.fwd.saturating_sub(cnt.fwd);
+                                        next_var.rev = next_var.rev.saturating_sub(cnt.rev);
+                                    }
                                 }
                             }
                         }
@@ -6856,6 +6879,54 @@ mod tests {
         assert_eq!(pa_rv75.hicov, 4);
         assert_eq!(pa_rv75.hi_freq, 0.0);
         assert_eq!(pa_rv75.extra_freq, 0.6);
+
+        // Verify `adjust_insertion_coverage_and_next_ref` cross-strand shortfall transfer under `-u`
+        // (`Switch 34` `mate_overlap_both_strands` + `unique_mode_alignment_enabled`):
+        // At pos 76 (`cov_next = 25`), skew `vm76["A"]` to `fwd = 2, rev = 23`, while `ins75["+AT"]`
+        // has `cnt = 11` (`fwd = 5, rev = 6` after `-u` rebalancing; vs `fwd = 0, rev = 11` before):
+        // - With `-u` + `Switch 34`: `rem_f = 5 - 2 = 3` transfers onto `rev` (`23 - 6 - 3 = 14`),
+        //   preserving exact `ref_fwd_cov + ref_rev_cov == 0 + 14 == 14` (`total_pos_cov = 25`, NOT `0 + 17 + 11 = 28`!).
+        // - Without `-u` (`unique_mode_alignment_enabled = false`), `Switch 34` is a 100% no-op!
+        let mut skew_vd = ref_vd.clone();
+        if let Some(v76) = skew_vd
+            .non_insertion_variants
+            .get_mut(&76)
+            .and_then(|m| m.map.get_mut("A"))
+        {
+            v76.fwd = 2;
+            v76.rev = 23;
+        }
+        let mut u_off_cfg = off_pileup_amp_cfg.clone();
+        u_off_cfg.unique_mode_alignment_enabled = true;
+        let u_off_res = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &u_off_cfg)
+            .build_aligned_variants(&skew_vd);
+        let u_rv75 = u_off_res.get(&75).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(
+            (u_rv75.ref_fwd_cov, u_rv75.ref_rev_cov, u_rv75.total_pos_cov),
+            (0, 14, 25)
+        );
+
+        let mut nou_loo34_cfg = off_pileup_amp_cfg.clone();
+        nou_loo34_cfg.compat.mate_overlap_both_strands = false;
+        let nou_off_res =
+            ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &off_pileup_amp_cfg)
+                .build_aligned_variants(&skew_vd);
+        let nou_loo_res = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &nou_loo34_cfg)
+            .build_aligned_variants(&skew_vd);
+        let nou_off_rv = nou_off_res.get(&75).unwrap().ref_variant.as_ref().unwrap();
+        let nou_loo_rv = nou_loo_res.get(&75).unwrap().ref_variant.as_ref().unwrap();
+        assert_eq!(
+            (
+                nou_off_rv.ref_fwd_cov,
+                nou_off_rv.ref_rev_cov,
+                nou_off_rv.total_pos_cov
+            ),
+            (
+                nou_loo_rv.ref_fwd_cov,
+                nou_loo_rv.ref_rev_cov,
+                nou_loo_rv.total_pos_cov
+            )
+        );
     }
 
     #[test]

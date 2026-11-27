@@ -117,9 +117,9 @@ except OSError:
 
 valid_alt_re = re.compile(r"^(?:[ACGTN]+|<[A-Za-z0-9_-]+>)(?:,(?:[ACGTN]+|<[A-Za-z0-9_-]+>))*$")
 
-hg002_bed = os.path.join(tmp, "hg002_chr20_100kb.bed")
+hg002_bed = os.path.join(tmp, "hg002_chr20_1_5mb.bed")
 with open(hg002_bed, "w", encoding="utf-8") as fh:
-    fh.write("chr20\t10000000\t10100000\thg002_c20\n")
+    fh.write("chr20\t10000000\t11500000\thg002_c20\n")
 
 seqc2_slices = os.path.join(g4_dir, "seqc2", "slices.bed")
 cohorts = [
@@ -220,25 +220,31 @@ for name, is_paired, ref_fa, bam_arg, extra_args in cohorts:
         stderr=subprocess.DEVNULL,
         text=True,
     )
-    split_recs = [
+    all_split_recs = [
         l.split("\t", 5)[:5]
         for l in split_vcf.splitlines()
         if l and not l.startswith("#")
     ]
-    norm_recs = [
+    all_norm_recs = [
         l.split("\t", 5)[:5]
         for l in norm_vcf.splitlines()
         if l and not l.startswith("#")
     ]
+    if len(all_split_recs) != len(all_norm_recs):
+        raise AssertionError(
+            f"{name}: bcftools norm record count mismatch: split={len(all_split_recs)} vs norm={len(all_norm_recs)}"
+        )
+    # Filter symbolic `<...>` SVs before pairing concrete alleles (`bcftools norm -f` shifts symbolic `<DUP>`
+    # across homologous endpoints and re-sorts across adjacent SNVs, while Switch 35 targets concrete alleles).
+    split_recs = [r for r in all_split_recs if r[4] != "." and not r[4].startswith("<")]
+    norm_recs = [r for r in all_norm_recs if r[4] != "." and not r[4].startswith("<")]
     if len(split_recs) != len(norm_recs):
         raise AssertionError(
-            f"{name}: bcftools norm record count mismatch: split={len(split_recs)} vs norm={len(norm_recs)}"
+            f"{name}: concrete bcftools norm count mismatch: split={len(split_recs)} vs norm={len(norm_recs)}"
         )
     for s_cols, n_cols in zip(split_recs, norm_recs):
         s_chr, s_pos_s, _, s_ref, s_alt = s_cols
         n_chr, n_pos_s, _, n_ref, n_alt = n_cols
-        if s_alt == "." or s_alt.startswith("<"):
-            continue
         t_pos = int(s_pos_s)
         t_ref, t_alt = s_ref, s_alt
         # Trim shared multiallelic 3' suffix then 5' prefix down to a 1-bp anchor at existing `t_pos`
@@ -307,6 +313,7 @@ for name, is_paired, ref_fa, bam_arg, extra_args in cohorts:
                     vj_subst_shift3_pos += 1
 
     seen_keys = {}
+    hg002_dup_ends = {}
     with gzip.open(off_gz, "rt", encoding="utf-8") as fh:
         for line in fh:
             if line.startswith("#") or not line.strip():
@@ -321,6 +328,8 @@ for name, is_paired, ref_fa, bam_arg, extra_args in cohorts:
                 raise AssertionError(f"{name}: invalid/unanchored ALT allele {alt_a!r} in {line}")
 
             kv = dict(x.split("=", 1) for x in info_s.split(";") if "=" in x)
+            if name == "GIAB_HG002_chr20" and alt_a == "<DUP>":
+                hg002_dup_ends.setdefault((chrom, pos, ref_a), set()).add(int(kv["END"]))
             for single_alt in alt_a.split(","):
                 if single_alt == "." or single_alt.startswith("<"):
                     continue
@@ -349,17 +358,24 @@ for name, is_paired, ref_fa, bam_arg, extra_args in cohorts:
                 if vd > dp or dp < sum(ad) or sum(ald) != vd:
                     raise AssertionError(f"{name}: depth/ALD accounting violation in {line}")
 
-            # Invariant 4: 0 duplicate (CHROM, POS, REF, ALT) shadow collisions in paired somatic --compat=off
+            # Invariant 4: 0 duplicate (CHROM, POS, END, REF, ALT) shadow collisions in paired somatic --compat=off
             if is_paired:
                 status = kv.get("STATUS", "")
                 for single_alt in alt_a.split(","):
-                    key = (chrom, pos, ref_a, single_alt)
+                    end_key = int(kv.get("END", pos)) if single_alt.startswith("<") else pos
+                    key = (chrom, pos, end_key, ref_a, single_alt)
                     if key in seen_keys:
                         raise AssertionError(
-                            f"{name}: duplicate somatic (CHROM, POS, REF, ALT) collision {key}: "
+                            f"{name}: duplicate somatic (CHROM, POS, END, REF, ALT) collision {key}: "
                             f"prev={seen_keys[key]} vs cur={status}"
                         )
                     seen_keys[key] = status
+    if name == "GIAB_HG002_chr20":
+        multi_end_dups = sum(1 for ends in hg002_dup_ends.values() if len(ends) > 1)
+        if multi_end_dups < 20:
+            raise AssertionError(
+                f"Expected >= 20 distinct-END symbolic <DUP> loci preserved at shared POS on GIAB HG002 1.5 Mbp, got {multi_end_dups}"
+            )
     if is_paired:
         somatic_cohorts_checked += 1
 
@@ -550,6 +566,20 @@ def build_scoped_sdf(ref_fa, contigs, prefix):
     )
     return scoped_fa, sdf_dir
 
+def parse_roc_last_row(roc_gz):
+    import gzip as _gz
+    if not os.path.isfile(roc_gz):
+        return None
+    last = None
+    with _gz.open(roc_gz, "rt", encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("#") or not line.strip():
+                continue
+            last = line.strip().split()
+    if last is None or len(last) < 8:
+        return None
+    return (int(float(last[1])), int(float(last[2])), int(float(last[4])), float(last[7]))
+
 def parse_vcfeval_summary(summary_path):
     best_f1 = 0.0
     none_row = None
@@ -570,7 +600,13 @@ def parse_vcfeval_summary(summary_path):
         raise AssertionError(f"Missing None row in {summary_path}")
     return (*none_row, best_f1)
 
-# 5a) SEQC2 HCC1395|HCC1395BL somatic truth concordance (rtg vcfeval --squash-ploidy)
+def parse_vcfeval_dir(out_dir):
+    all_row = parse_vcfeval_summary(os.path.join(out_dir, "summary.txt"))
+    snp_row = parse_roc_last_row(os.path.join(out_dir, "snp_roc.tsv.gz"))
+    indel_row = parse_roc_last_row(os.path.join(out_dir, "non_snp_roc.tsv.gz"))
+    return all_row, snp_row, indel_row
+
+# 5a) SEQC2 HCC1395|HCC1395BL somatic truth concordance (standard & paired-end -u)
 seqc2_slices = os.path.join(g4_dir, "seqc2", "slices.bed")
 seqc2_eval_src = os.path.join(g4_dir, "seqc2", "eval.bed")
 seqc2_eval_bed = os.path.join(tmp, "seqc2_eval_scoped.bed")
@@ -598,13 +634,14 @@ with open(seqc2_truth_vcf, "w", encoding="utf-8") as out:
 subprocess.run(["bgzip", "-f", seqc2_truth_vcf], check=True)
 subprocess.run(["tabix", "-f", "-p", "vcf", seqc2_truth_vcf + ".gz"], check=True)
 
-def eval_somatic_rtg(tag, ref_fa, sdf_dir, bam_pair, bed_path, eval_bed, truth_gz, compat_flag):
+def eval_somatic_rtg(tag, ref_fa, sdf_dir, bam_pair, bed_path, eval_bed, truth_gz, compat_flag, extra_flags=None):
+    extra_flags = extra_flags or []
     raw_vcf = os.path.join(tmp, f"{tag}_{compat_flag.split('=')[1]}_raw.vcf")
     som_vcf = os.path.join(tmp, f"{tag}_{compat_flag.split('=')[1]}_som.vcf")
     subprocess.run(
         [vdr, "-G", ref_fa, "-b", bam_pair, "-N", "TUMOR|NORMAL",
          "-c", "1", "-S", "2", "-E", "3", "-z", "-f", "0.01", "--fisher",
-         compat_flag, "--vcf-all-alleles", "--output", raw_vcf, "-th", "4", bed_path],
+         compat_flag, "--vcf-all-alleles", "--output", raw_vcf, "-th", "4", *extra_flags, bed_path],
         check=True,
     )
     with open(raw_vcf, "r", encoding="utf-8") as inp, open(som_vcf, "w", encoding="utf-8") as out:
@@ -633,11 +670,18 @@ s_off = eval_somatic_rtg("seqc2", seqc2_fa, seqc2_sdf, seqc2_pair, seqc2_slices,
 if s_off[3] < s_vj[3] or s_off[0] < s_vj[0] or s_off[1] > s_vj[1]:
     raise AssertionError(f"SEQC2 rtg vcfeval regression: vj={s_vj} vs off={s_off}")
 
-# 5b) GIAB HG002 chr20:10000000-10200000 germline truth concordance
-hg2_call_bed = os.path.join(tmp, "hg002_200kb.bed")
+su_vj = eval_somatic_rtg("seqc2_u", seqc2_fa, seqc2_sdf, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_vcf + ".gz", "--compat=vardictjava", ["-u"])
+su_off = eval_somatic_rtg("seqc2_u", seqc2_fa, seqc2_sdf, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_vcf + ".gz", "--compat=off", ["-u"])
+# Note: under `-u`, v1.1.0 Switch 18 (`somatic_continue_after_bad_var`) evaluates secondary alleles at multi-allelic
+# loci (+1 candidate vs v1.8.3 early-return); require zero TP loss and non-inferior best-threshold F1!
+if su_off[0] < su_vj[0] or su_off[4] + 1e-6 < su_vj[4]:
+    raise AssertionError(f"SEQC2 -u rtg vcfeval TP/ROC regression: vj={su_vj} vs off={su_off}")
+
+# 5b) GIAB HG002 chr20:10000000-11500000 (1.5 Mbp) germline truth concordance (SNP + INDEL stratified, diploid GT + squash-ploidy, standard + -u)
+hg2_call_bed = os.path.join(tmp, "hg002_1_5mb.bed")
 with open(hg2_call_bed, "w", encoding="utf-8") as fh:
-    fh.write("chr20\t10000000\t10200000\n")
-hg2_eval_bed = os.path.join(tmp, "hg002_200kb_eval.bed")
+    fh.write("chr20\t10000000\t11500000\n")
+hg2_eval_bed = os.path.join(tmp, "hg002_1_5mb_eval.bed")
 intersect_beds(hg2_call_bed, os.path.join(g4_dir, "hg002", "eval.bed"), hg2_eval_bed)
 hg2_fa, hg2_sdf = build_scoped_sdf(giab_ref, ["chr20"], "hg002_c20")
 hg2_truth_src = os.path.join(g4_dir, "hg002", "truth", "truth.vcf.gz")
@@ -648,30 +692,68 @@ subprocess.run(
 )
 subprocess.run(["tabix", "-f", "-p", "vcf", hg2_truth_scoped], check=True)
 
-def eval_hg002_rtg(compat_flag):
-    out_gz = os.path.join(tmp, f"hg002_{compat_flag.split('=')[1]}.vcf.gz")
+def eval_hg002_rtg(tag, compat_flag, extra_flags=None, check_diploid=False):
+    extra_flags = extra_flags or []
+    out_gz = os.path.join(tmp, f"{tag}_{compat_flag.split('=')[1]}.vcf.gz")
     subprocess.run(
         [vdr, "-G", hg2_fa, "-b", os.path.join(g4_dir, "hg002", "HG002.chr20.bam"),
          "-N", "HG002", "-c", "1", "-S", "2", "-E", "3", "-z", "-f", "0.05",
-         "--pass-only", compat_flag, "--vcf-all-alleles", "--output", out_gz, "--tbi", "-th", "4", hg2_call_bed],
+         "--pass-only", compat_flag, "--vcf-all-alleles", "--output", out_gz, "--tbi", "-th", "4", *extra_flags, hg2_call_bed],
         check=True,
     )
-    out_dir = os.path.join(tmp, f"rtg_hg002_{compat_flag.split('=')[1]}")
+    sq_dir = os.path.join(tmp, f"rtg_{tag}_{compat_flag.split('=')[1]}_sq")
     subprocess.run(
         ["rtg", "RTG_MEM=4G", "RTG_JAVA_OPTS=-Dtalkback=false", "vcfeval",
          "-T", "4", "-b", hg2_truth_scoped, "-c", out_gz, "-e", hg2_eval_bed, "-t", hg2_sdf,
-         "--squash-ploidy", "--vcf-score-field=QUAL", "-o", out_dir],
+         "--squash-ploidy", "--vcf-score-field=QUAL", "-o", sq_dir],
         stdout=subprocess.DEVNULL,
         check=True,
     )
-    return parse_vcfeval_summary(os.path.join(out_dir, "summary.txt"))
+    sq_res = parse_vcfeval_dir(sq_dir)
+    gt_res = None
+    if check_diploid:
+        gt_dir = os.path.join(tmp, f"rtg_{tag}_{compat_flag.split('=')[1]}_gt")
+        subprocess.run(
+            ["rtg", "RTG_MEM=4G", "RTG_JAVA_OPTS=-Dtalkback=false", "vcfeval",
+             "-T", "4", "-b", hg2_truth_scoped, "-c", out_gz, "-e", hg2_eval_bed, "-t", hg2_sdf,
+             "--vcf-score-field=QUAL", "-o", gt_dir],
+            stdout=subprocess.DEVNULL,
+            check=True,
+        )
+        gt_res = parse_vcfeval_dir(gt_dir)
+    return sq_res, gt_res
 
-g2_vj = eval_hg002_rtg("--compat=vardictjava")
-g2_off = eval_hg002_rtg("--compat=off")
-if g2_off[3] < g2_vj[3] or g2_off[0] < g2_vj[0] or g2_off[1] > g2_vj[1]:
-    raise AssertionError(f"GIAB HG002 rtg vcfeval regression: vj={g2_vj} vs off={g2_off}")
+(g2_vj, _), (g2_off, g2_off_gt) = (
+    eval_hg002_rtg("hg002", "--compat=vardictjava"),
+    eval_hg002_rtg("hg002", "--compat=off", check_diploid=True),
+)
+for stratum_name, vj_m, off_m in [("ALL", g2_vj[0], g2_off[0]), ("SNP", g2_vj[1], g2_off[1]), ("INDEL", g2_vj[2], g2_off[2])]:
+    if vj_m is None or off_m is None:
+        raise AssertionError(f"Missing GIAB HG002 {stratum_name} ROC stratum")
+    if off_m[3] + 1e-6 < vj_m[3] or off_m[0] < vj_m[0] or off_m[1] > vj_m[1]:
+        raise AssertionError(f"GIAB HG002 1.5M {stratum_name} rtg vcfeval regression: vj={vj_m} vs off={off_m}")
+if (
+    g2_off_gt is None
+    or g2_off_gt[0] is None
+    or g2_off_gt[1] is None
+    or g2_off_gt[2] is None
+    or g2_off_gt[0][3] < 0.9590
+    or g2_off_gt[1][3] < 0.9800
+    or g2_off_gt[2][3] < 0.8250
+):
+    raise AssertionError(f"GIAB HG002 1.5M diploid GT rtg vcfeval below threshold: {g2_off_gt}")
 
-# 5c) GIAB HG008 somatic v0.4 benchmark (if present locally)
+(g2u_vj, _), (g2u_off, _) = (
+    eval_hg002_rtg("hg002_u", "--compat=vardictjava", ["-u"]),
+    eval_hg002_rtg("hg002_u", "--compat=off", ["-u"]),
+)
+for stratum_name, vj_m, off_m in [("ALL", g2u_vj[0], g2u_off[0]), ("SNP", g2u_vj[1], g2u_off[1]), ("INDEL", g2u_vj[2], g2u_off[2])]:
+    if vj_m is None or off_m is None:
+        raise AssertionError(f"Missing GIAB HG002 -u {stratum_name} ROC stratum")
+    if off_m[3] + 1e-6 < vj_m[3] or off_m[0] < vj_m[0] or off_m[1] > vj_m[1]:
+        raise AssertionError(f"GIAB HG002 1.5M -u {stratum_name} rtg vcfeval regression: vj={vj_m} vs off={off_m}")
+
+# 5c) GIAB HG008 somatic v0.4 benchmark (standard + paired-end -u, if present locally)
 hg8_truth_v04 = os.path.join(g4_dir, "hg008", "truth", "HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_tumorvariants.vcf.gz")
 hg8_bed_v04 = os.path.join(g4_dir, "hg008", "truth", "HG008-T_somatic_smvar_benchmark_v0.4_GRCh38_all.bed")
 hg8_slices = os.path.join(g4_dir, "hg008", "slices.bed")
@@ -703,12 +785,19 @@ if os.path.isfile(hg8_truth_v04) and os.path.isfile(hg8_bed_v04) and os.path.isf
     h8_off = eval_somatic_rtg("hg008v04", hg8_fa, hg8_sdf, hg8_pair, hg8_eval_bed, hg8_eval_bed, hg8_truth_vcf + ".gz", "--compat=off")
     if h8_off[3] < h8_vj[3] or h8_off[0] < h8_vj[0] or h8_off[1] > h8_vj[1]:
         raise AssertionError(f"GIAB HG008 v0.4 rtg vcfeval regression: vj={h8_vj} vs off={h8_off}")
-    hg8_msg = f"HG008 v0.4 F1 {h8_vj[3]:.4f} -> {h8_off[3]:.4f} (TP {h8_vj[0]}->{h8_off[0]}, FP {h8_vj[1]}->{h8_off[1]})"
+    h8u_vj = eval_somatic_rtg("hg008v04_u", hg8_fa, hg8_sdf, hg8_pair, hg8_eval_bed, hg8_eval_bed, hg8_truth_vcf + ".gz", "--compat=vardictjava", ["-u"])
+    h8u_off = eval_somatic_rtg("hg008v04_u", hg8_fa, hg8_sdf, hg8_pair, hg8_eval_bed, hg8_eval_bed, hg8_truth_vcf + ".gz", "--compat=off", ["-u"])
+    if h8u_off[3] < h8u_vj[3] or h8u_off[0] < h8u_vj[0] or h8u_off[1] > h8u_vj[1]:
+        raise AssertionError(f"GIAB HG008 v0.4 -u rtg vcfeval regression: vj={h8u_vj} vs off={h8u_off}")
+    hg8_msg = (
+        f"HG008 v0.4 F1 {h8_vj[3]:.4f}->{h8_off[3]:.4f} (FP {h8_vj[1]}->{h8_off[1]}), "
+        f"-u F1 {h8u_vj[3]:.4f}->{h8u_off[3]:.4f} (FP {h8u_vj[1]}->{h8u_off[1]})"
+    )
 
 print(
-    f"  PASS Gate 5 (rtg vcfeval truth concordance): "
-    f"SEQC2 F1 {s_vj[3]:.4f} -> {s_off[3]:.4f} (TP {s_vj[0]}->{s_off[0]}, FP {s_vj[1]}->{s_off[1]}); "
-    f"HG002 F1 {g2_vj[3]:.4f} -> {g2_off[3]:.4f} (TP {g2_vj[0]}->{g2_off[0]}, FP {g2_vj[1]}->{g2_off[1]}); "
+    f"  PASS Gate 5 (rtg vcfeval standard & -u, SNP/INDEL & diploid GT): "
+    f"SEQC2 F1 {s_vj[3]:.4f}->{s_off[3]:.4f} (-u TP={su_off[0]}), "
+    f"HG002 1.5M F1 {g2_vj[0][3]:.4f}->{g2_off[0][3]:.4f} (diploid GT F1={g2_off_gt[0][3]:.4f}, Indel F1={g2_off[2][3]:.4f}, -u F1 {g2u_vj[0][3]:.4f}->{g2u_off[0][3]:.4f}), "
     f"{hg8_msg}"
 )
 PY

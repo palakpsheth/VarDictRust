@@ -2210,6 +2210,9 @@ pub fn realigndel(
                         lref.nm -= tv.nm;
                         lref.sub_dir(true, tv.get_dir(true));
                         lref.sub_dir(false, tv.get_dir(false));
+                        lref.overlap_agreed_pairs = lref
+                            .overlap_agreed_pairs
+                            .saturating_sub(tv.overlap_agreed_pairs);
                         crate::variations::util::correct_cnt(lref);
                     }
                 }
@@ -2483,6 +2486,7 @@ pub fn realigndel(
                                     h_mut.nm = 0.0;
                                     h_mut.rev = 0;
                                     h_mut.fwd = 0;
+                                    h_mut.overlap_agreed_pairs = 0;
                                     crate::variations::util::correct_cnt(h_mut);
                                 }
                             }
@@ -5656,6 +5660,9 @@ fn rm_cnt(vref: &mut crate::variations::Variation, tv: &crate::variations::Varia
     // ports VariationRealigner.java:2732 (rmCnt does not subtract nm)
     vref.sub_dir(true, tv.get_dir(true));
     vref.sub_dir(false, tv.get_dir(false));
+    vref.overlap_agreed_pairs = vref
+        .overlap_agreed_pairs
+        .saturating_sub(tv.overlap_agreed_pairs);
     crate::variations::util::correct_cnt(vref);
 }
 
@@ -5676,6 +5683,9 @@ fn add_var_factor(vref: &mut crate::variations::Variation, factor_f: f64) {
     vref.nm += factor_f * vref.nm;
     vref.fwd = vref.fwd.saturating_add((factor_f * vref.fwd as f64) as i32);
     vref.rev = vref.rev.saturating_add((factor_f * vref.rev as f64) as i32);
+    vref.overlap_agreed_pairs = i64::from(vref.overlap_agreed_pairs)
+        .saturating_add((factor_f * f64::from(vref.overlap_agreed_pairs)) as i64)
+        .clamp(0, i64::from(u32::MAX)) as u32;
 }
 
 fn ensure_reference_loaded(
@@ -5859,7 +5869,7 @@ fn partial_pipeline(
         }
     }
 
-    let var_data = parser.into_variation_data();
+    let var_data = parser.into_variation_data_unrebalanced();
     splice.extend(var_data.splice);
 
     // G3 (mate-window ownership): attribute — don't drop — merged
@@ -5917,6 +5927,9 @@ fn partial_pipeline(
                 }
                 v.pp = v.pp.saturating_add(var.pp);
                 v.pq += var.pq;
+                v.overlap_agreed_pairs = v
+                    .overlap_agreed_pairs
+                    .saturating_add(var.overlap_agreed_pairs);
             } else {
                 dest.map.insert(allele, var);
             }
@@ -5956,6 +5969,9 @@ fn partial_pipeline(
                 }
                 v.pp = v.pp.saturating_add(var.pp);
                 v.pq += var.pq;
+                v.overlap_agreed_pairs = v
+                    .overlap_agreed_pairs
+                    .saturating_add(var.overlap_agreed_pairs);
             } else {
                 dest.map.insert(allele, var);
             }
@@ -10877,6 +10893,11 @@ mod tests {
                     "random is_match_ref diff at case {case_idx}"
                 );
             }
+
+            let mut inf_v = crate::variations::Variation::new();
+            inf_v.overlap_agreed_pairs = 10;
+            add_var_factor(&mut inf_v, f64::INFINITY);
+            assert_eq!(inf_v.overlap_agreed_pairs, u32::MAX);
         }
     }
 }

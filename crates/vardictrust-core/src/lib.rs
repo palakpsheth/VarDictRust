@@ -925,7 +925,7 @@ fn run_pipeline_on_records_ext(
             parser.set_live_read_counts(preprocessor.total_reads, preprocessor.duplicate_reads);
         }
     }
-    let mut var_data = parser.into_variation_data();
+    let mut var_data = parser.into_variation_data_unrebalanced();
     if let Some(post_max) = post_pileup_max_read_length {
         var_data.max_read_length = var_data.max_read_length.max(post_max);
     }
@@ -966,6 +966,7 @@ fn run_pipeline_on_records_ext(
             crate::realign::adj_snv(reference, chr, config, &mut var_data);
         }
     }
+    var_data.finalize_overlap_strand_rebalance();
     Ok(var_data)
 }
 
