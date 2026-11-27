@@ -13,7 +13,7 @@
 #   UCSC 8-column CDS BED8 non-hijack verification (AR-02).
 # - Gate 3 (--preset amplicon): Targeted 8-col PCR amplicon panel, paired
 #   somatic Illumina PE two-primer amplicon, & QIAseq V3 single-primer (-sp)
-#   solid tumor panel (Gong et al., Sci. Data 2022, DOI: 10.1038/s41597-022-01359-2).
+#   solid tumor panel (Gong et al., Sci. Data 2022, DOI: 10.1038/s41597-022-01359-6).
 # - Gate 4 (--preset ctdna): Deterministic ~1,000x real-read 0.5% VAF QIAseq
 #   ctDNA titration (SampleB_QGN1 wild-type background + SampleA_QGN1 KnownPositive
 #   chr12:120999311 G>A spike-in, AR-06) + SampleAC5_QGN1 d100 soft-filtering &

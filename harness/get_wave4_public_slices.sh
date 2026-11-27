@@ -7,7 +7,7 @@
 #
 # Clinical Cohorts & Upstream Provenance Registry:
 # 1. FDA SEQC2 Oncopanel Sequencing Working Group (Gong et al., Sci. Data 2022,
-#    DOI: 10.1038/s41597-022-01359-2; ENA SRP295113; Figshare 19128005.v2 &
+#    DOI: 10.1038/s41597-022-01359-6; ENA SRP295113; Figshare 19128005.v2 &
 #    13511829.v4):
 #    - Cohort A: QIAseq V3 Single-Primer Extension (SPE) solid tumor Sample A
 #      (SRR13224707), matched normal Sample B (SRR13224695), and 0.5-1% ctDNA
@@ -389,7 +389,7 @@ fi
 
 # -----------------------------------------------------------------------------
 # Asset 4: Official FDA SEQC2 Oncopanel GRCh38 Truth & Panel BEDs
-#          (Gong et al., Sci. Data 2022, DOI: 10.1038/s41597-022-01359-2)
+#          (Gong et al., Sci. Data 2022, DOI: 10.1038/s41597-022-01359-6)
 # -----------------------------------------------------------------------------
 echo "[4/7] Staging FDA SEQC2 Oncopanel GRCh38 truth & panel BEDs (Figshare 19128005.v2 & 13511829.v4)..."
 FIGSHARE_BED_ZIP_SHA="ff41bd6deb6cd2fc88e2f8f34c22a265d4f91cc3ae8fa31185fe27818e4dc082"
