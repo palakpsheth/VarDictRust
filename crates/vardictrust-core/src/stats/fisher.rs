@@ -92,6 +92,12 @@ impl FisherExact {
         alt_rev: i32,
         java_fisher: bool,
     ) -> Self {
+        // Guard against negative cell counts where R `stats::fisher.test` and
+        // `FisherExact.java:67` (`HypergeometricDistribution`) throw (`AGENTS.md §11`).
+        let ref_fwd = ref_fwd.max(0);
+        let ref_rev = ref_rev.max(0);
+        let alt_fwd = alt_fwd.max(0);
+        let alt_rev = alt_rev.max(0);
         let m = ref_fwd.saturating_add(ref_rev);
         let n = alt_fwd.saturating_add(alt_rev);
         let k = ref_fwd.saturating_add(alt_fwd);
@@ -296,15 +302,19 @@ impl FisherExact {
                     self.mnhyper_unimodal_with(1.0 / t, &mut scratch, &mut left_scratch) - x
                 };
                 let f_lower = f(eps);
-                1.0 / crate::stats::zeroin::zeroin_c(
-                    eps,
-                    1.0,
-                    f_lower,
-                    mu - x,
-                    &mut f,
-                    &mut tol_val,
-                    &mut maxit,
-                )
+                if !self.java_fisher && f_lower < 0.0 {
+                    f64::INFINITY
+                } else {
+                    1.0 / crate::stats::zeroin::zeroin_c(
+                        eps,
+                        1.0,
+                        f_lower,
+                        mu - x,
+                        &mut f,
+                        &mut tol_val,
+                        &mut maxit,
+                    )
+                }
             } else {
                 1.0
             };
@@ -313,8 +323,28 @@ impl FisherExact {
             let f = |t: f64| self.mnhyper_with(t, &mut scratch) - x;
             crate::stats::zeroin::uniroot(0.0, 1.0, f, tol)
         } else if mu < x {
-            let f = |t: f64| self.mnhyper_with(1.0 / t, &mut scratch) - x;
-            1.0 / crate::stats::zeroin::uniroot(eps, 1.0, f, tol)
+            let mut f = |t: f64| self.mnhyper_with(1.0 / t, &mut scratch) - x;
+            if self.java_fisher {
+                1.0 / crate::stats::zeroin::uniroot(eps, 1.0, f, tol)
+            } else {
+                let f_lower = f(eps);
+                if f_lower < 0.0 {
+                    f64::INFINITY
+                } else {
+                    let f_upper = f(1.0);
+                    let mut tol_val = tol;
+                    let mut maxit = 1000;
+                    1.0 / crate::stats::zeroin::zeroin_c(
+                        eps,
+                        1.0,
+                        f_lower,
+                        f_upper,
+                        &mut f,
+                        &mut tol_val,
+                        &mut maxit,
+                    )
+                }
+            }
         } else {
             1.0
         }
@@ -2370,5 +2400,53 @@ mod tests {
                 assert_eq!(got.to_bits(), expected.to_bits());
             }
         }
+    }
+
+    #[test]
+    fn test_lane3_f14a_fisher_negative_cell_clamp_and_extreme_mle_infinity() {
+        // 1. Negative cell counts (crash inputs in FisherExact.java:67 and R stats::fisher.test):
+        //    must clamp to 0 at entry rather than falling through to NaN / p=0 / OR=1.
+        let neg_all_r = FisherExact::new(-5, -5, -5, -5);
+        let neg_all_j = FisherExact::new_java(-5, -5, -5, -5);
+        assert_eq!(neg_all_r.get_p_value(), 1.0);
+        assert_eq!(neg_all_r.get_odds_ratio(), "0");
+        assert_eq!(neg_all_j.get_p_value(), 1.0);
+        assert_eq!(neg_all_j.get_odds_ratio(), "0");
+
+        let neg_one_r = FisherExact::new(-1, 10, 5, 10);
+        let zero_one_r = FisherExact::new(0, 10, 5, 10);
+        assert_eq!(neg_one_r.get_p_value(), zero_one_r.get_p_value());
+        assert_eq!(neg_one_r.get_odds_ratio(), "0");
+
+        // 2. Extreme upper MLE where mu < x and f(eps) < 0.0 (true ncp > 1/eps = 4.5036e15):
+        //    !java_fisher returns "Inf" (f64::INFINITY), while java_fisher keeps UnirootZeroIn's finite result verbatim.
+        let unimod_r = FisherExact::new(200_000_000, 1, 1, 200_000_000);
+        assert!(unimod_r.use_unimodal);
+        assert_eq!(unimod_r.get_odds_ratio(), "Inf");
+
+        let unimod_j = FisherExact::new_java(200_000_000, 1, 1, 200_000_000);
+        assert!(unimod_j.use_unimodal);
+        assert_ne!(unimod_j.get_odds_ratio(), "Inf");
+        assert!(unimod_j.mle(200_000_000.0).is_finite());
+
+        // Dense path (support_len = 5_000_002 <= 16_777_216, m + n = 2_005_000_002 <= i32::MAX, OR ≈ 5e15 > 1/eps)
+        let dense_r = FisherExact::new(5_000_000, 1, 1, 1_999_999_999);
+        assert!(!dense_r.use_unimodal);
+        assert_eq!(dense_r.get_odds_ratio(), "Inf");
+
+        let dense_j = FisherExact::new_java(5_000_000, 1, 1, 1_999_999_999);
+        assert!(!dense_j.use_unimodal);
+        assert_ne!(dense_j.get_odds_ratio(), "Inf");
+        assert!(dense_j.mle(5_000_000.0).is_finite());
+
+        // 3. Exact f_lower == 0.0 boundary preserves 1.0 / eps matching R uniroot
+        let mut tie_at_eps = FisherExact::new(1, 1, 1, 10);
+        tie_at_eps.lo = 0;
+        tie_at_eps.hi = 2;
+        tie_at_eps.x = 1;
+        tie_at_eps.mu_at_1 = 0.5;
+        tie_at_eps.logdc = vec![0.0, 0.0, -2.0 * (1.0 / f64::EPSILON).ln()];
+        assert_eq!(tie_at_eps.mle(1.0), 1.0 / f64::EPSILON);
+        assert_eq!(tie_at_eps.get_odds_ratio(), "4503599627370496");
     }
 }
