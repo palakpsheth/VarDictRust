@@ -8306,8 +8306,9 @@ fn wave4_vardictcpp_cli_aliases_and_paired_amplicon_cram_tbi_csi_stats_e2e() {
     }
 
     // 1b. CLI `-c 1 -S 2 -E 3 -z` `fixtures/micro/micro.bed` diff-confinement:
-    //     `-E 3` keeps `omit_end_tag = true` on non-symbolic SNVs/indels under `--compat=off`,
-    //     guaranteeing 0 variant diffs vs default `--compat=vardictjava`.
+    //     `-E 3` keeps `omit_end_tag = true` on non-symbolic SNVs/indels under `--compat=off`
+    //     (`chr1:101 T>A` is byte-identical, while `Switch 35` canonically 5' left-aligns
+    //     `chr2:150 GCGG>G` to `chr2:149 AGCG>A`).
     let micro_bed = "fixtures/micro/micro.bed";
     let micro_bed_vj = base_cmd()
         .args([
@@ -8357,14 +8358,22 @@ fn wave4_vardictcpp_cli_aliases_and_paired_amplicon_cram_tbi_csi_stats_e2e() {
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect();
-    assert!(!micro_vj_data.is_empty());
+    assert_eq!(micro_vj_data.len(), 2);
+    assert_eq!(micro_off_data.len(), 2);
     assert!(
         micro_off_data.iter().all(|l| !l.contains(";END=")),
         "-E 3 must omit ;END= on non-symbolic variants under --compat=off: {micro_off_data:?}"
     );
     assert_eq!(
-        micro_vj_data, micro_off_data,
-        "-c 1 -S 2 -E 3 -z micro.bed must produce 0 variant diffs under --compat=off"
+        micro_vj_data[0], micro_off_data[0],
+        "-c 1 -S 2 -E 3 -z micro.bed chr1:101 T>A must produce 0 diffs under --compat=off"
+    );
+    assert!(
+        micro_vj_data[1].starts_with("chr2\t150\t.\tGCGG\tG\t")
+            && micro_off_data[1].starts_with("chr2\t149\t.\tAGCG\tA\t"),
+        "micro.bed chr2 deletion must stay 150 GCGG>G in default parity and left-align to 149 AGCG>A under --compat=off: vj={}, off={}",
+        micro_vj_data[1],
+        micro_off_data[1]
     );
 
     // 2. Paired somatic amplicon on `.cram` (`tumor_amp.cram|normal_amp.cram`) with
