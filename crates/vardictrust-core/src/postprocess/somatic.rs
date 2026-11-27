@@ -509,6 +509,9 @@ pub(crate) fn somatic_post_process_owned_with_bounds_and_ref(
         ref_info,
         true,
     )
+    .into_iter()
+    .map(|(_, sv)| sv)
+    .collect()
 }
 
 pub(crate) fn somatic_post_process_owned_unfinalized_with_bounds_and_ref(
@@ -521,7 +524,7 @@ pub(crate) fn somatic_post_process_owned_unfinalized_with_bounds_and_ref(
     max_read_length: i32,
     strict_bounds: Option<&[(i32, i32)]>,
     ref_info: Option<(&crate::reference::Reference, i32)>,
-) -> Vec<SomaticVariant> {
+) -> Vec<(i32, SomaticVariant)> {
     somatic_post_process_owned_inner(
         config,
         region,
@@ -551,8 +554,9 @@ fn somatic_post_process_owned_inner(
     strict_bounds: Option<&[(i32, i32)]>,
     ref_info: Option<(&crate::reference::Reference, i32)>,
     run_finalize: bool,
-) -> Vec<SomaticVariant> {
+) -> Vec<(i32, SomaticVariant)> {
     let mut results = Vec::new();
+    let mut origin_positions = Vec::new();
     let mut splice: std::borrow::Cow<'_, rustc_hash::FxHashSet<String>> =
         std::borrow::Cow::Borrowed(splice);
     let mut max_read_length = max_read_length;
@@ -584,19 +588,22 @@ fn somatic_post_process_owned_inner(
             &mut max_read_length,
             ref_ctx,
         );
+        origin_positions.resize(results.len(), position);
     }
 
+    let mut tagged: Vec<(i32, SomaticVariant)> =
+        origin_positions.into_iter().zip(results).collect();
     if run_finalize {
-        finalize_somatic_post_passes(config, &splice, &mut results);
+        finalize_somatic_post_passes_tagged(config, &splice, &mut tagged);
     }
 
     if let Some(merged_bounds) = strict_bounds {
-        results.retain(|sv| somatic_variant_within_strict_bounds(config, merged_bounds, sv));
+        tagged.retain(|(_, sv)| somatic_variant_within_strict_bounds(config, merged_bounds, sv));
     } else if config.compat.strict_region_bounds {
-        results.retain(|sv| sv.variant1.start_pos >= 1);
+        tagged.retain(|(_, sv)| sv.variant1.start_pos >= 1);
     }
 
-    results
+    tagged
 }
 
 /// Performs somatic analysis of variants from both samples (BAM1 and BAM2).
@@ -775,12 +782,50 @@ fn dedup_somatic_same_class_slice(results: &mut Vec<SomaticVariant>) {
     });
 }
 
+fn dedup_somatic_same_class_tagged(results: &mut Vec<(i32, SomaticVariant)>) {
+    crate::variations::dedup_post_norm_vec(results, |(_, sv)| {
+        if sv.variant1.null_record {
+            return None;
+        }
+        let has_t = sv.variant1.pos_coverage > 0;
+        let has_n = sv.variant2.as_ref().is_some_and(|v2| v2.pos_coverage > 0);
+        let presence_class: u8 = match (has_t, has_n) {
+            (true, true) => 0,
+            (true, false) => 1,
+            _ => 2,
+        };
+        let score_var = if presence_class == 2 {
+            sv.variant2.as_ref().unwrap_or(&sv.variant1)
+        } else {
+            &sv.variant1
+        };
+        Some((presence_class, &sv.variant1, score_var))
+    });
+}
+
 /// Region-level post-normalization passes for `Switch 36` (cross-position / cross-class
 /// split-allele reconciliation) and `Ruling 3` (same-sample-class collision deduplication).
 pub(crate) fn finalize_somatic_post_passes(
     config: &Config,
     splice: &rustc_hash::FxHashSet<String>,
     results: &mut Vec<SomaticVariant>,
+) {
+    if results.len() <= 1 || config.pileup {
+        return;
+    }
+    let old = std::mem::take(results);
+    let mut tagged: Vec<(i32, SomaticVariant)> = old
+        .into_iter()
+        .map(|sv| (sv.variant1.start_pos, sv))
+        .collect();
+    finalize_somatic_post_passes_tagged(config, splice, &mut tagged);
+    *results = tagged.into_iter().map(|(_, sv)| sv).collect();
+}
+
+pub(crate) fn finalize_somatic_post_passes_tagged(
+    config: &Config,
+    splice: &rustc_hash::FxHashSet<String>,
+    results: &mut Vec<(i32, SomaticVariant)>,
 ) {
     if results.len() <= 1 || config.pileup {
         return;
@@ -792,7 +837,7 @@ pub(crate) fn finalize_somatic_post_passes(
     //    Key by sample-presence class (`0 = paired`, `1 = tumor-only`, `2 = normal-only`)
     //    so a normal-absent row never clobbers a paired row when `Switch 36` is off.
     if do_left_align {
-        dedup_somatic_same_class_slice(results);
+        dedup_somatic_same_class_tagged(results);
     }
 
     // 2. Cross-position / cross-class split-allele reconciliation (`Switch 36`,
@@ -815,7 +860,7 @@ pub(crate) fn finalize_somatic_post_passes(
                 len,
                 crate::variations::FxBuildHasher::default(),
             );
-            for (idx, sv) in results.iter().enumerate() {
+            for (idx, (_, sv)) in results.iter().enumerate() {
                 if sv.variant1.null_record || sv.variant1.var_allele.contains('<') {
                     continue;
                 }
@@ -838,13 +883,13 @@ pub(crate) fn finalize_somatic_post_passes(
             let mut best_t_idx: Option<usize> = None;
             let mut best_n_idx: Option<usize> = None;
             for &i in &idxs {
-                let Some(sv) = results.get(i) else {
+                let Some((_, sv)) = results.get(i) else {
                     continue;
                 };
                 if sv.variant1.pos_coverage > 0 {
                     let replace = match best_t_idx.and_then(|bi| results.get(bi)) {
                         None => true,
-                        Some(cur_best) => crate::variations::post_norm_candidate_beats(
+                        Some((_, cur_best)) => crate::variations::post_norm_candidate_beats(
                             &sv.variant1,
                             &cur_best.variant1,
                         ),
@@ -857,7 +902,7 @@ pub(crate) fn finalize_somatic_post_passes(
                     if cand_v2.pos_coverage > 0 {
                         let replace = match best_n_idx
                             .and_then(|bi| results.get(bi))
-                            .and_then(|r| r.variant2.as_ref())
+                            .and_then(|(_, r)| r.variant2.as_ref())
                         {
                             None => true,
                             Some(cur_best_v2) => {
@@ -877,8 +922,15 @@ pub(crate) fn finalize_somatic_post_passes(
             let Some(&keep_idx) = idxs.first() else {
                 continue;
             };
-            let (Some(t_sv), Some(n_sv)) = (results.get(t_idx), results.get(n_idx)) else {
+            let (Some((t_orig, t_sv)), Some((n_orig, n_sv))) =
+                (results.get(t_idx), results.get(n_idx))
+            else {
                 continue;
+            };
+            let merged_orig = if t_sv.variant1.pos_coverage > 0 {
+                *t_orig
+            } else {
+                *n_orig
             };
             let Some(mut v2_matched) = n_sv.variant2.clone() else {
                 continue;
@@ -909,8 +961,8 @@ pub(crate) fn finalize_somatic_post_passes(
                     .find_map(|&i| {
                         results
                             .get(i)
-                            .filter(|r| !r.sv1.is_empty())
-                            .map(|r| r.sv1.clone())
+                            .filter(|(_, r)| !r.sv1.is_empty())
+                            .map(|(_, r)| r.sv1.clone())
                     })
                     .unwrap_or_default()
             };
@@ -921,18 +973,18 @@ pub(crate) fn finalize_somatic_post_passes(
                     .find_map(|&i| {
                         results
                             .get(i)
-                            .filter(|r| !r.sv2.is_empty())
-                            .map(|r| r.sv2.clone())
+                            .filter(|(_, r)| !r.sv2.is_empty())
+                            .map(|(_, r)| r.sv2.clone())
                     })
                     .unwrap_or_default()
             };
             let tumor_amplicon = t_sv.tumor_amplicon.or_else(|| {
                 idxs.iter()
-                    .find_map(|&i| results.get(i).and_then(|r| r.tumor_amplicon))
+                    .find_map(|&i| results.get(i).and_then(|(_, r)| r.tumor_amplicon))
             });
             let normal_amplicon = n_sv.normal_amplicon.or_else(|| {
                 idxs.iter()
-                    .find_map(|&i| results.get(i).and_then(|r| r.normal_amplicon))
+                    .find_map(|&i| results.get(i).and_then(|(_, r)| r.normal_amplicon))
             });
             let type_str = if t_idx == n_idx {
                 t_sv.status.clone()
@@ -955,17 +1007,20 @@ pub(crate) fn finalize_somatic_post_passes(
                 )
             };
             if let Some(slot) = results.get_mut(keep_idx) {
-                *slot = SomaticVariant {
-                    variant1: v1_matched,
-                    variant2: Some(v2_matched),
-                    status: type_str,
-                    sv1,
-                    sv2,
-                    end_is_variant2: n_end_is_variant2,
-                    tumor_amplicon,
-                    normal_amplicon,
-                    v2_ref_variant: n_v2_ref,
-                };
+                *slot = (
+                    merged_orig,
+                    SomaticVariant {
+                        variant1: v1_matched,
+                        variant2: Some(v2_matched),
+                        status: type_str,
+                        sv1,
+                        sv2,
+                        end_is_variant2: n_end_is_variant2,
+                        tumor_amplicon,
+                        normal_amplicon,
+                        v2_ref_variant: n_v2_ref,
+                    },
+                );
             }
             for &rm_idx in idxs.iter().skip(1) {
                 if let Some(flag) = drop_flags.get_mut(rm_idx) {
@@ -979,7 +1034,9 @@ pub(crate) fn finalize_somatic_post_passes(
             *results = old
                 .into_iter()
                 .enumerate()
-                .filter_map(|(i, sv)| (!drop_flags.get(i).copied().unwrap_or(false)).then_some(sv))
+                .filter_map(|(i, item)| {
+                    (!drop_flags.get(i).copied().unwrap_or(false)).then_some(item)
+                })
                 .collect();
         }
     }
