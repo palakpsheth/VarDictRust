@@ -455,8 +455,8 @@ fn reconcile_variant_dp(
     }
 }
 
-/// Region-level post-normalization passes for `Switch 36` (cross-position `StrongSomatic` + `StrongLOH`
-/// split-allele reconciliation) and `Ruling 3` (same-sample collision deduplication).
+/// Region-level post-normalization passes for `Switch 36` (cross-position / cross-class
+/// split-allele reconciliation) and `Ruling 3` (same-sample-class collision deduplication).
 fn finalize_somatic_post_passes(
     config: &Config,
     splice: &rustc_hash::FxHashSet<String>,
@@ -466,22 +466,30 @@ fn finalize_somatic_post_passes(
         return;
     }
 
+    let do_left_align = crate::variations::canonical_left_align_enabled(config);
+
     // 1. Same-sample post-normalization collision deduplication (Ruling 3):
-    //    Deduplicate same-side rows (`is_normal_only = DELETION | STRONG_LOH`) that normalize
-    //    to identical `(start_pos, ref_allele, var_allele)` before cross-sample reconciliation.
-    if config.compat.canonical_vcf_complex_left_align {
+    //    Key by sample-presence class (`0 = paired`, `1 = tumor-only`, `2 = normal-only`)
+    //    so a normal-absent row never clobbers a paired row when `Switch 36` is off.
+    if do_left_align {
         let old = std::mem::take(results);
         let mut deduped: Vec<SomaticVariant> = Vec::with_capacity(old.len());
-        let mut seen: rustc_hash::FxHashMap<(bool, i32, String, String), usize> =
+        let mut seen: rustc_hash::FxHashMap<(u8, i32, String, String), usize> =
             rustc_hash::FxHashMap::default();
         for sv in old {
             if sv.variant1.null_record {
                 deduped.push(sv);
                 continue;
             }
-            let is_normal_only = sv.status == DELETION || sv.status == STRONG_LOH;
+            let has_t = sv.variant1.pos_coverage > 0;
+            let has_n = sv.variant2.as_ref().is_some_and(|v2| v2.pos_coverage > 0);
+            let presence_class: u8 = match (has_t, has_n) {
+                (true, true) => 0,
+                (true, false) => 1,
+                _ => 2,
+            };
             let key = (
-                is_normal_only,
+                presence_class,
                 sv.variant1.start_pos,
                 sv.variant1.ref_allele.clone(),
                 sv.variant1.var_allele.clone(),
@@ -494,12 +502,12 @@ fn finalize_somatic_post_passes(
                 std::collections::hash_map::Entry::Occupied(e) => {
                     let idx = *e.get();
                     if let Some(cur) = deduped.get_mut(idx) {
-                        let cand_var = if is_normal_only {
+                        let cand_var = if presence_class == 2 {
                             sv.variant2.as_ref().unwrap_or(&sv.variant1)
                         } else {
                             &sv.variant1
                         };
-                        let cur_var = if is_normal_only {
+                        let cur_var = if presence_class == 2 {
                             cur.variant2.as_ref().unwrap_or(&cur.variant1)
                         } else {
                             &cur.variant1
@@ -514,64 +522,135 @@ fn finalize_somatic_post_passes(
         *results = deduped;
     }
 
-    // 2. Cross-position split-allele reconciliation (`Switch 36`, `clintval/vartovcf#191`/`#195`):
-    //    When Tumor and Normal had different raw pileup keys that normalized to the identical
-    //    `(start_pos, ref_allele, var_allele)`, reconcile a tumor-only `StrongSomatic` (`normal VD=0`)
-    //    and normal-only `StrongLOH` (`tumor VD=0`) pair into a single paired `SomaticVariant`.
+    // 2. Cross-position / cross-class split-allele reconciliation (`Switch 36`,
+    //    `clintval/vartovcf#191`/`#195`):
+    //    Group rows in deterministic `0..results.len()` order via `IndexMap` (never
+    //    iterating `HashMap`/`FxHashMap`, `AGENTS.md §8`). Whenever multiple rows share
+    //    normalized `(start_pos, ref_allele, var_allele)` and both tumor (`VD > 0`) and
+    //    normal (`VD > 0`) evidence exist across those rows (`StrongSomatic + StrongLOH`,
+    //    `Paired + StrongSomatic`, `Paired + StrongLOH`, etc.), combine the highest-scoring
+    //    tumor `variant1` and highest-scoring normal `variant2` via `determinate_type` at
+    //    the earliest row index and drop all shadow rows for that key.
     if config.compat.somatic_reconcile_split_alleles && results.len() > 1 {
         let len = results.len();
         let mut drop_flags = vec![false; len];
-        let mut ss_by_key: rustc_hash::FxHashMap<NormAlleleKey, usize> =
-            rustc_hash::FxHashMap::default();
-        let mut loh_by_key: rustc_hash::FxHashMap<NormAlleleKey, usize> =
-            rustc_hash::FxHashMap::default();
+        let mut groups: indexmap::IndexMap<NormAlleleKey, Vec<usize>> = indexmap::IndexMap::new();
 
         for (idx, sv) in results.iter().enumerate() {
             if sv.variant1.null_record {
                 continue;
             }
-            if sv.status == STRONG_SOMATIC
-                && sv.variant1.pos_coverage > 0
-                && sv.variant2.as_ref().map_or(0, |v| v.pos_coverage) == 0
-            {
-                let key = (
-                    sv.variant1.start_pos,
-                    sv.variant1.ref_allele.clone(),
-                    sv.variant1.var_allele.clone(),
-                );
-                ss_by_key.entry(key).or_insert(idx);
-            } else if sv.status == STRONG_LOH
-                && sv.variant1.pos_coverage == 0
-                && sv.variant2.as_ref().is_some_and(|v| v.pos_coverage > 0)
-            {
-                let key = (
-                    sv.variant1.start_pos,
-                    sv.variant1.ref_allele.clone(),
-                    sv.variant1.var_allele.clone(),
-                );
-                loh_by_key.entry(key).or_insert(idx);
-            }
+            let key = (
+                sv.variant1.start_pos,
+                sv.variant1.ref_allele.clone(),
+                sv.variant1.var_allele.clone(),
+            );
+            groups.entry(key).or_default().push(idx);
         }
 
-        for (key, ss_idx) in ss_by_key {
-            let Some(&loh_idx) = loh_by_key.get(&key) else {
-                continue;
-            };
-            if ss_idx == loh_idx {
+        let indel_only_shift3 = config.compat.indel_only_shift3;
+        for (_, idxs) in groups {
+            if idxs.len() <= 1 {
                 continue;
             }
-            let (Some(ss_sv), Some(loh_sv)) = (results.get(ss_idx), results.get(loh_idx)) else {
+            let mut best_t_idx: Option<usize> = None;
+            let mut best_n_idx: Option<usize> = None;
+            for &i in &idxs {
+                let Some(sv) = results.get(i) else {
+                    continue;
+                };
+                if sv.variant1.pos_coverage > 0 {
+                    let replace = match best_t_idx.and_then(|bi| results.get(bi)) {
+                        None => true,
+                        Some(cur_best) => crate::variations::post_norm_candidate_beats(
+                            &sv.variant1,
+                            &cur_best.variant1,
+                        ),
+                    };
+                    if replace {
+                        best_t_idx = Some(i);
+                    }
+                }
+                if let Some(ref cand_v2) = sv.variant2 {
+                    if cand_v2.pos_coverage > 0 {
+                        let replace = match best_n_idx
+                            .and_then(|bi| results.get(bi))
+                            .and_then(|r| r.variant2.as_ref())
+                        {
+                            None => true,
+                            Some(cur_best_v2) => {
+                                crate::variations::post_norm_candidate_beats(cand_v2, cur_best_v2)
+                            }
+                        };
+                        if replace {
+                            best_n_idx = Some(i);
+                        }
+                    }
+                }
+            }
+
+            let (Some(t_idx), Some(n_idx)) = (best_t_idx, best_n_idx) else {
                 continue;
             };
-            let Some(mut v2_matched) = loh_sv.variant2.clone() else {
+            let Some(&keep_idx) = idxs.first() else {
                 continue;
             };
-            let v1_matched = ss_sv.variant1.clone();
-            let sv1 = ss_sv.sv1.clone();
-            let sv2 = loh_sv.sv2.clone();
-            let type_str = determinate_type(config, None, &v1_matched, &mut v2_matched, splice);
-            let keep_idx = ss_idx.min(loh_idx);
-            let remove_idx = ss_idx.max(loh_idx);
+            let (Some(t_sv), Some(n_sv)) = (results.get(t_idx), results.get(n_idx)) else {
+                continue;
+            };
+            let Some(mut v2_matched) = n_sv.variant2.clone() else {
+                continue;
+            };
+            let mut v1_matched = t_sv.variant1.clone();
+            if v1_matched.var_type.is_empty() {
+                v1_matched.var_type = v1_matched.var_type();
+            }
+            v2_matched.start_pos = v1_matched.start_pos;
+            v2_matched.end_pos = v1_matched.end_pos;
+            if indel_only_shift3
+                && !v1_matched.var_allele.contains('<')
+                && v1_matched.ref_allele.len() == v1_matched.var_allele.len()
+            {
+                v1_matched.shift3 = 0;
+                v2_matched.shift3 = 0;
+            }
+            let sv1 = if !t_sv.sv1.is_empty() {
+                t_sv.sv1.clone()
+            } else {
+                idxs.iter()
+                    .find_map(|&i| {
+                        results
+                            .get(i)
+                            .filter(|r| !r.sv1.is_empty())
+                            .map(|r| r.sv1.clone())
+                    })
+                    .unwrap_or_default()
+            };
+            let sv2 = if !n_sv.sv2.is_empty() {
+                n_sv.sv2.clone()
+            } else {
+                idxs.iter()
+                    .find_map(|&i| {
+                        results
+                            .get(i)
+                            .filter(|r| !r.sv2.is_empty())
+                            .map(|r| r.sv2.clone())
+                    })
+                    .unwrap_or_default()
+            };
+            let tumor_amplicon = t_sv.tumor_amplicon.or_else(|| {
+                idxs.iter()
+                    .find_map(|&i| results.get(i).and_then(|r| r.tumor_amplicon))
+            });
+            let normal_amplicon = n_sv.normal_amplicon.or_else(|| {
+                idxs.iter()
+                    .find_map(|&i| results.get(i).and_then(|r| r.normal_amplicon))
+            });
+            let type_str = if t_idx == n_idx {
+                t_sv.status.clone()
+            } else {
+                determinate_type(config, None, &v1_matched, &mut v2_matched, splice)
+            };
             if let Some(slot) = results.get_mut(keep_idx) {
                 *slot = SomaticVariant {
                     variant1: v1_matched,
@@ -580,12 +659,14 @@ fn finalize_somatic_post_passes(
                     sv1,
                     sv2,
                     end_is_variant2: true,
-                    tumor_amplicon: None,
-                    normal_amplicon: None,
+                    tumor_amplicon,
+                    normal_amplicon,
                 };
             }
-            if let Some(flag) = drop_flags.get_mut(remove_idx) {
-                *flag = true;
+            for &rm_idx in idxs.iter().skip(1) {
+                if let Some(flag) = drop_flags.get_mut(rm_idx) {
+                    *flag = true;
+                }
             }
         }
 
@@ -5436,5 +5517,179 @@ mod tests {
         assert_eq!(del_rows[0].status, "Deletion");
         assert_eq!(del_rows[0].variant1.start_pos, 100);
         assert_eq!(del_rows[0].variant2.as_ref().unwrap().pos_coverage, 8);
+
+        // -3 (`three_prime`) and CRISPR (`crispr_cutting_site`) must bypass somatic Ruling 3 dedup:
+        let mut ss_same_trimmed = crate::javamap::JavaHashMap::new();
+        let mut st100 = Vars::new();
+        let mut stv100 = make_good_variant("-2", "CAT", "C", 0.40);
+        stv100.start_pos = 100;
+        stv100.end_pos = 102;
+        stv100.pos_coverage = 8;
+        st100.variants.push(stv100);
+        ss_same_trimmed.insert(100, st100);
+        let mut st101 = Vars::new();
+        let mut stv101 = make_good_variant("-2#G", "CATG", "CG", 0.35);
+        stv101.start_pos = 100;
+        stv101.end_pos = 103;
+        stv101.pos_coverage = 3;
+        st101.variants.push(stv101);
+        ss_same_trimmed.insert(101, st101);
+
+        let mut cfg_no_sw36_3p = cfg_no_sw36.clone();
+        cfg_no_sw36_3p.three_prime = true;
+        assert_eq!(
+            somatic_post_process_at(
+                &cfg_no_sw36_3p,
+                &region,
+                &ss_same_trimmed,
+                &empty_bam,
+                &splice,
+                None,
+                100
+            )
+            .len(),
+            2,
+            "-3 must bypass somatic Ruling 3 dedup"
+        );
+        let mut cfg_no_sw36_crispr = cfg_no_sw36.clone();
+        cfg_no_sw36_crispr.crispr_cutting_site = Some(108);
+        assert_eq!(
+            somatic_post_process_at(
+                &cfg_no_sw36_crispr,
+                &region,
+                &ss_same_trimmed,
+                &empty_bam,
+                &splice,
+                None,
+                100
+            )
+            .len(),
+            2,
+            "CRISPR mode must bypass somatic Ruling 3 dedup"
+        );
+
+        // Case E: Paired `Germline (T=8, N=15)` at key 104 + split `StrongSomatic (T=10, N=0)` at key 105:
+        // - With Switch 36 = false: `Germline` MUST NOT be overwritten by `StrongSomatic` (both rows preserved).
+        // - With Switch 36 = true: reconciles into a single `Germline (T=10, N=15)` row.
+        let mut bam1_e = crate::javamap::JavaHashMap::new();
+        let mut v1_e104 = Vars::new();
+        let mut t_e104 = make_good_variant("-3", "TAAG", "T", 0.25);
+        t_e104.start_pos = 103;
+        t_e104.end_pos = 106;
+        t_e104.pos_coverage = 8;
+        t_e104.hicnt = 8;
+        t_e104.total_pos_cov = 32;
+        t_e104.left_seq = "GGGGGG".to_string();
+        t_e104.right_seq = "AGAGAAG".to_string();
+        v1_e104.variants.push(t_e104);
+        bam1_e.insert(104, v1_e104);
+
+        let mut v1_e105 = Vars::new();
+        let mut t_e105 = make_good_variant("-4#A^G", "AGAGA", "GA", 0.30);
+        t_e105.start_pos = 105;
+        t_e105.end_pos = 109;
+        t_e105.pos_coverage = 10;
+        t_e105.hicnt = 10;
+        t_e105.total_pos_cov = 33;
+        t_e105.left_seq = "GGGGGGTA".to_string();
+        t_e105.right_seq = "GAAG".to_string();
+        v1_e105.variants.push(t_e105);
+        bam1_e.insert(105, v1_e105);
+
+        let mut bam2_e = crate::javamap::JavaHashMap::new();
+        bam2_e.insert(104, bam2_a.get(&104).unwrap().clone()); // Normal "-3" VD=15
+        let mut ref_only_e2 = Vars::new();
+        let mut rve2 = Variant::new();
+        rve2.total_pos_cov = 33;
+        rve2.ref_fwd_cov = 17;
+        rve2.ref_rev_cov = 16;
+        ref_only_e2.ref_variant = Some(rve2);
+        bam2_e.insert(105, ref_only_e2);
+
+        let rows_e_off =
+            somatic_post_process_at(&cfg_no_sw36, &region, &bam1_e, &bam2_e, &splice, None, 100);
+        assert_eq!(
+            rows_e_off.len(),
+            2,
+            "when Switch 36 is off, StrongSomatic (N=0) must never overwrite Germline (N=15)"
+        );
+        assert_eq!(rows_e_off[0].status, "Germline");
+        assert_eq!(rows_e_off[0].variant1.pos_coverage, 8);
+        assert_eq!(
+            rows_e_off[0].variant2.as_ref().unwrap().pos_coverage,
+            15,
+            "Normal's 15 reads must be preserved on Germline row"
+        );
+        assert_eq!(rows_e_off[1].status, "StrongSomatic");
+        assert_eq!(rows_e_off[1].variant1.pos_coverage, 10);
+
+        let rows_e_on =
+            somatic_post_process_at(&cfg_sw36, &region, &bam1_e, &bam2_e, &splice, None, 100);
+        assert_eq!(
+            rows_e_on.len(),
+            1,
+            "Switch 36 must reconcile Germline + split StrongSomatic into 1 row"
+        );
+        assert_eq!(rows_e_on[0].status, "Germline");
+        assert_eq!(rows_e_on[0].variant1.pos_coverage, 10);
+        assert_eq!(rows_e_on[0].variant2.as_ref().unwrap().pos_coverage, 15);
+
+        // Case F: Paired `Germline (T=12, N=9)` at key 104 + split `StrongLOH (T=0, N=15)` at key 105:
+        // - With Switch 36 = true: reconciles into a single `Germline (T=12, N=15)` row with zero shadow `StrongLOH`.
+        let mut bam1_f = crate::javamap::JavaHashMap::new();
+        let mut v1_f104 = Vars::new();
+        let mut t_f104 = make_good_variant("-3", "TAAG", "T", 0.35);
+        t_f104.start_pos = 103;
+        t_f104.end_pos = 106;
+        t_f104.pos_coverage = 12;
+        t_f104.hicnt = 12;
+        t_f104.total_pos_cov = 34;
+        t_f104.left_seq = "GGGGGG".to_string();
+        t_f104.right_seq = "AGAGAAG".to_string();
+        v1_f104.variants.push(t_f104);
+        bam1_f.insert(104, v1_f104);
+        let mut ref_only_f1 = Vars::new();
+        let mut rvf1 = Variant::new();
+        rvf1.total_pos_cov = 34;
+        rvf1.ref_fwd_cov = 17;
+        rvf1.ref_rev_cov = 17;
+        ref_only_f1.ref_variant = Some(rvf1);
+        bam1_f.insert(105, ref_only_f1);
+
+        let mut bam2_f = crate::javamap::JavaHashMap::new();
+        let mut v2_f104 = Vars::new();
+        let mut n_f104 = make_good_variant("-3", "TAAG", "T", 0.30);
+        n_f104.start_pos = 103;
+        n_f104.end_pos = 106;
+        n_f104.pos_coverage = 9;
+        n_f104.hicnt = 9;
+        n_f104.total_pos_cov = 30;
+        n_f104.left_seq = "GGGGGG".to_string();
+        n_f104.right_seq = "AGAGAAG".to_string();
+        v2_f104.variants.push(n_f104);
+        bam2_f.insert(104, v2_f104);
+
+        let mut v2_f105 = Vars::new();
+        let mut n_f105 = make_good_variant("-4#A^G", "AGAGA", "GA", 0.45);
+        n_f105.start_pos = 105;
+        n_f105.end_pos = 109;
+        n_f105.pos_coverage = 15;
+        n_f105.hicnt = 15;
+        n_f105.total_pos_cov = 33;
+        n_f105.left_seq = "GGGGGGTA".to_string();
+        n_f105.right_seq = "GAAG".to_string();
+        v2_f105.variants.push(n_f105);
+        bam2_f.insert(105, v2_f105);
+
+        let rows_f_on =
+            somatic_post_process_at(&cfg_sw36, &region, &bam1_f, &bam2_f, &splice, None, 100);
+        assert_eq!(
+            rows_f_on.len(),
+            1,
+            "Switch 36 must reconcile Germline + split StrongLOH into 1 row"
+        );
+        assert_eq!(rows_f_on[0].status, "Germline");
+        assert_eq!(rows_f_on[0].variant1.pos_coverage, 12);
+        assert_eq!(rows_f_on[0].variant2.as_ref().unwrap().pos_coverage, 15);
     }
 }

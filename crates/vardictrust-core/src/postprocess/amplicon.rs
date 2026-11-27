@@ -460,7 +460,7 @@ pub(crate) fn amplicon_post_process_streaming_with_ref<
     let do_left_align = crate::variations::canonical_left_align_enabled(config);
     let indel_only_shift3 = config.compat.indel_only_shift3;
     let ref_ctx = ref_info.map(|(r, len)| (r, region.chr.as_str(), len));
-    let dedup_non_pileup = config.compat.canonical_vcf_complex_left_align && !config.pileup;
+    let dedup_non_pileup = do_left_align && !config.pileup;
     let mut buffered_dedup: Vec<AmpliconVariant> = Vec::new();
     let mut dedup_seen: rustc_hash::FxHashMap<(i32, String, String), usize> =
         rustc_hash::FxHashMap::default();
@@ -3874,5 +3874,73 @@ mod tests {
         assert_eq!(out[1].variant.ref_allele, "A");
         assert_eq!(out[1].variant.var_allele, "G");
         assert_eq!(out[1].variant.shift3, 0);
+
+        // -3 (`three_prime`) and CRISPR (`crispr_cutting_site`) must bypass Switch 35 + Ruling 3 deduplication:
+        let mut m_same_trimmed = crate::javamap::JavaHashMap::new();
+        let mut mt100 = Vars::new();
+        let mut md100 = make_good_variant(100, "CAT", "C", 0.40);
+        md100.end_pos = 102;
+        md100.description = "-2AT".to_string();
+        md100.pos_coverage = 8;
+        md100.total_pos_cov = 20;
+        mt100.variants.push(md100);
+        m_same_trimmed.insert(100, mt100);
+        let mut mt101 = Vars::new();
+        let mut md101 = make_good_variant(100, "CATG", "CG", 0.35);
+        md101.end_pos = 103;
+        md101.description = "-2AT&G".to_string();
+        md101.pos_coverage = 3;
+        md101.total_pos_cov = 20;
+        mt101.variants.push(md101);
+        m_same_trimmed.insert(101, mt101);
+        let vars_same_trimmed = vec![m_same_trimmed];
+        let mut amps_same_trimmed = BTreeMap::new();
+        amps_same_trimmed.insert(100, vec![(0usize, &amp_reg)]);
+        amps_same_trimmed.insert(101, vec![(0usize, &amp_reg)]);
+
+        assert_eq!(
+            amplicon_post_process(
+                &cfg,
+                &amp_reg,
+                &vars_same_trimmed,
+                &amps_same_trimmed,
+                &splice
+            )
+            .expect("amplicon dedup on")
+            .len(),
+            1
+        );
+
+        let mut cfg_3p = cfg.clone();
+        cfg_3p.three_prime = true;
+        assert_eq!(
+            amplicon_post_process(
+                &cfg_3p,
+                &amp_reg,
+                &vars_same_trimmed,
+                &amps_same_trimmed,
+                &splice
+            )
+            .expect("amplicon_post_process -3")
+            .len(),
+            2,
+            "-3 must bypass amplicon Ruling 3 dedup"
+        );
+
+        let mut cfg_crispr = cfg.clone();
+        cfg_crispr.crispr_cutting_site = Some(108);
+        assert_eq!(
+            amplicon_post_process(
+                &cfg_crispr,
+                &amp_reg,
+                &vars_same_trimmed,
+                &amps_same_trimmed,
+                &splice
+            )
+            .expect("amplicon_post_process crispr")
+            .len(),
+            2,
+            "CRISPR mode must bypass amplicon Ruling 3 dedup"
+        );
     }
 }

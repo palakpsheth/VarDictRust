@@ -367,7 +367,7 @@ fn simple_post_process_core<'a>(
         vrefs.retain(|v| v.start_pos >= 1);
     }
 
-    if config.compat.canonical_vcf_complex_left_align && !config.pileup {
+    if do_left_align && !config.pileup {
         dedup_normalized_simple_variants(&mut vrefs);
     }
 
@@ -1590,6 +1590,38 @@ mod tests {
         assert_eq!(out_dedup[0].ref_allele, "CAT");
         assert_eq!(out_dedup[0].var_allele, "C");
         assert_eq!(out_dedup[0].pos_coverage, 8);
+
+        // Ruling 3 must also be bypassed under -3 (`three_prime`) and CRISPR (`crispr_cutting_site`):
+        let mut map_same_trimmed = crate::javamap::JavaHashMap::new();
+        let mut mt100 = Vars::new();
+        let mut mv100 = mk_variant(100, 102, "CAT", "C", 0.40);
+        mv100.pos_coverage = 8;
+        mv100.total_pos_cov = 20;
+        mt100.variants.push(mv100);
+        map_same_trimmed.insert(100, mt100);
+        let mut mt101 = Vars::new();
+        let mut mv101 = mk_variant(100, 103, "CATG", "CG", 0.35);
+        mv101.pos_coverage = 3;
+        mv101.total_pos_cov = 20;
+        mt101.variants.push(mv101);
+        map_same_trimmed.insert(101, mt101);
+
+        let out_same_dedup = simple_post_process(&cfg_dedup, &region, &map_same_trimmed, &splice);
+        assert_eq!(out_same_dedup.len(), 1);
+        let mut cfg_dedup_3p = cfg_dedup.clone();
+        cfg_dedup_3p.three_prime = true;
+        assert_eq!(
+            simple_post_process(&cfg_dedup_3p, &region, &map_same_trimmed, &splice).len(),
+            2,
+            "-3 (three_prime) must bypass Ruling 3 deduplication"
+        );
+        let mut cfg_dedup_crispr = cfg_dedup.clone();
+        cfg_dedup_crispr.crispr_cutting_site = Some(108);
+        assert_eq!(
+            simple_post_process(&cfg_dedup_crispr, &region, &map_same_trimmed, &splice).len(),
+            2,
+            "CRISPR mode must bypass Ruling 3 deduplication"
+        );
 
         // 3. Switch 38: Complex ("CA"->"CG", shift3=2) trimmed by adj_complex to SNV "A"->"G" resets shift3=0;
         //    real deletion ("AAAG"->"A", shift3=2) keeps shift3=2.

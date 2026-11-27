@@ -706,8 +706,9 @@ impl Variant {
                 || alt_init_bytes.len() == 1
                 || ref_init_bytes.first() != alt_init_bytes.first())
         {
-            let expected_end =
-                init_start.saturating_add((ref_init_bytes.len().min(i32::MAX as usize) as i32) - 1);
+            let expected_end = init_start.saturating_add(
+                (ref_init_bytes.len().min(i32::MAX as usize) as i32).saturating_sub(1),
+            );
             self.end_pos = expected_end;
             if refresh_var_type {
                 let vt = self.var_type_cow();
@@ -905,7 +906,6 @@ impl Variant {
         if indel_only_shift3
             && !self.null_record
             && !self.ref_allele.is_empty()
-            && !self.var_allele.starts_with('<')
             && !self.var_allele.contains('<')
             && self.ref_allele.len() == self.var_allele.len()
         {
