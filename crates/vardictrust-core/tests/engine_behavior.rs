@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`42` tests).
+//! First-class functional engine behavior integration suite (`43` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs,
