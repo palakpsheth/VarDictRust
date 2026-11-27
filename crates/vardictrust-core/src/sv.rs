@@ -3008,6 +3008,23 @@ pub fn find_sv(
             let vn = if explicit_inv {
                 let tins = complement_seq(&crate::util::join_ref(reference, chr, p5_adj, bp));
                 format!("-{}^{}{}", span, tins, extra)
+            } else if config.compat.sv_respect_min_len {
+                let ins5 = complement_seq(&crate::util::join_ref(
+                    reference,
+                    chr,
+                    bp.saturating_sub(49).max(p5_adj),
+                    bp,
+                ));
+                let ins3 = complement_seq(&crate::util::join_ref(
+                    reference,
+                    chr,
+                    p5_adj,
+                    p5_adj.saturating_add(49).min(bp),
+                ));
+                let mid = span
+                    .saturating_sub(ins5.len() as i32)
+                    .saturating_sub(ins3.len() as i32);
+                format!("-{}^{}<inv{}>{}{}", span, ins5, mid, ins3, extra)
             } else {
                 let ins5 = complement_seq(&crate::util::join_ref(
                     reference,
@@ -3264,6 +3281,23 @@ pub fn find_sv(
             let vn = if explicit_inv {
                 let tins = complement_seq(&crate::util::join_ref(reference, chr, p3_adj, bp));
                 format!("-{}^{}{}", span, extra, tins)
+            } else if config.compat.sv_respect_min_len {
+                let ins5 = complement_seq(&crate::util::join_ref(
+                    reference,
+                    chr,
+                    bp.saturating_sub(49).max(p3_adj),
+                    bp,
+                ));
+                let ins3 = complement_seq(&crate::util::join_ref(
+                    reference,
+                    chr,
+                    p3_adj,
+                    p3_adj.saturating_add(49).min(bp),
+                ));
+                let mid = span
+                    .saturating_sub(ins5.len() as i32)
+                    .saturating_sub(ins3.len() as i32);
+                format!("-{}^{}{}<inv{}>{}", span, extra, ins5, mid, ins3)
             } else {
                 let ins5 = complement_seq(&crate::util::join_ref(
                     reference,
@@ -10573,10 +10607,11 @@ mod tests {
             let chr = "chr1";
             let ref_len = 2_000usize;
             let chr_lengths = HashMap::from([(chr.to_string(), ref_len)]);
-            let (mut reference, _ref_seq) = build_ref(chr, ref_len);
+            let (mut reference, mut ref_seq) = build_ref(chr, ref_len);
 
             let mut vd = crate::variations::VariationData::default();
             vd.max_read_length = 50;
+            vd.ref_coverage.insert(500, 30);
             // Construct overlapping svfinv5 and svrinv5 with 80-bp inversion (bp=500, pe=579, len=80):
             let mut invf = Sclip::new();
             invf.start = 460;
@@ -10585,6 +10620,8 @@ mod tests {
             invf.mend = 579;
             invf.variation.cnt = 5;
             invf.variation.mqmean = 60.0 * 5.0;
+            invf.variation.qmean = 35.0 * 5.0;
+            invf.variation.pmean = 20.0 * 5.0;
             vd.sv_structures.svfinv5.push(invf);
 
             let mut invr = Sclip::new();
@@ -10594,6 +10631,8 @@ mod tests {
             invr.mend = 619;
             invr.variation.cnt = 5;
             invr.variation.mqmean = 60.0 * 5.0;
+            invr.variation.qmean = 35.0 * 5.0;
+            invr.variation.pmean = 20.0 * 5.0;
             vd.sv_structures.svrinv5.push(invr);
 
             let cfg = Config {
@@ -10626,6 +10665,140 @@ mod tests {
                 keys.iter().any(|k| k.contains("<inv-20>")),
                 "80-bp INV under -L 50 with sv_respect_min_len=true must stay symbolic <inv-20>, got {keys:?}"
             );
+
+            // Run ToVarsBuilder under BOTH isolated `sv_respect_min_len=true` (`canonical_sv_vcf_anchoring=false`)
+            // and full `COMPAT_OFF` to prove `<inv-20>` yields `var_allele == "<INV>"` and non-empty 1-bp `ref_allele`:
+            let reg = crate::regions::Region {
+                chr: chr.to_string(),
+                start: Pos1(1),
+                end: Pos1(ref_len as u32),
+                gene: "INV80".to_string(),
+                amplicon: None,
+            };
+            let al_iso = crate::tovars::ToVarsBuilder::new(&reference, &reg, &chr_lengths, &cfg)
+                .build_aligned_variants(&vd);
+            let v_iso = &al_iso.get(&500).expect("expected INV at 500").variants[0];
+            assert_eq!(v_iso.var_allele, "<INV>");
+            assert_eq!(
+                v_iso.ref_allele.len(),
+                1,
+                "isolated sv_respect_min_len must populate 1-bp ref_allele on <inv-20>, got {:?}",
+                v_iso.ref_allele
+            );
+
+            let cfg_off_l50 = Config {
+                min_reads: 2,
+                sv_min_len: 50,
+                compat: crate::config::COMPAT_OFF,
+                ..Config::default()
+            };
+            let al_off =
+                crate::tovars::ToVarsBuilder::new(&reference, &reg, &chr_lengths, &cfg_off_l50)
+                    .build_aligned_variants(&vd);
+            let v_off = &al_off.get(&500).expect("expected INV at 500").variants[0];
+            assert_eq!(v_off.var_allele, "<INV>");
+            assert_eq!(v_off.ref_allele.len(), 1);
+
+            // Also verify `find_sv` soft-clip-only 80-bp inversions (`51..=100 bp`, both 3' and 5' paths):
+            // 1-based 700..=779 (span = 80), distinct boundary bases at 699 ('A') and 780 ('A'):
+            let motif_760_779 = b"CCTTAAGGCCTTAAGGCCAT";
+            ref_seq[698] = b'A'; // pos 699
+            ref_seq[779] = b'A'; // pos 780
+            ref_seq[759..779].copy_from_slice(motif_760_779); // 1-based 760..=779
+            let motif_700_719 = b"GGAATTCCGGAATTCCGGTA";
+            ref_seq[699..719].copy_from_slice(motif_700_719); // 1-based 700..=719
+            reference.region_sequences[0].clone_from(&ref_seq);
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq.clone());
+            reference
+                .seed
+                .insert_for_test(&motif_760_779[3..20], vec![763]);
+            reference
+                .seed
+                .insert_for_test(&motif_700_719[0..17], vec![700]);
+
+            // 3' soft-clip at 700 matching RC(760..=779) -> bp=779, span=80:
+            let mut vd_fsv3 = crate::variations::VariationData::default();
+            vd_fsv3.max_read_length = 100;
+            vd_fsv3.ref_coverage.insert(700, 25);
+            let mut rc_3 = motif_760_779.to_vec();
+            crate::util::reverse_complement(&mut rc_3);
+            let mut sc3_700 = Sclip::new();
+            sc3_700.sequence = Some(rc_3);
+            sc3_700.variation.cnt = 6;
+            sc3_700.variation.hicnt = 6;
+            sc3_700.variation.qmean = 210.0;
+            sc3_700.variation.mqmean = 360.0;
+            sc3_700.variation.pmean = 120.0;
+            vd_fsv3.soft_clips_3_end.insert(700, sc3_700);
+            find_sv(
+                &mut vd_fsv3,
+                &mut reference,
+                chr,
+                650,
+                850,
+                &cfg,
+                &chr_lengths,
+            )
+            .unwrap();
+            let fsv3_keys: Vec<String> = vd_fsv3
+                .non_insertion_variants
+                .get(&700)
+                .map(|vm| vm.map.keys().map(str::to_string).collect())
+                .unwrap_or_default();
+            assert!(
+                fsv3_keys.iter().any(|k| k.contains("<inv-20>")),
+                "find_sv 3' 80-bp soft-clip INV under -L 50 must emit symbolic <inv-20>, got {fsv3_keys:?}"
+            );
+            let al_fsv3 = crate::tovars::ToVarsBuilder::new(&reference, &reg, &chr_lengths, &cfg)
+                .build_aligned_variants(&vd_fsv3);
+            let v_fsv3 = &al_fsv3.get(&700).unwrap().variants[0];
+            assert_eq!(v_fsv3.var_allele, "<INV>");
+            assert_eq!(v_fsv3.ref_allele.len(), 1);
+
+            // 5' soft-clip at 780 (`p5 = 780`, `dir = -1`) matching RC(700..=719) -> bp=700, swapped p5_adj=700, bp=779, span=80:
+            let mut vd_fsv5 = crate::variations::VariationData::default();
+            vd_fsv5.max_read_length = 100;
+            vd_fsv5.ref_coverage.insert(700, 25);
+            vd_fsv5.ref_coverage.insert(780, 25);
+            // In find_match_rev(..., dir=-1), seq is complemented in-place (not reversed!), so `complement(seq)` == `motif_700_719`:
+            let comp_5: Vec<u8> = motif_700_719
+                .iter()
+                .map(|&b| crate::util::complement(b))
+                .collect();
+            let mut sc5_780 = Sclip::new();
+            sc5_780.sequence = Some(comp_5);
+            sc5_780.variation.cnt = 6;
+            sc5_780.variation.hicnt = 6;
+            sc5_780.variation.qmean = 210.0;
+            sc5_780.variation.mqmean = 360.0;
+            sc5_780.variation.pmean = 120.0;
+            vd_fsv5.soft_clips_5_end.insert(780, sc5_780);
+            find_sv(
+                &mut vd_fsv5,
+                &mut reference,
+                chr,
+                650,
+                850,
+                &cfg,
+                &chr_lengths,
+            )
+            .unwrap();
+            let fsv5_keys: Vec<String> = vd_fsv5
+                .non_insertion_variants
+                .get(&700)
+                .map(|vm| vm.map.keys().map(str::to_string).collect())
+                .unwrap_or_default();
+            assert!(
+                fsv5_keys.iter().any(|k| k.contains("<inv-20>")),
+                "find_sv 5' 80-bp soft-clip INV under -L 50 must emit symbolic <inv-20>, got {fsv5_keys:?}"
+            );
+            let al_fsv5 = crate::tovars::ToVarsBuilder::new(&reference, &reg, &chr_lengths, &cfg)
+                .build_aligned_variants(&vd_fsv5);
+            let v_fsv5 = &al_fsv5.get(&700).unwrap().variants[0];
+            assert_eq!(v_fsv5.var_allele, "<INV>");
+            assert_eq!(v_fsv5.ref_allele.len(), 1);
         }
     }
 }

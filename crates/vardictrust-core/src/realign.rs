@@ -2604,7 +2604,9 @@ pub fn realignins(
 
         let mut ins3 = "";
         let mut inslen = insert_len_i32;
-        if let Some((dup_num_str, ins3_match)) = parse_dup_num_atgc(vn) {
+        if let Some((dup_num_str, ins3_match)) =
+            parse_dup_num_atgc_compat(vn, config.compat.sv_respect_min_len)
+        {
             ins3 = ins3_match;
             let dup_len = dup_num_str.parse::<i32>().unwrap_or(0);
             inslen = inslen
@@ -6616,7 +6618,12 @@ fn parse_begin_plus_atgc(vn: &str) -> Option<&str> {
     vn.get(1..end)
 }
 
+#[cfg(test)]
 fn parse_dup_num_atgc(vn: &str) -> Option<(&str, &str)> {
+    parse_dup_num_atgc_compat(vn, false)
+}
+
+fn parse_dup_num_atgc_compat(vn: &str, allow_neg: bool) -> Option<(&str, &str)> {
     let bytes = vn.as_bytes();
     let mut i = bytes.len();
     while i > 0 && bytes.get(i - 1).copied().is_some_and(is_atgc) {
@@ -6630,7 +6637,13 @@ fn parse_dup_num_atgc(vn: &str) -> Option<(&str, &str)> {
     while d > 0 && bytes.get(d - 1).is_some_and(u8::is_ascii_digit) {
         d -= 1;
     }
-    if d == gt_idx || d < 4 || bytes.get(d - 4..d) != Some(b"<dup") {
+    if d == gt_idx {
+        return None;
+    }
+    if allow_neg && d > 0 && bytes.get(d - 1).copied() == Some(b'-') {
+        d -= 1;
+    }
+    if d < 4 || bytes.get(d - 4..d) != Some(b"<dup") {
         return None;
     }
     Some((vn.get(d..gt_idx)?, vn.get(i..)?))
@@ -11043,6 +11056,104 @@ mod tests {
                     .iter()
                     .all(|k| !k.contains("<dup") && k.len() == 81),
                 "Switch 27 must keep 80-bp realignlgins explicit at -L 100: {sw27_keys_l100:?}"
+            );
+
+            // Also verify 5' `realignlgins` -> `realignins` parses negative `<dup-20>` under -L 50
+            // and recruits a 14-bp opposite-end 3' soft-clip at pos 380 (`< 17-bp` SEED_1 so ONLY
+            // `realignins` can recruit it, never 3' `find_match`):
+            let mut r_both = base_ref.clone();
+            // Place unique 20-bp motif at 1-based 360..=379 so `find_bi` cannot match locally within 32-bp repeat:
+            let uniq_360_379 = b"CCAATTGGCCAATTGGCCTT";
+            let mut ref_seq_b = ref_seq.clone();
+            ref_seq_b[359..379].copy_from_slice(uniq_360_379);
+            r_both.region_sequences[0].clone_from(&ref_seq_b);
+            r_both
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq_b.clone());
+            r_both.seed.insert(uniq_360_379[3..20].to_vec(), vec![363]); // 1-based 363..=379
+            let cfg_l50 = crate::config::Config {
+                sv_min_len: 50,
+                compat: crate::config::CompatProfile {
+                    sv_respect_min_len: true,
+                    ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+                },
+                ..crate::config::Config::default()
+            };
+            let mut non_ins_b = crate::javamap::JavaHashMap::new();
+            let mut ins_b = crate::javamap::JavaHashMap::new();
+            let mut ref_cov_b =
+                rustc_hash::FxHashMap::from_iter([(299, 30), (300, 30), (379, 30), (380, 30)]);
+
+            let mut sc5_seq = ref_seq_b[359..379].to_vec(); // 1-based 360..=379 reversed for 5' clip
+            sc5_seq.reverse();
+            let mut sc5_clip = Sclip::new();
+            sc5_clip.variation.cnt = 8;
+            sc5_clip.variation.hicnt = 8;
+            sc5_clip.variation.fwd = 4;
+            sc5_clip.variation.rev = 4;
+            sc5_clip.variation.qmean = 280.0;
+            sc5_clip.variation.mqmean = 480.0;
+            sc5_clip.variation.pmean = 160.0;
+            sc5_clip.sequence = Some(sc5_seq);
+            let mut sc5_b = BTreeMap::from([(300, sc5_clip)]);
+
+            let mut sc3_opp = Sclip::new();
+            sc3_opp.variation.cnt = 6;
+            sc3_opp.variation.hicnt = 6;
+            sc3_opp.variation.fwd = 3;
+            sc3_opp.variation.rev = 3;
+            sc3_opp.variation.qmean = 210.0;
+            sc3_opp.variation.mqmean = 360.0;
+            sc3_opp.variation.pmean = 120.0;
+            sc3_opp.sequence = Some(ref_seq_b[299..313].to_vec()); // 14 bp matching 1-based 300..=313
+            let mut sc3_b = BTreeMap::from([(380, sc3_opp)]);
+
+            assert_eq!(parse_dup_num_atgc_compat("+ACGT<dup-20>TGCA", false), None);
+            assert_eq!(
+                parse_dup_num_atgc_compat("+ACGT<dup-20>TGCA", true),
+                Some(("-20", "TGCA"))
+            );
+            assert_eq!(parse_dup_num_atgc_compat("+ACGT<dup->TGCA", true), None);
+
+            let mut svfdup_b = Vec::new();
+            let mut svrdup_b = Vec::new();
+            let mut splice_b = rustc_hash::FxHashSet::default();
+            realignlgins(
+                None,
+                &mut r_both,
+                chr,
+                ref_len as u32,
+                &region,
+                &cfg_l50,
+                &mut non_ins_b,
+                &mut ins_b,
+                &mut ref_cov_b,
+                &mut sc5_b,
+                &mut sc3_b,
+                100,
+                &mut svfdup_b,
+                &mut svrdup_b,
+                &mut splice_b,
+            );
+            assert!(
+                sc3_b[&380].used,
+                "realignins must parse <dup-20> and mark opposite-end 3' soft-clip at 380 used"
+            );
+            let dup_vm = ins_b.get(&299).expect("expected <dup-20> insertion at 299");
+            assert_eq!(dup_vm.map.len(), 1);
+            let (dup_k, dup_v) = dup_vm.map.iter().next().unwrap();
+            assert!(dup_k.contains("<dup-20>"), "got {dup_k}");
+            assert_eq!(
+                dup_v.cnt, 14,
+                "realignins must recruit 6 opposite-end 3' split reads into 8 5' split reads"
+            );
+            let sv_meta = non_ins_b
+                .get(&299)
+                .and_then(|vm| vm.sv.as_ref())
+                .expect("expected DUP SV metadata at 299");
+            assert_eq!(
+                sv_meta.splits, 14,
+                "DUP sv.splits must include recruited opposite-end 3' soft-clips (8 + 6 = 14)"
             );
         }
     }

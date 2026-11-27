@@ -376,7 +376,7 @@ fn merge_variation_into_ref(
     dst: &mut crate::variations::Variation,
     src: &crate::variations::Variation,
 ) {
-    if dst.cnt == 0 {
+    if dst.cnt == 0 && dst.extracnt == 0 && dst.fwd == 0 && dst.rev == 0 {
         *dst = src.clone();
         return;
     }
@@ -2303,7 +2303,7 @@ impl<'a> ToVarsBuilder<'a> {
                         } else {
                             position
                         };
-                        if matches_some_sv_numbers(description_string) {
+                        if matches_some_sv_numbers_compat(description_string, sv_respect_min_len) {
                             let base_cur = self.effective_ref_base_i32(del_seq_pos).unwrap_or(b'N');
                             refallele.clear();
                             refallele.push(base_cur as char);
@@ -3359,7 +3359,7 @@ fn matches_begin_minus_number_caret(s: &str) -> bool {
     }
 }
 
-fn matches_some_sv_numbers(s: &str) -> bool {
+fn matches_some_sv_numbers_compat(s: &str, allow_neg: bool) -> bool {
     if s.is_ascii() {
         let bytes = s.as_bytes();
         if bytes.len() < 6 {
@@ -3370,6 +3370,9 @@ fn matches_some_sv_numbers(s: &str) -> bool {
                 if let Some(sv_type) = bytes.get(i + 1..i + 4) {
                     if sv_type.iter().all(|&c| c != b'<' && c != b'>') {
                         let mut j = i + 4;
+                        if allow_neg && bytes.get(j) == Some(&b'-') {
+                            j += 1;
+                        }
                         let mut has_digits = false;
                         while let Some(&b) = bytes.get(j) {
                             if b.is_ascii_digit() {
@@ -3397,6 +3400,9 @@ fn matches_some_sv_numbers(s: &str) -> bool {
             if let Some(sv_type) = chars.get(i + 1..i + 4) {
                 if sv_type.iter().all(|&c| c != '<' && c != '>') {
                     let mut j = i + 4;
+                    if allow_neg && chars.get(j) == Some(&'-') {
+                        j += 1;
+                    }
                     let mut has_digits = false;
                     while let Some(&c) = chars.get(j) {
                         if c.is_ascii_digit() {
@@ -8983,6 +8989,18 @@ mod tests {
         ins120.map.insert(dup80, mk(10));
         vd.insertion_variants.insert(120, ins120);
 
+        // 80-bp `<inv-20>` symbolic inversion with ONLY `sv_respect_min_len: true` (`canonical_sv_vcf_anchoring: false`):
+        let inv80 = format!("-80^{}<inv-20>{}", "T".repeat(50), "T".repeat(50));
+        vd.ref_coverage.insert(200, 30);
+        let mut non_ins200 = VariationMap::new();
+        non_ins200.map.insert(inv80, mk(10));
+        let sv200 = crate::variations::VariationMap::get_sv(&mut vd.non_insertion_variants, 200);
+        sv200.r#type = "INV".to_string();
+        sv200.splits = 10;
+        if let Some(vm200) = vd.non_insertion_variants.get_mut(&200) {
+            vm200.map.extend(non_ins200.map);
+        }
+
         let cfg = Config {
             sv_min_len: 50,
             compat: crate::config::CompatProfile {
@@ -9001,6 +9019,12 @@ mod tests {
         let v120 = &aligned.get(&120).unwrap().variants[0];
         assert_eq!(v120.var_allele, "<DUP>");
         assert_eq!(v120.end_pos - v120.start_pos + 1, 80);
+        let v200 = &aligned.get(&200).unwrap().variants[0];
+        assert_eq!(v200.var_allele, "<INV>");
+        assert_eq!(
+            v200.ref_allele, "A",
+            "isolated sv_respect_min_len must populate 1-bp REF on <inv-20> instead of empty string"
+        );
 
         let cfg_off = Config {
             sv_min_len: 50,
