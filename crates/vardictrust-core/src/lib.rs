@@ -95,18 +95,29 @@ pub const MAX_TILE_SIZE: u32 = 500_000_000;
 /// whole-chromosome split runs without an arbitrary row-count cutoff.
 const SPLIT_VAR_RETENTION_WINDOW_BP: i32 = 200_000;
 
-/// Coordinate seam halo (`10,024 bp`, `M-DOCUMENTED-MAGIC`) buffered across contiguous
+/// Coordinate seam halo (`32,768 bp`, `M-DOCUMENTED-MAGIC`) buffered across contiguous
 /// `100 kbp` split sub-tiles of a `> 1 Mbp` parent region when `Switch 35`
 /// (`canonical_vcf_complex_left_align`) or `Switch 36` (`somatic_reconcile_split_alleles`)
-/// is active so cross-seam left-aligned indels and split tumor/normal alleles reconcile
-/// and deduplicate identically to an untiled single-region run (`AGENTS.md §10`).
-const SPLIT_TILE_SEAM_HALO_BP: i32 = 10_024;
+/// is active so cross-seam left-aligned indels (including `20 kbp+` homopolymer/repeat rolls)
+/// and split tumor/normal alleles reconcile and deduplicate identically to an untiled
+/// single-region run (`AGENTS.md §10`).
+const SPLIT_TILE_SEAM_HALO_BP: i32 = 32_768;
 
-fn ensure_split_tile_left_align_ref<'a, I>(
+/// Bounded upstream FASTA chunk size (`16,384 bp`, `M-DOCUMENTED-MAGIC`) fetched on demand
+/// by [`ensure_left_align_ref_chunks`] when a `Switch 35` (`canonical_vcf_complex_left_align`)
+/// repeat tract extends 5' past the currently loaded [`crate::reference::Reference`] span.
+const LEFT_ALIGN_UPSTREAM_CHUNK_BP: u32 = 16_384;
+
+/// Extra halo (`64 bp >= SEED_1 (17) + VAR_FLANK_SEQ_BP (20)`) passed to
+/// [`crate::reference::get_reference`] when loading [`LEFT_ALIGN_UPSTREAM_CHUNK_BP`] chunks so
+/// [`crate::reference::Reference::get_base`] (which trims trailing `SEED_1 = 17` k-mer lookahead
+/// bytes when `sequence_end < chr_len`) exposes every requested coordinate contiguously through
+/// `pos` plus 20-bp `LSEQ`/`RSEQ` flanks.
+const LEFT_ALIGN_CHUNK_EXT_BP: u32 = 64;
+
+fn ensure_left_align_ref_chunks<'a, I>(
     reference: &mut crate::reference::Reference,
     chr: &str,
-    tile_start: crate::types::Pos1,
-    original_start: crate::types::Pos1,
     aligned_maps: I,
     config: &config::Config,
     chromosomes_lengths: &HashMap<String, usize>,
@@ -114,46 +125,137 @@ fn ensure_split_tile_left_align_ref<'a, I>(
 where
     I: IntoIterator<Item = &'a crate::javamap::JavaHashMap<i32, crate::variations::Vars>>,
 {
-    if !crate::variations::canonical_left_align_enabled(config)
-        || tile_start.0 <= original_start.0
-        || config.reference.is_empty()
-    {
+    if !crate::variations::canonical_left_align_enabled(config) || config.reference.is_empty() {
         return Ok(());
     }
-    let want_lo = tile_start
-        .0
-        .saturating_sub(SPLIT_TILE_SEAM_HALO_BP as u32)
-        .max(1);
-    if reference
-        .loaded_span_bounds(chr)
-        .is_some_and(|(min_s, _)| min_s <= want_lo)
-    {
-        return Ok(());
+    let chr_len_usize = chromosomes_lengths.get(chr).copied().unwrap_or(0);
+    let chr_len_u32 = u32::try_from(chr_len_usize).unwrap_or(u32::MAX);
+    let chr_len_i32 = chr_len_usize.min(i32::MAX as usize) as i32;
+    let mut ref_b: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
+    let mut alt_b: std::collections::VecDeque<u8> = std::collections::VecDeque::new();
+
+    for m in aligned_maps {
+        for (_, vars) in m.iter() {
+            for v in &vars.variants {
+                if v.null_record
+                    || v.ref_allele.is_empty()
+                    || v.var_allele.is_empty()
+                    || v.var_allele == "."
+                    || v.var_allele.contains('<')
+                    || v.ref_allele.len() == v.var_allele.len()
+                    || v.start_pos < 1
+                    || !v.ref_allele.is_ascii()
+                    || !v.var_allele.is_ascii()
+                {
+                    continue;
+                }
+                let ref_init_bytes = v.ref_allele.as_bytes();
+                let alt_init_bytes = v.var_allele.as_bytes();
+                if ref_init_bytes.last() != alt_init_bytes.last()
+                    && (ref_init_bytes.len() == 1
+                        || alt_init_bytes.len() == 1
+                        || ref_init_bytes.first() != alt_init_bytes.first())
+                {
+                    continue;
+                }
+
+                ref_b.clear();
+                ref_b.extend(ref_init_bytes.iter().copied());
+                alt_b.clear();
+                alt_b.extend(alt_init_bytes.iter().copied());
+                let init_start = v.start_pos;
+                let mut pos = init_start;
+
+                while let (Some(&r_last), Some(&a_last)) = (ref_b.back(), alt_b.back()) {
+                    if r_last != a_last {
+                        break;
+                    }
+                    if ref_b.len() == 1 || alt_b.len() == 1 {
+                        if pos <= 1 {
+                            break;
+                        }
+                        let prev_pos = pos - 1;
+                        if chr_len_i32 > 0 && prev_pos > chr_len_i32 {
+                            break;
+                        }
+                        let Ok(prev_u32) = u32::try_from(prev_pos) else {
+                            break;
+                        };
+                        if reference.get_base(chr, prev_u32).is_none() {
+                            let chunk_lo =
+                                prev_u32.saturating_sub(LEFT_ALIGN_UPSTREAM_CHUNK_BP).max(1);
+                            let raw_hi = u32::try_from(pos).unwrap_or(prev_u32).max(chunk_lo);
+                            let chunk_hi = if chr_len_u32 > 0 {
+                                raw_hi.min(chr_len_u32).max(chunk_lo)
+                            } else {
+                                raw_hi
+                            };
+                            let ext_reg = crate::regions::Region {
+                                chr: chr.to_string(),
+                                start: crate::types::Pos1(chunk_lo),
+                                end: crate::types::Pos1(chunk_hi),
+                                gene: String::new(),
+                                amplicon: None,
+                            };
+                            crate::reference::get_reference(
+                                &ext_reg,
+                                LEFT_ALIGN_CHUNK_EXT_BP,
+                                chromosomes_lengths,
+                                config,
+                                reference,
+                            )?;
+                        }
+                        let Some(raw) = reference.get_base(chr, prev_u32) else {
+                            break;
+                        };
+                        let Some(b_prev) = crate::variations::normalize_fasta_anchor_byte(raw)
+                        else {
+                            break;
+                        };
+                        ref_b.pop_back();
+                        alt_b.pop_back();
+                        ref_b.push_front(b_prev);
+                        alt_b.push_front(b_prev);
+                        pos -= 1;
+                    } else {
+                        ref_b.pop_back();
+                        alt_b.pop_back();
+                    }
+                }
+
+                while ref_b.len() > 1 && alt_b.len() > 1 && ref_b.front() == alt_b.front() {
+                    ref_b.pop_front();
+                    alt_b.pop_front();
+                    pos = pos.saturating_add(1);
+                }
+
+                if pos < init_start && pos > 1 {
+                    let l_lo = u32::try_from(pos.saturating_sub(20).max(1)).unwrap_or(1);
+                    let l_hi = u32::try_from(pos.saturating_sub(1).max(1)).unwrap_or(l_lo);
+                    if l_lo <= l_hi
+                        && (chr_len_u32 == 0 || l_hi <= chr_len_u32)
+                        && reference.get_base(chr, l_lo).is_none()
+                    {
+                        let ext_reg = crate::regions::Region {
+                            chr: chr.to_string(),
+                            start: crate::types::Pos1(l_lo),
+                            end: crate::types::Pos1(l_hi),
+                            gene: String::new(),
+                            amplicon: None,
+                        };
+                        crate::reference::get_reference(
+                            &ext_reg,
+                            LEFT_ALIGN_CHUNK_EXT_BP,
+                            chromosomes_lengths,
+                            config,
+                            reference,
+                        )?;
+                    }
+                }
+            }
+        }
     }
-    let has_unequal = aligned_maps.into_iter().any(|m| {
-        m.iter().any(|(_, vars)| {
-            vars.variants
-                .iter()
-                .any(|v| v.ref_allele.len() != v.var_allele.len())
-        })
-    });
-    if !has_unequal {
-        return Ok(());
-    }
-    let ext_reg = crate::regions::Region {
-        chr: chr.to_string(),
-        start: crate::types::Pos1(want_lo),
-        end: tile_start,
-        gene: String::new(),
-        amplicon: None,
-    };
-    crate::reference::get_reference(
-        &ext_reg,
-        config.max_region_len,
-        chromosomes_lengths,
-        config,
-        reference,
-    )
+    Ok(())
 }
 
 /// Merge 1-based closed genomic intervals `(lo, hi)`, clamping `lo >= 1` and discarding
@@ -6629,16 +6731,16 @@ fn run_with_writer_inner<W: EngineWriter>(
             let chr_len_i32 = chromosomes_lengths_clone
                 .get(&builder_region.chr)
                 .map_or(0, |&len| len.min(i32::MAX as usize) as i32);
-            if seam_reconcile_simple && is_split_tile {
-                ensure_split_tile_left_align_ref(
+            if !config_clone.pileup {
+                ensure_left_align_ref_chunks(
                     &mut reference,
                     &builder_region.chr,
-                    tile.start,
-                    tile.original_start,
                     [&aligned_variants],
                     &config_clone,
                     &chromosomes_lengths_clone,
                 )?;
+            }
+            if seam_reconcile_simple && is_split_tile {
                 let variants = crate::postprocess::simple::simple_post_process_owned_unbucketed_with_bounds_and_ref(
                     &config_clone,
                     &builder_region,
@@ -7152,7 +7254,7 @@ fn load_amplicon_segment_postprocess_ref(
         vm.iter().any(|(_, vars)| {
             vars.variants
                 .iter()
-                .any(|v| v.ref_allele.len() != v.var_allele.len())
+                .any(|v| v.ref_allele.len() != v.var_allele.len() && !v.var_allele.contains('<'))
         })
     });
     if !has_unequal_allele {
@@ -7175,6 +7277,14 @@ fn load_amplicon_segment_postprocess_ref(
         chromosomes_lengths,
         config,
         &mut reference,
+    )
+    .ok()?;
+    ensure_left_align_ref_chunks(
+        &mut reference,
+        &first.chr,
+        vars_per_amplicon,
+        config,
+        chromosomes_lengths,
     )
     .ok()?;
     let chr_len = chromosomes_lengths
@@ -8216,16 +8326,16 @@ fn run_somatic<W: EngineWriter>(
             let chr_len_i32 = chromosomes_lengths_clone
                 .get(&builder_region.chr)
                 .map_or(0, |&len| len.min(i32::MAX as usize) as i32);
-            if seam_reconcile_somatic && is_split_tile {
-                ensure_split_tile_left_align_ref(
+            if !config_clone.pileup {
+                ensure_left_align_ref_chunks(
                     &mut reference,
                     &builder_region.chr,
-                    tile.start,
-                    tile.original_start,
                     [&aligned1, &aligned2],
                     &config_clone,
                     &chromosomes_lengths_clone,
                 )?;
+            }
+            if seam_reconcile_somatic && is_split_tile {
                 let somatic_variants =
                     crate::postprocess::somatic::somatic_post_process_owned_with_bounds_and_ref(
                         &config_clone,
@@ -8886,7 +8996,15 @@ fn compute_somatic_amplicon_segment_variants(
             vars_per_amplicon_bam2.push(aligned);
             splice = next_splice;
         }
-        if seg_post_ref.is_none() {
+        if let Some((ref mut r, _)) = seg_post_ref {
+            ensure_left_align_ref_chunks(
+                r,
+                &last_region.chr,
+                &vars_per_amplicon_bam2,
+                config,
+                chromosomes_lengths,
+            )?;
+        } else {
             seg_post_ref = load_amplicon_segment_postprocess_ref(
                 segment,
                 &vars_per_amplicon_bam2,

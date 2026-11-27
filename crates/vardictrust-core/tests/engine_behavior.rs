@@ -9748,5 +9748,182 @@ mod vcf_all_alleles_and_compat_off {
                 }
             }
         }
+
+        // 3) Copilot review regression (`100,050 AA>A` inside a `20,051 bp` poly-`A` tract
+        //    `80,000..=100,050` with `79,999 = 'C'`, rolling past the initial `~11.2 kbp` tile
+        //    halo AND across the `100,000 | 100,001` split-tile seam):
+        //    Verify BOTH untiled `[100_000, 100_200]` (whose initial cache only loads down to
+        //    `88,800`) AND `1.1 Mbp` tiled `[1, 1_100_000]` (plus untiled `[79_999, 100_200]`
+        //    under full `COMPAT_OFF` `strict_region_bounds = true`) fetch bounded upstream chunks
+        //    on demand and emit `chr2:79999 CA->C` identically across Single, Somatic, and Amplicon!
+        let mut poly_seq = ref_seq.clone();
+        poly_seq[79_998] = b'C'; // 1-based 79_999 = 'C'
+        poly_seq[79_999..100_050].fill(b'A'); // 1-based 80_000..=100_050 = 20,051 'A's
+        poly_seq[100_050] = b'G'; // 1-based 100_051 = 'G' (anchor right of poly-A)
+
+        let fa_poly = write_multi_contig_fasta(dir.path(), "w6_poly20k", &[("chr2", &poly_seq)]);
+        let bam_poly_t = dir.path().join("w6_poly20k_t.bam");
+        let bam_poly_n = dir.path().join("w6_poly20k_n.bam");
+        let mut poly_t = Vec::new();
+        let mut poly_n = Vec::new();
+        for i in 0..10usize {
+            let s_pos = 100_030 + (i % 3); // starts inside tile [100_001, 200_000] & [100_000, 100_200]
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt_seq = poly_seq[s_pos - 1..s_pos - 1 + 55].to_vec();
+            let wt_q = vec![38u8; 55];
+            poly_t.push(mk_contig_rec(
+                &format!("poly_twt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(55, Kind::Match)],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            poly_n.push(mk_contig_rec(
+                &format!("poly_nwt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(55, Kind::Match)],
+                wt_seq,
+                wt_q,
+                None,
+            ));
+
+            // 1D deleting 1-based 100_050 ('A') -> raw ToVars allele at 100_049..=100_050 ("AA" -> "A"),
+            // which must roll 20,050 bp upstream across cache & tile boundaries to `79,999 CA -> C`!
+            let left_m = 100_050 - s_pos;
+            let right_m = 30usize;
+            let mut d_seq = poly_seq[s_pos - 1..100_049].to_vec();
+            d_seq.extend_from_slice(&poly_seq[100_050..100_050 + right_m]);
+            let d_q = vec![39u8; left_m + right_m];
+            poly_t.push(mk_contig_rec(
+                &format!("poly_tdel_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_m, Kind::Match),
+                    (1, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                d_seq,
+                d_q,
+                None,
+            ));
+        }
+        poly_t.sort_by_key(|r| r.alignment_start().unwrap().get());
+        poly_n.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam_poly_t, &[("chr2", contig_len)], poly_t).expect("bam_poly_t");
+        write_multi_contig_bam(&bam_poly_n, &[("chr2", contig_len)], poly_n).expect("bam_poly_n");
+
+        let bed_poly_narrow = dir.path().join("poly_100k_200.bed"); // 1-based [100_000, 100_200]
+        let bed_poly_strict = dir.path().join("poly_79999_100200.bed"); // 1-based [79_999, 100_200]
+        let bed_poly_tiled = dir.path().join("poly_1_1m.bed"); // 1-based [1, 1_100_000]
+        std::fs::write(&bed_poly_narrow, "chr2\t99999\t100200\tPOLY_GENE\n").expect("narrow bed");
+        std::fs::write(&bed_poly_strict, "chr2\t79998\t100200\tPOLY_GENE\n").expect("strict bed");
+        std::fs::write(&bed_poly_tiled, "chr2\t0\t1100000\tPOLY_GENE\n").expect("tiled bed");
+
+        for is_paired in [false, true] {
+            // (a) Untiled `[100_000, 100_200]` vs tiled `[1, 1_100_000]` with `strict_region_bounds = false`:
+            //     both MUST roll `100,050 AA>A` all the way to `chr2:79999 CA>C`!
+            let mut compat_no_strict = COMPAT_OFF;
+            compat_no_strict.strict_region_bounds = false;
+            let make_poly_cfg = |bed_p: &std::path::Path, compat_prof| Config {
+                reference: fa_poly.to_string_lossy().into_owned(),
+                bam: if is_paired {
+                    format!("{}|{}", bam_poly_t.display(), bam_poly_n.display())
+                } else {
+                    bam_poly_t.to_string_lossy().into_owned()
+                },
+                sample: if is_paired {
+                    "POLY_T|POLY_N".to_string()
+                } else {
+                    "POLY_T".to_string()
+                },
+                sample_explicit: true,
+                bed: Some(bed_p.to_string_lossy().into_owned()),
+                col_chr: 0,
+                col_start: 1,
+                col_end: 2,
+                col_seg_start: 1,
+                col_seg_end: 2,
+                col_gene: Some(3),
+                column_for_chromosome: Some(0),
+                zero_based: true,
+                zero_based_defined: true,
+                freq: 0.01,
+                af_threshold: 0.01,
+                realign: 0,
+                fisher: true,
+                threads: 2,
+                compat: compat_prof,
+                ..Config::default()
+            };
+
+            let vcf_narrow =
+                run_core_vcf(&make_poly_cfg(&bed_poly_narrow, compat_no_strict)).expect("narrow");
+            let vcf_tiled_ns =
+                run_core_vcf(&make_poly_cfg(&bed_poly_tiled, compat_no_strict)).expect("tiled ns");
+            assert_eq!(
+                vcf_narrow, vcf_tiled_ns,
+                "untiled [100_000, 100_200] and tiled [1, 1_100_000] must match byte-for-byte on 20kbp repeat (paired={is_paired})"
+            );
+            let rows_ns = extract_variants(&vcf_narrow);
+            assert_eq!(rows_ns.len(), 1, "expected 1 call, got: {rows_ns:?}");
+            assert!(
+                rows_ns[0].starts_with("chr2\t79999\t.\tCA\tC\t"),
+                "20kbp poly-A deletion at 100,050 must left-align to chr2:79999 CA->C, got: {}",
+                rows_ns[0]
+            );
+
+            // (b) Full `COMPAT_OFF` (`strict_region_bounds = true`): untiled `[79_999, 100_200]` vs
+            //     tiled `[1, 1_100_000]` both emit `chr2:79999 CA->C` byte-identically!
+            let vcf_strict_un =
+                run_core_vcf(&make_poly_cfg(&bed_poly_strict, COMPAT_OFF)).expect("strict untiled");
+            let vcf_strict_ti =
+                run_core_vcf(&make_poly_cfg(&bed_poly_tiled, COMPAT_OFF)).expect("strict tiled");
+            assert_eq!(
+                vcf_strict_un, vcf_strict_ti,
+                "full COMPAT_OFF untiled [79_999, 100_200] and tiled [1, 1_100_000] must match (paired={is_paired})"
+            );
+            let rows_st = extract_variants(&vcf_strict_ti);
+            assert_eq!(rows_st.len(), 1);
+            assert!(rows_st[0].starts_with("chr2\t79999\t.\tCA\tC\t"));
+
+            // (c) Amplicon (single-sample & paired somatic amplicon) on narrow `[100_000, 100_200]`
+            //     amplicon segment (`strict_region_bounds = false` so segment FASTA initially covers
+            //     only `[89_990, 110_210]`): `load_amplicon_segment_postprocess_ref` +
+            //     `ensure_left_align_ref_chunks` must also roll `100,050 AA>A` to `chr2:79999 CA>C`!
+            let bed_poly_amp = dir.path().join("poly_amp_100k.bed");
+            std::fs::write(
+                &bed_poly_amp,
+                "chr2\t100029\t100085\tPOLY_AMP\t0\t+\t100039\t100075\n",
+            )
+            .expect("amp bed");
+            let mut amp_poly_cfg = make_poly_cfg(&bed_poly_amp, compat_no_strict);
+            amp_poly_cfg.amplicon = Some("10:0.95".to_string());
+            amp_poly_cfg.col_seg_start = Config::default().col_seg_start;
+            amp_poly_cfg.col_seg_end = Config::default().col_seg_end;
+            amp_poly_cfg.column_for_chromosome = None;
+            let vcf_amp = run_core_vcf(&amp_poly_cfg).expect("amplicon 20kbp repeat");
+            let rows_amp = extract_variants(&vcf_amp);
+            assert_eq!(
+                rows_amp.len(),
+                1,
+                "expected 1 amplicon call, got: {rows_amp:?}"
+            );
+            assert!(
+                rows_amp[0].starts_with("chr2\t79999\t.\tCA\tC\t"),
+                "amplicon (paired={is_paired}) 20kbp repeat must left-align to chr2:79999 CA->C, got: {}",
+                rows_amp[0]
+            );
+        }
     }
 }

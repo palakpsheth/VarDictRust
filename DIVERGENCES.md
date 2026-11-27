@@ -26,8 +26,8 @@ Verified Parity Baseline (release/v1.1.0, commit 9a1322b):
 - Final Acceptance:   8/8 PASS under release engine fingerprint `b18477ae0a7b07c1`
 
 Current Workspace Test Suite (main / pre-v1.1.1):
-- Core Library Tests: 598 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
-- Total Workspace:    827 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
+- Core Library Tests: 599 PASS / 0 FAIL (`cargo test -p vardictrust-core --lib`)
+- Total Workspace:    828 PASS / 0 FAIL (`cargo test --workspace` across core, corpus_parity, engine_behavior, amplicon_stream_mem, cram_stack, cli, profile_smoke, robustness, version)
 ```
 
 <a id="the-four-canonical-parity-classes-rewritesbio-5-8-11"></a>

@@ -1137,7 +1137,7 @@ impl Default for Variant {
 }
 
 #[inline]
-fn normalize_fasta_anchor_byte(b: u8) -> Option<u8> {
+pub(crate) fn normalize_fasta_anchor_byte(b: u8) -> Option<u8> {
     let up = b.to_ascii_uppercase();
     match up {
         b'A' | b'C' | b'G' | b'T' => Some(up),

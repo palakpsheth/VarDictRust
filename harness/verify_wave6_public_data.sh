@@ -205,13 +205,89 @@ for name, is_paired, ref_fa, bam_arg, extra_args in cohorts:
         [vdr, "-G", ref_fa, "-b", bam_arg, "--compat=off", "--vcf-all-alleles", "--output", off_gz, "--tbi", *extra_args],
         check=True,
     )
-    # Invariant 1a: bcftools norm --check-ref e must pass with 0 reference mismatches
-    subprocess.run(
-        ["bcftools", "norm", "--check-ref", "e", "-f", ref_fa, off_gz],
-        stdout=subprocess.DEVNULL,
+    # Invariant 1a: compare concrete split+unpadded (CHROM, POS, REF, ALT) alleles before vs after
+    # `bcftools norm --check-ref e -f ref_fa` so right-shifted indels (e.g. non-canonical `AA>A`)
+    # that `bcftools norm` rewrites instead of rejecting fail immediately (allowing ONLY the
+    # documented VCFv4.2 stop-before-'N' exception where `bcftools norm -f` rolls onto an 'N' base).
+    split_vcf = subprocess.check_output(
+        ["bcftools", "norm", "-m", "-any", off_gz],
         stderr=subprocess.DEVNULL,
-        check=True,
+        text=True,
     )
+    norm_vcf = subprocess.check_output(
+        ["bcftools", "norm", "--check-ref", "e", "-f", ref_fa, "-"],
+        input=split_vcf,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    split_recs = [
+        l.split("\t", 5)[:5]
+        for l in split_vcf.splitlines()
+        if l and not l.startswith("#")
+    ]
+    norm_recs = [
+        l.split("\t", 5)[:5]
+        for l in norm_vcf.splitlines()
+        if l and not l.startswith("#")
+    ]
+    if len(split_recs) != len(norm_recs):
+        raise AssertionError(
+            f"{name}: bcftools norm record count mismatch: split={len(split_recs)} vs norm={len(norm_recs)}"
+        )
+    for s_cols, n_cols in zip(split_recs, norm_recs):
+        s_chr, s_pos_s, _, s_ref, s_alt = s_cols
+        n_chr, n_pos_s, _, n_ref, n_alt = n_cols
+        if s_alt == "." or s_alt.startswith("<"):
+            continue
+        t_pos = int(s_pos_s)
+        t_ref, t_alt = s_ref, s_alt
+        # Trim shared multiallelic 3' suffix then 5' prefix down to a 1-bp anchor at existing `t_pos`
+        # (NO reference left-rolling!).
+        while len(t_ref) > 1 and len(t_alt) > 1 and t_ref[-1] == t_alt[-1]:
+            t_ref = t_ref[:-1]
+            t_alt = t_alt[:-1]
+        while len(t_ref) > 1 and len(t_alt) > 1 and t_ref[0] == t_alt[0]:
+            t_ref = t_ref[1:]
+            t_alt = t_alt[1:]
+            t_pos += 1
+        n_pos = int(n_pos_s)
+        if (s_chr, t_pos, t_ref, t_alt) != (n_chr, n_pos, n_ref, n_alt):
+            # Allow ONLY VCFv4.2 stop-before-'N' where VarDictRust halted immediately 3' of 'N'
+            # while `bcftools norm -f` rolled onto an 'N' base in `n_ref`/`n_alt`.
+            is_stop_before_n = False
+            if (
+                s_chr == n_chr
+                and n_pos < t_pos
+                and t_pos > 1
+                and ("N" in n_ref.upper() or "N" in n_alt.upper())
+                and "N" not in t_alt.upper()
+            ):
+                faidx_out = subprocess.check_output(
+                    ["samtools", "faidx", ref_fa, f"{s_chr}:{t_pos - 1}-{t_pos - 1}"],
+                    text=True,
+                )
+                prev_base = "".join(
+                    ln.strip() for ln in faidx_out.splitlines() if not ln.startswith(">")
+                ).upper()
+                if prev_base == "N":
+                    span_end = max(t_pos + len(t_ref) - 1, n_pos + len(n_ref) - 1)
+                    win_out = subprocess.check_output(
+                        ["samtools", "faidx", ref_fa, f"{s_chr}:{n_pos}-{span_end}"],
+                        text=True,
+                    )
+                    win_seq = "".join(
+                        ln.strip() for ln in win_out.splitlines() if not ln.startswith(">")
+                    ).upper()
+                    off_t = t_pos - n_pos
+                    mut_vdr = win_seq[:off_t] + t_alt.upper() + win_seq[off_t + len(t_ref) :]
+                    mut_bcf = n_alt.upper() + win_seq[len(n_ref) :]
+                    is_stop_before_n = mut_vdr == mut_bcf
+            if not is_stop_before_n:
+                raise AssertionError(
+                    f"{name}: non-canonical allele rewritten by bcftools norm -f: "
+                    f"emitted=({s_chr}, {t_pos}, {t_ref!r}, {t_alt!r}) vs "
+                    f"bcftools=({n_chr}, {n_pos}, {n_ref!r}, {n_alt!r})"
+                )
 
     # Run --compat=vardictjava on non-paired-amplicon cohorts (paired amplicon is unsupported in v1.8.3 VCF mode)
     is_paired_amp = is_paired and "-a" in extra_args
@@ -554,7 +630,7 @@ def eval_somatic_rtg(tag, ref_fa, sdf_dir, bam_pair, bed_path, eval_bed, truth_g
 seqc2_pair = f"{g4_dir}/seqc2/HCC1395.bam|{g4_dir}/seqc2/HCC1395BL.bam"
 s_vj = eval_somatic_rtg("seqc2", seqc2_fa, seqc2_sdf, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_vcf + ".gz", "--compat=vardictjava")
 s_off = eval_somatic_rtg("seqc2", seqc2_fa, seqc2_sdf, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_vcf + ".gz", "--compat=off")
-if s_off[3] < s_vj[3] or s_off[0] < s_vj[0]:
+if s_off[3] < s_vj[3] or s_off[0] < s_vj[0] or s_off[1] > s_vj[1]:
     raise AssertionError(f"SEQC2 rtg vcfeval regression: vj={s_vj} vs off={s_off}")
 
 # 5b) GIAB HG002 chr20:10000000-10200000 germline truth concordance
@@ -592,7 +668,7 @@ def eval_hg002_rtg(compat_flag):
 
 g2_vj = eval_hg002_rtg("--compat=vardictjava")
 g2_off = eval_hg002_rtg("--compat=off")
-if g2_off[3] < g2_vj[3] or g2_off[0] < g2_vj[0]:
+if g2_off[3] < g2_vj[3] or g2_off[0] < g2_vj[0] or g2_off[1] > g2_vj[1]:
     raise AssertionError(f"GIAB HG002 rtg vcfeval regression: vj={g2_vj} vs off={g2_off}")
 
 # 5c) GIAB HG008 somatic v0.4 benchmark (if present locally)
@@ -625,7 +701,7 @@ if os.path.isfile(hg8_truth_v04) and os.path.isfile(hg8_bed_v04) and os.path.isf
     hg8_pair = f"{g4_dir}/hg008/HG008-T.slice.bam|{g4_dir}/hg008/HG008-N.slice.bam"
     h8_vj = eval_somatic_rtg("hg008v04", hg8_fa, hg8_sdf, hg8_pair, hg8_eval_bed, hg8_eval_bed, hg8_truth_vcf + ".gz", "--compat=vardictjava")
     h8_off = eval_somatic_rtg("hg008v04", hg8_fa, hg8_sdf, hg8_pair, hg8_eval_bed, hg8_eval_bed, hg8_truth_vcf + ".gz", "--compat=off")
-    if h8_off[3] < h8_vj[3] or h8_off[0] < h8_vj[0]:
+    if h8_off[3] < h8_vj[3] or h8_off[0] < h8_vj[0] or h8_off[1] > h8_vj[1]:
         raise AssertionError(f"GIAB HG008 v0.4 rtg vcfeval regression: vj={h8_vj} vs off={h8_off}")
     hg8_msg = f"HG008 v0.4 F1 {h8_vj[3]:.4f} -> {h8_off[3]:.4f} (TP {h8_vj[0]}->{h8_off[0]}, FP {h8_vj[1]}->{h8_off[1]})"
 
