@@ -898,6 +898,16 @@ fuzz_target!(|data: &[u8]| {
             compat.omit_nonsv_vcf_end = (w5_bits & 64) != 0; // Switch 31
             compat.canonical_vcf_gt = (w5_bits & 128) != 0; // Switch 32
         }
+        let w6_gate = cur.u8();
+        if (w6_gate & 1) != 0 {
+            let w6_bits = cur.u8();
+            compat.sclip_majority_count_first = (w6_bits & 1) != 0; // Switch 33
+            compat.mate_overlap_both_strands = (w6_bits & 2) != 0; // Switch 34
+            compat.canonical_vcf_complex_left_align = (w6_bits & 4) != 0; // Switch 35
+            compat.somatic_reconcile_split_alleles = (w6_bits & 8) != 0; // Switch 36
+            compat.adj_snv_full_sclip_match = (w6_bits & 16) != 0; // Switch 37
+            compat.indel_only_shift3 = (w6_bits & 32) != 0; // Switch 38
+        }
         compat
     };
     base_cfg.omit_end_tag = cur.bool();

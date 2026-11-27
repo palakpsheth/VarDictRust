@@ -149,31 +149,68 @@ fn strip_markers(seq: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     }
 }
 
+/// Returns the largest integer mismatch count `m <= mm_limit` satisfying
+/// `(m as f64) / (len as f64) < 0.15`, or `None` when `len == 0` or `mm_limit < 0`.
+#[inline]
+fn max_allowed_mismatches(len: usize, mm_limit: i32) -> Option<usize> {
+    if len == 0 || mm_limit < 0 {
+        return None;
+    }
+    let mm_cap = usize::try_from(mm_limit).ok()?;
+    let len_f64 = len as f64;
+    let mut max_mm = ((len_f64 * 0.15) as usize).min(mm_cap).min(len);
+    while max_mm < mm_cap && max_mm < len && ((max_mm + 1) as f64) / len_f64 < 0.15 {
+        max_mm += 1;
+    }
+    while max_mm > 0 && (max_mm as f64) / len_f64 >= 0.15 {
+        max_mm -= 1;
+    }
+    ((max_mm as f64) / len_f64 < 0.15).then_some(max_mm)
+}
+
 /// Check if seq1 matches seq2 with no more than MM mismatches and mismatches ratio < 0.15.
 ///
 /// Ports `VariationRealigner.ismatch`.
 pub fn is_match(seq1: &[u8], seq2: &[u8], dir: i32, mm_limit: i32) -> bool {
+    let len = seq1.len();
+    let Some(max_mm) = max_allowed_mismatches(len, mm_limit) else {
+        return false;
+    };
     let clean_seq2 = strip_markers(seq2);
+    let limit = len.min(clean_seq2.len());
+    let Some(s1) = seq1.get(..limit) else {
+        return false;
+    };
 
-    let mut mm = 0;
-    let limit = seq1.len().min(clean_seq2.len());
-    for n in 0..limit {
-        let idx2 = if dir == -1 {
-            clean_seq2.len().saturating_sub(1).saturating_sub(n)
-        } else {
-            n
+    let mut mm = 0usize;
+    if dir == -1 {
+        let start2 = clean_seq2.len().saturating_sub(limit);
+        let Some(s2_tail) = clean_seq2.get(start2..) else {
+            return false;
         };
-        if let (Some(&base1), Some(&base2)) = (seq1.get(n), clean_seq2.get(idx2)) {
+        for (&base1, &base2) in s1.iter().zip(s2_tail.iter().rev()) {
             if base1 != base2 {
                 mm += 1;
+                if mm > max_mm {
+                    return false;
+                }
+            }
+        }
+    } else {
+        let Some(s2) = clean_seq2.get(..limit) else {
+            return false;
+        };
+        for (&base1, &base2) in s1.iter().zip(s2.iter()) {
+            if base1 != base2 {
+                mm += 1;
+                if mm > max_mm {
+                    return false;
+                }
             }
         }
     }
 
-    if seq1.is_empty() {
-        return false;
-    }
-    mm <= mm_limit && (mm as f64) / (seq1.len() as f64) < 0.15
+    mm <= max_mm && (mm as f64) / (len as f64) < 0.15
 }
 
 /// Check if sequence matches reference starting at position (1-based), in direction dir, with no more than mm_limit mismatches.
@@ -187,8 +224,44 @@ pub fn is_match_ref(
     dir: i32,
     mm_limit: i32,
 ) -> bool {
-    let mut mm = 0;
-    for n in 0..sequence.len() {
+    let len = sequence.len();
+    let Some(max_mm) = max_allowed_mismatches(len, mm_limit) else {
+        return false;
+    };
+
+    if let (1 | -1, Some((prim_slice, prim_start))) = (dir, reference.primary_region_slice(chr)) {
+        if let Ok(len_minus_1_i64) = i64::try_from(len.saturating_sub(1)) {
+            let pos_i64 = i64::from(position);
+            let (start_i64, end_i64) = if dir == 1 {
+                (pos_i64, pos_i64.saturating_add(len_minus_1_i64))
+            } else {
+                (pos_i64.saturating_sub(len_minus_1_i64), pos_i64)
+            };
+            let prim_start_i64 = i64::from(prim_start);
+            if start_i64 >= prim_start_i64 && end_i64 <= i64::from(i32::MAX) {
+                if let Ok(off) = usize::try_from(start_i64 - prim_start_i64) {
+                    if let Some(ref_sub) = off
+                        .checked_add(len)
+                        .and_then(|end| prim_slice.get(off..end))
+                    {
+                        let mut mm = 0usize;
+                        for (&seq_ch, &ref_ch) in sequence.iter().zip(ref_sub.iter()) {
+                            if seq_ch != ref_ch {
+                                mm += 1;
+                                if mm > max_mm {
+                                    return false;
+                                }
+                            }
+                        }
+                        return mm <= max_mm && (mm as f64) / (len as f64) < 0.15;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut mm = 0usize;
+    for n in 0..len {
         let ref_ch = match i32::try_from(n)
             .ok()
             .and_then(|ni| dir.checked_mul(ni))
@@ -200,20 +273,20 @@ pub fn is_match_ref(
             None => return false,
         };
 
-        let seq_idx = if dir == -1 { sequence.len() - 1 - n } else { n };
+        let seq_idx = if dir == -1 { len - 1 - n } else { n };
         let Some(&seq_ch) = sequence.get(seq_idx) else {
             return false;
         };
 
         if seq_ch != ref_ch {
             mm += 1;
+            if mm > max_mm {
+                return false;
+            }
         }
     }
 
-    if sequence.is_empty() {
-        return false;
-    }
-    mm <= mm_limit && (mm as f64) / (sequence.len() as f64) < 0.15
+    mm <= max_mm && (mm as f64) / (len as f64) < 0.15
 }
 
 /// Find breakpoint position.
@@ -2212,6 +2285,7 @@ pub fn realigndel(
                         conseq_dir5,
                         &adaptor_forward,
                         &adaptor_reverse,
+                        config.compat.sclip_majority_count_first,
                     );
                     if dcnt <= 2 && tv.variation.cnt.checked_div(dcnt).is_none_or(|r| r > 5) {
                         continue;
@@ -2276,6 +2350,7 @@ pub fn realigndel(
                         conseq_dir3,
                         &adaptor_forward,
                         &adaptor_reverse,
+                        config.compat.sclip_majority_count_first,
                     );
                     if dcnt <= 2 && tv.variation.cnt.checked_div(dcnt).is_none_or(|r| r > 5) {
                         continue;
@@ -2785,6 +2860,7 @@ pub fn realignins(
                         conseq_dir5,
                         &adaptor_forward,
                         &adaptor_reverse,
+                        config.compat.sclip_majority_count_first,
                     );
                     if config.verbose {
                         crate::verbose_eprintln!(
@@ -2843,6 +2919,7 @@ pub fn realignins(
                         conseq_dir3,
                         &adaptor_forward,
                         &adaptor_reverse,
+                        config.compat.sclip_majority_count_first,
                     );
                     if config.verbose {
                         crate::verbose_eprintln!(
@@ -3108,6 +3185,7 @@ pub fn realignlgdel(
                 5,
                 &adaptor_forward,
                 &adaptor_reverse,
+                config.compat.sclip_majority_count_first,
             );
             if seq.len() < 7 {
                 continue;
@@ -3540,6 +3618,7 @@ pub fn realignlgdel(
                 3,
                 &adaptor_forward,
                 &adaptor_reverse,
+                config.compat.sclip_majority_count_first,
             );
             if seq.len() < 7 {
                 continue;
@@ -3939,6 +4018,7 @@ pub fn realignlgins30(
                     5,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 let n = s.len();
                 if let Some(dst) = seq5_stack.get_mut(..n) {
@@ -3959,6 +4039,7 @@ pub fn realignlgins30(
                     3,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 if let Some(dst) = seq3_stack.get_mut(..s.len()) {
                     dst.copy_from_slice(s);
@@ -4367,6 +4448,7 @@ pub fn realignlgins(
                 conseq_dir5,
                 &adaptor_forward,
                 &adaptor_reverse,
+                config.compat.sclip_majority_count_first,
             )
         };
         if seq.is_empty() {
@@ -4679,6 +4761,7 @@ pub fn realignlgins(
                 conseq_dir3,
                 &adaptor_forward,
                 &adaptor_reverse,
+                config.compat.sclip_majority_count_first,
             )
         };
         if seq.is_empty() {
@@ -5754,6 +5837,7 @@ fn partial_pipeline(
     );
     for (idx, bam) in bams.iter().enumerate() {
         preprocessor.reset_for_next_bam();
+        parser.reset_for_next_bam();
         let bam_path = std::path::Path::new(bam);
         let mut feed = crate::bam::query_region_iter(
             bam_path,
@@ -6076,6 +6160,7 @@ pub fn adjust_mnp(
                         conseq_dir3,
                         &adaptor_forward,
                         &adaptor_reverse,
+                        config.compat.sclip_majority_count_first,
                     );
                     if seq.starts_with(mnt_bytes) {
                         let tail_matches = match seq.get(mnt_len..) {
@@ -6121,6 +6206,7 @@ pub fn adjust_mnp(
                         conseq_dir5,
                         &adaptor_forward,
                         &adaptor_reverse,
+                        config.compat.sclip_majority_count_first,
                     );
                     if !seq.is_empty() && seq.len() >= mnt_len {
                         let mut seq_rev = seq;
@@ -6181,6 +6267,8 @@ pub fn adj_snv(
         (0, 0)
     };
 
+    let full_sclip_match = config.compat.adj_snv_full_sclip_match;
+
     for (&position, sc5v) in &mut var_data.soft_clips_5_end {
         if sc5v.used {
             continue;
@@ -6190,8 +6278,9 @@ pub fn adj_snv(
             conseq_dir5,
             &adaptor_forward,
             &adaptor_reverse,
+            config.compat.sclip_majority_count_first,
         );
-        if seq.len() > 5 {
+        if (full_sclip_match && seq.len() < 2) || seq.len() > 5 {
             continue;
         }
         let bp_bytes = substr(&seq, 0, 1);
@@ -6210,7 +6299,19 @@ pub fn adj_snv(
         if let Some(vars_on_prev) = var_data.non_insertion_variants.get_mut(&previous_position) {
             if vars_on_prev.map.contains_key(bp) {
                 should_adj = true;
-                if seq.len() > 1 {
+                if full_sclip_match {
+                    for (k, &expected_base) in seq.iter().enumerate().skip(1) {
+                        let ref_base = i32::try_from(k)
+                            .ok()
+                            .and_then(|ki| position.checked_sub(1)?.checked_sub(ki))
+                            .and_then(|p| u32::try_from(p).ok())
+                            .and_then(|pos_u32| reference.get_base(chr, pos_u32));
+                        if ref_base != Some(expected_base) {
+                            should_adj = false;
+                            break;
+                        }
+                    }
+                } else if seq.len() > 1 {
                     if let Some(pos_sub_2) = position.checked_sub(2) {
                         let ref_base = reference.get_base(chr, pos_sub_2 as u32);
                         if ref_base.is_none() || ref_base != seq.get(1).copied() {
@@ -6246,8 +6347,9 @@ pub fn adj_snv(
             conseq_dir3,
             &adaptor_forward,
             &adaptor_reverse,
+            config.compat.sclip_majority_count_first,
         );
-        if seq.len() > 5 {
+        if (full_sclip_match && seq.len() < 2) || seq.len() > 5 {
             continue;
         }
         let bp_bytes = substr(&seq, 0, 1);
@@ -6265,7 +6367,19 @@ pub fn adj_snv(
         if let Some(vars_on_pos) = var_data.non_insertion_variants.get_mut(&position) {
             if vars_on_pos.map.contains_key(bp) {
                 should_adj = true;
-                if seq.len() > 1 {
+                if full_sclip_match {
+                    for (k, &expected_base) in seq.iter().enumerate().skip(1) {
+                        let ref_base = i32::try_from(k)
+                            .ok()
+                            .and_then(|ki| position.checked_add(ki))
+                            .and_then(|p| u32::try_from(p).ok())
+                            .and_then(|pos_u32| reference.get_base(chr, pos_u32));
+                        if ref_base != Some(expected_base) {
+                            should_adj = false;
+                            break;
+                        }
+                    }
+                } else if seq.len() > 1 {
                     if let Some(pos_add_1) = position.checked_add(1) {
                         let ref_base = reference.get_base(chr, pos_add_1 as u32);
                         if ref_base.is_none() || ref_base != seq.get(1).copied() {
@@ -9569,7 +9683,7 @@ mod tests {
             probe_sc.nt.insert(idx as i32, nt);
         }
         assert_eq!(
-            crate::variations::util::find_conseq_slice(&mut probe_sc, 5, &adapt_f, &adapt_r),
+            crate::variations::util::find_conseq_slice(&mut probe_sc, 5, &adapt_f, &adapt_r, false),
             b"ACGTACGT"
         );
 
@@ -10217,6 +10331,552 @@ mod tests {
             let sw24_h = run_case(true);
             assert_eq!(sw24_h.cnt, 0);
             assert_eq!(sw24_h.extracnt, 0);
+        }
+
+        #[test]
+        fn wave6_lane1_switch33_sclip_majority_count_first_rescues_realign_and_sv() {
+            // 10-bp non-low-complexity soft-clip motif matching downstream reference after a 15-bp deletion:
+            // At every position in 0..10, 20 reads support the true motif base (qmean = 33.0)
+            // while 1 sequencing-error read has an alternate base with higher qmean = 38.0.
+            let chr = "chr1";
+            let ref_len = 500usize;
+            let (mut base_ref, ref_seq) = build_patterned_ref(chr, ref_len);
+            let region = crate::regions::Region {
+                chr: chr.to_string(),
+                start: Pos1(1),
+                end: Pos1(ref_len as u32),
+                gene: String::new(),
+                amplicon: None,
+            };
+            // Deletion of 15 bp starting at 100 (deletes 100..=114), so 3' soft-clip at 100
+            // has 10-bp consensus matching ref[115..=124] (`ref_seq[114..124]`).
+            let clip_motif = &ref_seq[114..124];
+            assert_eq!(clip_motif.len(), 10);
+            assert!(!crate::variations::util::is_low_complex_seq(clip_motif));
+
+            let build_noisy_sclip = |motif: &[u8]| -> Sclip {
+                let mut sc = Sclip::new();
+                sc.variation.cnt = 21;
+                sc.variation.hicnt = 21;
+                sc.variation.fwd = 11;
+                sc.variation.rev = 10;
+                sc.variation.qmean = 33.0 * 21.0;
+                sc.variation.mqmean = 60.0 * 21.0;
+                sc.variation.pmean = 25.0 * 21.0;
+                for (idx, &true_b) in motif.iter().enumerate() {
+                    // Pick an error base strictly greater in ASCII so it visits AFTER `true_b` in BTreeMap
+                    // (e.g. 'T' > 'A'/'C'/'G'; if true_b == 'T', use 'G' wait: 'G' < 'T' so if true_b == 'T',
+                    // 'G' visits first with qmean=38.0 and then 'T' has 20 > 1 so 'T' would win! To ensure
+                    // every position triggers the bug when majority_count_first=false, force motif to A/C/G
+                    // and error base to 'T').
+                    let err_b = b'T';
+                    assert!(true_b < err_b);
+                    sc.nt
+                        .insert(idx as i32, BTreeMap::from([(true_b, 20), (err_b, 1)]));
+                    let mut v_true = Variation::new();
+                    v_true.qmean = 33.0;
+                    let mut v_err = Variation::new();
+                    v_err.qmean = 38.0;
+                    sc.seq.insert(
+                        idx as i32,
+                        BTreeMap::from([(true_b, v_true), (err_b, v_err)]),
+                    );
+                }
+                sc
+            };
+
+            // Replace any 'T' in ref_seq[114..124] with 'C' so every motif base < 'T'.
+            let mut clean_ref_seq = ref_seq;
+            for b in &mut clean_ref_seq[114..124] {
+                if *b == b'T' {
+                    *b = b'C';
+                }
+            }
+            // Ensure distinct boundary base so deletion doesn't left-shift past 100
+            clean_ref_seq[98] = b'A'; // pos 99
+            clean_ref_seq[113] = b'G'; // pos 114
+            base_ref.region_sequences[0].clone_from(&clean_ref_seq);
+            base_ref
+                .reference_sequences
+                .insert(chr.to_string(), clean_ref_seq.clone());
+            let motif_no_t = &clean_ref_seq[114..124];
+
+            let run_lgdel = |majority_first: bool| -> bool {
+                let mut r = base_ref.clone();
+                let cfg = crate::config::Config {
+                    compat: crate::config::CompatProfile {
+                        sclip_majority_count_first: majority_first,
+                        ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+                    },
+                    ..crate::config::Config::default()
+                };
+                let mut non_ins = crate::javamap::JavaHashMap::new();
+                let mut ins = crate::javamap::JavaHashMap::new();
+                let mut ref_cov = rustc_hash::FxHashMap::from_iter([(99, 30), (100, 30)]);
+                let mut sc5 = BTreeMap::new();
+                let mut sc3 = BTreeMap::from([(100, build_noisy_sclip(motif_no_t))]);
+                let mut svfdel = Vec::new();
+                let mut svrdel = Vec::new();
+                let mut splice = rustc_hash::FxHashSet::default();
+
+                realignlgdel(
+                    None,
+                    &mut r,
+                    chr,
+                    ref_len as u32,
+                    &region,
+                    &cfg,
+                    &mut non_ins,
+                    &mut ins,
+                    &mut ref_cov,
+                    &mut sc5,
+                    &mut sc3,
+                    150,
+                    &mut svfdel,
+                    &mut svrdel,
+                    &mut splice,
+                );
+                non_ins
+                    .get(&100)
+                    .is_some_and(|vm| vm.map.contains_key("-15"))
+            };
+
+            assert!(
+                !run_lgdel(false),
+                "legacy sclip_majority_count_first=false destroys consensus via single Q38 error read"
+            );
+            assert!(
+                run_lgdel(true),
+                "sclip_majority_count_first=true must preserve 20-read majority consensus and rescue -15 deletion"
+            );
+        }
+
+        #[test]
+        fn wave6_lane1_switch37_adj_snv_requires_full_flank_and_min_2bp() {
+            let chr = "chr1";
+            let ref_len = 200usize;
+            let mut ref_seq = vec![b'A'; ref_len];
+            // 5' test sites:
+            // Site 5A (1-bp sclip): SNV 'T' at pos 49, sclip5 at pos 50 = "T"
+            // Site 5B (4-bp partial mismatch): SNV 'T' at pos 79, sclip5 at pos 80 = "TGTT"
+            //   ref[78] = 'G' (matches seq[1]), ref[77] = 'C' (!= 'T'), ref[76] = 'A' (!= 'T')
+            ref_seq[77] = b'G'; // 1-based 78
+            ref_seq[76] = b'C'; // 1-based 77
+            ref_seq[75] = b'A'; // 1-based 76
+                                // Site 5C (4-bp full match): SNV 'T' at pos 109, sclip5 at pos 110 = "TGCA"
+                                //   ref[108] = 'G', ref[107] = 'C', ref[106] = 'A'
+            ref_seq[107] = b'G'; // 1-based 108
+            ref_seq[106] = b'C'; // 1-based 107
+            ref_seq[105] = b'A'; // 1-based 106
+
+            // 3' test sites:
+            // Site 3A (1-bp sclip): SNV 'T' at pos 130, sclip3 at pos 130 = "T"
+            // Site 3B (4-bp partial mismatch): SNV 'T' at pos 150, sclip3 at pos 150 = "TGTT"
+            //   ref[151] = 'G' (matches seq[1]), ref[152] = 'C' (!= 'T'), ref[153] = 'A' (!= 'T')
+            ref_seq[150] = b'G'; // 1-based 151
+            ref_seq[151] = b'C'; // 1-based 152
+            ref_seq[152] = b'A'; // 1-based 153
+                                 // Site 3C (4-bp full match): SNV 'T' at pos 170, sclip3 at pos 170 = "TGCA"
+                                 //   ref[171] = 'G', ref[172] = 'C', ref[173] = 'A'
+            ref_seq[170] = b'G'; // 1-based 171
+            ref_seq[171] = b'C'; // 1-based 172
+            ref_seq[172] = b'A'; // 1-based 173
+                                 // Site 3D (out-of-bounds flank at contig end): SNV 'T' at pos 199, sclip3 at pos 199 = "TGCA"
+                                 //   ref[200] = 'G' (matches seq[1]), pos 201..=202 out of bounds!
+            ref_seq[199] = b'G'; // 1-based 200
+
+            let mut reference = Reference::new();
+            reference.loaded_regions.push(LoadedRegion {
+                chr: chr.to_string(),
+                sequence_start: 1,
+                sequence_end: ref_len as u32,
+            });
+            reference.region_sequences.push(ref_seq.clone());
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq);
+
+            let run_case = |full_match: bool| -> crate::variations::VariationData {
+                let mut vd = crate::variations::VariationData::default();
+                for snv_pos in [2, 49, 79, 109, 130, 150, 170, 199] {
+                    let mut snv = Variation::new();
+                    snv.cnt = 2;
+                    snv.fwd = 2;
+                    vd.non_insertion_variants
+                        .get_or_put_with(snv_pos, crate::variations::VariationMap::new)
+                        .map
+                        .insert("T".to_string(), snv);
+                    vd.ref_coverage.insert(snv_pos, 10);
+                }
+
+                // 5' soft-clips:
+                // Site 5D (out-of-bounds flank near start): SNV 'T' at pos 2, sclip5 at pos 3 = "TAAA"
+                //   k=1 -> pos 1 ('A' matches), k=2 -> pos 0 (None -> out of bounds)
+                vd.soft_clips_5_end
+                    .insert(3, fresh_sclip_with_nt(b"TAAA", 3));
+                vd.soft_clips_5_end.insert(50, fresh_sclip_with_nt(b"T", 3));
+                vd.soft_clips_5_end
+                    .insert(80, fresh_sclip_with_nt(b"TGTT", 3));
+                vd.soft_clips_5_end
+                    .insert(110, fresh_sclip_with_nt(b"TGCA", 3));
+
+                // 3' soft-clips:
+                vd.soft_clips_3_end
+                    .insert(130, fresh_sclip_with_nt(b"T", 4));
+                vd.soft_clips_3_end
+                    .insert(150, fresh_sclip_with_nt(b"TGTT", 4));
+                vd.soft_clips_3_end
+                    .insert(170, fresh_sclip_with_nt(b"TGCA", 4));
+                vd.soft_clips_3_end
+                    .insert(199, fresh_sclip_with_nt(b"TGCA", 4));
+
+                let cfg = crate::config::Config {
+                    compat: crate::config::CompatProfile {
+                        adj_snv_full_sclip_match: full_match,
+                        ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+                    },
+                    ..crate::config::Config::default()
+                };
+                adj_snv(&reference, chr, &cfg, &mut vd);
+                vd
+            };
+
+            let snv_cnt = |vd: &crate::variations::VariationData, pos: i32| -> i32 {
+                vd.non_insertion_variants
+                    .get(&pos)
+                    .unwrap()
+                    .map
+                    .get("T")
+                    .unwrap()
+                    .cnt
+            };
+
+            // Legacy VarDictJava v1.8.3 (`adj_snv_full_sclip_match = false`): lifts ALL 8 sites
+            // because len==1 skips flanking check and len>1 checks ONLY seq[1]!
+            let vd_leg = run_case(false);
+            for pos in [2, 49, 79, 109] {
+                assert_eq!(snv_cnt(&vd_leg, pos), 5, "legacy 5' site at {pos}");
+            }
+            for pos in [130, 150, 170, 199] {
+                assert_eq!(snv_cnt(&vd_leg, pos), 6, "legacy 3' site at {pos}");
+            }
+
+            // Switch 37 (`adj_snv_full_sclip_match = true`): rejects 1-bp, partial-flank mismatch,
+            // and out-of-bounds flank clips, while rescuing ONLY full-flank-matching 4-bp clips (109 & 170)!
+            let vd_full = run_case(true);
+            for rejected_5 in [2, 49, 79] {
+                assert_eq!(
+                    snv_cnt(&vd_full, rejected_5),
+                    2,
+                    "full_match must reject 5' noise clip for SNV at {rejected_5}"
+                );
+                assert_eq!(vd_full.ref_coverage[&rejected_5], 10);
+            }
+            assert!(!vd_full.soft_clips_5_end[&3].used);
+            assert!(!vd_full.soft_clips_5_end[&50].used);
+            assert!(!vd_full.soft_clips_5_end[&80].used);
+
+            assert_eq!(
+                snv_cnt(&vd_full, 109),
+                5,
+                "full_match must rescue 5' 4-bp clip whose seq[1..4] all match reference"
+            );
+            assert_eq!(vd_full.ref_coverage[&109], 13);
+            assert!(vd_full.soft_clips_5_end[&110].used);
+
+            for rejected_3 in [130, 150, 199] {
+                assert_eq!(
+                    snv_cnt(&vd_full, rejected_3),
+                    2,
+                    "full_match must reject 3' noise clip for SNV at {rejected_3}"
+                );
+                assert_eq!(vd_full.ref_coverage[&rejected_3], 10);
+                assert!(!vd_full.soft_clips_3_end[&rejected_3].used);
+            }
+            assert_eq!(
+                snv_cnt(&vd_full, 170),
+                6,
+                "full_match must rescue 3' 4-bp clip whose seq[1..4] all match reference"
+            );
+            assert_eq!(vd_full.ref_coverage[&170], 14);
+            assert!(vd_full.soft_clips_3_end[&170].used);
+        }
+
+        #[test]
+        fn wave6_lane1_is_match_and_is_match_ref_fastpath_matches_oracle() {
+            fn is_match_oracle(seq1: &[u8], seq2: &[u8], dir: i32, mm_limit: i32) -> bool {
+                let clean_seq2: Vec<u8> = seq2
+                    .iter()
+                    .copied()
+                    .filter(|&b| b != b'#' && b != b'^')
+                    .collect();
+                let mut mm = 0;
+                let limit = seq1.len().min(clean_seq2.len());
+                for n in 0..limit {
+                    let idx2 = if dir == -1 {
+                        clean_seq2.len().saturating_sub(1).saturating_sub(n)
+                    } else {
+                        n
+                    };
+                    if let (Some(&base1), Some(&base2)) = (seq1.get(n), clean_seq2.get(idx2)) {
+                        if base1 != base2 {
+                            mm += 1;
+                        }
+                    }
+                }
+                if seq1.is_empty() {
+                    return false;
+                }
+                mm <= mm_limit && (mm as f64) / (seq1.len() as f64) < 0.15
+            }
+
+            fn is_match_ref_oracle(
+                sequence: &[u8],
+                reference: &Reference,
+                chr: &str,
+                position: i32,
+                dir: i32,
+                mm_limit: i32,
+            ) -> bool {
+                let mut mm = 0;
+                for n in 0..sequence.len() {
+                    let ref_ch = match i32::try_from(n)
+                        .ok()
+                        .and_then(|ni| dir.checked_mul(ni))
+                        .and_then(|off| position.checked_add(off))
+                        .and_then(|p| u32::try_from(p).ok())
+                        .and_then(|p| reference.get_base(chr, p))
+                    {
+                        Some(c) => c,
+                        None => return false,
+                    };
+                    let seq_idx = if dir == -1 { sequence.len() - 1 - n } else { n };
+                    let Some(&seq_ch) = sequence.get(seq_idx) else {
+                        return false;
+                    };
+                    if seq_ch != ref_ch {
+                        mm += 1;
+                    }
+                }
+                if sequence.is_empty() {
+                    return false;
+                }
+                mm <= mm_limit && (mm as f64) / (sequence.len() as f64) < 0.15
+            }
+
+            // 1. Verify primary-slice fast-path performs ZERO `Reference::get_base` calls
+            //    on both dir = 1 and dir = -1.
+            let (single_ref, single_seq) = build_patterned_ref("chr1", 100);
+            crate::reference::reset_get_base_calls();
+            assert!(is_match_ref(
+                &single_seq[19..39],
+                &single_ref,
+                "chr1",
+                20,
+                1,
+                3
+            ));
+            assert!(is_match_ref(
+                &single_seq[19..39],
+                &single_ref,
+                "chr1",
+                39,
+                -1,
+                3
+            ));
+            assert_eq!(
+                crate::reference::get_base_calls(),
+                0,
+                "is_match_ref inside primary_region_slice must bypass per-base Reference::get_base"
+            );
+
+            // 2. Boundary lengths around 0.15 (`len = 0, 1, 6, 7, 13, 14, 20, 21, 26, 27, 40, 41`),
+            //    `mm_limit = -1, 0, 1, 2, 3, 10`, `dir = 1, -1, 0, 2`, markers `&`, `#`, `^`.
+            let motif = b"ACGTTGCAAGCTTAGCGATCGATCCGTAAGCTACGTTGCAAGCTTAGC";
+            for &len in &[0usize, 1, 6, 7, 13, 14, 20, 21, 26, 27, 40, 41] {
+                let seq1 = &motif[..len];
+                for inj_mm in 0..=4usize {
+                    let mut raw_fwd = seq1.to_vec();
+                    for slot in raw_fwd.iter_mut().take(inj_mm.min(len)) {
+                        *slot = b'N';
+                    }
+                    let mut raw_rev = raw_fwd.clone();
+                    raw_rev.reverse();
+
+                    // Build marker-decorated variants (`#`, `^` stripped; `&` NOT stripped)
+                    let mut marked_fwd = Vec::new();
+                    for (idx, &b) in raw_fwd.iter().enumerate() {
+                        if idx == 1 {
+                            marked_fwd.push(b'#');
+                        }
+                        if idx == 3 {
+                            marked_fwd.push(b'^');
+                        }
+                        marked_fwd.push(b);
+                    }
+                    let mut amp_fwd = raw_fwd.clone();
+                    if len >= 2 {
+                        amp_fwd.insert(1, b'&');
+                    }
+                    let mut marked_rev = Vec::new();
+                    for (idx, &b) in raw_rev.iter().enumerate() {
+                        if idx == 1 {
+                            marked_rev.push(b'^');
+                        }
+                        if idx == 2 {
+                            marked_rev.push(b'#');
+                        }
+                        marked_rev.push(b);
+                    }
+
+                    for seq2 in [
+                        raw_fwd.as_slice(),
+                        raw_rev.as_slice(),
+                        marked_fwd.as_slice(),
+                        amp_fwd.as_slice(),
+                        marked_rev.as_slice(),
+                        &b""[..],
+                        &raw_fwd[..len.saturating_sub(2)],
+                    ] {
+                        for &dir in &[1i32, -1, 0, 2] {
+                            for &mm_limit in &[-1i32, 0, 1, 2, 3, 10] {
+                                assert_eq!(
+                                    is_match(seq1, seq2, dir, mm_limit),
+                                    is_match_oracle(seq1, seq2, dir, mm_limit),
+                                    "is_match diff at len={len}, inj_mm={inj_mm}, dir={dir}, mm_limit={mm_limit}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Multi-chunk Reference (including leading chr2 chunk, contiguous boundary chunk1->chunk2,
+            //    unloaded gap chunk2->chunk3, and u32 region crossing i32::MAX!).
+            let mut multi_ref = Reference::new();
+            multi_ref.loaded_regions.push(LoadedRegion {
+                chr: "chr2".to_string(),
+                sequence_start: 1,
+                sequence_end: 30,
+            });
+            multi_ref.region_sequences.push(vec![b'G'; 30]);
+            // Primary chr1 chunk: 10..=39 (30 bp)
+            let chunk1: Vec<u8> = (0..30).map(|i| motif[i % motif.len()]).collect();
+            multi_ref.loaded_regions.push(LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 10,
+                sequence_end: 39,
+            });
+            multi_ref.region_sequences.push(chunk1.clone());
+            // Contiguous second chr1 chunk: 40..=69 (30 bp)
+            let chunk2: Vec<u8> = (30..60).map(|i| motif[i % motif.len()]).collect();
+            multi_ref.loaded_regions.push(LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 40,
+                sequence_end: 69,
+            });
+            multi_ref.region_sequences.push(chunk2.clone());
+            // Disjoint third chr1 chunk after unloaded gap (70..=79 unloaded): 80..=99
+            let chunk3: Vec<u8> = (0..20).map(|i| motif[(i + 5) % motif.len()]).collect();
+            multi_ref.loaded_regions.push(LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 80,
+                sequence_end: 99,
+            });
+            multi_ref.region_sequences.push(chunk3);
+            // High-coordinate chunk crossing i32::MAX (`i32::MAX as u32 - 5 ..= i32::MAX as u32 + 5`)
+            multi_ref.loaded_regions.push(LoadedRegion {
+                chr: "chr_hi".to_string(),
+                sequence_start: (i32::MAX as u32) - 5,
+                sequence_end: (i32::MAX as u32) + 5,
+            });
+            multi_ref.region_sequences.push(vec![b'A'; 11]);
+
+            for &len in &[0usize, 1, 7, 13, 14, 20, 21] {
+                for &mm_inj in &[0usize, 1, 2, 3, 4] {
+                    let mut q = vec![b'A'; len];
+                    for (idx, dst) in q.iter_mut().enumerate() {
+                        *dst = motif[idx % motif.len()];
+                    }
+                    for slot in q.iter_mut().take(mm_inj.min(len)) {
+                        *slot = b'N';
+                    }
+                    for &pos in &[
+                        i32::MIN,
+                        -1,
+                        0,
+                        1,
+                        9,
+                        10,
+                        15,
+                        35, // crosses chunk1..chunk2 boundary
+                        45, // wholly inside chunk2
+                        65, // crosses into unloaded gap 70..=79
+                        85, // wholly inside chunk3
+                        99,
+                        i32::MAX - 2,
+                        i32::MAX,
+                    ] {
+                        for &dir in &[1i32, -1, 0, 2, -2] {
+                            for &mm_limit in &[-1i32, 0, 1, 2, 3] {
+                                for chr_name in ["chr1", "chr_hi", "chr_missing"] {
+                                    assert_eq!(
+                                        is_match_ref(&q, &multi_ref, chr_name, pos, dir, mm_limit),
+                                        is_match_ref_oracle(
+                                            &q, &multi_ref, chr_name, pos, dir, mm_limit
+                                        ),
+                                        "is_match_ref diff at chr={chr_name}, len={len}, mm_inj={mm_inj}, pos={pos}, dir={dir}, mm_limit={mm_limit}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4. Seeded random differential check (5,000 random pairs + reference spans).
+            const ALPH: &[u8; 8] = b"ACGTN&^#";
+            let mut rng: u64 = 0x517C_C1B7_2722_0A95;
+            let mut next_u64 = || -> u64 {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng
+            };
+            for case_idx in 0..5_000 {
+                let len1 = (next_u64() as usize) % 45;
+                let len2 = (next_u64() as usize) % 50;
+                let s1: Vec<u8> = (0..len1).map(|_| ALPH[(next_u64() as usize) % 5]).collect();
+                let mut s2: Vec<u8> = (0..len2).map(|_| ALPH[(next_u64() as usize) % 8]).collect();
+                let dir = match next_u64() % 4 {
+                    0 => 1,
+                    1 => -1,
+                    2 => 0,
+                    _ => 2,
+                };
+                let mm_limit = ((next_u64() % 8) as i32) - 2;
+                if case_idx % 2 == 0 && !s1.is_empty() && s2.len() >= s1.len() {
+                    if dir == -1 {
+                        for (idx, &b) in s1.iter().enumerate() {
+                            let ridx = s2.len() - 1 - idx;
+                            s2[ridx] = b;
+                        }
+                    } else {
+                        s2[..s1.len()].copy_from_slice(&s1);
+                    }
+                }
+                assert_eq!(
+                    is_match(&s1, &s2, dir, mm_limit),
+                    is_match_oracle(&s1, &s2, dir, mm_limit),
+                    "random is_match diff at case {case_idx}"
+                );
+                let pos = ((next_u64() % 115) as i32) - 5;
+                assert_eq!(
+                    is_match_ref(&s1, &multi_ref, "chr1", pos, dir, mm_limit),
+                    is_match_ref_oracle(&s1, &multi_ref, "chr1", pos, dir, mm_limit),
+                    "random is_match_ref diff at case {case_idx}"
+                );
+            }
         }
     }
 }

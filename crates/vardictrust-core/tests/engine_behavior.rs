@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`42` tests).
+//! First-class functional engine behavior integration suite (`44` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs,
@@ -3367,14 +3367,35 @@ mod vcf_all_alleles_and_compat_off {
             return ws;
         }
         let dr = data_root().join("VarDictJava/VarDict").join(script_name);
-        assert!(
-            dr.is_file(),
+        if dr.is_file() {
+            return dr;
+        }
+        if let Ok(out) = Command::new("git")
+            .args([
+                "-C",
+                workspace_root().to_str().unwrap_or("."),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ])
+            .output()
+        {
+            if out.status.success() {
+                let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if let Some(parent) = std::path::Path::new(&common).parent() {
+                    let common_script = parent.join("VarDictJava/VarDict").join(script_name);
+                    if common_script.is_file() {
+                        return common_script;
+                    }
+                }
+            }
+        }
+        panic!(
             "missing in-tree Perl oracle script {}: checked {} and {}",
             script_name,
             ws.display(),
             dr.display()
         );
-        dr
     }
 
     fn run_perl_var2vcf(script_name: &str, args: &[&str], var_stdin: &str) -> Vec<String> {
@@ -5592,12 +5613,30 @@ mod vcf_all_alleles_and_compat_off {
         );
         assert!(
             !pr402_off_var.trim().is_empty()
-                && pr402_off_vars[0].starts_with("chr1\t115\t.\tAGAA\tA\t")
+                && pr402_off_vars[0].starts_with("chr1\t113\t.\tAAAG\tA\t")
                 && pr402_off_vars[0].contains("TYPE=Deletion;")
                 && pr402_off_vars[1].starts_with("chr1\t118\t.\tAAAAAAAAAG\tA\t")
                 && pr402_off_vars[1].contains("TYPE=Deletion;"),
-            "expected rescued Deletion variants (with trimmed 14D11I -> AGAA/A reclassified from stale Complex to Deletion by clintval/vartovcf#109) from AstraZeneca-NGS/VarDictJava#402 read, got:\n{}",
+            "expected rescued Deletion variants (canonically 5' left-aligned to chr1:113 AAAG>A by Switch 35 and reclassified from stale Complex to Deletion by Switch 29) from AstraZeneca-NGS/VarDictJava#402 read, got:\n{}",
             pr402_off_vars.join("\n")
+        );
+
+        let mut pr402_sw8_only = pr402_vj_cfg.clone();
+        pr402_sw8_only.exception_counter =
+            std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut p_sw8 = COMPAT_VARDICTJAVA_1_8_3;
+        p_sw8.cigar_homopolymer_merge = true;
+        pr402_sw8_only.compat = p_sw8;
+        let pr402_sw8_vars =
+            extract_variants(&run_via_core_run(&pr402_sw8_only, "pr402_sw8", false));
+        assert_eq!(pr402_sw8_only.exception_counter.load(Ordering::Relaxed), 0);
+        assert!(
+            pr402_sw8_vars.len() == 2
+                && pr402_sw8_vars[0].starts_with("chr1\t115\t.\tAGAA\tA\t")
+                && pr402_sw8_vars[0].contains("TYPE=Complex;")
+                && pr402_sw8_vars[1].starts_with("chr1\t118\t.\tAAAAAAAAAG\tA\t"),
+            "isolated cigar_homopolymer_merge (canonical_vcf_complex_left_align=false) must retain unshifted chr1:115 AGAA>A, got:\n{}",
+            pr402_sw8_vars.join("\n")
         );
 
         // =========================================================================
@@ -8320,5 +8359,1571 @@ mod vcf_all_alleles_and_compat_off {
             2,
             "default VardictJava183 must preserve legacy duplicate Q20;Q20, got FILTER={vj_filter}"
         );
+    }
+
+    #[test]
+    fn compat_wave6_switches_33_to_38_isolated_diff_confinement() {
+        use vardictrust_core::config::{CompatProfile, VcfThreshold, WorkflowPreset};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run_via_core_run = |base_cfg: &Config, tag: &str, intermediate: bool| -> String {
+            let ext = if intermediate { "var" } else { "vcf" };
+            let out_path = dir.path().join(format!("{tag}.{ext}"));
+            let mut cfg = base_cfg.clone();
+            cfg.emit_intermediate = intermediate;
+            cfg.output_path = Some(out_path.to_string_lossy().into_owned());
+            vardictrust_core::run(&cfg).unwrap_or_else(|e| panic!("{tag}.{ext} run failed: {e}"));
+            fs::read_to_string(&out_path)
+                .unwrap_or_else(|e| panic!("read {tag}.{ext} output failed: {e}"))
+        };
+
+        // Non-repetitive 4-base de Bruijn-style reference (adjacent bases & k-mers differ unless overridden)
+        let non_rep_ref = |seed: u64, len: usize| -> Vec<u8> {
+            let mut out = lcg_ref_bytes(seed, len);
+            for idx in 1..len {
+                if out[idx] == out[idx - 1] {
+                    out[idx] = match out[idx] {
+                        b'A' => b'C',
+                        b'C' => b'G',
+                        b'G' => b'T',
+                        _ => b'A',
+                    };
+                }
+                if idx >= 2
+                    && out[idx] == out[idx - 2]
+                    && out[idx - 1] == out.get(idx.wrapping_sub(3)).copied().unwrap_or(0)
+                {
+                    out[idx] = match (out[idx - 1], out[idx]) {
+                        (b'A', b'C') => b'G',
+                        (b'C', b'G') => b'T',
+                        (b'G', b'T') => b'A',
+                        _ => b'C',
+                    };
+                }
+            }
+            out
+        };
+
+        // =====================================================================
+        // Case 33 (`sclip_majority_count_first`, `VariationUtils.java:90`):
+        // 15-bp deletion (`101..=115`, anchored at `100`) carried as `15S` 3' soft-clips
+        // (`< SEED_1=17` and `>= 7` for `realignlgdel`).
+        // - 2 majority reads carry true `ref[116..=130]` (`"AA..."`) with Phred=23 at idx 0..=1 (`sum=46.0`)
+        // - 1 noisy Q50 read carries `"TT..."` at idx 0..=1 (`sum=50.0 > 46.0`, `'T' > 'A'` in BTreeMap)
+        // Legacy (`Switch 33 = false`): `'T'` overwrites `'A'` at idx 0 & 1 (`flag` breaks at idx 1) -> 0 variants.
+        // Isolated `Switch 33 = true`: majority count (2 > 1) preserves consensus -> rescues canonical `-15` DEL at 100!
+        // =====================================================================
+        let mut ref33 = non_rep_ref(0x3333_0001_2026_1111, 320);
+        ref33[99] = b'G'; // 1-based 100 anchor ('G')
+        ref33[100] = b'C'; // 1-based 101 first deleted base ('C' != 'A' and 'C' != 'T' so modify_cigar keeps 15S)
+        ref33[101] = b'G';
+        ref33[102] = b'C';
+        ref33[114] = b'C'; // 1-based 115 last deleted base ('C' != 'G' so DEL at 100 is non-shiftable by Switch 35!)
+                           // 1-based 116..=130 (`ref33[115..130]`, 15 bp, high-complexity & starting with "AA"):
+        ref33[115..130].copy_from_slice(b"AACGATCGCTAGCTA");
+        let fa33 = write_multi_contig_fasta(dir.path(), "w6_case33", &[("chr1", &ref33)]);
+        let bam33 = dir.path().join("w6_case33.bam");
+        let mut recs33 = Vec::new();
+        for i in 0..8usize {
+            let s = 70 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs33.push(mk_contig_rec(
+                &format!("c33_wt_{i}"),
+                0,
+                flags,
+                s,
+                &[(75, Kind::Match)],
+                ref33[s - 1..s - 1 + 75].to_vec(),
+                vec![38u8; 75],
+                None,
+            ));
+        }
+        for (idx, (start_1b, flags, is_err)) in [
+            (54usize, Flags::empty(), false),
+            (55usize, Flags::REVERSE_COMPLEMENTED, false),
+            (56usize, Flags::empty(), true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let m_len = 101 - start_1b; // ends Match at 1-based 100; 15S starts at 101
+            let mut seq = ref33[start_1b - 1..100].to_vec();
+            let mut clip = ref33[115..130].to_vec();
+            let mut qual = vec![38u8; m_len + 15];
+            if is_err {
+                clip[0] = b'T';
+                clip[1] = b'T';
+                qual[m_len] = 50;
+                qual[m_len + 1] = 50;
+            } else {
+                qual[m_len] = 23 + (idx as u8); // 23 + 24 = 47.0 < 50.0, both >= 22.5!
+                qual[m_len + 1] = 23 + (idx as u8);
+            }
+            seq.extend_from_slice(&clip);
+            recs33.push(mk_contig_rec(
+                &format!("c33_sc_{idx}"),
+                0,
+                flags,
+                start_1b,
+                &[(m_len, Kind::Match), (15, Kind::SoftClip)],
+                seq,
+                qual,
+                None,
+            ));
+        }
+        recs33.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam33, &[("chr1", ref33.len())], recs33).expect("bam33");
+        let cfg33_base = Config {
+            reference: fa33.to_string_lossy().into_owned(),
+            bam: bam33.to_string_lossy().into_owned(),
+            sample: "W6_C33".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:60-160".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            omit_end_tag: true,
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+
+        // =====================================================================
+        // Case 34 (`mate_overlap_both_strands`, `BALSAMIC#1396` / `VarDictJava#239`):
+        // Paired-end short-insert BAM with `-u` (`unique_mode_alignment_enabled = true`):
+        // - At `pos = 140` (`C -> A`): 14 agreed FR molecules (`pair_0..pair_13`, R1+ @ 100..=179, R2- @ 110..=189)
+        //   plus 10 non-overlapping WT reads (`5` fwd + `5` rev) so `REFBIAS` is bidirectional (`2`).
+        // - At `pos = 160` (`T -> G`, Review Focus #1): 6 discordant FR molecules where R1+ carries REF `'T'`
+        //   and R2- carries sequencing-error `'G'` -> must remain strand-biased (`ALD=0,6`, `BIAS=2:0`)!
+        // =====================================================================
+        let mut ref34 = non_rep_ref(0x3434_0002_2026_2222, 320);
+        ref34[135..147].copy_from_slice(b"GTAGCTGATCGA"); // 1-based 140 (idx 139) == 'C'; non-repetitive -> SHIFT3=0
+        ref34[155..167].copy_from_slice(b"CTAGTCGATAGC"); // 1-based 160 (idx 159) == 'T'; non-repetitive -> SHIFT3=0
+        ref34[109] = if ref34[141] == b'A' { b'C' } else { b'A' };
+        ref34[129] = if ref34[161] == b'A' { b'C' } else { b'A' };
+        let fa34 = write_multi_contig_fasta(dir.path(), "w6_case34", &[("chr1", &ref34)]);
+        let bam34 = dir.path().join("w6_case34.bam");
+        let mut recs34 = Vec::new();
+        for i in 0..10usize {
+            let s = 92 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs34.push(mk_contig_rec(
+                &format!("c34_wt_se_{i}"),
+                0,
+                flags,
+                s,
+                &[(95, Kind::Match)],
+                ref34[s - 1..s - 1 + 95].to_vec(),
+                vec![37 + (i % 3) as u8; 95],
+                None,
+            ));
+        }
+        let f_flags = Flags::SEGMENTED
+            | Flags::PROPERLY_SEGMENTED
+            | Flags::FIRST_SEGMENT
+            | Flags::MATE_REVERSE_COMPLEMENTED;
+        let r_flags = Flags::SEGMENTED
+            | Flags::PROPERLY_SEGMENTED
+            | Flags::LAST_SEGMENT
+            | Flags::REVERSE_COMPLEMENTED;
+        for idx in 0..14usize {
+            let r1_s = 100 + (idx % 3);
+            let r2_s = 110 + (idx % 3);
+            let tlen = (r2_s + 80 - r1_s) as i32;
+            let qname = format!("pair_{idx}");
+            let mut s1 = ref34[r1_s - 1..r1_s - 1 + 80].to_vec();
+            let mut s2 = ref34[r2_s - 1..r2_s - 1 + 80].to_vec();
+            s1[140 - r1_s] = b'A';
+            s2[140 - r2_s] = b'A';
+            let qv = 36 + (idx % 4) as u8;
+            recs34.push(mk_contig_rec(
+                &qname,
+                0,
+                f_flags,
+                r1_s,
+                &[(80, Kind::Match)],
+                s1,
+                vec![qv; 80],
+                Some((0, r2_s, tlen)),
+            ));
+            recs34.push(mk_contig_rec(
+                &qname,
+                0,
+                r_flags,
+                r2_s,
+                &[(80, Kind::Match)],
+                s2,
+                vec![qv; 80],
+                Some((0, r1_s, -tlen)),
+            ));
+        }
+        for idx in 0..6usize {
+            let r1_s = 100 + (idx % 2);
+            let r2_s = 110 + (idx % 2);
+            let tlen = (r2_s + 80 - r1_s) as i32;
+            let qname = format!("disc_err_{idx}");
+            let s1 = ref34[r1_s - 1..r1_s - 1 + 80].to_vec(); // R1+ has REF 'T' at 160!
+            let mut s2 = ref34[r2_s - 1..r2_s - 1 + 80].to_vec();
+            s2[160 - r2_s] = b'G'; // R2- alone has error 'G' at 160!
+            let qv = 37 + (idx % 3) as u8;
+            recs34.push(mk_contig_rec(
+                &qname,
+                0,
+                f_flags,
+                r1_s,
+                &[(80, Kind::Match)],
+                s1,
+                vec![qv; 80],
+                Some((0, r2_s, tlen)),
+            ));
+            recs34.push(mk_contig_rec(
+                &qname,
+                0,
+                r_flags,
+                r2_s,
+                &[(80, Kind::Match)],
+                s2,
+                vec![qv; 80],
+                Some((0, r1_s, -tlen)),
+            ));
+        }
+        recs34.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam34, &[("chr1", ref34.len())], recs34).expect("bam34");
+        let cfg34_base = Config {
+            reference: fa34.to_string_lossy().into_owned(),
+            bam: bam34.to_string_lossy().into_owned(),
+            sample: "W6_C34".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:95-200".to_string()),
+            unique_mode_alignment_enabled: true,
+            freq: 0.01,
+            af_threshold: 0.01,
+            omit_end_tag: true,
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+
+        // =====================================================================
+        // Case 35 (`canonical_vcf_complex_left_align`, `VarDictJava#264` / Tan et al. 2015):
+        // Right-aligned 3-bp deletion in `TAAGAAG` (`100='T', 101..=103="AAG", 104..=106="AAG"`),
+        // deleting `104..=106`:
+        // - Legacy (`Switch 35 = false`): emits right-shifted `chr1:103 GAAG -> G`.
+        // - Isolated `Switch 35 = true`: canonically left-aligns to `chr1:100 TAAG -> T`!
+        // =====================================================================
+        let mut ref35 = non_rep_ref(0x3535_0003_2026_3333, 300);
+        ref35[97..110].copy_from_slice(b"GCTAAGAAGCTGA"); // 1-based 100 == 'T', 101..=106 == "AAGAAG"
+        let fa35 = write_multi_contig_fasta(dir.path(), "w6_case35", &[("chr1", &ref35)]);
+        let bam35 = dir.path().join("w6_case35.bam");
+        let mut recs35 = Vec::new();
+        for i in 0..8usize {
+            let s = 75 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs35.push(mk_contig_rec(
+                &format!("c35_wt_{i}"),
+                0,
+                flags,
+                s,
+                &[(65, Kind::Match)],
+                ref35[s - 1..s - 1 + 65].to_vec(),
+                vec![38u8; 65],
+                None,
+            ));
+        }
+        for i in 0..8usize {
+            let s = 75 + (i % 3);
+            let left_m = 104 - s; // covers s..=103; 3D deletes 104..=106 ("AAG")
+            let right_m = 30usize; // covers 107..=136
+            let mut seq = ref35[s - 1..103].to_vec();
+            seq.extend_from_slice(&ref35[106..106 + right_m]);
+            let mut qual = vec![37 + (i % 3) as u8; left_m + right_m];
+            // Keep the 2 bases before 3D (`102..=103`) at Phred=20 so CigarParser records pure `-3` at 104 (`POS=103 GAAG->G`)
+            qual[left_m - 2] = 20;
+            qual[left_m - 1] = 20;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs35.push(mk_contig_rec(
+                &format!("c35_del_{i}"),
+                0,
+                flags,
+                s,
+                &[
+                    (left_m, Kind::Match),
+                    (3, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                seq,
+                qual,
+                None,
+            ));
+        }
+        recs35.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam35, &[("chr1", ref35.len())], recs35).expect("bam35");
+        let cfg35_base = Config {
+            reference: fa35.to_string_lossy().into_owned(),
+            bam: bam35.to_string_lossy().into_owned(),
+            sample: "W6_C35".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:70-160".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            omit_end_tag: true,
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+
+        // =====================================================================
+        // Case 36 (`somatic_reconcile_split_alleles`, `clintval/vartovcf#191`/`#195`):
+        // Paired Tumor|Normal BAM where BOTH samples carry the identical germline 3-bp deletion
+        // `(chr1, 111, TCAG, T)` on a non-repetitive template (`Switch 35` is a 100% no-op!),
+        // but represented with distinct pileup keys & descriptions:
+        // - Tumor: `4D1I` (`-4^T` at key 111 -> `(111, TCAG, T)`, VD=12)
+        // - Normal: `3D` (`-3` at key 112 -> `(111, TCAG, T)`, VD=12)
+        // Legacy (`Switch 36 = false`): emits colliding `StrongSomatic` (N_VD=0) + `StrongLOH` (T_VD=0).
+        // Isolated `Switch 36 = true`: reconciles into 1 `STATUS=Germline` row (T_VD=12, N_VD=12)!
+        // =====================================================================
+        let mut ref36 = non_rep_ref(0x3636_0004_2026_4444, 300);
+        ref36[107..117].copy_from_slice(b"CGATCAGCTA"); // 111='T', 112..=114="CAG" -> (111, "TCAG", "T")
+        let fa36 = write_multi_contig_fasta(dir.path(), "w6_case36", &[("chr1", &ref36)]);
+        let bam36_t = dir.path().join("w6_case36_t.bam");
+        let bam36_n = dir.path().join("w6_case36_n.bam");
+        let mut recs36_t = Vec::new();
+        let mut recs36_n = Vec::new();
+        for i in 0..12usize {
+            let s = 82 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt_seq = ref36[s - 1..s - 1 + 65].to_vec();
+            let wt_q = vec![38u8; 65];
+            recs36_t.push(mk_contig_rec(
+                &format!("c36_twt_{i}"),
+                0,
+                flags,
+                s,
+                &[(65, Kind::Match)],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            recs36_n.push(mk_contig_rec(
+                &format!("c36_nwt_{i}"),
+                0,
+                flags,
+                s,
+                &[(65, Kind::Match)],
+                wt_seq,
+                wt_q,
+                None,
+            ));
+
+            // Tumor variant read: Match s..=110 (`left_t`), 4D (`111..=114` "TCAG"), 1I (`'T'`), 28M (`115..=142`)
+            let left_t = 111 - s;
+            let right_m = 28usize;
+            let mut t_seq = ref36[s - 1..110].to_vec();
+            t_seq.push(b'T');
+            t_seq.extend_from_slice(&ref36[114..114 + right_m]);
+            let mut t_q = vec![37 + (i % 3) as u8; left_t + 1 + right_m];
+            t_q[left_t - 2] = 20;
+            t_q[left_t - 1] = 20;
+            recs36_t.push(mk_contig_rec(
+                &format!("c36_tvar_{i}"),
+                0,
+                flags,
+                s,
+                &[
+                    (left_t, Kind::Match),
+                    (4, Kind::Deletion),
+                    (1, Kind::Insertion),
+                    (right_m, Kind::Match),
+                ],
+                t_seq,
+                t_q,
+                None,
+            ));
+
+            // Normal variant read: Match s..=111 (`left_n`), 3D (`112..=114` "CAG"), 28M (`115..=142`)
+            let left_n = 112 - s;
+            let mut n_seq = ref36[s - 1..111].to_vec();
+            n_seq.extend_from_slice(&ref36[114..114 + right_m]);
+            let mut n_q = vec![37 + (i % 3) as u8; left_n + right_m];
+            n_q[left_n - 2] = 20;
+            n_q[left_n - 1] = 20;
+            recs36_n.push(mk_contig_rec(
+                &format!("c36_nvar_{i}"),
+                0,
+                flags,
+                s,
+                &[
+                    (left_n, Kind::Match),
+                    (3, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                n_seq,
+                n_q,
+                None,
+            ));
+        }
+        recs36_t.sort_by_key(|r| r.alignment_start().unwrap().get());
+        recs36_n.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam36_t, &[("chr1", ref36.len())], recs36_t).expect("bam36_t");
+        write_multi_contig_bam(&bam36_n, &[("chr1", ref36.len())], recs36_n).expect("bam36_n");
+        let cfg36_base = Config {
+            reference: fa36.to_string_lossy().into_owned(),
+            bam: format!("{}|{}", bam36_t.display(), bam36_n.display()),
+            sample: "W6_T|W6_N".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:80-155".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            vcf_all_alleles: true,
+            fisher: true,
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+
+        // =====================================================================
+        // Case 37 (`adj_snv_full_sclip_match`, `clintval/vartovcf#181`/`#186`):
+        // - At `pos = 150` (`T -> A` on `"CTGATCGATACG"`): 4 spanning `60M` variant reads +
+        //   4 chimeric `4S` 3' soft-clipped reads (`"ACTT"` where `seq[1]=='C'==ref[151]`
+        //   but `seq[2..=3]=="TT" != ref[152..=153]=="GA"`).
+        //   Legacy (`Switch 37 = false`): lifts chimeric soft-clip -> `VD=8`.
+        //   Isolated `Switch 37 = true`: rejects partial-flank soft-clip -> `VD=4`!
+        // - At `pos = 210` (`G -> T` on `"CTAGCGATCAGT"`): 4 spanning `120M` variant reads without
+        //   adjacent soft-clips -> control locus preserved untouched at `VD=4` in BOTH legacy and `Switch 37 = true`!
+        // =====================================================================
+        let mut ref37 = non_rep_ref(0x3737_0005_2026_5555, 320);
+        ref37[146..158].copy_from_slice(b"CTGTCGATACGA"); // 150 (idx 149) == 'T', 151..=153 == "CGA"
+        ref37[206..218].copy_from_slice(b"CTAGCGATCAGT"); // 210 (idx 209) == 'G', 211..=213 == "ATC"
+        ref37[119] = if ref37[151] == b'A' { b'C' } else { b'A' };
+        ref37[179] = if ref37[211] == b'A' { b'C' } else { b'A' };
+        let fa37 = write_multi_contig_fasta(dir.path(), "w6_case37", &[("chr1", &ref37)]);
+        let bam37 = dir.path().join("w6_case37.bam");
+        let mut recs37 = Vec::new();
+        for i in 0..12usize {
+            let s = 115 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs37.push(mk_contig_rec(
+                &format!("c37_wt_{i}"),
+                0,
+                flags,
+                s,
+                &[(130, Kind::Match)],
+                ref37[s - 1..s - 1 + 130].to_vec(),
+                vec![38u8; 130],
+                None,
+            ));
+        }
+        for i in 0..4usize {
+            let s = 120 + i;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut seq = ref37[s - 1..s - 1 + 120].to_vec();
+            seq[150 - s] = b'A';
+            seq[210 - s] = b'T';
+            recs37.push(mk_contig_rec(
+                &format!("c37_snv_{i}"),
+                0,
+                flags,
+                s,
+                &[(120, Kind::Match)],
+                seq,
+                vec![37 + (i % 3) as u8; 120],
+                None,
+            ));
+
+            // Chimeric 4S at pos 150 ("ACTT" vs ref[150..=153] == "TCGA": 3 mismatches so modify_cigar keeps 4S)
+            let s_c1 = 118 + i;
+            let m_c1 = 150 - s_c1;
+            let mut seq_c1 = ref37[s_c1 - 1..149].to_vec();
+            seq_c1.extend_from_slice(b"ACTT");
+            recs37.push(mk_contig_rec(
+                &format!("c37_chim150_{i}"),
+                0,
+                flags,
+                s_c1,
+                &[(m_c1, Kind::Match), (4, Kind::SoftClip)],
+                seq_c1,
+                vec![38u8; m_c1 + 4],
+                None,
+            ));
+        }
+        recs37.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam37, &[("chr1", ref37.len())], recs37).expect("bam37");
+        let cfg37_base = Config {
+            reference: fa37.to_string_lossy().into_owned(),
+            bam: bam37.to_string_lossy().into_owned(),
+            sample: "W6_C37".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:115-240".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            omit_end_tag: true,
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+
+        // =====================================================================
+        // Case 38 (`indel_only_shift3`, `VarDictJava#263` / `clintval/vartovcf#117`):
+        // - At `pos = 120` (`A -> G` followed by `"AAAAA"`): SNV gets spurious `SHIFT3=4` in legacy,
+        //   clamped to `SHIFT3=0` (keeping `MSI=6;MSILEN=1`) under `Switch 38 = true`!
+        // - At `pos = 165` (`AC -> TG` followed by `"ACACAC"`): equal-length 2-bp MNV gets spurious
+        //   `SHIFT3 > 0` in legacy, clamped to `SHIFT3=0` under `Switch 38 = true`!
+        // - At `pos = 209` (`TG -> T` anchored at `'T'` before `"GGGGGG"`): true 1-bp deletion
+        //   (`ref.len() != alt.len()`, non-left-shiftable by `Switch 35`) retains `SHIFT3=5 > 0`!
+        // =====================================================================
+        let mut ref38 = non_rep_ref(0x3838_0006_2026_6666, 320);
+        ref38[117..128].copy_from_slice(b"GCAAAAAATCG"); // 120..=125 == "AAAAAA"
+        ref38[134..136].copy_from_slice(b"AC"); // 135..=136 == "AC" matches 167..=168 (`position-30` vs `position+2` in ToVarsBuilder#263!)
+        ref38[162..175].copy_from_slice(b"GTACACACACGAT"); // 165..=172 == "ACACACAC"
+        ref38[207..218].copy_from_slice(b"CTGGGGGGATC"); // 209 == 'T', 210..=215 == "GGGGGG"
+        let fa38 = write_multi_contig_fasta(dir.path(), "w6_case38", &[("chr1", &ref38)]);
+        let bam38 = dir.path().join("w6_case38.bam");
+        let mut recs38 = Vec::new();
+        for i in 0..10usize {
+            let s = 95 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs38.push(mk_contig_rec(
+                &format!("c38_wt_{i}"),
+                0,
+                flags,
+                s,
+                &[(145, Kind::Match)],
+                ref38[s - 1..s - 1 + 145].to_vec(),
+                vec![38u8; 145],
+                None,
+            ));
+        }
+        for i in 0..8usize {
+            let s = 96 + (i % 3);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            // Read carrying SNV at 120 (A->G), 2-bp MNV at 165..=166 (AC->TG), and 1-bp DEL of 210 (`TG->T` at 209)
+            let left_m = 210 - s; // covers s..=209
+            let right_m = 28usize; // covers 211..=238
+            let mut seq = ref38[s - 1..209].to_vec();
+            seq[120 - s] = b'G';
+            seq[165 - s] = b'T';
+            seq[166 - s] = b'G';
+            seq.extend_from_slice(&ref38[210..210 + right_m]);
+            let mut q = vec![37 + (i % 3) as u8; left_m + right_m];
+            q[left_m - 2] = 20;
+            q[left_m - 1] = 20;
+            recs38.push(mk_contig_rec(
+                &format!("c38_var_{i}"),
+                0,
+                flags,
+                s,
+                &[
+                    (left_m, Kind::Match),
+                    (1, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                seq,
+                q,
+                None,
+            ));
+        }
+        recs38.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam38, &[("chr1", ref38.len())], recs38).expect("bam38");
+        let cfg38_base = Config {
+            reference: fa38.to_string_lossy().into_owned(),
+            bam: bam38.to_string_lossy().into_owned(),
+            sample: "W6_C38".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:95-240".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            omit_end_tag: true,
+            threads: 1,
+            compat: COMPAT_VARDICTJAVA_1_8_3,
+            ..Config::default()
+        };
+
+        // =====================================================================
+        // Evaluate Baseline + Strict 6x6 Single-Switch Isolation Matrix!
+        // =====================================================================
+        let cases: [(&str, &Config); 6] = [
+            ("case33_sclip_majority", &cfg33_base),
+            ("case34_mate_overlap_u", &cfg34_base),
+            ("case35_left_align", &cfg35_base),
+            ("case36_somatic_split", &cfg36_base),
+            ("case37_adj_snv_flank", &cfg37_base),
+            ("case38_indel_shift3", &cfg38_base),
+        ];
+
+        let mut sw33 = COMPAT_VARDICTJAVA_1_8_3;
+        sw33.sclip_majority_count_first = true;
+        let mut sw34 = COMPAT_VARDICTJAVA_1_8_3;
+        sw34.mate_overlap_both_strands = true;
+        let mut sw35 = COMPAT_VARDICTJAVA_1_8_3;
+        sw35.canonical_vcf_complex_left_align = true;
+        let mut sw36 = COMPAT_VARDICTJAVA_1_8_3;
+        sw36.somatic_reconcile_split_alleles = true;
+        let mut sw37 = COMPAT_VARDICTJAVA_1_8_3;
+        sw37.adj_snv_full_sclip_match = true;
+        let mut sw38 = COMPAT_VARDICTJAVA_1_8_3;
+        sw38.indel_only_shift3 = true;
+
+        let isolated_switches: [(&str, CompatProfile); 6] = [
+            ("sw33_sclip_majority_count_first", sw33),
+            ("sw34_mate_overlap_both_strands", sw34),
+            ("sw35_canonical_vcf_complex_left_align", sw35),
+            ("sw36_somatic_reconcile_split_alleles", sw36),
+            ("sw37_adj_snv_full_sclip_match", sw37),
+            ("sw38_indel_only_shift3", sw38),
+        ];
+
+        let baseline_vcfs: Vec<String> = cases
+            .iter()
+            .map(|(cname, cfg)| run_via_core_run(cfg, &format!("vj_{cname}"), false))
+            .collect();
+        let baseline_vars: Vec<String> = cases
+            .iter()
+            .map(|(cname, cfg)| run_via_core_run(cfg, &format!("vj_{cname}"), true))
+            .collect();
+
+        // 1. Verify legacy `COMPAT_VARDICTJAVA_1_8_3` behavior on all 6 cases
+        assert!(
+            extract_variants(&baseline_vcfs[0]).is_empty(),
+            "Case 33 legacy must drop -15 DEL due to single Q50 error overwriting 2-read majority, got:\n{}",
+            baseline_vcfs[0]
+        );
+        let vj34_rows = extract_variants(&baseline_vcfs[1]);
+        let vj34_140 = vj34_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t140\t.\tC\tA\t"))
+            .expect("Case 34 legacy pos 140");
+        let vj34_160 = vj34_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t160\t.\tT\tG\t"))
+            .expect("Case 34 legacy pos 160");
+        assert!(
+            vj34_140.contains(";BIAS=2:1;") && vj34_140.ends_with(":0,14"),
+            "Case 34 legacy -u must starve fwd strand (ALD=0,14, BIAS=2:1), got: {vj34_140}"
+        );
+        assert!(
+            vj34_160.contains(";BIAS=2:0;")
+                && vj34_160.contains(";VARBIAS=0:6;")
+                && vj34_160.ends_with(":0,6"),
+            "Case 34 legacy pos 160 discordant error must have ALD=0,6 and BIAS=2:0, got: {vj34_160}"
+        );
+        let vj35_rows = extract_variants(&baseline_vcfs[2]);
+        assert!(
+            vj35_rows.len() == 1 && vj35_rows[0].starts_with("chr1\t103\t.\tGAAG\tG\t"),
+            "Case 35 legacy must emit right-shifted chr1:103 GAAG->G, got:\n{}",
+            vj35_rows.join("\n")
+        );
+        let vj36_rows = extract_variants(&baseline_vcfs[3]);
+        assert!(
+            baseline_vars[3]
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count()
+                == 2
+                && baseline_vars[3].contains("\tStrongSomatic\t")
+                && baseline_vars[3].contains("\tStrongLOH\t"),
+            "Case 36 legacy .var must emit colliding StrongSomatic + StrongLOH rows, got:\n{}",
+            baseline_vars[3]
+        );
+        assert!(
+            vj36_rows.len() == 1
+                && vj36_rows[0].contains("STATUS=StrongSomatic;")
+                && vj36_rows[0].contains("\t0/0:24:0:"),
+            "Case 36 legacy VCF must misclassify split 50%/50% germline indel as StrongSomatic (Normal 0/0, VD=0), got:\n{}",
+            vj36_rows.join("\n")
+        );
+        let vj37_rows = extract_variants(&baseline_vcfs[4]);
+        let vj37_150 = vj37_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t150\t.\tT\tA\t"))
+            .expect("Case 37 legacy pos 150");
+        assert!(
+            vj37_150.contains(";VD=8;"),
+            "Case 37 legacy adj_snv must lift partial-flank 4S onto pos 150 (VD=8), got: {vj37_150}"
+        );
+        let vj38_rows = extract_variants(&baseline_vcfs[5]);
+        let vj38_120 = vj38_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t120\t.\tA\tG\t"))
+            .expect("Case 38 legacy pos 120");
+        let vj38_165 = vj38_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t165\t.\tAC\tTG\t"))
+            .expect("Case 38 legacy pos 165");
+        let vj38_209 = vj38_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t209\t.\tTG\tT\t"))
+            .expect("Case 38 legacy pos 209");
+        assert!(
+            vj38_120.contains(";SHIFT3=1;MSI=6;MSILEN=1;")
+                && !vj38_165.contains(";SHIFT3=0;")
+                && vj38_209.contains(";SHIFT3=5;"),
+            "Case 38 legacy must emit SHIFT3>0 on SNV/MNV as well as true deletion, got:\n{}",
+            vj38_rows.join("\n")
+        );
+
+        // 2. Enforce strict 6x6 diagonal diff confinement across BOTH .vcf and .var!
+        let mut diag_vcfs = Vec::with_capacity(6);
+        let mut diag_vars = Vec::with_capacity(6);
+        for (sw_idx, (sw_name, sw_prof)) in isolated_switches.iter().enumerate() {
+            for (case_idx, (case_name, base_cfg)) in cases.iter().enumerate() {
+                let mut cfg = (*base_cfg).clone();
+                cfg.compat = *sw_prof;
+                let got_vcf = run_via_core_run(&cfg, &format!("iso_{sw_name}_{case_name}"), false);
+                let got_var = run_via_core_run(&cfg, &format!("iso_{sw_name}_{case_name}"), true);
+                if sw_idx == case_idx {
+                    assert_ne!(
+                        got_vcf, baseline_vcfs[case_idx],
+                        "{sw_name} MUST change its targeted {case_name} VCF"
+                    );
+                    assert_ne!(
+                        got_var, baseline_vars[case_idx],
+                        "{sw_name} MUST change its targeted {case_name} .var"
+                    );
+                    diag_vcfs.push(got_vcf);
+                    diag_vars.push(got_var);
+                } else {
+                    assert_eq!(
+                        got_vcf, baseline_vcfs[case_idx],
+                        "OFF-TARGET VCF DIFF: {sw_name} unexpectedly altered {case_name}"
+                    );
+                    assert_eq!(
+                        got_var, baseline_vars[case_idx],
+                        "OFF-TARGET .VAR DIFF: {sw_name} unexpectedly altered {case_name}"
+                    );
+                }
+            }
+        }
+
+        // 3. Verify exact isolated behavior on each diagonal cell (33..=38)
+        let s33_rows = extract_variants(&diag_vcfs[0]);
+        assert!(
+            s33_rows.len() == 1
+                && s33_rows[0].starts_with("chr1\t100\t.\tGC")
+                && s33_rows[0].contains("\tG\t")
+                && s33_rows[0].contains(";TYPE=Deletion;")
+                && s33_rows[0].contains(";VD=3;"),
+            "Switch 33 isolated must rescue 15-bp deletion at chr1:100 with VD=3, got:\n{}",
+            s33_rows.join("\n")
+        );
+
+        let s34_rows = extract_variants(&diag_vcfs[1]);
+        let s34_140 = s34_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t140\t.\tC\tA\t"))
+            .expect("Switch 34 pos 140");
+        let s34_160 = s34_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t160\t.\tT\tG\t"))
+            .expect("Switch 34 pos 160");
+        // Verify DP and VD unchanged vs legacy, ALD rebalanced to 7,7 (BIAS=2:2, SBF=1) on agreed pair,
+        // and discordant R2-only error at 160 untouched at ALD=0,6 (BIAS=2:0)!
+        let parse_dp_vd_ald = |row: &str| -> (i32, i32, String) {
+            let smp = row.split('\t').nth(9).unwrap();
+            let f: Vec<&str> = smp.split(':').collect();
+            (
+                f[1].parse().unwrap(),
+                f[2].parse().unwrap(),
+                f[6].to_string(),
+            )
+        };
+        let (vj_dp140, vj_vd140, _) = parse_dp_vd_ald(vj34_140);
+        let (s34_dp140, s34_vd140, s34_ald140) = parse_dp_vd_ald(s34_140);
+        assert_eq!(
+            (s34_dp140, s34_vd140, s34_ald140.as_str()),
+            (vj_dp140, vj_vd140, "7,7"),
+            "Switch 34 must preserve exact DP & VD while rebalancing agreed FR molecules to ALD=7,7"
+        );
+        assert!(
+            s34_140.contains(";BIAS=2:2;") && s34_140.contains(";SBF=1;"),
+            "Switch 34 must restore BIAS=2:2 and SBF=1 on agreed FR molecules: {s34_140}"
+        );
+        let (vj_dp160, vj_vd160, _) = parse_dp_vd_ald(vj34_160);
+        let (s34_dp160, s34_vd160, s34_ald160) = parse_dp_vd_ald(s34_160);
+        assert_eq!(
+            (s34_dp160, s34_vd160, s34_ald160.as_str()),
+            (vj_dp160, vj_vd160, "0,6"),
+            "Switch 34 must NOT rebalance discordant R2-only error at pos 160 (ALD must stay 0,6): {s34_160}"
+        );
+        assert!(
+            s34_160.contains(";BIAS=2:0;") && s34_160.contains(";VARBIAS=0:6;"),
+            "Switch 34 must keep discordant R2-only error single-strand (VARBIAS=0:6, BIAS=2:0): {s34_160}"
+        );
+
+        let s35_rows = extract_variants(&diag_vcfs[2]);
+        assert!(
+            s35_rows.len() == 1 && s35_rows[0].starts_with("chr1\t100\t.\tTAAG\tT\t"),
+            "Switch 35 isolated must left-align chr1:103 GAAG->G to chr1:100 TAAG->T, got:\n{}",
+            s35_rows.join("\n")
+        );
+        // Review Focus #3: `-3` (`three_prime = true`) and CRISPR (`crispr_cutting_site`) bypass Switch 35
+        let mut cfg35_3p = cfg35_base.clone();
+        cfg35_3p.three_prime = true;
+        let mut cfg35_3p_sw35 = cfg35_3p.clone();
+        cfg35_3p_sw35.compat = sw35;
+        assert_eq!(
+            run_core_vcf(&cfg35_3p_sw35).expect("3p + sw35"),
+            run_core_vcf(&cfg35_3p).expect("3p + vj"),
+            "-3 (three_prime) must bypass canonical_vcf_complex_left_align"
+        );
+        let mut cfg35_crispr = cfg35_base.clone();
+        cfg35_crispr.crispr_cutting_site = Some(105);
+        let mut cfg35_crispr_sw35 = cfg35_crispr.clone();
+        cfg35_crispr_sw35.compat = sw35;
+        assert_eq!(
+            run_core_vcf(&cfg35_crispr_sw35).expect("crispr + sw35"),
+            run_core_vcf(&cfg35_crispr).expect("crispr + vj"),
+            "CRISPR (-J) must bypass canonical_vcf_complex_left_align"
+        );
+        // Review Focus #4: Contig-start `POS == 1` homopolymer deletion stops cleanly at POS=1 (`POS >= 1`, valid anchor)
+        let mut ref_pos1 = non_rep_ref(0x3535_9999_1111_0001, 120);
+        ref_pos1[0..30].fill(b'A'); // pos 1..=30 == 'A'
+        ref_pos1[30] = b'C'; // pos 31 == 'C'
+        let fa_pos1 = write_multi_contig_fasta(dir.path(), "w6_pos1", &[("chr1", &ref_pos1)]);
+        let bam_pos1 = dir.path().join("w6_pos1.bam");
+        let mut recs_pos1 = Vec::new();
+        for i in 0..6usize {
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            // 27M (1..=27 'A', PMEAN=27 >= 25) + 1D (deletes pos 28 'A') + 35M (29..=63)
+            let mut dseq = vec![b'A'; 27];
+            dseq.extend_from_slice(&ref_pos1[28..63]);
+            let mut dq = vec![38u8; 62];
+            dq[25] = 20;
+            dq[26] = 20;
+            recs_pos1.push(mk_contig_rec(
+                &format!("p1_del_{i}"),
+                0,
+                flags,
+                1,
+                &[(27, Kind::Match), (1, Kind::Deletion), (35, Kind::Match)],
+                dseq,
+                dq,
+                None,
+            ));
+        }
+        write_multi_contig_bam(&bam_pos1, &[("chr1", ref_pos1.len())], recs_pos1)
+            .expect("bam_pos1");
+        let cfg_pos1 = Config {
+            reference: fa_pos1.to_string_lossy().into_owned(),
+            bam: bam_pos1.to_string_lossy().into_owned(),
+            sample: "POS1".to_string(),
+            sample_explicit: true,
+            region: Some("chr1:1-90".to_string()),
+            freq: 0.01,
+            af_threshold: 0.01,
+            omit_end_tag: true,
+            threads: 1,
+            compat: sw35,
+            ..Config::default()
+        };
+        let pos1_rows = extract_variants(&run_core_vcf(&cfg_pos1).expect("pos1 vcf"));
+        assert!(
+            pos1_rows.len() == 1 && pos1_rows[0].starts_with("chr1\t1\t.\tAA\tA\t"),
+            "contig-start POS=1 left-alignment must stop cleanly at POS=1 (chr1:1 AA->A), got:\n{}",
+            pos1_rows.join("\n")
+        );
+
+        let s36_rows = extract_variants(&diag_vcfs[3]);
+        assert_eq!(
+            diag_vars[3]
+                .lines()
+                .filter(|l| !l.trim().is_empty())
+                .count(),
+            1,
+            "Switch 36 isolated .var must reconcile split Tumor/Normal representations into 1 row"
+        );
+        assert!(
+            s36_rows.len() == 1
+                && s36_rows[0].starts_with("chr1\t111\t.\tTCAG\tT\t")
+                && s36_rows[0].contains("STATUS=Germline;")
+                && !s36_rows[0].contains("StrongSomatic")
+                && !s36_rows[0].contains("StrongLOH"),
+            "Switch 36 isolated VCF must emit 1 reconciled STATUS=Germline row with 0 shadow collisions, got:\n{}",
+            s36_rows.join("\n")
+        );
+        let s36_cols: Vec<&str> = s36_rows[0].split('\t').collect();
+        assert!(
+            s36_cols[9].starts_with("1/0:24:12:")
+                && s36_cols[10].starts_with("1/0:24:12:"),
+            "Switch 36 isolated must preserve het GT and VD=12 in BOTH Tumor and Normal columns: {}",
+            s36_rows[0]
+        );
+
+        let s37_rows = extract_variants(&diag_vcfs[4]);
+        let s37_150 = s37_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t150\t.\tT\tA\t"))
+            .expect("Switch 37 pos 150");
+        let s37_210 = s37_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t210\t.\tG\tT\t"))
+            .expect("Switch 37 pos 210");
+        assert!(
+            s37_150.contains(";VD=4;") && s37_210.contains(";VD=4;"),
+            "Switch 37 isolated must reject partial-flank 4S at pos 150 (VD=8 -> VD=4) while keeping pos 210 intact: {s37_150}"
+        );
+
+        let s38_rows = extract_variants(&diag_vcfs[5]);
+        let s38_120 = s38_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t120\t.\tA\tG\t"))
+            .expect("Switch 38 pos 120");
+        let s38_165 = s38_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t165\t.\tAC\tTG\t"))
+            .expect("Switch 38 pos 165");
+        let s38_209 = s38_rows
+            .iter()
+            .find(|l| l.starts_with("chr1\t209\t.\tTG\tT\t"))
+            .expect("Switch 38 pos 209");
+        assert!(
+            s38_120.contains(";SHIFT3=0;MSI=6;MSILEN=1;")
+                && s38_165.contains(";SHIFT3=0;")
+                && s38_209.contains(";SHIFT3=5;"),
+            "Switch 38 isolated must clamp SNV & equal-length MNV SHIFT3 to 0 while keeping MSI/MSILEN and indel SHIFT3=5: {}",
+            s38_rows.join("\n")
+        );
+
+        // 4. Verify `COMPAT_OFF`, `--preset wes`, and `--preset ctdna` compose all 6 fixes cleanly!
+        for (cname, base_cfg) in &cases {
+            let mut off_cfg = (*base_cfg).clone();
+            off_cfg.compat = COMPAT_OFF;
+            let off_vcf = run_via_core_run(&off_cfg, &format!("off_{cname}"), false);
+            assert!(
+                off_vcf.contains("##VarDictRustCompat=off\n"),
+                "COMPAT_OFF must stamp ##VarDictRustCompat=off on {cname}"
+            );
+            let off_rows = extract_variants(&off_vcf);
+            match *cname {
+                "case33_sclip_majority" => assert!(
+                    off_rows.len() == 1
+                        && off_rows[0].starts_with("chr1\t100\t")
+                        && off_rows[0].contains(";VD=3;"),
+                    "COMPAT_OFF case33: {off_rows:?}"
+                ),
+                "case34_mate_overlap_u" => {
+                    let r140 = off_rows
+                        .iter()
+                        .find(|l| l.starts_with("chr1\t140\t"))
+                        .unwrap();
+                    let r160 = off_rows
+                        .iter()
+                        .find(|l| l.starts_with("chr1\t160\t"))
+                        .unwrap();
+                    assert!(r140.contains(";BIAS=2:2;") && r140.ends_with(":7,7"));
+                    assert!(
+                        r160.contains(";BIAS=2:0;")
+                            && r160.contains(";VARBIAS=0:6;")
+                            && r160.ends_with(":0,6")
+                    );
+                }
+                "case35_left_align" => assert!(
+                    off_rows.len() == 1 && off_rows[0].starts_with("chr1\t100\t.\tTAAG\tT\t"),
+                    "COMPAT_OFF case35: {off_rows:?}"
+                ),
+                "case36_somatic_split" => assert!(
+                    off_rows.len() == 1
+                        && off_rows[0].starts_with("chr1\t111\t.\tTCAG\tT\t")
+                        && off_rows[0].contains("STATUS=Germline;")
+                        && off_rows[0].contains(";TYPE=Deletion;"),
+                    "COMPAT_OFF case36 (Switch 36 + Switch 29): {off_rows:?}"
+                ),
+                "case37_adj_snv_flank" => {
+                    let r150 = off_rows
+                        .iter()
+                        .find(|l| l.starts_with("chr1\t150\t"))
+                        .unwrap();
+                    assert!(r150.contains(";VD=4;"));
+                }
+                "case38_indel_shift3" => {
+                    let r120 = off_rows
+                        .iter()
+                        .find(|l| l.starts_with("chr1\t120\t"))
+                        .unwrap();
+                    let r165 = off_rows
+                        .iter()
+                        .find(|l| l.starts_with("chr1\t165\t"))
+                        .unwrap();
+                    let r209 = off_rows
+                        .iter()
+                        .find(|l| l.starts_with("chr1\t209\t"))
+                        .unwrap();
+                    assert!(
+                        r120.contains(";SHIFT3=0;")
+                            && r165.contains(";SHIFT3=0;")
+                            && r209.contains(";SHIFT3=5;")
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        for preset in [WorkflowPreset::Wes, WorkflowPreset::Ctdna] {
+            let mut p_cfg = Config::from_preset(preset);
+            assert!(
+                p_cfg.compat.sclip_majority_count_first
+                    && p_cfg.compat.mate_overlap_both_strands
+                    && p_cfg.compat.canonical_vcf_complex_left_align
+                    && p_cfg.compat.somatic_reconcile_split_alleles
+                    && p_cfg.compat.adj_snv_full_sclip_match
+                    && p_cfg.compat.indel_only_shift3,
+                "Config::from_preset({preset}) must enable all 6 Wave-6 switches"
+            );
+            p_cfg.reference = fa36.to_string_lossy().into_owned();
+            p_cfg.bam = format!("{}|{}", bam36_t.display(), bam36_n.display());
+            p_cfg.sample = "W6_T|W6_N".to_string();
+            p_cfg.sample_explicit = true;
+            p_cfg.region = Some("chr1:80-155".to_string());
+            p_cfg.vcf_min_depth = Some(VcfThreshold::new(10));
+            p_cfg.vcf_all_alleles = true;
+            p_cfg.threads = 1;
+            let p_vcf = run_core_vcf(&p_cfg).expect("preset paired somatic VCF");
+            let p_rows = extract_variants(&p_vcf);
+            assert!(
+                p_vcf.contains(&format!("##VarDictRustPreset={preset}\n"))
+                    && p_rows.len() == 1
+                    && p_rows[0].starts_with("chr1\t111\t.\tTCAG\tT\t")
+                    && p_rows[0].contains("STATUS=Germline;"),
+                "--preset {preset} must compose Wave-6 somatic split reconciliation cleanly, got:\n{p_vcf}"
+            );
+        }
+    }
+
+    #[test]
+    fn compat_wave6_split_tile_1_1mbp_seam_parity_switches_35_and_36() {
+        use noodles::sam::alignment::record::cigar::op::Kind;
+        use noodles::sam::alignment::record::Flags;
+        use vardictrust_core::config::COMPAT_OFF;
+
+        // `1,100,000 bp` (> `DEFAULT_UNTILED_SPAN_MAX = 1_000_000`) synthetic contig so default
+        // `effective_tile_size` splits `[1, 1_100_000]` into 11 `100 kbp` tiles (`[1, 100_000]`,
+        // `[100_001, 200_000]`, ..., `[1_000_001, 1_100_000]`) with a live tile seam at
+        // `100_000 | 100_001`, while `[99_500, 100_500]` (`1,001 bp <= 1 Mbp`) runs untiled (`AGENTS.md §10`).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let contig_len = 1_100_000usize;
+        let mut s = 0x5EA4_2026_0111_6666_u64;
+        let mut ref_seq = Vec::with_capacity(contig_len);
+        let mut prev1 = 0u8;
+        let mut prev2 = 0u8;
+        for _ in 0..contig_len {
+            loop {
+                s = s
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let b = b"ACGT"[((s >> 62) & 3) as usize];
+                if b != prev1 && b != prev2 {
+                    prev2 = prev1;
+                    prev1 = b;
+                    ref_seq.push(b);
+                    break;
+                }
+            }
+        }
+
+        // Locus A (`Switch 35` repeat indel collision across `100_000 | 100_001`):
+        // Place `"GCTAAGAAGAAGAAGCTGA"` starting at 1-based `99_993` (`idx = 99_992`):
+        // - `99_995` (`idx 99_994`) = `'T'`
+        // - `99_996..=100_007` (`idx 99_995..100_007`) = `"AAGAAGAAGAAG"` (4x `"AAG"` spanning `100_000 | 100_001`!)
+        // Reads deleting `99_999..=100_001` (4 reads, pileup key `99_999 <= 100_000` in tile 0) and
+        // reads deleting `100_005..=100_007` (10 reads, pileup key `100_005 >= 100_001` in tile 1)
+        // BOTH left-align to `(chr1, 99_995, TAAG, T)` -> Ruling 3 must retain the `VD=10` winner across the seam!
+        ref_seq[99_992..100_011].copy_from_slice(b"GCTAAGAAGAAGAAGCTGA");
+
+        // Locus B (`Switch 36` split tumor/normal germline deletion across `100_000 | 100_001` on a second
+        // `200_000 | 200_001` seam, AND also right across `100_000 | 100_001` in a dedicated paired BAM):
+        // Place `"CGATCAGCTA"` at `99_997..=100_006` (`idx 99_996..100_006`) on a second contig `chr2` (`1_100_000 bp`)
+        // OR place Locus A across `200_000 | 200_001` (`tile 1 | tile 2`) and Locus B across `100_000 | 100_001` (`tile 0 | tile 1`)
+        // on the SAME `1_100_000 bp` `chr1` contig so ONE run tests BOTH seams simultaneously!
+        // Let's place Locus B right at `100_000 | 100_001` and Locus A right at `200_000 | 200_001` (AND compare
+        // `[1, 1_100_000]` tiled against `[99_500, 200_500]` `101,001 bp <= 1 Mbp` untiled!):
+        // Reset `99_992..100_011` cleanly for Locus B at `100_000 | 100_001`, and put Locus A at `200_000 | 200_001`!
+        ref_seq[99_996..100_006].copy_from_slice(b"CGATCAGCTA"); // 100_000='T', 100_001..=100_003="CAG" -> (100_000, "TCAG", "T")
+        ref_seq[199_992..200_011].copy_from_slice(b"GCTAAGAAGAAGAAGCTGA"); // 199_995='T', 199_996..=200_007="AAGAAGAAGAAG"
+
+        let fa = write_multi_contig_fasta(dir.path(), "w6_seam_1_1m", &[("chr1", &ref_seq)]);
+        let bam_t = dir.path().join("w6_seam_t.bam");
+        let bam_n = dir.path().join("w6_seam_n.bam");
+        let mut recs_t = Vec::new();
+        let mut recs_n = Vec::new();
+
+        // 1) At seam `100_000 | 100_001` (`Switch 36`):
+        //    - Tumor: 12 WT reads + 12 `4D1I` (`-4^T` at key `100_000` in tile 0 -> `(100_000, TCAG, T)`)
+        //    - Normal: 12 WT reads + 12 `3D` (`-3` at key `100_001` in tile 1 -> `(100_000, TCAG, T)`)
+        for i in 0..12usize {
+            let s_pos = 99_972 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt_seq = ref_seq[s_pos - 1..s_pos - 1 + 65].to_vec();
+            let wt_q = vec![38u8; 65];
+            recs_t.push(mk_contig_rec(
+                &format!("s36_twt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(65, Kind::Match)],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            recs_n.push(mk_contig_rec(
+                &format!("s36_nwt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(65, Kind::Match)],
+                wt_seq,
+                wt_q,
+                None,
+            ));
+
+            // Tumor `4D1I` at 100_000..=100_003:
+            let left_t = 100_000 - s_pos;
+            let right_m = 28usize;
+            let mut t_seq = ref_seq[s_pos - 1..99_999].to_vec();
+            t_seq.push(b'T');
+            t_seq.extend_from_slice(&ref_seq[100_003..100_003 + right_m]);
+            let mut t_q = vec![37 + (i % 3) as u8; left_t + 1 + right_m];
+            t_q[left_t - 2] = 20;
+            t_q[left_t - 1] = 20;
+            recs_t.push(mk_contig_rec(
+                &format!("s36_tvar_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_t, Kind::Match),
+                    (4, Kind::Deletion),
+                    (1, Kind::Insertion),
+                    (right_m, Kind::Match),
+                ],
+                t_seq,
+                t_q,
+                None,
+            ));
+
+            // Normal `3D` at 100_001..=100_003:
+            let left_n = 100_001 - s_pos;
+            let mut n_seq = ref_seq[s_pos - 1..100_000].to_vec();
+            n_seq.extend_from_slice(&ref_seq[100_003..100_003 + right_m]);
+            let mut n_q = vec![37 + (i % 3) as u8; left_n + right_m];
+            n_q[left_n - 2] = 20;
+            n_q[left_n - 1] = 20;
+            recs_n.push(mk_contig_rec(
+                &format!("s36_nvar_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_n, Kind::Match),
+                    (3, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                n_seq,
+                n_q,
+                None,
+            ));
+        }
+
+        // 2) At seam `200_000 | 200_001` (`Switch 35` Ruling 3 repeat indel collision under default `realign = 1`):
+        //    - 12 WT reads in both Tumor & Normal
+        //    - 4 Tumor reads with `3D` at `199_996..=199_998` (pileup key `199_995 <= 200_000` in tile `[100_001, 200_000]`, `(199_995, TAAG, T)`, VD=4)
+        //    - 10 Tumor reads with `4D1I` (`-4^G`) at `200_004..=200_007` (pileup key `200_004 >= 200_001` in tile `[200_001, 300_000]`, which `adj_complex` + `Switch 35` left-aligns across the seam to `(199_995, TAAG, T)`, VD=10)
+        for i in 0..12usize {
+            let s_pos = 199_970 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt_seq = ref_seq[s_pos - 1..s_pos - 1 + 70].to_vec();
+            let wt_q = vec![38u8; 70];
+            recs_t.push(mk_contig_rec(
+                &format!("s35_twt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(70, Kind::Match)],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            recs_n.push(mk_contig_rec(
+                &format!("s35_nwt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(70, Kind::Match)],
+                wt_seq,
+                wt_q,
+                None,
+            ));
+        }
+        for i in 0..4usize {
+            let s_pos = 199_970 + (i % 3);
+            let left_m = 199_996 - s_pos; // 3D deletes 199_996..=199_998 ("AAG") -> key 199_995
+            let right_m = 30usize;
+            let mut seq = ref_seq[s_pos - 1..199_995].to_vec();
+            seq.extend_from_slice(&ref_seq[199_998..199_998 + right_m]);
+            let mut q = vec![36u8; left_m + right_m];
+            q[left_m - 2] = 20;
+            q[left_m - 1] = 20;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs_t.push(mk_contig_rec(
+                &format!("s35_t_left_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_m, Kind::Match),
+                    (3, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                seq,
+                q,
+                None,
+            ));
+        }
+        for i in 0..10usize {
+            let s_pos = 199_976 + (i % 3);
+            let left_m = 200_004 - s_pos; // 4D1I deletes 200_004..=200_007 ("GAAG") + inserts 'G' -> key 200_004
+            let right_m = 28usize;
+            let mut seq = ref_seq[s_pos - 1..200_003].to_vec();
+            seq.push(b'G');
+            seq.extend_from_slice(&ref_seq[200_007..200_007 + right_m]);
+            let mut q = vec![39u8; left_m + 1 + right_m];
+            q[left_m - 2] = 20;
+            q[left_m - 1] = 20;
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs_t.push(mk_contig_rec(
+                &format!("s35_t_right_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_m, Kind::Match),
+                    (4, Kind::Deletion),
+                    (1, Kind::Insertion),
+                    (right_m, Kind::Match),
+                ],
+                seq,
+                q,
+                None,
+            ));
+        }
+
+        recs_t.sort_by_key(|r| r.alignment_start().unwrap().get());
+        recs_n.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam_t, &[("chr1", contig_len)], recs_t).expect("bam_t");
+        write_multi_contig_bam(&bam_n, &[("chr1", contig_len)], recs_n).expect("bam_n");
+
+        let bed_tiled = dir.path().join("tiled_1_1m.bed");
+        let bed_untiled = dir.path().join("untiled_101k.bed");
+        std::fs::write(&bed_tiled, "chr1\t0\t1100000\tSEAM_GENE\n").expect("bed_tiled");
+        std::fs::write(&bed_untiled, "chr1\t99499\t200500\tSEAM_GENE\n").expect("bed_untiled");
+
+        // Verify BOTH (1) Single-sample Simple mode AND (2) Paired Somatic mode across VCF ($ALL=1 & --vcf-all-alleles) and .var!
+        for is_paired in [false, true] {
+            for vcf_all in [false, true] {
+                for emit_inter in [false, true] {
+                    if emit_inter && vcf_all {
+                        continue;
+                    }
+                    let make_cfg = |bed_path: &std::path::Path| Config {
+                        reference: fa.to_string_lossy().into_owned(),
+                        bam: if is_paired {
+                            format!("{}|{}", bam_t.display(), bam_n.display())
+                        } else {
+                            bam_t.to_string_lossy().into_owned()
+                        },
+                        sample: if is_paired {
+                            "SEAM_T|SEAM_N".to_string()
+                        } else {
+                            "SEAM_T".to_string()
+                        },
+                        sample_explicit: true,
+                        bed: Some(bed_path.to_string_lossy().into_owned()),
+                        col_chr: 0,
+                        col_start: 1,
+                        col_end: 2,
+                        col_seg_start: 1,
+                        col_seg_end: 2,
+                        col_gene: Some(3),
+                        column_for_chromosome: Some(0),
+                        zero_based: true,
+                        zero_based_defined: true,
+                        freq: 0.01,
+                        af_threshold: 0.01,
+                        vcf_all_alleles: vcf_all,
+                        emit_intermediate: emit_inter,
+                        fisher: true,
+                        threads: 2,
+                        compat: COMPAT_OFF,
+                        ..Config::default()
+                    };
+
+                    let out_tiled = run_core_vcf(&make_cfg(&bed_tiled)).expect("tiled 1.1M run");
+                    let out_untiled =
+                        run_core_vcf(&make_cfg(&bed_untiled)).expect("untiled 101k run");
+                    assert_eq!(
+                        out_tiled, out_untiled,
+                        "1.1 Mbp 100 kbp-tiled output MUST be byte-identical to untiled single-region output (paired={is_paired}, all_alleles={vcf_all}, intermediate={emit_inter})"
+                    );
+
+                    if !emit_inter {
+                        let rows = extract_variants(&out_tiled);
+                        assert_eq!(
+                            rows.len(),
+                            2,
+                            "expected exact 2 reconciled/deduplicated records across both seams, got:\n{}",
+                            rows.join("\n")
+                        );
+                        assert!(
+                            rows[0].starts_with("chr1\t100000\t.\tTCAG\tT\t"),
+                            "expected seam 100000|100001 locus at chr1:100000 TCAG->T, got: {}",
+                            rows[0]
+                        );
+                        if is_paired {
+                            assert!(
+                                rows[0].contains("STATUS=Germline;"),
+                                "paired Switch 36 across 100000|100001 seam must reconcile into STATUS=Germline, got: {}",
+                                rows[0]
+                            );
+                        }
+                        assert!(
+                            rows[1].starts_with("chr1\t199995\t.\tTAAG\tT\t")
+                                && (rows[1].contains(";VD=10;") || rows[1].contains(":10:")),
+                            "Switch 35 Ruling 3 across 200000|200001 seam must select VD=10 winner at chr1:199995 TAAG->T, got: {}",
+                            rows[1]
+                        );
+                    }
+                }
+            }
+        }
+
+        // 3) Copilot review regression (`100,050 AA>A` inside a `20,051 bp` poly-`A` tract
+        //    `80,000..=100,050` with `79,999 = 'C'`, rolling past the initial `~11.2 kbp` tile
+        //    halo AND across the `100,000 | 100,001` split-tile seam):
+        //    Verify BOTH untiled `[100_000, 100_200]` (whose initial cache only loads down to
+        //    `88,800`) AND `1.1 Mbp` tiled `[1, 1_100_000]` (plus untiled `[79_999, 100_200]`
+        //    under full `COMPAT_OFF` `strict_region_bounds = true`) fetch bounded upstream chunks
+        //    on demand and emit `chr2:79999 CA->C` identically across Single, Somatic, and Amplicon!
+        let mut poly_seq = ref_seq.clone();
+        poly_seq[79_998] = b'C'; // 1-based 79_999 = 'C'
+        poly_seq[79_999..100_050].fill(b'A'); // 1-based 80_000..=100_050 = 20,051 'A's
+        poly_seq[100_050] = b'G'; // 1-based 100_051 = 'G' (anchor right of poly-A)
+
+        let fa_poly = write_multi_contig_fasta(dir.path(), "w6_poly20k", &[("chr2", &poly_seq)]);
+        let bam_poly_t = dir.path().join("w6_poly20k_t.bam");
+        let bam_poly_n = dir.path().join("w6_poly20k_n.bam");
+        let mut poly_t = Vec::new();
+        let mut poly_n = Vec::new();
+        for i in 0..10usize {
+            let s_pos = 100_030 + (i % 3); // starts inside tile [100_001, 200_000] & [100_000, 100_200]
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt_seq = poly_seq[s_pos - 1..s_pos - 1 + 55].to_vec();
+            let wt_q = vec![38u8; 55];
+            poly_t.push(mk_contig_rec(
+                &format!("poly_twt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(55, Kind::Match)],
+                wt_seq.clone(),
+                wt_q.clone(),
+                None,
+            ));
+            poly_n.push(mk_contig_rec(
+                &format!("poly_nwt_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[(55, Kind::Match)],
+                wt_seq,
+                wt_q,
+                None,
+            ));
+
+            // 1D deleting 1-based 100_050 ('A') -> raw ToVars allele at 100_049..=100_050 ("AA" -> "A"),
+            // which must roll 20,050 bp upstream across cache & tile boundaries to `79,999 CA -> C`!
+            let left_m = 100_050 - s_pos;
+            let right_m = 30usize;
+            let mut d_seq = poly_seq[s_pos - 1..100_049].to_vec();
+            d_seq.extend_from_slice(&poly_seq[100_050..100_050 + right_m]);
+            let d_q = vec![39u8; left_m + right_m];
+            poly_t.push(mk_contig_rec(
+                &format!("poly_tdel_{i}"),
+                0,
+                flags,
+                s_pos,
+                &[
+                    (left_m, Kind::Match),
+                    (1, Kind::Deletion),
+                    (right_m, Kind::Match),
+                ],
+                d_seq,
+                d_q,
+                None,
+            ));
+        }
+        poly_t.sort_by_key(|r| r.alignment_start().unwrap().get());
+        poly_n.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&bam_poly_t, &[("chr2", contig_len)], poly_t).expect("bam_poly_t");
+        write_multi_contig_bam(&bam_poly_n, &[("chr2", contig_len)], poly_n).expect("bam_poly_n");
+
+        let bed_poly_narrow = dir.path().join("poly_100k_200.bed"); // 1-based [100_000, 100_200]
+        let bed_poly_strict = dir.path().join("poly_79999_100200.bed"); // 1-based [79_999, 100_200]
+        let bed_poly_tiled = dir.path().join("poly_1_1m.bed"); // 1-based [1, 1_100_000]
+        std::fs::write(&bed_poly_narrow, "chr2\t99999\t100200\tPOLY_GENE\n").expect("narrow bed");
+        std::fs::write(&bed_poly_strict, "chr2\t79998\t100200\tPOLY_GENE\n").expect("strict bed");
+        std::fs::write(&bed_poly_tiled, "chr2\t0\t1100000\tPOLY_GENE\n").expect("tiled bed");
+
+        for is_paired in [false, true] {
+            // (a) Untiled `[100_000, 100_200]` vs tiled `[1, 1_100_000]` with `strict_region_bounds = false`:
+            //     both MUST roll `100,050 AA>A` all the way to `chr2:79999 CA>C`!
+            let mut compat_no_strict = COMPAT_OFF;
+            compat_no_strict.strict_region_bounds = false;
+            let make_poly_cfg = |bed_p: &std::path::Path, compat_prof| Config {
+                reference: fa_poly.to_string_lossy().into_owned(),
+                bam: if is_paired {
+                    format!("{}|{}", bam_poly_t.display(), bam_poly_n.display())
+                } else {
+                    bam_poly_t.to_string_lossy().into_owned()
+                },
+                sample: if is_paired {
+                    "POLY_T|POLY_N".to_string()
+                } else {
+                    "POLY_T".to_string()
+                },
+                sample_explicit: true,
+                bed: Some(bed_p.to_string_lossy().into_owned()),
+                col_chr: 0,
+                col_start: 1,
+                col_end: 2,
+                col_seg_start: 1,
+                col_seg_end: 2,
+                col_gene: Some(3),
+                column_for_chromosome: Some(0),
+                zero_based: true,
+                zero_based_defined: true,
+                freq: 0.01,
+                af_threshold: 0.01,
+                realign: 0,
+                fisher: true,
+                threads: 2,
+                compat: compat_prof,
+                ..Config::default()
+            };
+
+            let vcf_narrow =
+                run_core_vcf(&make_poly_cfg(&bed_poly_narrow, compat_no_strict)).expect("narrow");
+            let vcf_tiled_ns =
+                run_core_vcf(&make_poly_cfg(&bed_poly_tiled, compat_no_strict)).expect("tiled ns");
+            assert_eq!(
+                vcf_narrow, vcf_tiled_ns,
+                "untiled [100_000, 100_200] and tiled [1, 1_100_000] must match byte-for-byte on 20kbp repeat (paired={is_paired})"
+            );
+            let rows_ns = extract_variants(&vcf_narrow);
+            assert_eq!(rows_ns.len(), 1, "expected 1 call, got: {rows_ns:?}");
+            assert!(
+                rows_ns[0].starts_with("chr2\t79999\t.\tCA\tC\t"),
+                "20kbp poly-A deletion at 100,050 must left-align to chr2:79999 CA->C, got: {}",
+                rows_ns[0]
+            );
+
+            // (b) Full `COMPAT_OFF` (`strict_region_bounds = true`): untiled `[79_999, 100_200]` vs
+            //     tiled `[1, 1_100_000]` both emit `chr2:79999 CA->C` byte-identically!
+            let vcf_strict_un =
+                run_core_vcf(&make_poly_cfg(&bed_poly_strict, COMPAT_OFF)).expect("strict untiled");
+            let vcf_strict_ti =
+                run_core_vcf(&make_poly_cfg(&bed_poly_tiled, COMPAT_OFF)).expect("strict tiled");
+            assert_eq!(
+                vcf_strict_un, vcf_strict_ti,
+                "full COMPAT_OFF untiled [79_999, 100_200] and tiled [1, 1_100_000] must match (paired={is_paired})"
+            );
+            let rows_st = extract_variants(&vcf_strict_ti);
+            assert_eq!(rows_st.len(), 1);
+            assert!(rows_st[0].starts_with("chr2\t79999\t.\tCA\tC\t"));
+
+            // (c) Amplicon (single-sample & paired somatic amplicon) on narrow `[100_000, 100_200]`
+            //     amplicon segment (`strict_region_bounds = false` so segment FASTA initially covers
+            //     only `[89_990, 110_210]`): `load_amplicon_segment_postprocess_ref` +
+            //     `ensure_left_align_ref_chunks` must also roll `100,050 AA>A` to `chr2:79999 CA>C`!
+            let bed_poly_amp = dir.path().join("poly_amp_100k.bed");
+            std::fs::write(
+                &bed_poly_amp,
+                "chr2\t100029\t100085\tPOLY_AMP\t0\t+\t100039\t100075\n",
+            )
+            .expect("amp bed");
+            let mut amp_poly_cfg = make_poly_cfg(&bed_poly_amp, compat_no_strict);
+            amp_poly_cfg.amplicon = Some("10:0.95".to_string());
+            amp_poly_cfg.col_seg_start = Config::default().col_seg_start;
+            amp_poly_cfg.col_seg_end = Config::default().col_seg_end;
+            amp_poly_cfg.column_for_chromosome = None;
+            let vcf_amp = run_core_vcf(&amp_poly_cfg).expect("amplicon 20kbp repeat");
+            let rows_amp = extract_variants(&vcf_amp);
+            assert_eq!(
+                rows_amp.len(),
+                1,
+                "expected 1 amplicon call, got: {rows_amp:?}"
+            );
+            assert!(
+                rows_amp[0].starts_with("chr2\t79999\t.\tCA\tC\t"),
+                "amplicon (paired={is_paired}) 20kbp repeat must left-align to chr2:79999 CA->C, got: {}",
+                rows_amp[0]
+            );
+        }
     }
 }

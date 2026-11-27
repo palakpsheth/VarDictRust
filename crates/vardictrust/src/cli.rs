@@ -941,7 +941,7 @@ pub struct Cli {
     #[arg(long = "parity", help_heading = "Core Inputs & Outputs")]
     pub parity: bool,
 
-    /// Compatibility profile: 'vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] for 100% v1.8.3 parity, or 'off' to enable 32 CompatProfile accuracy/scale/SV/amplicon/VCF/--eqx fixes (including somatic_continue_after_bad_var [joachimwolff/VarDictJava#4], adaptor_all_consensus_dirs [AstraZeneca-NGS/VarDictJava#240], canonical_sv_vcf_anchoring [AstraZeneca-NGS/VarDictJava#398], paired_somatic_amplicon [AstraZeneca-NGS/VarDictJava#378], cigar_strip_outer_hard_clips [AstraZeneca-NGS/VarDictJava#341], strict_vcf_ad_number_r [clintval/vartovcf#101], omit_nonsv_vcf_end [clintval/vartovcf#105], and canonical_vcf_gt [clintval/vartovcf#99]; stamps ##VarDictRustCompat=off). [default: vardictjava]
+    /// Compatibility profile: 'vardictjava' [aliases: 'vardictjava-1.8.3', '1.8.3'] for 100% v1.8.3 parity, or 'off' to enable 38 CompatProfile accuracy/scale/SV/amplicon/VCF/--eqx fixes (including somatic_continue_after_bad_var [joachimwolff/VarDictJava#4], adaptor_all_consensus_dirs [AstraZeneca-NGS/VarDictJava#240], canonical_sv_vcf_anchoring [AstraZeneca-NGS/VarDictJava#398], paired_somatic_amplicon [AstraZeneca-NGS/VarDictJava#378], cigar_strip_outer_hard_clips [AstraZeneca-NGS/VarDictJava#341], strict_vcf_ad_number_r [clintval/vartovcf#101], omit_nonsv_vcf_end [clintval/vartovcf#105], canonical_vcf_gt [clintval/vartovcf#99], mate_overlap_both_strands [Clinical-Genomics/BALSAMIC#1396], canonical_vcf_complex_left_align [AstraZeneca-NGS/VarDictJava#264], somatic_reconcile_split_alleles [clintval/vartovcf#191], and indel_only_shift3 [AstraZeneca-NGS/VarDictJava#263]; stamps ##VarDictRustCompat=off). [default: vardictjava]
     #[arg(
         long = "compat",
         value_name = "TARGET",
@@ -2350,11 +2350,12 @@ mod tests {
             "expected --compat=off in short help:\n{rendered_help}"
         );
         assert!(
-            rendered_help.contains("32 CompatProfile")
+            rendered_help.contains("38 CompatProfile")
+                && !rendered_help.contains("32 CompatProfile")
                 && !rendered_help.contains("21 CompatProfile")
                 && !rendered_help.contains("17 CompatProfile")
                 && !rendered_help.contains("13 CompatProfile"),
-            "expected 32 CompatProfile switches in short help:\n{rendered_help}"
+            "expected 38 CompatProfile switches in short help:\n{rendered_help}"
         );
         assert!(
             rendered_help.contains("-h / --header"),
@@ -2362,11 +2363,12 @@ mod tests {
         );
         let rendered_long_help = cmd.render_long_help().to_string();
         assert!(
-            rendered_long_help.contains("32 CompatProfile")
+            rendered_long_help.contains("38 CompatProfile")
+                && !rendered_long_help.contains("32 CompatProfile")
                 && !rendered_long_help.contains("21 CompatProfile")
                 && !rendered_long_help.contains("17 CompatProfile")
                 && !rendered_long_help.contains("13 CompatProfile"),
-            "expected 32 CompatProfile switches in long help:\n{rendered_long_help}"
+            "expected 38 CompatProfile switches in long help:\n{rendered_long_help}"
         );
         assert!(
             rendered_long_help.contains("18/18 var2vcf"),
@@ -2498,7 +2500,7 @@ mod tests {
             r"\-\-vcf\-all\-alleles",
             r"\-\-all\-alleles",
             r"\-\-compat=off",
-            "32 CompatProfile",
+            "38 CompatProfile",
             r"\-\-completions",
             r"\-H",
             r"\-h",
@@ -2525,6 +2527,7 @@ mod tests {
             "13 CompatProfile",
             "17 CompatProfile",
             "21 CompatProfile",
+            "32 CompatProfile",
         ] {
             assert!(
                 !man_text.contains(forbidden),
@@ -4323,7 +4326,7 @@ mod tests {
         ])
         .expect("--compat=vardictjava must succeed");
         assert_eq!(vj_cli_cfg.compat, COMPAT_VARDICTJAVA_1_8_3);
-        let vj_all_32: [bool; 32] = [
+        let vj_all_38: [bool; 38] = [
             vj_cli_cfg.compat.sanitize_sample_info,
             vj_cli_cfg.compat.standard_dup_symbolic_alt,
             vj_cli_cfg.compat.shift3_3prime_alleles,
@@ -4356,8 +4359,14 @@ mod tests {
             vj_cli_cfg.compat.strict_vcf_ad_number_r,
             vj_cli_cfg.compat.omit_nonsv_vcf_end,
             vj_cli_cfg.compat.canonical_vcf_gt,
+            vj_cli_cfg.compat.sclip_majority_count_first,
+            vj_cli_cfg.compat.mate_overlap_both_strands,
+            vj_cli_cfg.compat.canonical_vcf_complex_left_align,
+            vj_cli_cfg.compat.somatic_reconcile_split_alleles,
+            vj_cli_cfg.compat.adj_snv_full_sclip_match,
+            vj_cli_cfg.compat.indel_only_shift3,
         ];
-        assert_eq!(vj_all_32, [false; 32]);
+        assert_eq!(vj_all_38, [false; 38]);
 
         let off_cli_cfg = parse_cfg(&[
             "-G",
@@ -4370,7 +4379,7 @@ mod tests {
         ])
         .expect("--compat=off must succeed");
         assert_eq!(off_cli_cfg.compat, COMPAT_OFF);
-        let off_all_32: [bool; 32] = [
+        let off_all_38: [bool; 38] = [
             off_cli_cfg.compat.sanitize_sample_info,
             off_cli_cfg.compat.standard_dup_symbolic_alt,
             off_cli_cfg.compat.shift3_3prime_alleles,
@@ -4403,8 +4412,14 @@ mod tests {
             off_cli_cfg.compat.strict_vcf_ad_number_r,
             off_cli_cfg.compat.omit_nonsv_vcf_end,
             off_cli_cfg.compat.canonical_vcf_gt,
+            off_cli_cfg.compat.sclip_majority_count_first,
+            off_cli_cfg.compat.mate_overlap_both_strands,
+            off_cli_cfg.compat.canonical_vcf_complex_left_align,
+            off_cli_cfg.compat.somatic_reconcile_split_alleles,
+            off_cli_cfg.compat.adj_snv_full_sclip_match,
+            off_cli_cfg.compat.indel_only_shift3,
         ];
-        assert_eq!(off_all_32, [true; 32]);
+        assert_eq!(off_all_38, [true; 38]);
 
         // Positional BED alongside `--compat off` must not miscount `"off"` as a positional BED
         let bed_off_cfg = parse_cfg(&[

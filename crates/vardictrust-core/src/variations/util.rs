@@ -64,6 +64,7 @@ pub fn is_low_complex_seq(seq: &[u8]) -> bool {
 fn find_conseq_with(
     soft_clip: &mut Sclip,
     dir: i32,
+    majority_count_first: bool,
     has_fwd: impl FnOnce(&[u8; 6]) -> bool,
     has_rev: impl FnOnce(&[u8; 6]) -> bool,
 ) -> &[u8] {
@@ -101,8 +102,15 @@ fn find_conseq_with(
                 });
                 let mean_qual = has_seq_qual.map_or(0.0, |v| v.qmean);
 
-                if current_count > max_count || (has_seq_qual.is_some() && mean_qual > max_quality)
-                {
+                let beats = if majority_count_first {
+                    current_count > max_count
+                        || (current_count == max_count
+                            && has_seq_qual.is_some()
+                            && mean_qual > max_quality)
+                } else {
+                    current_count > max_count || (has_seq_qual.is_some() && mean_qual > max_quality)
+                };
+                if beats {
                     max_count = current_count;
                     chosen_base = Some(current_base);
                     max_quality = mean_qual;
@@ -201,6 +209,7 @@ pub fn find_conseq(
     find_conseq_with(
         soft_clip,
         dir,
+        false,
         |seed| adaptor_forward.contains_key(seed.as_slice()),
         |rev_seed| adaptor_reverse.contains_key(rev_seed.as_slice()),
     )
@@ -212,10 +221,12 @@ pub(crate) fn find_conseq_slice<'a>(
     dir: i32,
     adaptor_forward: &crate::realign::AdaptorSet,
     adaptor_reverse: &crate::realign::AdaptorSet,
+    majority_count_first: bool,
 ) -> &'a [u8] {
     find_conseq_with(
         soft_clip,
         dir,
+        majority_count_first,
         |seed| adaptor_forward.contains_seed(seed),
         |rev_seed| adaptor_reverse.contains_seed(rev_seed),
     )
@@ -226,8 +237,16 @@ pub(crate) fn find_conseq_sets(
     dir: i32,
     adaptor_forward: &crate::realign::AdaptorSet,
     adaptor_reverse: &crate::realign::AdaptorSet,
+    majority_count_first: bool,
 ) -> Vec<u8> {
-    find_conseq_slice(soft_clip, dir, adaptor_forward, adaptor_reverse).to_vec()
+    find_conseq_slice(
+        soft_clip,
+        dir,
+        adaptor_forward,
+        adaptor_reverse,
+        majority_count_first,
+    )
+    .to_vec()
 }
 
 /// Correct counts for negative values.
@@ -1331,7 +1350,103 @@ pub(crate) mod tests {
         }
 
         let adapt = crate::realign::AdaptorSet::default();
-        let consensus = find_conseq_sets(&mut sc, 0, &adapt, &adapt);
+        let consensus = find_conseq_sets(&mut sc, 0, &adapt, &adapt, false);
         assert_eq!(consensus, b"GTTTTT");
+    }
+
+    #[test]
+    #[expect(
+        deprecated,
+        reason = "verifies legacy find_conseq parity vs sclip_majority_count_first"
+    )]
+    fn wave6_lane1_switch33_find_conseq_majority_count_first_and_tie_breakers() {
+        let adapt = crate::realign::AdaptorSet::default();
+        let empty_bt = BTreeMap::new();
+
+        // 1. 20 reads 'A' (mean_qual = 33.0) + 1 error read 'T' (mean_qual = 38.0) across a 10-bp soft-clip:
+        //    - Legacy `find_conseq` / `majority_count_first = false` lets single 'T' overwrite 'A' via
+        //      `38.0 > 33.0`, tripping the 2-mismatch break and destroying consensus to `b""`.
+        //    - `majority_count_first = true` keeps 20-read 'A' majority (`200/210 = 95.2% > 90%`) -> `b"AAAAAAAAAA"`.
+        let build_20a_1t_sclip = || -> Sclip {
+            let mut sc = Sclip::new();
+            sc.variation.cnt = 21;
+            for pos in 0..10 {
+                sc.nt.insert(pos, BTreeMap::from([(b'A', 20), (b'T', 1)]));
+                let mut va = Variation::new();
+                va.qmean = 33.0;
+                let mut vt = Variation::new();
+                vt.qmean = 38.0;
+                sc.seq.insert(pos, BTreeMap::from([(b'A', va), (b'T', vt)]));
+            }
+            sc
+        };
+
+        let mut sc_legacy_pub = build_20a_1t_sclip();
+        assert_eq!(
+            find_conseq(&mut sc_legacy_pub, 0, &empty_bt, &empty_bt),
+            b"",
+            "deprecated find_conseq must preserve VarDictJava v1.8.3 behavior"
+        );
+        let mut sc_legacy = build_20a_1t_sclip();
+        assert_eq!(
+            find_conseq_sets(&mut sc_legacy, 0, &adapt, &adapt, false),
+            b""
+        );
+
+        let mut sc_majority = build_20a_1t_sclip();
+        assert_eq!(
+            find_conseq_slice(&mut sc_majority, 0, &adapt, &adapt, true),
+            b"AAAAAAAAAA"
+        );
+
+        // 2. Equal-count tie-breaker: 5 'A' (Q30) vs 5 'G' (Q35) at pos 0 (with clean 'A'x20 at 1..10
+        //    so overall match_cnt / total = 185 / 190 > 0.9) must pick higher-quality 'G'.
+        let mut sc_tie_qual = Sclip::new();
+        sc_tie_qual.variation.cnt = 20;
+        sc_tie_qual
+            .nt
+            .insert(0, BTreeMap::from([(b'A', 5), (b'G', 5)]));
+        let mut va_q30 = Variation::new();
+        va_q30.qmean = 30.0;
+        let mut vg_q35 = Variation::new();
+        vg_q35.qmean = 35.0;
+        sc_tie_qual
+            .seq
+            .insert(0, BTreeMap::from([(b'A', va_q30), (b'G', vg_q35)]));
+        for pos in 1..10 {
+            sc_tie_qual.nt.insert(pos, BTreeMap::from([(b'A', 20)]));
+            let mut va = Variation::new();
+            va.qmean = 35.0;
+            sc_tie_qual.seq.insert(pos, BTreeMap::from([(b'A', va)]));
+        }
+        assert_eq!(
+            find_conseq_sets(&mut sc_tie_qual, 0, &adapt, &adapt, true),
+            b"GAAAAAAAAA"
+        );
+
+        // 3. Exact equal-count AND equal-quality tie: 5 'C' (Q35) vs 5 'T' (Q35) at pos 0
+        //    must deterministically keep lexicographically first 'C' (`mean_qual > max_quality` is strict `>`).
+        let mut sc_tie_lex = Sclip::new();
+        sc_tie_lex.variation.cnt = 20;
+        sc_tie_lex
+            .nt
+            .insert(0, BTreeMap::from([(b'C', 5), (b'T', 5)]));
+        let mut vc_q35 = Variation::new();
+        vc_q35.qmean = 35.0;
+        let mut vt_q35 = Variation::new();
+        vt_q35.qmean = 35.0;
+        sc_tie_lex
+            .seq
+            .insert(0, BTreeMap::from([(b'C', vc_q35), (b'T', vt_q35)]));
+        for pos in 1..10 {
+            sc_tie_lex.nt.insert(pos, BTreeMap::from([(b'A', 20)]));
+            let mut va = Variation::new();
+            va.qmean = 35.0;
+            sc_tie_lex.seq.insert(pos, BTreeMap::from([(b'A', va)]));
+        }
+        assert_eq!(
+            find_conseq_sets(&mut sc_tie_lex, 0, &adapt, &adapt, true),
+            b"CAAAAAAAAA"
+        );
     }
 }

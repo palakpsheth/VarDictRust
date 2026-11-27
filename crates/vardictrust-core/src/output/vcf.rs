@@ -3822,6 +3822,7 @@ mod tests {
             end_is_variant2: false,
             tumor_amplicon: None,
             normal_amplicon: None,
+            v2_ref_variant: None,
         }
     }
 
@@ -4110,6 +4111,7 @@ mod tests {
             end_is_variant2: false,
             tumor_amplicon: None,
             normal_amplicon: None,
+            v2_ref_variant: None,
         };
         let pr = format_paired_vcf_record(&sv, "chr1", &config);
         assert_eq!(pr.as_str().split('\t').nth(5).unwrap(), "71");

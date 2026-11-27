@@ -51,7 +51,7 @@ pub enum CompatTarget {
     /// Exact VarDictJava v1.8.3 (`0886261`) + `var2vcf_*.pl` (`009e017`) output parity (`--compat=vardictjava`).
     #[default]
     VardictJava183,
-    /// Compatibility off (`--compat=off`): enables all 32 [`CompatProfile`] accuracy, scale, SV, amplicon, VCF schema, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
+    /// Compatibility off (`--compat=off`): enables all 38 [`CompatProfile`] accuracy, scale, SV, amplicon, VCF schema, and `--eqx` fixes and stamps `##VarDictRustCompat=off` in the VCF header.
     Off,
 }
 
@@ -75,7 +75,7 @@ impl CompatTarget {
     }
 }
 
-/// Resolved compatibility behavior switches (32 independent correctness, scale, SV, amplicon, VCF schema, and `--eqx` flags) derived from [`CompatTarget`].
+/// Resolved compatibility behavior switches (38 independent correctness, scale, SV, amplicon, VCF schema, and `--eqx` flags) derived from [`CompatTarget`].
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CompatProfile {
@@ -144,9 +144,21 @@ pub struct CompatProfile {
     pub omit_nonsv_vcf_end: bool,
     /// `clintval/vartovcf#99`, `clintval/vartovcf#54`, `AstraZeneca-NGS/VarDictJava#344`, `AstraZeneca-NGS/VarDict#186`: Canonicalize unphased `1/0` to `0/1` and promote concrete non-dot `0/0` carrier genotypes with `VD > 0` to `0/1`.
     pub canonical_vcf_gt: bool,
+    /// VariationUtils.java:90 / Issue #160 Item 4: Require current_count > max_count before breaking ties by mean_qual > max_quality in find_conseq soft-clip consensus.
+    pub sclip_majority_count_first: bool,
+    /// Clinical-Genomics/BALSAMIC#1396 / AstraZeneca-NGS/VarDictJava#239 / Issue #160 Item 8: Rebalance agreed overlapping FR mate-pair support across forward and reverse strands under -u without inflating VD or DP.
+    pub mate_overlap_both_strands: bool,
+    /// AstraZeneca-NGS/VarDictJava#264 / mskcc/vcf2maf#279 / Issue #160 Item 5: Apply Tan et al. (2015) parsimonious 5' left-alignment and 1-bp upstream FASTA anchoring to non-symbolic unequal-length alleles when -3 and CRISPR modes are inactive.
+    pub canonical_vcf_complex_left_align: bool,
+    /// clintval/vartovcf#191 / clintval/vartovcf#195 / Issue #160 Item 11: Reconcile paired tumor/normal alleles matching on normalized (start_pos, ref_allele, var_allele) when raw description strings differ.
+    pub somatic_reconcile_split_alleles: bool,
+    /// clintval/vartovcf#181 / clintval/vartovcf#186 / AstraZeneca-NGS/VarDict#174 / Issue #160 Item 10A: Require >= 2 bp soft-clip consensus and full flanking reference match across seq[1..] in adj_snv.
+    pub adj_snv_full_sclip_match: bool,
+    /// AstraZeneca-NGS/VarDictJava#263 / clintval/vartovcf#117 / Issue #160 Item 12B: Clamp SHIFT3 to 0 on equal-length substitutions (SNVs and equal-length MNVs) while preserving MSI and MSILEN.
+    pub indel_only_shift3: bool,
 }
 
-/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 32 [`CompatProfile`] fixes disabled).
+/// Default `v1.x` VarDictJava v1.8.3 / `var2vcf_*.pl` parity profile (`--compat=vardictjava`, all 38 [`CompatProfile`] fixes disabled).
 pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     target: CompatTarget::VardictJava183,
     sanitize_sample_info: false,
@@ -181,9 +193,15 @@ pub const COMPAT_VARDICTJAVA_1_8_3: CompatProfile = CompatProfile {
     strict_vcf_ad_number_r: false,
     omit_nonsv_vcf_end: false,
     canonical_vcf_gt: false,
+    sclip_majority_count_first: false,
+    mate_overlap_both_strands: false,
+    canonical_vcf_complex_left_align: false,
+    somatic_reconcile_split_alleles: false,
+    adj_snv_full_sclip_match: false,
+    indel_only_shift3: false,
 };
 
-/// Compatibility-off profile (`--compat=off`) enabling all 32 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), paired somatic amplicon, VCF schema, and `--eqx` fixes.
+/// Compatibility-off profile (`--compat=off`) enabling all 38 [`CompatProfile`] accuracy, scale, symbolic SV (`<DUP>`, `<INV>`, `<DEL>`), paired somatic amplicon, VCF schema, and `--eqx` fixes.
 pub const COMPAT_OFF: CompatProfile = CompatProfile {
     target: CompatTarget::Off,
     sanitize_sample_info: true,
@@ -218,6 +236,12 @@ pub const COMPAT_OFF: CompatProfile = CompatProfile {
     strict_vcf_ad_number_r: true,
     omit_nonsv_vcf_end: true,
     canonical_vcf_gt: true,
+    sclip_majority_count_first: true,
+    mate_overlap_both_strands: true,
+    canonical_vcf_complex_left_align: true,
+    somatic_reconcile_split_alleles: true,
+    adj_snv_full_sclip_match: true,
+    indel_only_shift3: true,
 };
 
 impl Default for CompatProfile {
@@ -1313,9 +1337,15 @@ mod tests {
             strict_vcf_ad_number_r,
             omit_nonsv_vcf_end,
             canonical_vcf_gt,
+            sclip_majority_count_first,
+            mate_overlap_both_strands,
+            canonical_vcf_complex_left_align,
+            somatic_reconcile_split_alleles,
+            adj_snv_full_sclip_match,
+            indel_only_shift3,
         } = vj;
         assert_eq!(vj_target, CompatTarget::VardictJava183);
-        let vj_switches: [bool; 32] = [
+        let vj_switches: [bool; 38] = [
             sanitize_sample_info,
             standard_dup_symbolic_alt,
             shift3_3prime_alleles,
@@ -1348,6 +1378,12 @@ mod tests {
             strict_vcf_ad_number_r,
             omit_nonsv_vcf_end,
             canonical_vcf_gt,
+            sclip_majority_count_first,
+            mate_overlap_both_strands,
+            canonical_vcf_complex_left_align,
+            somatic_reconcile_split_alleles,
+            adj_snv_full_sclip_match,
+            indel_only_shift3,
         ];
         assert!(vj_switches.iter().all(|&flag| !flag));
 
@@ -1386,9 +1422,15 @@ mod tests {
             strict_vcf_ad_number_r,
             omit_nonsv_vcf_end,
             canonical_vcf_gt,
+            sclip_majority_count_first,
+            mate_overlap_both_strands,
+            canonical_vcf_complex_left_align,
+            somatic_reconcile_split_alleles,
+            adj_snv_full_sclip_match,
+            indel_only_shift3,
         } = off;
         assert_eq!(off_target, CompatTarget::Off);
-        let off_switches: [bool; 32] = [
+        let off_switches: [bool; 38] = [
             sanitize_sample_info,
             standard_dup_symbolic_alt,
             shift3_3prime_alleles,
@@ -1421,6 +1463,12 @@ mod tests {
             strict_vcf_ad_number_r,
             omit_nonsv_vcf_end,
             canonical_vcf_gt,
+            sclip_majority_count_first,
+            mate_overlap_both_strands,
+            canonical_vcf_complex_left_align,
+            somatic_reconcile_split_alleles,
+            adj_snv_full_sclip_match,
+            indel_only_shift3,
         ];
         assert!(off_switches.iter().all(|&flag| flag));
 
@@ -1984,6 +2032,7 @@ mod tests {
             end_is_variant2: false,
             tumor_amplicon: Some(amp_a),
             normal_amplicon: None,
+            v2_ref_variant: None,
         };
         assert_eq!(som.tumor_amplicon, Some(amp_a));
         assert!(som.normal_amplicon.is_none());
@@ -2087,6 +2136,92 @@ mod tests {
             let mut cfg = Config::from_preset(preset);
             assert_eq!(cfg.preset, Some(preset));
             assert_eq!(cfg.compat, COMPAT_OFF);
+            let CompatProfile {
+                target: preset_target,
+                sanitize_sample_info,
+                standard_dup_symbolic_alt,
+                shift3_3prime_alleles,
+                strict_region_bounds,
+                suppress_pileup_sentinels,
+                live_duprate,
+                preserve_mixed_sex_contigs,
+                cigar_homopolymer_merge,
+                eqx_cigar_read_length,
+                preserve_discordant_svs,
+                mark_dup_sv_inclusive_end,
+                sv_lazy_mate_pileup,
+                exact_binary_half_even,
+                reconcile_vd_dp,
+                coordinate_sorted_vars,
+                exact_35_overlap,
+                exact_cigar_dlen_match,
+                somatic_continue_after_bad_var,
+                adaptor_all_consensus_dirs,
+                canonical_sv_vcf_anchoring,
+                paired_somatic_amplicon,
+                cigar_strip_outer_hard_clips,
+                nonnegative_subtracted_means,
+                reconcile_strand_and_hq_sums,
+                reconcile_rd_vd_dp,
+                sanitize_iupac_alt_alleles,
+                sv_respect_min_len,
+                pileup_preserve_shifted_ref,
+                recompute_vartype_after_adj_complex,
+                strict_vcf_ad_number_r,
+                omit_nonsv_vcf_end,
+                canonical_vcf_gt,
+                sclip_majority_count_first,
+                mate_overlap_both_strands,
+                canonical_vcf_complex_left_align,
+                somatic_reconcile_split_alleles,
+                adj_snv_full_sclip_match,
+                indel_only_shift3,
+            } = cfg.compat;
+            assert_eq!(preset_target, CompatTarget::Off);
+            let preset_switches: [bool; 38] = [
+                sanitize_sample_info,
+                standard_dup_symbolic_alt,
+                shift3_3prime_alleles,
+                strict_region_bounds,
+                suppress_pileup_sentinels,
+                live_duprate,
+                preserve_mixed_sex_contigs,
+                cigar_homopolymer_merge,
+                eqx_cigar_read_length,
+                preserve_discordant_svs,
+                mark_dup_sv_inclusive_end,
+                sv_lazy_mate_pileup,
+                exact_binary_half_even,
+                reconcile_vd_dp,
+                coordinate_sorted_vars,
+                exact_35_overlap,
+                exact_cigar_dlen_match,
+                somatic_continue_after_bad_var,
+                adaptor_all_consensus_dirs,
+                canonical_sv_vcf_anchoring,
+                paired_somatic_amplicon,
+                cigar_strip_outer_hard_clips,
+                nonnegative_subtracted_means,
+                reconcile_strand_and_hq_sums,
+                reconcile_rd_vd_dp,
+                sanitize_iupac_alt_alleles,
+                sv_respect_min_len,
+                pileup_preserve_shifted_ref,
+                recompute_vartype_after_adj_complex,
+                strict_vcf_ad_number_r,
+                omit_nonsv_vcf_end,
+                canonical_vcf_gt,
+                sclip_majority_count_first,
+                mate_overlap_both_strands,
+                canonical_vcf_complex_left_align,
+                somatic_reconcile_split_alleles,
+                adj_snv_full_sclip_match,
+                indel_only_shift3,
+            ];
+            assert!(
+                preset_switches.iter().all(|&flag| flag),
+                "expected all 38 CompatProfile switches enabled for preset {preset}"
+            );
             assert!(cfg.zero_based);
             assert!(!cfg.zero_based_defined);
             assert!(cfg.af_threshold_raw.is_none());

@@ -432,8 +432,47 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
     splice: &rustc_hash::FxHashSet<String>,
     emit: &mut dyn FnMut(AmpliconVariant) -> Result<(), crate::types::VardictError>,
 ) -> Result<(), crate::types::VardictError> {
+    amplicon_post_process_streaming_with_ref(
+        config,
+        region,
+        vars_per_amplicon,
+        positions,
+        splice,
+        None,
+        emit,
+    )
+}
+
+pub(crate) fn amplicon_post_process_streaming_with_ref<
+    R: std::borrow::Borrow<Region>,
+    C: AsRef<[(usize, R)]>,
+>(
+    config: &Config,
+    region: &Region,
+    vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
+    positions: impl IntoIterator<Item = (i32, C)>,
+    splice: &rustc_hash::FxHashSet<String>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
+    emit: &mut dyn FnMut(AmpliconVariant) -> Result<(), crate::types::VardictError>,
+) -> Result<(), crate::types::VardictError> {
     let skip_eq_non_pileup = !config.pileup && config.compat.sanitize_iupac_alt_alleles;
     let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
+    let do_left_align = crate::variations::canonical_left_align_enabled(config);
+    let indel_only_shift3 = config.compat.indel_only_shift3;
+    let ref_ctx = ref_info.map(|(r, len)| (r, region.chr.as_str(), len));
+    let has_shiftable_candidate = do_left_align
+        && !config.pileup
+        && vars_per_amplicon.iter().any(|vm| {
+            vm.iter().any(|(&pos, vars)| {
+                vars.variants.iter().any(|v| {
+                    !v.null_record
+                        && !v.var_allele.contains('<')
+                        && (v.ref_allele.len() > 1 || v.var_allele.len() > 1 || v.start_pos != pos)
+                })
+            })
+        });
+    let dedup_non_pileup = do_left_align && !config.pileup && has_shiftable_candidate;
+    let mut buffered_dedup: Vec<AmpliconVariant> = Vec::new();
     // Per-amplicon cached `chr:start-end` strings formatted at most once per segment.
     let mut region_tags: Vec<String> = vec![String::new(); vars_per_amplicon.len()];
     // Scratch collections reused across positions to avoid per-base allocations.
@@ -452,9 +491,14 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
     // bad variants (-D debug column)
     let mut bad_vars: Vec<(Option<Variant>, String)> = Vec::new();
 
-    // Iterate over positions sorted (BTreeMap already sorted)
-    for (position, amplicon_regions) in positions {
-        let amplicon_regions = amplicon_regions.as_ref();
+    let mut step_position = |position: i32,
+                             amplicon_regions: &[(usize, R)],
+                             horizon_opt: Option<(i32, bool)>,
+                             emit: &mut dyn FnMut(
+        AmpliconVariant,
+    )
+        -> Result<(), crate::types::VardictError>|
+     -> Result<(), crate::types::VardictError> {
         gvs.clear();
         if config.pileup {
             ref_vars.clear();
@@ -566,7 +610,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                     vref_list.push(top_ref);
                 } else {
                     if config.compat.suppress_pileup_sentinels {
-                        continue;
+                        return Ok(());
                     }
                     // Output empty variant at this position (AmpliconPostProcessModule.java:105-106,
                     // AmpliconOutputVariant.java:25,27,54-60: new Variant() has genotype="", bias="0;0",
@@ -588,10 +632,10 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                         good_variants: Vec::new(),
                         bad_variants: Vec::new(),
                     })?;
-                    continue;
+                    return Ok(());
                 }
             } else {
-                continue;
+                return Ok(());
             }
         } else {
             fill_vref_list_into(&gvs, &mut vref_list);
@@ -602,6 +646,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
         let mut use_gcnt = false;
 
         let total_amplicons = amplicon_regions.len() as i32;
+        let mut pushed_any = false;
 
         for &max_var in &vref_list {
             // If flag is set, re-check by looking at top variant's description across all amplicons
@@ -711,14 +756,17 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
             let gdamp = current_gvscnt;
             let tlamp = current_gvscnt.saturating_add(bad_count);
 
-            // Apply complex variant adjustment — clone max_var once at emission
+            // Apply complex variant adjustment + Switch 35 / Switch 38 normalization
             let mut out_variant = max_var.clone();
             out_variant.var_type = out_variant.var_type();
-            if out_variant.var_type == "Complex" {
-                out_variant.adj_complex_compat(refresh_vt);
-                if skip_eq_non_pileup && out_variant.ref_allele == out_variant.var_allele {
-                    continue;
-                }
+            out_variant.normalize_postprocess(
+                ref_ctx,
+                do_left_align,
+                refresh_vt,
+                indel_only_shift3,
+            );
+            if skip_eq_non_pileup && out_variant.ref_allele == out_variant.var_allele {
+                continue;
             }
 
             let region_str = if let Some(&(_, amp_idx)) = good_variants.first() {
@@ -747,7 +795,7 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                 (Vec::new(), Vec::new())
             };
 
-            emit(AmpliconVariant {
+            let av = AmpliconVariant {
                 variant: out_variant,
                 gdamp,
                 tlamp,
@@ -756,7 +804,127 @@ pub fn amplicon_post_process_streaming<R: std::borrow::Borrow<Region>, C: AsRef<
                 region: region_str,
                 good_variants: debug_good,
                 bad_variants: debug_bad,
-            })?;
+            };
+            if horizon_opt.is_some() {
+                buffered_dedup.push(av);
+                pushed_any = true;
+            } else {
+                emit(av)?;
+            }
+        }
+
+        if let Some((horizon, is_last)) = horizon_opt {
+            if pushed_any && buffered_dedup.len() > 1 {
+                crate::variations::dedup_post_norm_vec(&mut buffered_dedup, |av| {
+                    (!av.variant.null_record).then_some((0u8, &av.variant, &av.variant))
+                });
+            }
+            let drain_cnt = if is_last {
+                buffered_dedup.len()
+            } else {
+                buffered_dedup
+                    .iter()
+                    .position(|av| av.variant.start_pos >= horizon)
+                    .unwrap_or(buffered_dedup.len())
+            };
+            if drain_cnt > 0 {
+                for av in buffered_dedup.drain(..drain_cnt) {
+                    emit(av)?;
+                }
+            }
+        }
+
+        Ok(())
+    };
+
+    // Iterate over positions sorted (BTreeMap already sorted):
+    // - SNV-only / empty / pileup / default-parity segments stream immediately with 0 buffering;
+    // - Indel/MNV segments under Switch 35 compute a suffix-minimum normalized `start_pos`
+    //   horizon and drain collision-resolved rows immediately once `start_pos < horizon`.
+    if !dedup_non_pileup {
+        for (position, amplicon_regions) in positions {
+            step_position(position, amplicon_regions.as_ref(), None, emit)?;
+        }
+    } else {
+        let pos_vec: Vec<(i32, C)> = positions.into_iter().collect();
+        let has_loaded_ref = ref_ctx
+            .as_ref()
+            .is_some_and(|(r, chr, _)| r.loaded_span_bounds(chr).is_some());
+        let mut scratch_var = Variant::empty_internal();
+        let mut min_future_start = vec![i32::MAX; pos_vec.len()];
+        let mut running_min = i32::MAX;
+        for idx in (0..pos_vec.len()).rev() {
+            if let Some((position, covering)) = pos_vec.get(idx) {
+                let p = *position;
+                let mut pos_min = i32::MAX;
+                for (amp_num, _) in covering.as_ref() {
+                    let Some(vtmp) = vars_per_amplicon.get(*amp_num).and_then(|m| m.get(&p)) else {
+                        continue;
+                    };
+                    for tv in &vtmp.variants {
+                        if tv.null_record || tv.ref_allele.is_empty() {
+                            continue;
+                        }
+                        if skip_eq_non_pileup && tv.ref_allele == tv.var_allele {
+                            continue;
+                        }
+                        let cand_start = if !tv.var_allele.contains('<')
+                            && (tv.ref_allele.len() > 1 || tv.var_allele.len() > 1)
+                        {
+                            scratch_var.null_record = false;
+                            scratch_var.start_pos = tv.start_pos;
+                            scratch_var.end_pos = tv.end_pos;
+                            scratch_var.ref_allele.clone_from(&tv.ref_allele);
+                            scratch_var.var_allele.clone_from(&tv.var_allele);
+                            if !has_loaded_ref {
+                                scratch_var.left_seq.clone_from(&tv.left_seq);
+                                scratch_var.right_seq.clone_from(&tv.right_seq);
+                            } else {
+                                scratch_var.left_seq.clear();
+                                scratch_var.right_seq.clear();
+                            }
+                            let vt = scratch_var.var_type_cow();
+                            scratch_var.var_type.clear();
+                            scratch_var.var_type.push_str(&vt);
+                            scratch_var.normalize_postprocess(
+                                ref_ctx,
+                                do_left_align,
+                                refresh_vt,
+                                indel_only_shift3,
+                            );
+                            if skip_eq_non_pileup
+                                && scratch_var.ref_allele == scratch_var.var_allele
+                            {
+                                continue;
+                            }
+                            scratch_var.start_pos
+                        } else {
+                            tv.start_pos
+                        };
+                        if cand_start < pos_min {
+                            pos_min = cand_start;
+                        }
+                    }
+                }
+                if pos_min < running_min {
+                    running_min = pos_min;
+                }
+            }
+            if let Some(slot) = min_future_start.get_mut(idx) {
+                *slot = running_min;
+            }
+        }
+
+        let pos_len = pos_vec.len();
+        for (idx, (position, amplicon_regions)) in pos_vec.into_iter().enumerate() {
+            let horizon = min_future_start.get(idx + 1).copied().unwrap_or(i32::MAX);
+            let is_last = idx + 1 >= pos_len;
+            step_position(
+                position,
+                amplicon_regions.as_ref(),
+                Some((horizon, is_last)),
+                emit,
+            )?;
         }
     }
 
@@ -1050,6 +1218,21 @@ pub fn aggregate_sample_amplicon_vars(
     crate::javamap::JavaHashMap<i32, Vars>,
     SampleAmpliconConcordance,
 ) {
+    aggregate_sample_amplicon_vars_with_ref(config, segment, vars_per_amplicon, splice, None)
+}
+
+pub(crate) fn aggregate_sample_amplicon_vars_with_ref(
+    config: &Config,
+    segment: &[Region],
+    vars_per_amplicon: Vec<crate::javamap::JavaHashMap<i32, Vars>>,
+    splice: &rustc_hash::FxHashSet<String>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
+) -> (
+    crate::javamap::JavaHashMap<i32, Vars>,
+    SampleAmpliconConcordance,
+) {
+    let seg_chr = segment.first().map_or("", |r| r.chr.as_str());
+    let ref_ctx = ref_info.map(|(r, len)| (r, seg_chr, len));
     let allow_padded_sv = config.compat.canonical_sv_vcf_anchoring;
     let has_symbolic_sv_at = |p: i32| -> bool {
         vars_per_amplicon.iter().any(|vm| {
@@ -1083,6 +1266,7 @@ pub fn aggregate_sample_amplicon_vars(
             &vars_per_amplicon,
             amplicon_position_ref_stream(segment).chain(extra_covs),
             splice,
+            ref_ctx,
         )
     } else {
         let mut positions: BTreeSet<i32> = BTreeSet::new();
@@ -1107,10 +1291,41 @@ pub fn aggregate_sample_amplicon_vars(
                 None
             }),
             splice,
+            ref_ctx,
         )
     };
     drop(vars_per_amplicon);
     out
+}
+
+fn upsert_concordance_entry(
+    concordance: &mut SampleAmpliconConcordance,
+    key_start: i32,
+    key_ref: &str,
+    key_var: &str,
+    cand_conc: crate::config::AmpliconConcordance,
+    nocov: i32,
+    current_flag: bool,
+) {
+    let entries = concordance.allele_concordance.entry(key_start).or_default();
+    if let Some((_, _, existing)) = entries
+        .iter_mut()
+        .find(|(r, a, _)| r.as_ref() == key_ref && a.as_ref() == key_var)
+    {
+        if (cand_conc.gdamp, cand_conc.tlamp) > (existing.gdamp, existing.tlamp) {
+            *existing = cand_conc;
+        }
+    } else {
+        entries.push((
+            key_ref.to_owned().into_boxed_str(),
+            key_var.to_owned().into_boxed_str(),
+            cand_conc,
+        ));
+    }
+    concordance
+        .position_baseline
+        .entry(key_start)
+        .or_insert((nocov, current_flag));
 }
 
 fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>>(
@@ -1118,6 +1333,7 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
     vars_per_amplicon: &[crate::javamap::JavaHashMap<i32, Vars>],
     positions: impl IntoIterator<Item = (i32, C)>,
     splice: &rustc_hash::FxHashSet<String>,
+    ref_ctx: Option<(&crate::reference::Reference, &str, i32)>,
 ) -> (
     crate::javamap::JavaHashMap<i32, Vars>,
     SampleAmpliconConcordance,
@@ -1126,6 +1342,8 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
     let canonical_sv_anchoring = config.compat.canonical_sv_vcf_anchoring;
     let skip_eq_non_pileup = !config.pileup && config.compat.sanitize_iupac_alt_alleles;
     let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
+    let do_left_align = crate::variations::canonical_left_align_enabled(config);
+    let indel_only_shift3 = config.compat.indel_only_shift3;
     let min_reads_bias = i32::try_from(config.min_reads_bias).unwrap_or(i32::MAX);
     let mut aligned_vars = crate::javamap::JavaHashMap::new();
     let mut concordance = SampleAmpliconConcordance {
@@ -1360,25 +1578,35 @@ fn aggregate_sample_amplicon_positions<R: Borrow<Region>, C: AsRef<[(usize, R)]>
                 ncamp: nocov,
                 ampflag: current_flag,
             };
-            let entries = concordance.allele_concordance.entry(key_start).or_default();
-            if let Some((_, _, existing)) = entries
-                .iter_mut()
-                .find(|(r, a, _)| r.as_ref() == key_ref.as_ref() && a.as_ref() == key_var.as_ref())
-            {
-                if (cand_conc.gdamp, cand_conc.tlamp) > (existing.gdamp, existing.tlamp) {
-                    *existing = cand_conc;
+            upsert_concordance_entry(
+                &mut concordance,
+                key_start,
+                key_ref.as_ref(),
+                key_var.as_ref(),
+                cand_conc,
+                nocov,
+                current_flag,
+            );
+            if do_left_align && rep_var.ref_allele.len() != rep_var.var_allele.len() {
+                let mut la_tmp = rep_var.clone();
+                la_tmp.var_type = la_tmp.var_type();
+                la_tmp.normalize_postprocess(ref_ctx, true, refresh_vt, indel_only_shift3);
+                if !(skip_eq_non_pileup && la_tmp.ref_allele == la_tmp.var_allele)
+                    && (la_tmp.start_pos != key_start
+                        || la_tmp.ref_allele != key_ref.as_ref()
+                        || la_tmp.var_allele != key_var.as_ref())
+                {
+                    upsert_concordance_entry(
+                        &mut concordance,
+                        la_tmp.start_pos,
+                        &la_tmp.ref_allele,
+                        &la_tmp.var_allele,
+                        cand_conc,
+                        nocov,
+                        current_flag,
+                    );
                 }
-            } else {
-                entries.push((
-                    key_ref.into_owned().into_boxed_str(),
-                    key_var.into_owned().into_boxed_str(),
-                    cand_conc,
-                ));
             }
-            concordance
-                .position_baseline
-                .entry(key_start)
-                .or_insert((nocov, current_flag));
         }
 
         if best_ref.is_some() || best_skipped_eq.is_some() || !best_by_desc.is_empty() {
@@ -3680,5 +3908,270 @@ mod tests {
             assert_eq!(loh_170.variant1.genotype.as_deref(), Some("C/C"));
             assert_eq!(loh_170.variant1.bias, "2;0");
         }
+    }
+
+    #[test]
+    fn test_wave6_switch35_switch38_and_ruling3_amplicon_postprocess() {
+        let amp_reg = make_amp_region("chr1", 90, 150);
+        let splice = rustc_hash::FxHashSet::default();
+
+        let mut m0 = crate::javamap::JavaHashMap::new();
+        let mut v100 = Vars::new();
+        let mut d100 = make_good_variant(100, "CAT", "C", 0.40);
+        d100.end_pos = 102;
+        d100.description = "-2AT".to_string();
+        d100.pos_coverage = 8;
+        d100.total_pos_cov = 20;
+        d100.left_seq = "GGGGGG".to_string();
+        v100.variants.push(d100);
+        m0.insert(100, v100);
+
+        let mut v102 = Vars::new();
+        let mut d102 = make_good_variant(102, "TAT", "T", 0.45);
+        d102.end_pos = 104;
+        d102.description = "-2AT".to_string();
+        d102.pos_coverage = 3;
+        d102.total_pos_cov = 20;
+        d102.left_seq = "GGGGGGCA".to_string();
+        v102.variants.push(d102);
+        m0.insert(102, v102);
+
+        let mut v110 = Vars::new();
+        let mut c110 = make_good_variant(110, "CA", "CG", 0.35);
+        c110.end_pos = 111;
+        c110.description = "C&G".to_string();
+        c110.shift3 = 3;
+        c110.msi = 5.0;
+        c110.msint = 1;
+        v110.variants.push(c110);
+        m0.insert(110, v110);
+
+        let vars_per_amp = vec![m0];
+        let mut amps_on_pos = BTreeMap::new();
+        amps_on_pos.insert(100, vec![(0usize, &amp_reg)]);
+        amps_on_pos.insert(102, vec![(0usize, &amp_reg)]);
+        amps_on_pos.insert(110, vec![(0usize, &amp_reg)]);
+
+        let mut cfg = Config::default();
+        cfg.emit_intermediate = true;
+        cfg.freq = 0.01;
+        cfg.min_reads = 2;
+        cfg.read_pos = 5.0;
+        cfg.base_qual = 22.5;
+        cfg.qratio = 1.5;
+        cfg.compat.canonical_vcf_complex_left_align = true;
+        cfg.compat.indel_only_shift3 = true;
+
+        let out = amplicon_post_process(&cfg, &amp_reg, &vars_per_amp, &amps_on_pos, &splice)
+            .expect("amplicon_post_process");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].variant.start_pos, 100);
+        assert_eq!(out[0].variant.ref_allele, "CAT");
+        assert_eq!(out[0].variant.var_allele, "C");
+        assert_eq!(out[0].variant.pos_coverage, 8);
+        assert_eq!(out[1].variant.start_pos, 111);
+        assert_eq!(out[1].variant.ref_allele, "A");
+        assert_eq!(out[1].variant.var_allele, "G");
+        assert_eq!(out[1].variant.shift3, 0);
+
+        // -3 (`three_prime`) and CRISPR (`crispr_cutting_site`) must bypass Switch 35 + Ruling 3 deduplication:
+        let mut m_same_trimmed = crate::javamap::JavaHashMap::new();
+        let mut mt100 = Vars::new();
+        let mut md100 = make_good_variant(100, "CAT", "C", 0.40);
+        md100.end_pos = 102;
+        md100.description = "-2AT".to_string();
+        md100.pos_coverage = 8;
+        md100.total_pos_cov = 20;
+        mt100.variants.push(md100);
+        m_same_trimmed.insert(100, mt100);
+        let mut mt101 = Vars::new();
+        let mut md101 = make_good_variant(100, "CATG", "CG", 0.35);
+        md101.end_pos = 103;
+        md101.description = "-2AT&G".to_string();
+        md101.pos_coverage = 3;
+        md101.total_pos_cov = 20;
+        mt101.variants.push(md101);
+        m_same_trimmed.insert(101, mt101);
+        let vars_same_trimmed = vec![m_same_trimmed];
+        let mut amps_same_trimmed = BTreeMap::new();
+        amps_same_trimmed.insert(100, vec![(0usize, &amp_reg)]);
+        amps_same_trimmed.insert(101, vec![(0usize, &amp_reg)]);
+
+        assert_eq!(
+            amplicon_post_process(
+                &cfg,
+                &amp_reg,
+                &vars_same_trimmed,
+                &amps_same_trimmed,
+                &splice
+            )
+            .expect("amplicon dedup on")
+            .len(),
+            1
+        );
+
+        let mut cfg_3p = cfg.clone();
+        cfg_3p.three_prime = true;
+        assert_eq!(
+            amplicon_post_process(
+                &cfg_3p,
+                &amp_reg,
+                &vars_same_trimmed,
+                &amps_same_trimmed,
+                &splice
+            )
+            .expect("amplicon_post_process -3")
+            .len(),
+            2,
+            "-3 must bypass amplicon Ruling 3 dedup"
+        );
+
+        let mut cfg_crispr = cfg.clone();
+        cfg_crispr.crispr_cutting_site = Some(108);
+        assert_eq!(
+            amplicon_post_process(
+                &cfg_crispr,
+                &amp_reg,
+                &vars_same_trimmed,
+                &amps_same_trimmed,
+                &splice
+            )
+            .expect("amplicon_post_process crispr")
+            .len(),
+            2,
+            "CRISPR mode must bypass amplicon Ruling 3 dedup"
+        );
+    }
+
+    #[test]
+    fn test_wave6_amplicon_bounded_horizon_streaming_and_early_emit_error() {
+        use std::cell::Cell;
+
+        let amp_reg = make_amp_region("chr1", 80, 550);
+        let splice = rustc_hash::FxHashSet::default();
+        let mut cfg = Config::default();
+        cfg.emit_intermediate = true;
+        cfg.freq = 0.01;
+        cfg.min_reads = 2;
+        cfg.read_pos = 5.0;
+        cfg.base_qual = 22.5;
+        cfg.qratio = 1.5;
+        cfg.compat = crate::config::COMPAT_OFF;
+
+        // (a1) SNV-only segment under `--compat=off`: streams immediately without collecting the
+        // position iterator; an `emit` error on the 1st row aborts BEFORE later positions are pulled!
+        let mut m_snv = crate::javamap::JavaHashMap::new();
+        for p in [100, 200, 300] {
+            let mut vs = Vars::new();
+            vs.variants.push(make_good_variant(p, "A", "G", 0.35));
+            m_snv.insert(p, vs);
+        }
+        let pulled_snv = Cell::new(0usize);
+        let emitted_snv = Cell::new(0usize);
+        let cov_slice = [(0usize, &amp_reg)];
+        let snv_iter = [100, 200, 300].into_iter().map(|p| {
+            pulled_snv.set(pulled_snv.get() + 1);
+            (p, &cov_slice[..])
+        });
+        let err_snv = amplicon_post_process_streaming(
+            &cfg,
+            &amp_reg,
+            &[m_snv],
+            snv_iter,
+            &splice,
+            &mut |_av| {
+                emitted_snv.set(emitted_snv.get() + 1);
+                Err(crate::types::VardictError::Other(
+                    "abort_on_first_snv".to_string(),
+                ))
+            },
+        );
+        assert!(err_snv.is_err(), "SNV-only emit error must propagate");
+        assert_eq!(emitted_snv.get(), 1);
+        assert_eq!(
+            pulled_snv.get(),
+            1,
+            "SNV-only --compat=off segment must stream lazily and abort before pulling pos 200/300"
+        );
+
+        // (a2) & (b) Indel segment under `--compat=off`: colliding repeat indels at 100 (cov=4) and
+        // 102 (cov=12, rolling left to 100 CAT->C) deduplicate within the horizon to the cov=12
+        // winner, then flush immediately once horizon advances to 300 — so an `emit` error on that
+        // 1st flushed winner aborts BEFORE position 300 is processed or emitted!
+        let mut m_indel = crate::javamap::JavaHashMap::new();
+        let mut v100 = Vars::new();
+        let mut d100 = make_good_variant(100, "CAT", "C", 0.25);
+        d100.end_pos = 102;
+        d100.description = "-2AT".to_string();
+        d100.pos_coverage = 4;
+        d100.total_pos_cov = 20;
+        d100.left_seq = "GGGGGG".to_string();
+        v100.variants.push(d100);
+        m_indel.insert(100, v100);
+
+        let mut v102 = Vars::new();
+        let mut d102 = make_good_variant(102, "TAT", "T", 0.60);
+        d102.end_pos = 104;
+        d102.description = "-2AT".to_string();
+        d102.pos_coverage = 12;
+        d102.total_pos_cov = 20;
+        d102.left_seq = "GGGGGGCA".to_string();
+        v102.variants.push(d102);
+        m_indel.insert(102, v102);
+
+        let mut v300 = Vars::new();
+        v300.variants.push(make_good_variant(300, "C", "T", 0.50));
+        m_indel.insert(300, v300);
+
+        let indel_maps = [m_indel];
+        let mut seen_before_err = Vec::new();
+        let err_indel = amplicon_post_process_streaming(
+            &cfg,
+            &amp_reg,
+            &indel_maps,
+            [
+                (100, &cov_slice[..]),
+                (102, &cov_slice[..]),
+                (300, &cov_slice[..]),
+            ],
+            &splice,
+            &mut |av| {
+                seen_before_err.push((
+                    av.variant.start_pos,
+                    av.variant.ref_allele.clone(),
+                    av.variant.var_allele.clone(),
+                    av.variant.pos_coverage,
+                ));
+                Err(crate::types::VardictError::Other(
+                    "abort_after_horizon_flush".to_string(),
+                ))
+            },
+        );
+        assert!(err_indel.is_err(), "horizon emit error must propagate");
+        assert_eq!(
+            seen_before_err,
+            vec![(100, "CAT".to_string(), "C".to_string(), 12)],
+            "colliding 100/102 repeat indels must dedup to cov=12 winner and flush at pos 102 before pos 300"
+        );
+
+        // Full non-error pass emits exact `[100 CAT->C (cov=12), 300 C->T]`
+        let mut full_rows = Vec::new();
+        amplicon_post_process_streaming(
+            &cfg,
+            &amp_reg,
+            &indel_maps,
+            [
+                (100, &cov_slice[..]),
+                (102, &cov_slice[..]),
+                (300, &cov_slice[..]),
+            ],
+            &splice,
+            &mut |av| {
+                full_rows.push((av.variant.start_pos, av.variant.pos_coverage));
+                Ok(())
+            },
+        )
+        .expect("full horizon stream");
+        assert_eq!(full_rows, vec![(100, 12), (300, 10)]);
     }
 }

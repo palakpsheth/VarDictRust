@@ -1532,6 +1532,7 @@ fn find_inv_sub_paths(
                 conseq_dir,
                 &adaptor_forward,
                 &adaptor_reverse,
+                config.compat.sclip_majority_count_first,
             );
             if seq.is_empty()
                 || (config.compat.sv_lazy_mate_pileup && seq.len() < MIN_INV_SCLIP_LEN)
@@ -1588,6 +1589,7 @@ fn find_inv_sub_paths(
                     conseq_dir,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 if seq_check.is_empty()
                     || (config.compat.sv_lazy_mate_pileup && seq_check.len() < MIN_INV_SCLIP_LEN)
@@ -2123,6 +2125,7 @@ fn find_del_paths(
                     conseq_dir3,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 if s.len() < 12 {
                     continue;
@@ -2333,6 +2336,7 @@ fn find_del_paths(
                     conseq_dir3,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 if seq.len() < 12 {
                     continue;
@@ -2476,6 +2480,7 @@ fn find_del_paths(
                     conseq_dir5,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 if s.len() < 12 {
                     continue;
@@ -2641,6 +2646,7 @@ fn find_del_paths(
                     conseq_dir5,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 if seq.len() < 12 {
                     continue;
@@ -2851,6 +2857,7 @@ pub fn find_sv(
                 conseq_dir5,
                 &adaptor_forward,
                 &adaptor_reverse,
+                config.compat.sclip_majority_count_first,
             );
             (seq, sc5v.variation.clone())
         };
@@ -3077,6 +3084,7 @@ pub fn find_sv(
                 conseq_dir3,
                 &adaptor_forward,
                 &adaptor_reverse,
+                config.compat.sclip_majority_count_first,
             );
             (seq, sc3v.variation.clone())
         };
@@ -4216,6 +4224,7 @@ fn find_dup_disc_paths(
                     conseq_dir3,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 find_match(seq, reference, bp, 1, 17, 3, chr, verbose).base_position
             };
@@ -4470,6 +4479,7 @@ fn find_dup_disc_paths(
                     conseq_dir5,
                     &adaptor_forward,
                     &adaptor_reverse,
+                    config.compat.sclip_majority_count_first,
                 );
                 find_match(seq, reference, pe, -1, 17, 3, chr, verbose).base_position
             };
@@ -4873,6 +4883,7 @@ fn partial_pipeline_paths(
             let mut r = crate::bam::SamRecord::new();
             for (idx, mut feed) in feeds.into_iter().enumerate() {
                 preprocessor.reset_for_next_bam();
+                parser.reset_for_next_bam();
                 let mut any_passed = false;
                 while feed.next_into(&mut r)? {
                     if preprocessor.preprocess_record(&r, config) {
@@ -9990,6 +10001,98 @@ mod tests {
                 let mutant_hap = format!("{}{}", v1.var_allele, &dup_1_200[1..]);
                 assert_eq!(mutant_hap, format!("{dup_1_200}{dup_1_200}"));
             }
+        }
+
+        #[test]
+        fn wave6_lane1_switch33_sv_consensus_respects_majority_count_first() {
+            let chr = "chr1";
+            let ref_len = 2_000usize;
+            let chr_lengths = HashMap::from([(chr.to_string(), ref_len)]);
+            let (mut base_ref, mut ref_seq) = build_ref(chr, ref_len);
+            // Replace 'T' with 'C' inside 1_100..1_125 so every true motif base < 'T'
+            for b in &mut ref_seq[1_099..1_125] {
+                if *b == b'T' {
+                    *b = b'C';
+                }
+            }
+            ref_seq[798] = b'A'; // 1-based 799
+            ref_seq[1_098] = b'G'; // 1-based 1099 (prevents left-shift past 800..=1099)
+            base_ref.region_sequences[0].clone_from(&ref_seq);
+            base_ref
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq.clone());
+            let target_20bp = &ref_seq[1_099..1_119]; // 1-based 1100..=1119
+            base_ref
+                .seed
+                .insert_for_test(&target_20bp[3..20], vec![1_103]);
+
+            let run_sv_del = |majority_first: bool| -> bool {
+                let mut reference = base_ref.clone();
+                let cfg = Config {
+                    min_reads: 2,
+                    compat: crate::config::CompatProfile {
+                        sclip_majority_count_first: majority_first,
+                        ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+                    },
+                    ..Config::default()
+                };
+                let mut vd = crate::variations::VariationData::default();
+                vd.max_read_length = 100;
+                vd.sv_structures_filtered = true;
+                let mut bam_piled = vec![(1, ref_len as i32)];
+
+                let mut fdel = Sclip::new();
+                fdel.start = 750;
+                fdel.end = 800;
+                fdel.mstart = 1_100;
+                fdel.mend = 1_150;
+                fdel.variation.cnt = 5;
+                fdel.soft.insert(800, 21);
+                vd.sv_structures.svfdel.push(fdel);
+
+                let mut sc3 = Sclip::new();
+                sc3.variation.cnt = 21;
+                sc3.variation.hicnt = 21;
+                sc3.variation.qmean = 33.0 * 21.0;
+                sc3.variation.mqmean = 60.0 * 21.0;
+                sc3.variation.pmean = 25.0 * 21.0;
+                for (idx, &true_b) in target_20bp.iter().enumerate() {
+                    sc3.nt
+                        .insert(idx as i32, BTreeMap::from([(true_b, 20), (b'T', 1)]));
+                    let mut v_true = Variation::new();
+                    v_true.qmean = 33.0;
+                    let mut v_err = Variation::new();
+                    v_err.qmean = 38.0;
+                    sc3.seq.insert(
+                        idx as i32,
+                        BTreeMap::from([(true_b, v_true), (b'T', v_err)]),
+                    );
+                }
+                vd.soft_clips_3_end.insert(800, sc3);
+
+                find_del_paths(
+                    &mut vd,
+                    &[],
+                    &mut reference,
+                    chr,
+                    &cfg,
+                    &chr_lengths,
+                    &mut bam_piled,
+                )
+                .unwrap();
+                vd.non_insertion_variants
+                    .get(&800)
+                    .is_some_and(|vm| vm.map.contains_key("-300"))
+            };
+
+            assert!(
+                !run_sv_del(false),
+                "legacy sclip_majority_count_first=false drops split-refined SV deletion due to single Q38 error read"
+            );
+            assert!(
+                run_sv_del(true),
+                "sclip_majority_count_first=true must preserve 20-read majority consensus in SV split-read refinement"
+            );
         }
     }
 }

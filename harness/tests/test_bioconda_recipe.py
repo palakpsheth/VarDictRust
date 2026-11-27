@@ -1136,14 +1136,15 @@ class TestNfCoreModulePackaging(unittest.TestCase):
             e2e_readme = tmp_path / "README_e2e.md"
             seed_legacy_1010_nfcore_fixture(in_tree_copy, e2e_readme)
 
+            git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
             nfcore_repo = tmp_path / "nf-core-modules"
             nfcore_repo.mkdir(parents=True)
-            subprocess.run(["git", "init", "-q"], cwd=str(nfcore_repo), check=True)
-            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(nfcore_repo), check=True)
-            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(nfcore_repo), check=True)
+            subprocess.run(["git", "init", "-q"], cwd=str(nfcore_repo), env=git_env, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(nfcore_repo), env=git_env, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=str(nfcore_repo), env=git_env, check=True)
             (nfcore_repo / "README.md").write_text("nf-core mock\n", encoding="utf-8")
-            subprocess.run(["git", "add", "README.md"], cwd=str(nfcore_repo), check=True)
-            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(nfcore_repo), check=True)
+            subprocess.run(["git", "add", "README.md"], cwd=str(nfcore_repo), env=git_env, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=str(nfcore_repo), env=git_env, check=True)
 
             mock_bin = tmp_path / "mock_bin"
             mock_bin.mkdir()
@@ -1188,7 +1189,7 @@ class TestNfCoreModulePackaging(unittest.TestCase):
             for p in mock_bin.iterdir():
                 p.chmod(0o755)
 
-            env = dict(os.environ)
+            env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
             env["PATH"] = f"{mock_bin}:{env.get('PATH', '')}"
             env["NFCORE_MODULES_DIR"] = str(nfcore_repo)
             env["IN_TREE_MODULE_DIR"] = str(in_tree_copy)

@@ -2498,15 +2498,21 @@ impl<'a> ToVarsBuilder<'a> {
                     vref.hi_freq = round_half_even_compat(vref.hi_freq, 4, exact_binary_half_even);
                     vref.total_pos_cov = total_pos_coverage_adj;
                 }
+                validate_ref_allele_in_place(&mut refallele);
+                if self.config.compat.sanitize_iupac_alt_alleles {
+                    validate_alt_allele_in_place(&mut varallele);
+                }
+                if self.config.compat.indel_only_shift3
+                    && !varallele.starts_with('<')
+                    && refallele.len() == varallele.len()
+                {
+                    shift3 = 0;
+                }
                 vref.msi = round_half_even_compat(msi, 3, exact_binary_half_even);
                 vref.msint = msint_len;
                 vref.shift3 = shift3;
                 vref.start_pos = start_position;
                 vref.end_pos = end_position;
-                validate_ref_allele_in_place(&mut refallele);
-                if self.config.compat.sanitize_iupac_alt_alleles {
-                    validate_alt_allele_in_place(&mut varallele);
-                }
                 vref.ref_allele = refallele;
                 vref.var_allele = varallele;
                 vref.genotype = Some(genotype);
@@ -8366,5 +8372,103 @@ mod tests {
         // Single-position builder must match full builder
         let single50 = b_sw28.build_vars_at_position(&vd, 50).unwrap();
         assert_eq!(single50.ref_variant.unwrap().ref_allele, "G");
+    }
+
+    #[test]
+    fn test_wave6_switch38_indel_only_shift3_clamps_snv_and_mnv_preserving_msi() {
+        use crate::types::Pos1;
+        use crate::variations::{Variation, VariationData, VariationMap};
+
+        // Build a homopolymer/dinucleotide repeat locus so SNV & MNV trigger legacy shift3 > 0:
+        // 1..=40: "A" * 40 (so SNV at pos 20 has tseq1 = ref[1..=21] = "A"*21, tseq2 = ref[22..=90] = "A"*29 -> shift3 > 0!)
+        // 41..=80: "AT" * 20 (so 2-bp MNV "GC" at pos 50 has tseq1 ending in "AT", tseq2 starting with "ATAT..." -> shift3 > 0!)
+        let mut seq = Vec::new();
+        seq.extend_from_slice(&[b'A'; 40]); // 1..=40
+        for _ in 0..20 {
+            seq.extend_from_slice(b"AT"); // 41..=80
+        }
+        seq.extend_from_slice(b"CAAAGTTCGA"); // 81..=90: 81=C, 82=A, 83=A, 84=A, 85=G
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: seq.len() as u32,
+            });
+        ref_genome.region_sequences.push(seq.clone());
+        let mut chr_lengths = HashMap::new();
+        chr_lengths.insert("chr1".to_string(), seq.len());
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(seq.len() as u32),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+
+        let mk = |cnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - cnt / 2;
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 20.0 * f64::from(cnt);
+            v
+        };
+
+        let mut vd = VariationData::new();
+        // 1) SNV A->G at pos 20 in poly-A run:
+        vd.ref_coverage.insert(20, 30);
+        let mut vm20 = VariationMap::new();
+        vm20.map.insert("A".to_string(), mk(20));
+        vm20.map.insert("G".to_string(), mk(10));
+        vd.non_insertion_variants.insert(20, vm20);
+
+        // 2) 2-bp MNV AT->GC at pos 51 (description "G&C") in AT-repeat:
+        vd.ref_coverage.insert(51, 30);
+        let mut vm51 = VariationMap::new();
+        vm51.map.insert("A".to_string(), mk(20));
+        vm51.map.insert("G&C".to_string(), mk(10));
+        vd.non_insertion_variants.insert(51, vm51);
+
+        // 3) Real 1-bp deletion "-1" in poly-A ("AAAG" -> pos 82 deletes 'A', shift3 = 2):
+        vd.ref_coverage.insert(82, 30);
+        let mut vm82 = VariationMap::new();
+        vm82.map.insert("A".to_string(), mk(20));
+        vm82.map.insert("-1".to_string(), mk(10));
+        vd.non_insertion_variants.insert(82, vm82);
+
+        let cfg_leg = Config::default();
+        let al_leg = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_leg)
+            .build_aligned_variants(&vd);
+        let snv_leg = &al_leg.get(&20).unwrap().variants[0];
+        let mnv_leg = &al_leg.get(&51).unwrap().variants[0];
+        let del_leg = &al_leg.get(&82).unwrap().variants[0];
+        assert!(snv_leg.shift3 > 0, "legacy SNV in repeat has shift3 > 0");
+        assert!(mnv_leg.shift3 > 0, "legacy MNV in repeat has shift3 > 0");
+        assert_eq!(del_leg.shift3, 2);
+
+        let mut cfg_sw38 = Config::default();
+        cfg_sw38.compat.indel_only_shift3 = true;
+        let al_sw38 = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_sw38)
+            .build_aligned_variants(&vd);
+        let snv_on = &al_sw38.get(&20).unwrap().variants[0];
+        let mnv_on = &al_sw38.get(&51).unwrap().variants[0];
+        let del_on = &al_sw38.get(&82).unwrap().variants[0];
+
+        assert_eq!(snv_on.shift3, 0, "Switch 38 must clamp SNV shift3 to 0");
+        assert_eq!(snv_on.msi.to_bits(), snv_leg.msi.to_bits());
+        assert_eq!(snv_on.msint, snv_leg.msint);
+
+        assert_eq!(mnv_on.shift3, 0, "Switch 38 must clamp MNV shift3 to 0");
+        assert_eq!(mnv_on.msi.to_bits(), mnv_leg.msi.to_bits());
+        assert_eq!(mnv_on.msint, mnv_leg.msint);
+
+        assert_eq!(del_on.shift3, 2, "Switch 38 must preserve indel shift3");
+        assert_eq!(del_on.msi.to_bits(), del_leg.msi.to_bits());
+        assert_eq!(del_on.msint, del_leg.msint);
     }
 }
