@@ -955,7 +955,7 @@ impl Variant {
             && !self.var_allele.contains('<')
             && self.ref_allele.len() != self.var_allele.len()
         {
-            self.canonical_left_align(ref_ctx, true, indel_only_shift3);
+            self.canonical_left_align(ref_ctx, refresh_var_type, indel_only_shift3);
         } else if self.var_type == "Complex" {
             self.adj_complex_compat(refresh_var_type);
         }
@@ -2035,10 +2035,13 @@ impl VariationData {
 
     /// Rebalances agreed `-u` mate-overlap reverse counts onto forward counts once after realignment.
     ///
-    /// Runs after all pileup `sub_cnt` and local-realignment `sub_dir` subtractions finish,
-    /// guarding via `overlap_strand_rebalanced` so repeated calls are `O(1)` no-ops while
-    /// preserving `var.overlap_agreed_pairs`.
-    pub(crate) fn finalize_overlap_strand_rebalance(&mut self) {
+    /// Callers running local realignment (`realign::realign_indels` / `realign::adj_snv`) MUST
+    /// extract pileup state via [`crate::cigar::parse::CigarParser::into_variation_data_unrebalanced`]
+    /// before realignment and call [`Self::finalize_overlap_strand_rebalance`] once after `adj_snv`.
+    /// Clamps `overlap_agreed_pairs` to surviving `var.rev` before halving so post-realignment
+    /// `sub_dir` subtractions can never starve `var.rev` to `0`, and guards via
+    /// `overlap_strand_rebalanced` so repeated calls are `O(1)` no-ops.
+    pub fn finalize_overlap_strand_rebalance(&mut self) {
         if self.overlap_strand_rebalanced {
             return;
         }
@@ -2050,7 +2053,7 @@ impl VariationData {
             map.for_each_val_mut(|vm| {
                 for (_, var) in vm.map.iter_mut() {
                     if var.overlap_agreed_pairs >= 2 && var.rev > 0 {
-                        let shift = (var.overlap_agreed_pairs / 2).min(var.rev as u32) as i32;
+                        let shift = (var.overlap_agreed_pairs.min(var.rev as u32) / 2) as i32;
                         var.rev -= shift;
                         var.fwd = var.fwd.saturating_add(shift);
                     }
@@ -3077,5 +3080,63 @@ mod debug_tests {
         let bounds = v_cpx.post_adj_complex_bounds();
         v_cpx.adj_complex();
         assert_eq!(bounds, (v_cpx.start_pos, v_cpx.end_pos));
+    }
+
+    #[test]
+    fn pr1_lane2_f08_overlap_rd_strand_clamp_prevents_reverse_starvation() {
+        let run_case = |fwd: i32, rev: i32, agreed: u32| -> (i32, i32) {
+            let mut vd = VariationData::new();
+            let v = get_variation(&mut vd.non_insertion_variants, 100, "C");
+            v.cnt = fwd + rev;
+            v.fwd = fwd;
+            v.rev = rev;
+            v.overlap_agreed_pairs = agreed;
+            vd.finalize_overlap_strand_rebalance();
+            let out = vd
+                .non_insertion_variants
+                .get(&100)
+                .unwrap()
+                .map
+                .get("C")
+                .unwrap();
+            (out.fwd, out.rev)
+        };
+
+        // 10 agreed overlapping FR pairs minus 8 realigned reverse reads -> 2 rev left -> 1,1 (not 2,0)
+        assert_eq!(run_case(0, 2, 10), (1, 1));
+        // 1 surviving reverse read (SEQC2 HCC1395 chr9:137284857 & chr22:50184923) -> 0,1 (not 1,0)
+        assert_eq!(run_case(0, 1, 10), (0, 1));
+        // 1 fwd + 1 rev surviving (SEQC2 HCC1395 chr7:151240291) -> 1,1 (not 2,0)
+        assert_eq!(run_case(1, 1, 6), (1, 1));
+        // 3 surviving reverse reads -> 1,2 (not 3,0)
+        assert_eq!(run_case(0, 3, 10), (1, 2));
+        // Unsubtracted 10 agreed pairs -> 5,5
+        assert_eq!(run_case(0, 10, 10), (5, 5));
+    }
+
+    #[test]
+    fn pr1_lane2_s03_normalize_postprocess_propagates_refresh_var_type() {
+        let mut v_keep = Variant::new();
+        v_keep.start_pos = 50;
+        v_keep.end_pos = 53;
+        v_keep.ref_allele = "AACG".to_string();
+        v_keep.var_allele = "AG".to_string();
+        v_keep.var_type = "Complex".to_string();
+        v_keep.normalize_postprocess(None, true, false, false);
+        assert_eq!(v_keep.ref_allele, "AAC");
+        assert_eq!(v_keep.var_allele, "A");
+        assert_eq!(
+            v_keep.var_type, "Complex",
+            "refresh_var_type=false must not overwrite var_type inside canonical_left_align"
+        );
+
+        let mut v_refresh = Variant::new();
+        v_refresh.start_pos = 50;
+        v_refresh.end_pos = 53;
+        v_refresh.ref_allele = "AACG".to_string();
+        v_refresh.var_allele = "AG".to_string();
+        v_refresh.var_type = "Complex".to_string();
+        v_refresh.normalize_postprocess(None, true, true, false);
+        assert_eq!(v_refresh.var_type, "Deletion");
     }
 }

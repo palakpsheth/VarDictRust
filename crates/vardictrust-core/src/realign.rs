@@ -4526,21 +4526,42 @@ pub fn realignlgins(
             }
 
             const SVFLANK: i32 = 50;
-            if bi.saturating_sub(p) > sv_min_len.saturating_add(2 * SVFLANK) {
-                let mut tmp_ins = join_ref_int(reference, chr, p, p.saturating_add(SVFLANK - 1));
+            let make_symbolic_dup5 = if config.compat.sv_respect_min_len {
+                let dup_span = bi.saturating_sub(p).saturating_add(1);
+                let total_dup_len =
+                    dup_span.saturating_add(extra.len().min(i32::MAX as usize) as i32);
+                if total_dup_len >= sv_min_len {
+                    true
+                } else {
+                    if let Err(e) =
+                        ensure_reference_loaded(reference, chr, p, bi, 0, chr_len, config)
+                    {
+                        log::warn!("ensure_reference_loaded failed: {:?}", e);
+                    }
+                    !crate::reference::is_loaded(chr, p.max(1) as u32, bi.max(1) as u32, reference)
+                }
+            } else {
+                bi.saturating_sub(p) > sv_min_len.saturating_add(2 * SVFLANK)
+            };
+            if make_symbolic_dup5 {
+                let (f5_end, f3_start) = if config.compat.sv_respect_min_len {
+                    (
+                        p.saturating_add(SVFLANK - 1).min(bi),
+                        bi.saturating_sub(SVFLANK - 1).max(p),
+                    )
+                } else {
+                    (
+                        p.saturating_add(SVFLANK - 1),
+                        bi.saturating_sub(SVFLANK - 1),
+                    )
+                };
+                let mut tmp_ins = join_ref_int(reference, chr, p, f5_end);
                 let dup_str = format!(
                     "<dup{}>",
                     bi.saturating_sub(p).saturating_sub(2 * SVFLANK - 1)
                 );
                 tmp_ins.extend_from_slice(dup_str.as_bytes());
-                let jref = join_ref_for_5_lgins(
-                    reference,
-                    chr,
-                    bi.saturating_sub(SVFLANK - 1),
-                    bi,
-                    &seq,
-                    &extra,
-                );
+                let jref = join_ref_for_5_lgins(reference, chr, f3_start, bi, &seq, &extra);
                 tmp_ins.extend_from_slice(&jref);
                 ins = tmp_ins;
                 is_symbolic_dup = true;
@@ -4868,24 +4889,38 @@ pub fn realignlgins(
             }
 
             const SVFLANK: i32 = 50;
-            if p.saturating_sub(bi) > sv_min_len.saturating_add(2 * SVFLANK) {
-                ins = join_ref_for_3_lgins(
-                    reference,
-                    chr,
-                    bi,
-                    bi.saturating_add(SVFLANK - 1),
-                    shift5,
-                    &seq,
-                    &extra,
-                );
+            let make_symbolic_dup3 = if config.compat.sv_respect_min_len {
+                let dup_span = p.saturating_sub(bi);
+                let total_dup_len =
+                    dup_span.saturating_add(extra.len().min(i32::MAX as usize) as i32);
+                if total_dup_len >= sv_min_len {
+                    true
+                } else {
+                    let hi = p.saturating_sub(1);
+                    if let Err(e) =
+                        ensure_reference_loaded(reference, chr, bi, hi, 0, chr_len, config)
+                    {
+                        log::warn!("ensure_reference_loaded failed: {:?}", e);
+                    }
+                    !crate::reference::is_loaded(chr, bi.max(1) as u32, hi.max(1) as u32, reference)
+                }
+            } else {
+                p.saturating_sub(bi) > sv_min_len.saturating_add(2 * SVFLANK)
+            };
+            if make_symbolic_dup3 {
+                let p_prev = p.saturating_sub(1);
+                let (f5_end, f3_start) = if config.compat.sv_respect_min_len {
+                    (
+                        bi.saturating_add(SVFLANK - 1).min(p_prev),
+                        p.saturating_sub(SVFLANK).max(bi),
+                    )
+                } else {
+                    (bi.saturating_add(SVFLANK - 1), p.saturating_sub(SVFLANK))
+                };
+                ins = join_ref_for_3_lgins(reference, chr, bi, f5_end, shift5, &seq, &extra);
                 let dup_str = format!("<dup{}>", p.saturating_sub(bi).saturating_sub(2 * SVFLANK));
                 ins.extend_from_slice(dup_str.as_bytes());
-                let jref = join_ref_int(
-                    reference,
-                    chr,
-                    p.saturating_sub(SVFLANK),
-                    p.saturating_sub(1),
-                );
+                let jref = join_ref_int(reference, chr, f3_start, p_prev);
                 ins.extend_from_slice(&jref);
                 is_symbolic_dup = true;
             } else {
@@ -10380,23 +10415,39 @@ mod tests {
                 sc.variation.mqmean = 60.0 * 21.0;
                 sc.variation.pmean = 25.0 * 21.0;
                 for (idx, &true_b) in motif.iter().enumerate() {
-                    // Pick an error base strictly greater in ASCII so it visits AFTER `true_b` in BTreeMap
-                    // (e.g. 'T' > 'A'/'C'/'G'; if true_b == 'T', use 'G' wait: 'G' < 'T' so if true_b == 'T',
-                    // 'G' visits first with qmean=38.0 and then 'T' has 20 > 1 so 'T' would win! To ensure
-                    // every position triggers the bug when majority_count_first=false, force motif to A/C/G
-                    // and error base to 'T').
+                    // Pick an error base strictly greater in ASCII so it visits AFTER `true_b` in BTreeMap.
+                    // `Variation.qmean` stores the accumulated Phred quality SUM (`nt * mean_qual`) matching
+                    // `CigarParser` (`cigar/parse.rs:3133, 3191`): at staggered positions `4..=5`, 3 reads
+                    // carry `true_b` at Q18 (`sum = 54.0`) vs 2 error reads carrying `'T'` at Q38 (`sum = 76.0`).
                     let err_b = b'T';
                     assert!(true_b < err_b);
-                    sc.nt
-                        .insert(idx as i32, BTreeMap::from([(true_b, 20), (err_b, 1)]));
-                    let mut v_true = Variation::new();
-                    v_true.qmean = 33.0;
-                    let mut v_err = Variation::new();
-                    v_err.qmean = 38.0;
-                    sc.seq.insert(
-                        idx as i32,
-                        BTreeMap::from([(true_b, v_true), (err_b, v_err)]),
-                    );
+                    if idx == 4 || idx == 5 {
+                        sc.nt
+                            .insert(idx as i32, BTreeMap::from([(true_b, 3), (err_b, 2)]));
+                        let mut v_true = Variation::new();
+                        v_true.cnt = 3;
+                        v_true.qmean = 3.0 * 18.0;
+                        let mut v_err = Variation::new();
+                        v_err.cnt = 2;
+                        v_err.qmean = 2.0 * 38.0;
+                        sc.seq.insert(
+                            idx as i32,
+                            BTreeMap::from([(true_b, v_true), (err_b, v_err)]),
+                        );
+                    } else {
+                        sc.nt
+                            .insert(idx as i32, BTreeMap::from([(true_b, 20), (err_b, 1)]));
+                        let mut v_true = Variation::new();
+                        v_true.cnt = 20;
+                        v_true.qmean = 20.0 * 33.0;
+                        let mut v_err = Variation::new();
+                        v_err.cnt = 1;
+                        v_err.qmean = 1.0 * 38.0;
+                        sc.seq.insert(
+                            idx as i32,
+                            BTreeMap::from([(true_b, v_true), (err_b, v_err)]),
+                        );
+                    }
                 }
                 sc
             };
@@ -10898,6 +10949,101 @@ mod tests {
             inf_v.overlap_agreed_pairs = 10;
             add_var_factor(&mut inf_v, f64::INFINITY);
             assert_eq!(inf_v.overlap_agreed_pairs, u32::MAX);
+        }
+
+        #[test]
+        fn pr1_lane2_f14b_realignlgins_sv_respect_min_len_cutoff_unification() {
+            let chr = "chr1";
+            let ref_len = 2_000usize;
+            let (mut base_ref, mut ref_seq) = build_patterned_ref(chr, ref_len);
+            // Make boundaries distinct so 3' left-shift stops cleanly at bi=300, p=380 (80-bp DUP)
+            ref_seq[298] = b'A'; // pos 299
+            ref_seq[378] = b'G'; // pos 379
+            base_ref.region_sequences[0].clone_from(&ref_seq);
+            base_ref
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq.clone());
+            // Index 17-mer seeds for find_match
+            let seed_300 = ref_seq[299..316].to_vec(); // 1-based 300..=316
+            base_ref.seed.insert(seed_300, vec![300]);
+
+            let region = crate::regions::Region {
+                chr: chr.to_string(),
+                start: Pos1(1),
+                end: Pos1(ref_len as u32),
+                gene: String::new(),
+                amplicon: None,
+            };
+
+            let run_3p_dup80 = |respect: bool, min_sv: u32| -> Vec<String> {
+                let mut r = base_ref.clone();
+                let cfg = crate::config::Config {
+                    sv_min_len: min_sv,
+                    compat: crate::config::CompatProfile {
+                        sv_respect_min_len: respect,
+                        ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+                    },
+                    ..crate::config::Config::default()
+                };
+                let mut non_ins = crate::javamap::JavaHashMap::new();
+                let mut ins = crate::javamap::JavaHashMap::new();
+                let mut ref_cov = rustc_hash::FxHashMap::from_iter([(299, 30), (380, 30)]);
+                let mut sc5 = BTreeMap::new();
+                let mut sc3_clip = Sclip::new();
+                sc3_clip.variation.cnt = 10;
+                sc3_clip.variation.hicnt = 10;
+                sc3_clip.variation.fwd = 5;
+                sc3_clip.variation.rev = 5;
+                sc3_clip.variation.qmean = 350.0;
+                sc3_clip.variation.mqmean = 600.0;
+                sc3_clip.variation.pmean = 200.0;
+                sc3_clip.sequence = Some(ref_seq[299..319].to_vec()); // 20 bp matching pos 300..=319
+                let mut sc3 = BTreeMap::from([(380, sc3_clip)]);
+                let mut svfdup = Vec::new();
+                let mut svrdup = Vec::new();
+                let mut splice = rustc_hash::FxHashSet::default();
+
+                realignlgins(
+                    None,
+                    &mut r,
+                    chr,
+                    ref_len as u32,
+                    &region,
+                    &cfg,
+                    &mut non_ins,
+                    &mut ins,
+                    &mut ref_cov,
+                    &mut sc5,
+                    &mut sc3,
+                    150,
+                    &mut svfdup,
+                    &mut svrdup,
+                    &mut splice,
+                );
+                ins.get(&299)
+                    .map(|vm| vm.map.keys().map(str::to_string).collect())
+                    .unwrap_or_default()
+            };
+
+            // Under -L 50 (`sv_min_len = 50`), an 80-bp duplication (`>= 50`, `< 2 * SVFLANK = 100`)
+            // stays explicit in legacy mode (`80 <= 50 + 100`) but MUST emit symbolic `<dup-20>` under Switch 27!
+            let leg_keys = run_3p_dup80(false, 50);
+            assert!(
+                leg_keys.iter().all(|k| !k.contains("<dup")),
+                "legacy --compat=vardictjava keeps 80-bp realignlgins explicit at -L 50: {leg_keys:?}"
+            );
+            let sw27_keys_l50 = run_3p_dup80(true, 50);
+            assert!(
+                sw27_keys_l50.iter().any(|k| k.contains("<dup-20>")),
+                "Switch 27 must emit symbolic <dup-20> for 80-bp realignlgins at -L 50: {sw27_keys_l50:?}"
+            );
+            let sw27_keys_l100 = run_3p_dup80(true, 100);
+            assert!(
+                sw27_keys_l100
+                    .iter()
+                    .all(|k| !k.contains("<dup") && k.len() == 81),
+                "Switch 27 must keep 80-bp realignlgins explicit at -L 100: {sw27_keys_l100:?}"
+            );
         }
     }
 }
