@@ -9818,6 +9818,12 @@ mod vcf_all_alleles_and_compat_off {
             run_core_vcf(&cfg_nou_loo34).expect("no-u loo34"),
             "Switch 34 MUST be a 100% byte-identical no-op whenever -u is disabled"
         );
+        // Preserve downstream external-crate struct-update syntax `VariationData { ..Default::default() }` across v1.1.x:
+        let ext_vd = vardictrust_core::variations::VariationData {
+            duprate: 0.25,
+            ..Default::default()
+        };
+        assert!(!ext_vd.overlap_strand_rebalanced && (ext_vd.duprate - 0.25).abs() < f64::EPSILON);
     }
 
     #[test]

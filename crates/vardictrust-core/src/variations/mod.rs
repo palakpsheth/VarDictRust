@@ -2014,7 +2014,7 @@ pub struct VariationData {
     pub splice_count: rustc_hash::FxHashMap<String, [i32; 1]>,
     pub duprate: f64,
     pub sv_structures_filtered: bool,
-    pub(crate) overlap_strand_rebalanced: bool,
+    pub overlap_strand_rebalanced: bool,
     /// Owning tile's active range (pileup region), stamped at pileup time.
     /// Mate-window `partial_pipeline` merges (G3) plant keys outside this
     /// range; the ToVarsBuilder ownership gate drops those planted keys so
