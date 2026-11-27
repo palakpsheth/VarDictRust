@@ -54,6 +54,8 @@ pub struct Variation {
     /// True when a symbolic `<dupN>` variation key is already anchored at `bp - 1`
     /// (`realignlgins` or shifted `sv.rs` under `CompatProfile::canonical_sv_vcf_anchoring`).
     pub pre_anchored_dup: bool,
+    /// Count of overlapping FR reverse-mate observations under -u agreeing with this allele.
+    pub overlap_agreed_pairs: u32,
 }
 
 impl Variation {
@@ -75,6 +77,7 @@ impl Variation {
             pq: 0.0,
             extracnt: 0,
             pre_anchored_dup: false,
+            overlap_agreed_pairs: 0,
         }
     }
 
@@ -179,9 +182,9 @@ impl Variation {
 
     /// Reset accumulated count (`cnt = 0`), and when `clear_aux` is true
     /// (`CompatProfile::reconcile_strand_and_hq_sums`, `AstraZeneca-NGS/VarDictJava#316`,
-    /// `clintval/vartovcf#120`, `clintval/vartovcf#142`), also clear all 9 auxiliary
+    /// `clintval/vartovcf#120`, `clintval/vartovcf#142`), also clear all 10 auxiliary
     /// strand/quality/sum accumulators (`fwd`, `rev`, `hicnt`, `locnt`, `extracnt`,
-    /// `pmean`, `qmean`, `mqmean`, `nm`).
+    /// `pmean`, `qmean`, `mqmean`, `nm`, `overlap_agreed_pairs`).
     #[inline]
     pub fn reset_counts_compat(&mut self, clear_aux: bool) {
         self.cnt = 0;
@@ -195,6 +198,7 @@ impl Variation {
             self.qmean = 0.0;
             self.mqmean = 0.0;
             self.nm = 0.0;
+            self.overlap_agreed_pairs = 0;
         }
     }
 }
@@ -1909,8 +1913,10 @@ mod tests {
     #[test]
     fn variation_reset_counts_compat_and_variant_adj_complex_compat() {
         // 1. Variation::reset_counts_compat(false) clears only cnt (VarDictJava v1.8.3 parity);
-        //    reset_counts_compat(true) clears all 10 count/sum fields while preserving metadata
+        //    reset_counts_compat(true) clears all 11 count/sum fields while preserving metadata
         //    (AstraZeneca-NGS/VarDictJava#316, clintval/vartovcf#120, clintval/vartovcf#142).
+        assert_eq!(Variation::new().overlap_agreed_pairs, 0_u32);
+        assert_eq!(Variation::default().overlap_agreed_pairs, 0_u32);
         let populated = Variation {
             cnt: 9,
             fwd: 5,
@@ -1927,6 +1933,7 @@ mod tests {
             pq: 36.0,
             extracnt: 3,
             pre_anchored_dup: true,
+            overlap_agreed_pairs: 6,
         };
 
         let mut vj_var = populated.clone();
@@ -1941,6 +1948,7 @@ mod tests {
         assert_eq!(vj_var.qmean, 315.0);
         assert_eq!(vj_var.mqmean, 540.0);
         assert_eq!(vj_var.nm, 4.0);
+        assert_eq!(vj_var.overlap_agreed_pairs, 6);
         assert!(vj_var.pstd);
         assert!(vj_var.qstd);
         assert_eq!(vj_var.pp, 18);
@@ -1959,6 +1967,7 @@ mod tests {
         assert_eq!(compat_var.qmean, 0.0);
         assert_eq!(compat_var.mqmean, 0.0);
         assert_eq!(compat_var.nm, 0.0);
+        assert_eq!(compat_var.overlap_agreed_pairs, 0);
         assert!(compat_var.pstd);
         assert!(compat_var.qstd);
         assert_eq!(compat_var.pp, 18);
