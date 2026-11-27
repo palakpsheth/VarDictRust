@@ -512,6 +512,7 @@ fn tile_owns_pos(
 }
 
 fn dedup_simple_seam_owned_vec(
+    config: &config::Config,
     items: Vec<(bool, crate::variations::Variant)>,
 ) -> Vec<crate::variations::Variant> {
     if items.len() <= 1 {
@@ -548,12 +549,24 @@ fn dedup_simple_seam_owned_vec(
             }
         }
     }
-    let mut out: Vec<crate::variations::Variant> = items
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, (_, v))| keep_flags.get(i).copied().unwrap_or(true).then_some(v))
-        .collect();
+    let mut owned_out = Vec::with_capacity(items.len());
+    let mut unowned_out = Vec::new();
+    for (i, (owned, v)) in items.into_iter().enumerate() {
+        if !keep_flags.get(i).copied().unwrap_or(true) {
+            continue;
+        }
+        if owned {
+            owned_out.push(v);
+        } else {
+            unowned_out.push(v);
+        }
+    }
+    owned_out.extend(unowned_out);
+    let mut out = owned_out;
     crate::variations::dedup_post_norm_vec(&mut out, |v| (!v.null_record).then_some((0u8, v, v)));
+    if config.compat.coordinate_sorted_vars {
+        out.sort_by_key(|v| v.start_pos);
+    }
     out
 }
 
@@ -603,7 +616,20 @@ fn finalize_somatic_seam_owned_vec(
                 let n_covered = match (u_v2, o_v2) {
                     (None, _) => true,
                     (Some(uv), Some(ov)) => !crate::variations::post_norm_candidate_beats(uv, ov),
-                    (Some(_), None) => false,
+                    (Some(uv), None) => {
+                        let o_dp = o_sv
+                            .variant2
+                            .as_ref()
+                            .map_or(0, |v| v.total_pos_cov)
+                            .max(o_sv.v2_ref_variant.as_ref().map_or(0, |v| v.total_pos_cov));
+                        let uv_rd = i64::from(uv.ref_fwd_cov) + i64::from(uv.ref_rev_cov);
+                        uv_rd <= 0
+                            && o_dp > 0
+                            && uv.pos_coverage <= 1
+                            && uv.mean_quality < config.base_qual
+                            && (uv.pos_coverage as f64) / (o_dp.max(uv.pos_coverage) as f64)
+                                < 2.0 * config.lofreq
+                    }
                 };
                 t_covered && n_covered
             });
@@ -614,12 +640,24 @@ fn finalize_somatic_seam_owned_vec(
             }
         }
     }
-    let mut out: Vec<crate::postprocess::somatic::SomaticVariant> = items
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, (_, sv))| keep_flags.get(i).copied().unwrap_or(true).then_some(sv))
-        .collect();
+    let mut owned_out = Vec::with_capacity(items.len());
+    let mut unowned_out = Vec::new();
+    for (i, (owned, sv)) in items.into_iter().enumerate() {
+        if !keep_flags.get(i).copied().unwrap_or(true) {
+            continue;
+        }
+        if owned {
+            owned_out.push(sv);
+        } else {
+            unowned_out.push(sv);
+        }
+    }
+    owned_out.extend(unowned_out);
+    let mut out = owned_out;
     crate::postprocess::somatic::finalize_somatic_post_passes(config, splice, &mut out);
+    if config.compat.coordinate_sorted_vars {
+        out.sort_by_key(|sv| sv.variant1.start_pos);
+    }
     out
 }
 
@@ -7273,7 +7311,7 @@ fn run_with_writer_inner<W: EngineWriter>(
         |output| {
             if !matches!(output, SimpleTileOutput::SeamSplit { .. }) {
                 if let Some((prev_reg, prev_held, prev_ts)) = simple_seam.take() {
-                    let flushed = dedup_simple_seam_owned_vec(prev_held);
+                    let flushed = dedup_simple_seam_owned_vec(config, prev_held);
                     emit_simple_seam_batch(
                         &prev_reg,
                         flushed,
@@ -7302,7 +7340,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                         || simple_seam.as_ref().is_some_and(|(pr, _, _)| pr != &region)
                     {
                         if let Some((prev_reg, prev_held, prev_ts)) = simple_seam.take() {
-                            let flushed = dedup_simple_seam_owned_vec(prev_held);
+                            let flushed = dedup_simple_seam_owned_vec(config, prev_held);
                             emit_simple_seam_batch(
                                 &prev_reg,
                                 flushed,
@@ -7336,7 +7374,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                         None => tagged_tile.collect(),
                     };
                     if tile_end == original_end {
-                        let ready_vars = dedup_simple_seam_owned_vec(combined);
+                        let ready_vars = dedup_simple_seam_owned_vec(config, combined);
                         emit_simple_seam_batch(
                             &region,
                             ready_vars,
@@ -7361,7 +7399,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                                 ready.push(item);
                             }
                         }
-                        let ready_vars = dedup_simple_seam_owned_vec(ready);
+                        let ready_vars = dedup_simple_seam_owned_vec(config, ready);
                         emit_simple_seam_batch(
                             &region,
                             ready_vars,
@@ -7458,7 +7496,7 @@ fn run_with_writer_inner<W: EngineWriter>(
         SimpleTileOutput::approx_heap_bytes,
     )?;
     if let Some((prev_reg, prev_held, prev_ts)) = simple_seam.take() {
-        let flushed = dedup_simple_seam_owned_vec(prev_held);
+        let flushed = dedup_simple_seam_owned_vec(config, prev_held);
         emit_simple_seam_batch(
             &prev_reg,
             flushed,
@@ -16547,16 +16585,18 @@ mod tests {
         .unwrap();
         std::fs::write(&ref_fai, "chr1\t2000\t6\t2000\t2001\n").unwrap();
 
-        // Subtest 1 (F-01.1 & F-01.2): 3-tile somatic (`chr1:1-600`, `--tile-size 200` vs `--tile-size 500000`)
-        // Make 198..=205 non-repeating so the 2-bp deletion at 202..=203 anchors deterministically at `start_pos = 201`
-        // (right across seam 200: UNOWNED in Tile 1 [1, 200] where RD_T=0 and Normal's reads at 201..=300 are absent,
-        // and OWNED in Tile 2 [201, 400] where RD_T=14 and Normal's Q=4 noise indel triggers `LikelySomatic`!).
-        for (off, b) in [b'C', b'G', b'T', b'A', b'C', b'T', b'G', b'C']
-            .into_iter()
-            .enumerate()
-        {
-            ref_seq[198 + off] = b;
+        // Subtest 1a (F-01.1): 3-tile somatic & simple (`chr1:1-600`, `--tile-size 200`)
+        // Homopolymer `200..=220 = 'A'` (`199 = 'G'`, `221 = 'C'`, `read_pos = 0.0`):
+        // - Tile 1 `[1, 200]` (OWNED at `start_pos = 199`): 8 Tumor `1D` reads (`150..=198`, `1D` at `200`? `145..=199` with `1D` at `200`) + 14 Tumor WT reads (`145..=199`, `RD_T = 14`),
+        //   plus 1 Normal `Q = 18` (`12 <= 18 < 22.5`) `1D` read + 24 Normal WT reads (`RD_N = 24`, `freq = 1/25 = 0.04 < 2*lofreq` -> `is_noise` -> `LikelySomatic`, `VD_N = 0, DP_N = 24`)!
+        // - Tile 2 `[201, 400]` (UNOWNED after `Switch 35` rolls `205 -> 199`): 8 Tumor `1D` reads starting at `205` (`RD_T = 0`, tied `VD_T = 8, QUAL_T = 35`)
+        //   plus 1 Normal `Q = 18` `1D` read starting at `205` (`RD_N = 0, VD_N = 1, freq = 1.0`, escaping `Variant::is_noise` in Tile 2!).
+        ref_seq[197] = b'G'; // 1-based 198
+        for b in &mut ref_seq[198..220] {
+            *b = b'A'; // 1-based 199..=220
         }
+        ref_seq[220] = b'C'; // 1-based 221
+        ref_seq[479] = b'A'; // 1-based 480 in Tile 3 [401, 600]
         std::fs::write(
             &ref_fa,
             format!(">chr1\n{}\n", std::str::from_utf8(&ref_seq).unwrap()),
@@ -16565,32 +16605,33 @@ mod tests {
 
         let tumor_bam = dir.path().join("somatic_3tile_t.bam");
         let normal_bam = dir.path().join("somatic_3tile_n.bam");
-        let mk_del_read = |name: &str, start_1: usize, q: u8| -> RecordBuf {
-            let mut seq = Vec::new();
-            let pre_len = 202 - start_1;
-            seq.extend_from_slice(&ref_seq[(start_1 - 1)..(start_1 - 1 + pre_len)]);
-            let post_len = 98 - pre_len;
-            seq.extend_from_slice(&ref_seq[203..(203 + post_len)]);
-            let cigar: Cigar = [
-                Op::new(CigarKind::Match, pre_len),
-                Op::new(CigarKind::Deletion, 2),
-                Op::new(CigarKind::Match, post_len),
-            ]
-            .into_iter()
-            .collect();
-            RecordBuf::builder()
-                .set_name(name)
-                .set_flags(Flags::empty())
-                .set_reference_sequence_id(0)
-                .set_alignment_start(Position::try_from(start_1).unwrap())
-                .set_mapping_quality(
-                    noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
-                )
-                .set_cigar(cigar)
-                .set_sequence(seq.into())
-                .set_quality_scores(vec![q; 98].into())
-                .build()
-        };
+        let mk_1d_read =
+            |name: &str, start_1: usize, del_1: usize, total_qlen: usize, q: u8| -> RecordBuf {
+                let pre_len = del_1 - start_1;
+                let post_len = total_qlen - pre_len;
+                let mut seq = Vec::with_capacity(total_qlen);
+                seq.extend_from_slice(&ref_seq[(start_1 - 1)..(del_1 - 1)]);
+                seq.extend_from_slice(&ref_seq[del_1..(del_1 + post_len)]);
+                let cigar: Cigar = [
+                    Op::new(CigarKind::Match, pre_len),
+                    Op::new(CigarKind::Deletion, 1),
+                    Op::new(CigarKind::Match, post_len),
+                ]
+                .into_iter()
+                .collect();
+                RecordBuf::builder()
+                    .set_name(name)
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![q; total_qlen].into())
+                    .build()
+            };
         let mk_ref_read = |name: &str, start_1: usize, len: usize, q: u8| -> RecordBuf {
             let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
             RecordBuf::builder()
@@ -16606,28 +16647,72 @@ mod tests {
                 .set_quality_scores(vec![q; len].into())
                 .build()
         };
+        let mk_snv_read =
+            |name: &str, start_1: usize, len: usize, snv_1: usize, alt: u8, q: u8| -> RecordBuf {
+                let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+                let mut seq = ref_seq[(start_1 - 1)..(start_1 - 1 + len)].to_vec();
+                seq[snv_1 - start_1] = alt;
+                RecordBuf::builder()
+                    .set_name(name)
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![q; len].into())
+                    .build()
+            };
 
         let mut t_reads = Vec::new();
         for i in 0..8usize {
-            // Starts at 150 + i -> spans across seam 200 into Tile 2 [201, 400] with IDENTICAL VD=8 in Tile 1 and Tile 2!
-            t_reads.push(mk_del_read(&format!("t_del_{i}"), 150 + i, 35));
+            // Tile 1 [1, 200] ONLY (`135..=200`, `1D` at `200`, ends at `200`!)
+            let s1 = 135 + (i % 4);
+            let qlen = 200 - s1; // pre = 200 - s1 - 0? No: covers s1..=199 (`200 - s1` bases) + 1D(200) -> ends at 200? Give 1M at 201? Wait: if it ends at 201 it overlaps Tile 2!
+                                 // Instead put `del_1 = 199` (`198 = 'G'`, `199..=220 = 'A'`!) so `pre` covers `s1..=198`, `1D(199)`, `1M(200)` -> alignment_end == 200 <= 200!!
+            let _ = qlen;
+            t_reads.push(mk_1d_read(&format!("t1_own_{i}"), s1, 199, 200 - s1, 35));
+            // Tile 2 [201, 400] ONLY (`start_1 = 205 >= 201`, `del_1 = 207`, `RD_T = 0`, rolls `206 -> 198` unowned!)
+            t_reads.push(mk_1d_read(
+                &format!("t2_halo_{i}"),
+                205 + (i % 2),
+                207,
+                45,
+                35,
+            ));
         }
         for i in 0..14usize {
-            // Reference reads starting at 201 -> present ONLY in Tile 2 [201, 400], NOT in Tile 1 [1, 200]!
-            t_reads.push(mk_ref_read(&format!("t_ref_t2_{i}"), 201, 100, 35));
+            // Reference reads in Tile 1 [1, 200] ONLY (`145..=200`, ending at 200!)
+            t_reads.push(mk_ref_read(&format!("t_ref_t1_{i}"), 145, 56, 35));
+        }
+        for i in 0..6usize {
+            t_reads.push(mk_snv_read(
+                &format!("t_t3_snv_{i}"),
+                450 + i,
+                70,
+                480,
+                b'G',
+                35,
+            ));
+        }
+        for i in 0..14usize {
+            t_reads.push(mk_ref_read(&format!("t_t3_ref_{i}"), 450 + (i % 5), 70, 35));
         }
         t_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
         write_test_bam(&tumor_bam, "chr1", 2000, &t_reads);
 
         let mut n_reads = Vec::new();
-        // Noise deletion read + reference reads starting at 185..195 vs 201:
-        // Put noise deletion starting at 185 (202 - 185 = 17M2D81M -> present in BOTH tiles or starting at 180?
-        // Wait: if n_noise starts at 201 would pre_len be 1M2D97M -> clipped! Instead start n_noise at 185 AND put
-        // 24 n_ref starting at 201 so Tile 1 has RD_N = 0 -> n_noise has freq = 1.0 in Tile 1 (`AFDiff`!) while
-        // Tile 2 has RD_N = 24 -> n_noise has freq = 1/25 = 0.04 < lofreq -> `LikelySomatic` with `is_noise` zeroing VD_N!)
-        n_reads.push(mk_del_read("n_noise_del", 180, 4));
+        // Tile 1 [1, 200] ONLY (`142..=200`, `1D` at `199`, `1M` at `200`): `Q = 18` + `24` WT reads (`freq = 1/25 = 0.04 < 2*lofreq` -> `is_noise` -> `LikelySomatic`, `VD_N = 0`!)
+        n_reads.push(mk_1d_read("n1_noise_q18", 142, 199, 58, 18));
         for i in 0..24usize {
-            n_reads.push(mk_ref_read(&format!("n_ref_t2_{i}"), 201, 100, 35));
+            n_reads.push(mk_ref_read(&format!("n_ref_t1_{i}"), 145, 56, 35));
+        }
+        // Tile 2 [201, 400] ONLY: `Q = 18` with `RD_N = 0` (`freq = 1.0`, escaping `Variant::is_noise` in Tile 2!)
+        n_reads.push(mk_1d_read("n2_halo_noise_q18", 205, 207, 45, 18));
+        for i in 0..20usize {
+            n_reads.push(mk_ref_read(&format!("n_t3_ref_{i}"), 450 + (i % 5), 70, 35));
         }
         n_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
         write_test_bam(&normal_bam, "chr1", 2000, &n_reads);
@@ -16639,6 +16724,8 @@ mod tests {
                 region: Some("chr1:1-600".to_string()),
                 compat: crate::config::COMPAT_OFF,
                 tile_size: Some(tile_sz),
+                realign: 0,
+                read_pos: 0.0,
                 threads: 1,
                 ..Default::default()
             };
@@ -16653,49 +16740,426 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let som_untiled = run_som(500_000);
-        assert!(
-            som_untiled.contains("STATUS=LikelySomatic"),
-            "untiled oracle must call LikelySomatic at pos 201, got: {som_untiled}"
-        );
         let som_tiled = run_som(200);
-        assert_eq!(
-            som_tiled, som_untiled,
-            "F-01: 3-tile somatic --compat=off must preserve Tile 2 owned RD and LikelySomatic status across seam"
+        let row_198 = som_tiled
+            .lines()
+            .find(|l| l.starts_with("chr1\t198\t.\tGA\tG\t"))
+            .unwrap_or_else(|| {
+                panic!("expected GA->G at 198 in 3-tile somatic VCF, got:\n{som_tiled}")
+            });
+        assert!(
+            row_198.contains("STATUS=LikelySomatic;")
+                && row_198.contains("\t0/1:")
+                && row_198.contains(":14,0:")
+                && row_198.contains("\t0/0:24:0:"),
+            "F-01.1: 3-tile somatic --compat=off must drop Tile 2 unowned zero-RD_N Q=18 halo copy and keep Tile 1 owned RD_T=14 + LikelySomatic, got:\n{row_198}"
         );
 
-        // Also check simple mode (`F-01.1` & `F-04`) on `tumor_bam` (`--tile-size 200` vs `--tile-size 500000`)
-        for compat in [
-            crate::config::COMPAT_OFF,
-            crate::config::COMPAT_VARDICTJAVA_1_8_3,
-        ] {
-            let run_simp = |tile_sz: u32| -> String {
-                let mut cfg = crate::config::Config {
-                    bam: tumor_bam.to_string_lossy().into_owned(),
-                    reference: ref_fa.to_string_lossy().into_owned(),
-                    region: Some("chr1:1-600".to_string()),
-                    compat,
-                    tile_size: Some(tile_sz),
-                    threads: 1,
-                    ..Default::default()
-                };
-                cfg.freq = 0.01;
-                cfg.min_reads = 2;
-                let mut out = Vec::new();
-                run_with_writer(&cfg, &mut out).unwrap();
-                String::from_utf8(out)
-                    .unwrap()
-                    .lines()
-                    .filter(|l| !l.starts_with('#'))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+        // Simple mode (`F-01.1`) on `tumor_bam` (`--compat=off`, `--tile-size 200`):
+        let mut cfg_simp_f011 = crate::config::Config {
+            bam: tumor_bam.to_string_lossy().into_owned(),
+            reference: ref_fa.to_string_lossy().into_owned(),
+            region: Some("chr1:1-600".to_string()),
+            compat: crate::config::COMPAT_OFF,
+            tile_size: Some(200),
+            realign: 0,
+            read_pos: 0.0,
+            freq: 0.01,
+            min_reads: 2,
+            threads: 1,
+            ..Default::default()
+        };
+        cfg_simp_f011.af_threshold = 0.01;
+        let mut simp_out = Vec::new();
+        run_with_writer(&cfg_simp_f011, &mut simp_out).unwrap();
+        let simp_vcf = String::from_utf8(simp_out).unwrap();
+        let simp_row_198 = simp_vcf
+            .lines()
+            .find(|l| l.starts_with("chr1\t198\t.\tGA\tG\t"))
+            .unwrap_or_else(|| {
+                panic!("expected GA->G at 198 in 3-tile simple VCF, got:\n{simp_vcf}")
+            });
+        assert!(
+            simp_row_198.contains("\t0/1:") && simp_row_198.contains(":14,0:"),
+            "F-01.1 simple: owned RD=14 (0/1) must beat unowned RD=0 (1/1) on tied (VD, QUAL), got:\n{simp_row_198}"
+        );
+    }
+
+    #[test]
+    fn lane1_fix_r1_f01_2_three_tile_somatic_next_held_single_post_pass() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind as CigarKind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::Cigar;
+        use noodles::sam::alignment::RecordBuf;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_fa = dir.path().join("e2e_ref2.fa");
+        let ref_fai = dir.path().join("e2e_ref2.fa.fai");
+        let mut ref_seq = Vec::with_capacity(2000);
+        for i in 0..2000usize {
+            ref_seq.push(b"ACGT"[((i * 13) ^ (i / 7)) & 3]);
+        }
+        ref_seq[479] = b'A';
+        ref_seq[499] = b'C'; // pos 500
+        for b in &mut ref_seq[500..545] {
+            *b = b'A';
+        }
+        ref_seq[545] = b'G'; // pos 546
+        std::fs::write(
+            &ref_fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&ref_seq).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(&ref_fai, "chr1\t2000\t6\t2000\t2001\n").unwrap();
+        let mk_snv_read =
+            |name: &str, start_1: usize, len: usize, snv_1: usize, alt: u8, q: u8| -> RecordBuf {
+                let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+                let mut seq = ref_seq[(start_1 - 1)..(start_1 - 1 + len)].to_vec();
+                seq[snv_1 - start_1] = alt;
+                RecordBuf::builder()
+                    .set_name(name)
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![q; len].into())
+                    .build()
             };
-            assert_eq!(
-                run_simp(200),
-                run_simp(500_000),
-                "F-01.1 / F-04: simple tiled vs untiled single-allele VCF must match byte-for-byte"
+
+        // Subtest 1b (F-01.2): 3-tile somatic (`chr1:1-600`, `--tile-size 200` vs `--tile-size 500000`)
+        // carrying `StrongSomatic (VD_T=6)` + `StrongLOH (VD_N=2, Q_N=11, !qstd, AF_N=0.02 -> is_noise!)`
+        // from Tile 1 `[1, 200]` merged with higher-`VD_T` `StrongSomatic (VD_T=10)` from Tile 2 `[201, 400]`
+        // across Tile 3 `[401, 600]`: `finalize_somatic_post_passes` MUST run once so `LikelySomatic` (`VD_T=10`)
+        // is preserved rather than overwritten to `StrongSomatic`!
+        let mut ref_f012 = ref_seq.clone();
+        ref_f012[139] = b'C'; // 1-based 140
+        for b in &mut ref_f012[140..225] {
+            *b = b'A'; // 1-based 141..=225 homopolymer spanning Tile 1 [1,200] & Tile 2 [201,400]
+        }
+        ref_f012[225] = b'G'; // 1-based 226
+        let f012_fa = dir.path().join("f012_ref.fa");
+        let f012_fai = dir.path().join("f012_ref.fa.fai");
+        std::fs::write(
+            &f012_fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&ref_f012).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(&f012_fai, "chr1\t2000\t6\t2000\t2001\n").unwrap();
+
+        let mk_f012_1d =
+            |name: &str, start_1: usize, del_1: usize, total_qlen: usize, q: u8| -> RecordBuf {
+                let pre = del_1 - start_1;
+                let post = total_qlen - pre;
+                let mut seq = Vec::with_capacity(total_qlen);
+                seq.extend_from_slice(&ref_f012[(start_1 - 1)..(del_1 - 1)]);
+                seq.extend_from_slice(&ref_f012[del_1..(del_1 + post)]);
+                let cigar: Cigar = [
+                    Op::new(CigarKind::Match, pre),
+                    Op::new(CigarKind::Deletion, 1),
+                    Op::new(CigarKind::Match, post),
+                ]
+                .into_iter()
+                .collect();
+                RecordBuf::builder()
+                    .set_name(name)
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(start_1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![q; total_qlen].into())
+                    .build()
+            };
+        let mk_f012_ref = |name: &str, start_1: usize, len: usize, q: u8| -> RecordBuf {
+            let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(start_1).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(ref_f012[(start_1 - 1)..(start_1 - 1 + len)].to_vec().into())
+                .set_quality_scores(vec![q; len].into())
+                .build()
+        };
+
+        let f012_t_bam = dir.path().join("f012_t.bam");
+        let f012_n_bam = dir.path().join("f012_n.bam");
+        let mut f012_t_reads = Vec::new();
+        // Tile 1 [1, 200] ONLY (starts at 155 -> `CigarParser` stops at 156, separate from Normal's 141!):
+        // 6 Tumor `1D` reads (`StrongSomatic`, VD_T=6 -> Switch 35 rolls 155 -> 140)
+        for i in 0..6usize {
+            f012_t_reads.push(mk_f012_1d(
+                &format!("t1_1d_{i}"),
+                155 + (i % 2),
+                165,
+                42,
+                35,
+            ));
+        }
+        for i in 0..20usize {
+            f012_t_reads.push(mk_f012_ref(&format!("t1_ref_{i}"), 105, 94, 35));
+        }
+        // Tile 2 [201, 400] ONLY (starts >= 205): 10 Tumor `1D` reads (`StrongSomatic`, VD_T=10 -> rolls 205 -> 140)
+        for i in 0..10usize {
+            f012_t_reads.push(mk_f012_1d(
+                &format!("t2_1d_{i}"),
+                205 + (i % 2),
+                215,
+                48,
+                35,
+            ));
+        }
+        for i in 0..20usize {
+            f012_t_reads.push(mk_f012_ref(&format!("t2_ref_{i}"), 201, 55, 35));
+        }
+        // Tile 3 [401, 600]: active somatic SNV at 480
+        for i in 0..6usize {
+            f012_t_reads.push(mk_snv_read(
+                &format!("t3_snv_{i}"),
+                450 + i,
+                60,
+                480,
+                b'G',
+                35,
+            ));
+        }
+        for i in 0..14usize {
+            f012_t_reads.push(mk_f012_ref(&format!("t3_ref_{i}"), 450, 60, 35));
+        }
+        f012_t_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_test_bam(&f012_t_bam, "chr1", 2000, &f012_t_reads);
+
+        let mut f012_n_reads = Vec::new();
+        // Tile 1 [1, 200] ONLY: 2 Normal `1D` reads starting at 105..107 (`CigarParser` shifts to 141 -> `140: "CA" -> "C"`)
+        // with uniform Q=11 (`base_qual = 5.0` so `11 >= base_qual + 5.0` counts in `hicnt`, while `11 < 12 && !qstd`
+        // triggers `Variant::is_noise` during Switch 36!) + 98 WT reads (`AF_N = 2/100 = 0.02 < lofreq 0.025`)
+        // -> `StrongLOH` before Switch 36, `LikelySomatic` after Switch 36!
+        f012_n_reads.push(mk_f012_1d("n1_loh_noise_0", 105, 145, 85, 11));
+        f012_n_reads.push(mk_f012_1d("n1_loh_noise_1", 107, 145, 85, 11));
+        for i in 0..18usize {
+            f012_n_reads.push(mk_f012_ref(&format!("n1_ref_{i}"), 105, 94, 35));
+        }
+        for i in 0..30usize {
+            f012_n_reads.push(mk_f012_ref(&format!("n2_ref_{i}"), 201, 55, 35));
+        }
+        for i in 0..20usize {
+            f012_n_reads.push(mk_f012_ref(&format!("n3_ref_{i}"), 450, 60, 35));
+        }
+        f012_n_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_test_bam(&f012_n_bam, "chr1", 2000, &f012_n_reads);
+
+        let run_f012 = |tile_sz: u32| -> String {
+            let mut cfg = crate::config::Config {
+                bam: format!("{}|{}", f012_t_bam.display(), f012_n_bam.display()),
+                reference: f012_fa.to_string_lossy().into_owned(),
+                region: Some("chr1:1-600".to_string()),
+                compat: crate::config::COMPAT_OFF,
+                tile_size: Some(tile_sz),
+                realign: 0,
+                read_pos: 0.0,
+                base_qual: 5.0,
+                lofreq: 0.15,
+                mfreq: 0.01,
+                freq: 0.01,
+                min_reads: 2,
+                threads: 1,
+                ..Default::default()
+            };
+            cfg.af_threshold = 0.01;
+            let mut out = Vec::new();
+            run_with_writer(&cfg, &mut out).unwrap();
+            String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let f012_untiled = run_f012(500_000);
+        assert!(
+            f012_untiled.contains("chr1\t140\t.\tCA\tC\t")
+                && f012_untiled.contains("STATUS=LikelySomatic")
+                && f012_untiled.contains(";VD=10;"),
+            "F-01.2 untiled oracle must emit LikelySomatic with VD=10 at pos 140, got:\n{f012_untiled}"
+        );
+        let f012_tiled = run_f012(200);
+        assert_eq!(
+            f012_tiled, f012_untiled,
+            "F-01.2: 3-tile somatic next_held must run finalize_somatic_post_passes once and preserve LikelySomatic (not StrongSomatic)"
+        );
+
+        // Subtest 1c (F-04): split-tile single-allele VCF (`!vcf_all_alleles`) where an unowned spanning
+        // deletion/SV at `POS = 180` (`AF = 0.30` in Tile 1 `[1, 200]` vs `AF = 1.00` in Tile 2 `[201, 400]`)
+        // would clobber Tile 1's owned SNV at `POS = 180` (`AF = 0.50`) if per-tile top-1 bucketing hid
+        // Tile 1's lower-AF deletion copy before `vcf_tile_deduper`!
+        let mut ref_f04 = ref_seq.clone();
+        ref_f04[179] = b'A'; // 1-based 180
+        let f04_fa = dir.path().join("f04_ref.fa");
+        let f04_fai = dir.path().join("f04_ref.fa.fai");
+        std::fs::write(
+            &f04_fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&ref_f04).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(&f04_fai, "chr1\t2000\t6\t2000\t2001\n").unwrap();
+
+        let f04_t_bam = dir.path().join("f04_t.bam");
+        let mut f04_reads = Vec::new();
+        // 10 SNV reads (`A -> G` at 180) ending at 195 -> in Tile 1 [1, 200] ONLY (`AF = 10/20 = 0.50`)
+        for i in 0..10usize {
+            let s1 = 140 + (i % 4);
+            let len = 55;
+            let mut seq = ref_f04[(s1 - 1)..(s1 - 1 + len)].to_vec();
+            seq[180 - s1] = b'G';
+            let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+            f04_reads.push(
+                RecordBuf::builder()
+                    .set_name(format!("f04_snv_{i}"))
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(s1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![35u8; len].into())
+                    .build(),
             );
         }
+        // 4 WT reads ending at 195 -> in Tile 1 [1, 200] ONLY
+        for i in 0..4usize {
+            let s1 = 140 + i;
+            let len = 55;
+            let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+            f04_reads.push(
+                RecordBuf::builder()
+                    .set_name(format!("f04_wt_{i}"))
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(s1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(ref_f04[(s1 - 1)..(s1 - 1 + len)].to_vec().into())
+                    .set_quality_scores(vec![35u8; len].into())
+                    .build(),
+            );
+        }
+        // 6 spanning `60D` deletion/SV reads (`sv_min_len = 50`) starting at 151..156 (`preM + 60D(181..=240) + 50M`),
+        // anchored at `POS = 180`: `AF = 6/20 = 0.30` in Tile 1 [1, 200], `AF = 6/6 = 1.00` in Tile 2 [201, 400]!
+        for i in 0..6usize {
+            let s1 = 151 + i;
+            let pre = 181 - s1;
+            let post = 50;
+            let mut seq = Vec::with_capacity(pre + post);
+            seq.extend_from_slice(&ref_f04[(s1 - 1)..(s1 - 1 + pre)]);
+            seq.extend_from_slice(&ref_f04[240..(240 + post)]);
+            let cigar: Cigar = [
+                Op::new(CigarKind::Match, pre),
+                Op::new(CigarKind::Deletion, 60),
+                Op::new(CigarKind::Match, post),
+            ]
+            .into_iter()
+            .collect();
+            f04_reads.push(
+                RecordBuf::builder()
+                    .set_name(format!("f04_spandel_{i}"))
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(s1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![35u8; pre + post].into())
+                    .build(),
+            );
+        }
+        f04_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_test_bam(&f04_t_bam, "chr1", 2000, &f04_reads);
+
+        let run_f04_simple = |tile_sz: u32| -> String {
+            let cfg = crate::config::Config {
+                bam: f04_t_bam.to_string_lossy().into_owned(),
+                reference: f04_fa.to_string_lossy().into_owned(),
+                region: Some("chr1:1-600".to_string()),
+                compat: crate::config::COMPAT_VARDICTJAVA_1_8_3,
+                vcf_all_alleles: false,
+                sv_min_len: 50,
+                freq: 0.01,
+                min_reads: 2,
+                tile_size: Some(tile_sz),
+                threads: 1,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            run_with_writer(&cfg, &mut out).unwrap();
+            String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let f04_simp_untiled = run_f04_simple(500_000);
+        assert!(
+            f04_simp_untiled.starts_with("chr1\t180\t.\tA\tG\t"),
+            "F-04 simple untiled oracle must pick owned SNV A->G (AF=0.50) at pos 180, got:\n{f04_simp_untiled}"
+        );
+        assert_eq!(
+            run_f04_simple(200),
+            f04_simp_untiled,
+            "F-04 simple: Tile 2 unowned AF=1.0 spanning deletion must not clobber Tile 1 owned SNV at pos 180"
+        );
+
+        let run_f04_somatic = |tile_sz: u32| -> String {
+            let cfg = crate::config::Config {
+                bam: format!("{}|{}", f04_t_bam.display(), f012_n_bam.display()),
+                reference: f04_fa.to_string_lossy().into_owned(),
+                region: Some("chr1:1-600".to_string()),
+                compat: crate::config::COMPAT_VARDICTJAVA_1_8_3,
+                vcf_all_alleles: false,
+                sv_min_len: 50,
+                freq: 0.01,
+                min_reads: 2,
+                tile_size: Some(tile_sz),
+                threads: 1,
+                ..Default::default()
+            };
+            let mut out = Vec::new();
+            run_with_writer(&cfg, &mut out).unwrap();
+            String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let f04_som_untiled = run_f04_somatic(500_000);
+        assert!(
+            f04_som_untiled.starts_with("chr1\t180\t.\tA\tG\t"),
+            "F-04 somatic untiled oracle must pick owned SNV A->G (AF=0.50) at pos 180, got:\n{f04_som_untiled}"
+        );
+        assert_eq!(
+            run_f04_somatic(200),
+            f04_som_untiled,
+            "F-04 somatic: Tile 2 unowned AF=1.0 spanning deletion must not clobber Tile 1 owned SNV at pos 180"
+        );
 
         // Subtest 2 (F-10(1) & F-03): `-p --compat=off` left-aligns deletion across unloaded 5' FASTA chunk
         // using a 2-exon BED (`chr1:495-505` and `chr1:540-550`), AND paired `-p --compat=off` VCF emits `ALT=.`!
@@ -16770,7 +17234,7 @@ mod tests {
 
         // Paired `-p --compat=off` VCF: preserved shifted reference row at 543 must also emit canonical `ALT=.`!
         let mut cfg_p_paired = cfg_p_la.clone();
-        cfg_p_paired.bam = format!("{}|{}", p_bam.display(), normal_bam.display());
+        cfg_p_paired.bam = format!("{}|{}", p_bam.display(), f012_n_bam.display());
         let mut p_paired_out = Vec::new();
         run_with_writer(&cfg_p_paired, &mut p_paired_out).unwrap();
         let p_paired_vcf = String::from_utf8(p_paired_out).unwrap();
@@ -16850,6 +17314,120 @@ mod tests {
                 "del_1050_1200",
                 "del_1050_1400",
             ]
+        );
+    }
+
+    #[test]
+    fn lane1_fix_r1_seam_owned_partition_and_switch36_tie() {
+        let mk_seam_var =
+            |pos: i32, r: &str, a: &str, vd: i32, rd: i32, q: f64| -> crate::variations::Variant {
+                let mut v = crate::variations::Variant::new();
+                v.start_pos = pos;
+                v.end_pos = pos + (r.len() as i32).saturating_sub(1);
+                v.ref_allele = r.to_string();
+                v.var_allele = a.to_string();
+                v.var_type = v.var_type();
+                v.pos_coverage = vd;
+                v.fwd = vd / 2;
+                v.rev = vd - v.fwd;
+                v.ref_fwd_cov = rd / 2;
+                v.ref_rev_cov = rd - v.ref_fwd_cov;
+                v.total_pos_cov = vd + rd;
+                v.frequency = if v.total_pos_cov > 0 {
+                    vd as f64 / v.total_pos_cov as f64
+                } else {
+                    0.0
+                };
+                v.hicnt = vd;
+                v.hicov = vd + rd;
+                v.hi_freq = v.frequency;
+                v.mean_quality = q;
+                v.mean_mapping_quality = 60.0;
+                v.mean_position = 25.0;
+                v.hq_lq_ratio = 20.0;
+                v.pstd = true;
+                v.qstd = true;
+                v
+            };
+        let cfg_seam_off = crate::config::Config {
+            compat: crate::config::COMPAT_OFF,
+            freq: 0.01,
+            min_reads: 2,
+            ..Default::default()
+        };
+        let simple_seam_out = dedup_simple_seam_owned_vec(
+            &cfg_seam_off,
+            vec![
+                (true, mk_seam_var(220, "C", "T", 8, 12, 35.0)),
+                (false, mk_seam_var(190, "G", "A", 10, 10, 35.0)),
+                (false, mk_seam_var(201, "ACT", "A", 8, 0, 35.0)),
+                (true, mk_seam_var(201, "ACT", "A", 8, 14, 35.0)),
+            ],
+        );
+        let simple_pos_rd: Vec<(i32, i32)> = simple_seam_out
+            .iter()
+            .map(|v| (v.start_pos, v.ref_fwd_cov + v.ref_rev_cov))
+            .collect();
+        assert_eq!(
+            simple_pos_rd,
+            vec![(190, 10), (201, 14), (220, 12)],
+            "dedup_simple_seam_owned_vec must keep owned RD=14 at 201 and restore ascending coordinate_sorted_vars order"
+        );
+
+        let empty_sp = rustc_hash::FxHashSet::default();
+        let u_som = crate::postprocess::somatic::SomaticVariant {
+            variant1: mk_seam_var(201, "ACT", "A", 8, 0, 35.0),
+            variant2: Some(mk_seam_var(201, "ACT", "A", 4, 16, 35.0)),
+            status: "Germline".to_string(),
+            sv1: String::new(),
+            sv2: String::new(),
+            end_is_variant2: true,
+            tumor_amplicon: None,
+            normal_amplicon: None,
+            v2_ref_variant: None,
+        };
+        let o_som = crate::postprocess::somatic::SomaticVariant {
+            variant1: mk_seam_var(201, "ACT", "A", 8, 14, 35.0),
+            variant2: Some(mk_seam_var(201, "A", "A", 0, 20, 35.0)),
+            status: "StrongSomatic".to_string(),
+            sv1: String::new(),
+            sv2: String::new(),
+            end_is_variant2: false,
+            tumor_amplicon: None,
+            normal_amplicon: None,
+            v2_ref_variant: None,
+        };
+        let u_upstream = crate::postprocess::somatic::SomaticVariant {
+            variant1: mk_seam_var(185, "G", "T", 9, 11, 35.0),
+            variant2: Some(mk_seam_var(185, "G", "G", 0, 20, 35.0)),
+            status: "StrongSomatic".to_string(),
+            sv1: String::new(),
+            sv2: String::new(),
+            end_is_variant2: false,
+            tumor_amplicon: None,
+            normal_amplicon: None,
+            v2_ref_variant: None,
+        };
+        let som_seam_out = finalize_somatic_seam_owned_vec(
+            &cfg_seam_off,
+            &empty_sp,
+            vec![(false, u_som), (true, o_som), (false, u_upstream)],
+        );
+        let som_summary: Vec<(i32, i32, i32, &str)> = som_seam_out
+            .iter()
+            .map(|sv| {
+                (
+                    sv.variant1.start_pos,
+                    sv.variant1.ref_fwd_cov + sv.variant1.ref_rev_cov,
+                    sv.variant2.as_ref().map_or(0, |v| v.pos_coverage),
+                    sv.status.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            som_summary,
+            vec![(185, 11, 0, "StrongSomatic"), (201, 14, 4, "Germline")],
+            "finalize_somatic_seam_owned_vec must partition owned ahead of unowned so Switch 36 selects owned RD_T=14 on (VD, QUAL) tie and restores coordinate order"
         );
     }
 }

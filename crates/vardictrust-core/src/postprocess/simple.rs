@@ -1579,6 +1579,7 @@ mod tests {
         let mut cfg_sw35 = Config::default();
         cfg_sw35.emit_intermediate = true;
         cfg_sw35.compat.canonical_vcf_complex_left_align = true;
+        cfg_sw35.compat.recompute_vartype_after_adj_complex = true;
         let out_sw35 = simple_post_process(&cfg_sw35, &region, &map_delins, &splice);
         assert_eq!(out_sw35.len(), 1);
         assert_eq!(out_sw35[0].start_pos, 103);
