@@ -180,8 +180,34 @@ vardictrust -G fixtures/micro/micro.ref.fa -b fixtures/micro/micro.bam -R chr1:4
 <a id="usage--pipeline-recipes"></a>
 ## Usage & Pipeline Recipes
 
+<a id="preset-quickstart"></a>
+### Recommended Quickstart for New NGS Projects (`--preset`, v1.1.0+)
+
+Starting a new pipeline rather than migrating an existing `VarDictJava` script? Pass **`--preset <wgs|wes|amplicon|ctdna>`** to automatically enable **standard `0`-based BED coordinates**, all 32 `--compat=off` VCF/somatic/SV/`--eqx` accuracy fixes, and modality-calibrated filters (any explicit CLI flag still overrides; see the [preset threshold table](docs/migration.md#clinical-workflow-presets)):
+
+```bash
+# Germline WES or WGS (standard 0-based BED, BAM or CRAM, direct BGZF + Tabix)
+vardictrust --preset wes -G GRCh38.fa -b sample.bam -N SAMPLE \
+  --vcf-all-alleles -th 8 --output sample.vcf.gz --tbi exome_0based.bed
+
+# Paired tumor-normal somatic WES or WGS (rescues subclonal GT=0/1 & multi-allelic sites)
+vardictrust --preset wes -G GRCh38.fa -b "tumor.bam|normal.bam" -N "TUMOR|NORMAL" \
+  --vcf-all-alleles -th 8 --output somatic.vcf.gz --tbi exome_0based.bed
+
+# Single-primer extension panel (QIAGEN QIAseq V3 / ArcherDX, 8-column amplicon BED)
+vardictrust --preset amplicon -sp -G GRCh38.fa -b panel.bam -N SAMPLE \
+  -th 8 --output panel.vcf.gz --tbi qiaseq_8col.bed
+
+# Liquid-biopsy ctDNA (~0.2%–1% VAF sensitivity + Illumina TruSeq adapter screening)
+vardictrust --preset ctdna -G GRCh38.fa -b cfdna.bam -N CFDNA \
+  --adaptor AGATCGGAAGAGCACACGTCTGAACTCCAGTCA,AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT \
+  --vcf-all-alleles -th 8 --output cfdna.vcf.gz --tbi hotspot_0based.bed
+```
+
+*Note for UMI / duplex ctDNA assays:* collapse molecular barcodes upstream (e.g., `fgbio` or `UMI-tools`) before running `--preset ctdna`; native in-caller UMI collapsing and `--preset hifi|ont` target `v2.0` ([`ROADMAP.md`](ROADMAP.md)). For exact `VarDictJava v1.8.3` default parity (`--compat=vardictjava`), omit `--preset` and use recipes `1–5` below.
+
 > [!WARNING]
-> **The Silent BED Coordinate Trap (`-c 1 -S 2 -E 3 -z`):**
+> **The Silent BED Coordinate Trap (`-c 1 -S 2 -E 3 -z` When `--preset` Is Omitted):**
 > - **Non-4-Column BED Files (`chr start end ...`):** VarDict defaults to 13-column UCSC `refGene` columns (`-c 3 -S 7 -E 8 -s 10 -e 11 -g 13`, 1-based inclusive), while auto-detecting 4-column standard 0-based BEDs (when `-c` is omitted) and 8-column amplicon BEDs. Pass **`-c 1 -S 2 -E 3 -z`** on 3-, 5-, and 6-column 0-based BED files (and whenever `-c 1` is passed explicitly on 4-column 0-based BEDs) to prevent coordinate shifts or parser aborts; see the [VarDictJava Migration Guide](docs/migration.md) for side-by-side pipeline translation.
 > - **Direct Region Specification:** Pass `-R chr:start-end[:gene]` to bypass BED parsing.
 

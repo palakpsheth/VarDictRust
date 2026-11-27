@@ -36,7 +36,7 @@
 # - Item 7 (--amplicon-single-primer / -sp):
 #   AstraZeneca-NGS/VarDictJava#301, AstraZeneca-NGS/VarDictJava#303,
 #   AstraZeneca-NGS/VarDictJava#326, AstraZeneca-NGS/VarDict#191;
-#   Gong et al., Sci. Data 2022 (DOI: 10.1038/s41597-022-01359-2, ENA SRP295113,
+#   Gong et al., Sci. Data 2022 (DOI: 10.1038/s41597-022-01359-6, ENA SRP295113,
 #   Figshare DOI: 10.6084/m9.figshare.19128005.v2 &
 #   DOI: 10.6084/m9.figshare.13511829.v4).
 # - Item 8 (CompatProfile switch 21: paired_somatic_amplicon):
@@ -732,7 +732,7 @@ PY
 # Suite 6: --amplicon-single-primer (-sp) on QIAseq V3 SPE Tumor & 0.5% ctDNA
 #          (AstraZeneca-NGS/VarDictJava#301, AstraZeneca-NGS/VarDictJava#303,
 #           AstraZeneca-NGS/VarDictJava#326, AstraZeneca-NGS/VarDict#191;
-#           Gong et al. Sci. Data 2022, DOI: 10.1038/s41597-022-01359-2)
+#           Gong et al. Sci. Data 2022, DOI: 10.1038/s41597-022-01359-6)
 # =============================================================================
 echo "[6/7] Verifying --amplicon-single-primer (-sp) on QIAseq V3 SPE solid tumor & 0.5% ctDNA..."
 python3 - "$VARDICTRUST_BIN" "$GRCH38_REF" "$WAVE4_DIR" "$WORK_TMP" <<'PY'

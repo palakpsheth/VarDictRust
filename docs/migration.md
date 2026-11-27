@@ -6,6 +6,9 @@ By default (`--compat=vardictjava`, aliases `vardictjava-1.8.3` / `1.8.3`, or `-
 
 ---
 
+> [!TIP]
+> **Not migrating an existing `VarDictJava` script?** Start directly with **`--preset <wgs|wes|amplicon|ctdna>`** (`v1.1.0+`) for automatic `0`-based BED coordinates, all 32 `--compat=off` VCF/somatic/SV/`--eqx` fixes, and modality-tuned filters; see [Clinical Workflow Presets (`--preset`)](#clinical-workflow-presets) below and the [README `--preset` Quickstart](../README.md#preset-quickstart).
+
 ## 1. Side-by-Side Pipeline Translation
 
 ### Single-Sample / Germline Calling
@@ -201,17 +204,6 @@ Following [`RegionBuilder.java`](https://github.com/AstraZeneca-NGS/VarDictJava/
 - **Compatibility Profiles (`--compat=vardictjava` vs `--compat=off`):**
   - **`--compat=vardictjava` (default in `v1.x`; aliases: `vardictjava-1.8.3`, `1.8.3`, or `--parity`):** Locks 100% byte-for-byte `VarDictJava` v1.8.3 + `var2vcf_*.pl` parity across `v1.x` and future `v2.0+` releases.
   - **`--compat=off` (`v1.1.0+`):** Activates all 32 `VarDictRust` `CompatProfile` (`COMPAT_OFF`) correctness switches without per-bug `--fix` flag sprawl and stamps `##VarDictRustCompat=off` in VCF headers (`AstraZeneca-NGS/VarDictJava#116` bijective `INFO/SAMPLE` percent-encoding, `AstraZeneca-NGS/VarDictJava#342` standard `<DUP>` symbolic `ALT` when `mlen < 100`, `AstraZeneca-NGS/VarDictJava#292` FASTA-valid 3'-shifted `REF`/`ALT` alleles, `AstraZeneca-NGS/VarDictJava#369` strict merged-interval target bounds, `UB-1`/`UB-2` `-p` pileup sentinel suppression, live `u64` `DUPRATE` accounting, mixed `X`+`chrX` / `Y`+`chrY` / `MT`+`chrM` contig preservation, `AstraZeneca-NGS/VarDictJava#402` `CigarModifier` homopolymer multi-indel merge, `minimap2 --eqx` `=`/`X` CIGAR read-length and coalescing support, `UB-5` single-sample discordant-pair `<DUP>`/`<INV>`/`<DEL>` SV preservation, `UB-6` inclusive `mark_dup_sv` `svfdup` boundary, `sv_lazy_mate_pileup` lazy mate-window pileup in `find_inv_sub`, exact IEEE-754 binary `HALF_EVEN` tie rounding, `AstraZeneca-NGS/VarDictJava#92`/`AstraZeneca-NGS/VarDictJava#386`/`AstraZeneca-NGS/VarDictJava#400` `reconcile_vd_dp` enforcing `VD <= DP` / `AF <= 1.0` / `ADJAF <= 1.0` / `HICNT <= HICOV`, `UB-3`/`AstraZeneca-NGS/VarDictJava#282` `coordinate_sorted_vars` ascending coordinate position-map iteration, `palakpsheth/VarDictRust#34 PB-2` `exact_35_overlap`, `palakpsheth/VarDictRust#34 PB-4` `exact_cigar_dlen_match`, `joachimwolff/VarDictJava#4` / `clintval/vartovcf#139` `somatic_continue_after_bad_var`, `AstraZeneca-NGS/VarDictJava#240` / `AstraZeneca-NGS/VarDict#119` `adaptor_all_consensus_dirs`, `AstraZeneca-NGS/VarDictJava#398` / `clintval/vartovcf#192` `canonical_sv_vcf_anchoring`, `AstraZeneca-NGS/VarDictJava#378` / `AstraZeneca-NGS/VarDict#109` `paired_somatic_amplicon`, `AstraZeneca-NGS/VarDictJava#341` / `AstraZeneca-NGS/VarDictJava#103` `cigar_strip_outer_hard_clips`, `bcbio/bcbio-nextgen#1704` `nonnegative_subtracted_means`, `AstraZeneca-NGS/VarDictJava#316` `reconcile_strand_and_hq_sums`, `AstraZeneca-NGS/VarDict#168` `reconcile_rd_vd_dp`, `AstraZeneca-NGS/VarDictJava#267` `sanitize_iupac_alt_alleles`, `AstraZeneca-NGS/VarDictJava#328` `sv_respect_min_len`, `AstraZeneca-NGS/VarDictJava#330` `pileup_preserve_shifted_ref`, `clintval/vartovcf#109` `recompute_vartype_after_adj_complex`, `clintval/vartovcf#101` `strict_vcf_ad_number_r`, `clintval/vartovcf#105` `omit_nonsv_vcf_end`, and `clintval/vartovcf#99` `canonical_vcf_gt`; see [`ROADMAP.md`](../ROADMAP.md)). Combining `--parity` with `--compat=off` (or `--compat=vardictjava` with `--compat=off`) fails fast with `VardictError::Parse`.
-- **Clinical Workflow Presets (`--preset <wgs|wes|amplicon|ctdna>`, `v1.1.0+`, [`palakpsheth/VarDictRust#94`](https://github.com/palakpsheth/VarDictRust/issues/94)):**
-  - Enables `--compat=off` (`COMPAT_OFF`, stamping `##VarDictRustCompat=off` and `##VarDictRustPreset=<PRESET>` in VCF headers; conflicts with `--parity` and `--compat=vardictjava`), sets 0-based BED coordinates (`zero_based = true` on BED inputs while keeping `-R` 1-based unless `-z` is passed explicitly), deduplicates paired somatic `Q20` `FILTER` tags, and seeds modality-calibrated candidate/VCF `FILTER` defaults that **any explicit CLI flag overrides**:
-
-    | Preset | Target Assay & Coordinate Defaults | Candidate Pileup Defaults (`-f`, `-r`) | VCF `FILTER` Defaults (`--vcf-*`) | Clinical Override Guidance |
-    | :--- | :--- | :--- | :--- | :--- |
-    | `--preset wgs` | 30×–100× germline or paired T/N WGS; 0-based BED (`-c 1 -S 2 -E 3 -g 4`, UCSC BED8 kept in `SimpleMode`) | `-f 0.05`, `-r 2` | `--vcf-af 0.05`, `--vcf-min-depth 10`, `--vcf-min-vd 3`, `--vcf-mapq 20` (`--vcf-qmean 22.5`) | For `< 5%` VAF subclonal somatic WGS, add **`-f 0.01`** (which also resets the VCF AF floor to `0.01` unless `--vcf-af` is passed explicitly). |
-    | `--preset wes` | 100×–500× germline or paired T/N WES / broad capture; 0-based BED (`-c 1 -S 2 -E 3 -g 4`) | `-f 0.01`, `-r 2` | `--vcf-af 0.02`, `--vcf-min-depth 20`, `--vcf-min-vd 4`, `--vcf-mapq 20` (`--vcf-qmean 22.5`) | Add `--paired-strict` when germline/LOH rescue should be suppressed in tumor-normal WES. |
-    | `--preset amplicon` | Targeted 8-col PCR or SPE amplicon BED (`-a 10:0.95`, `dedup = false`; rejects `-R` and `-i`) | `-f 0.01`, `-r 2` | `--vcf-af 0.01`, `--vcf-min-depth 50`, `--vcf-min-vd 5`, `--vcf-mapq 20` (`--vcf-qmean 22.5`) | Add **`-sp`** (`--amplicon-single-primer`) for QIAseq V3 / ArcherDX SPE panels; supports paired `-b "tumor\|normal"` natively under `COMPAT_OFF`. |
-    | `--preset ctdna` | 1,000×–50,000× liquid-biopsy / cfDNA hybrid capture; 0-based BED (`-c 1 -S 2 -E 3 -g 4`) | `-f 0.001`, `-r 3` | `--vcf-af 0.002`, `--vcf-min-depth 100`, `--vcf-min-vd 4`, `--vcf-qmean 25`, `--vcf-mapq 20` | For paired T/N somatic cfDNA/WBC workflows, add **`--paired-strict`** (`var2vcf_paired.pl -M`) to disable germline rescue. |
-
-  - Deferred long-read presets (`--preset hifi` and `--preset ont`) fail fast with `VardictError::Unsupported` ([`palakpsheth/VarDictRust#96`](https://github.com/palakpsheth/VarDictRust/issues/96)).
 - **Shell Completions & Manual Page (`v1.0.8+`):**
   ```bash
   # Generate shell completions (installed automatically in Bioconda environments):
@@ -222,6 +214,20 @@ Following [`RegionBuilder.java`](https://github.com/AstraZeneca-NGS/VarDictJava/
   # View the standalone roff manual page:
   vardictrust --manpage | man -l -
   ```
+
+<a id="clinical-workflow-presets"></a>
+### Clinical Workflow Presets (`--preset <wgs|wes|amplicon|ctdna>`, `v1.1.0+`)
+
+Passing `--preset <wgs|wes|amplicon|ctdna>` ([`palakpsheth/VarDictRust#94`](https://github.com/palakpsheth/VarDictRust/issues/94)) enables `--compat=off` (`COMPAT_OFF`, stamping `##VarDictRustCompat=off` and `##VarDictRustPreset=<PRESET>` in VCF headers; conflicts with `--parity` and `--compat=vardictjava`), sets `0`-based BED coordinates (`zero_based = true` on BED inputs while keeping `-R` 1-based unless `-z` is passed explicitly), deduplicates paired somatic `Q20` `FILTER` tags, and seeds modality-calibrated candidate/VCF `FILTER` defaults that **any explicit CLI flag overrides**:
+
+| Preset | Target Assay & Coordinate Defaults | Candidate Pileup Defaults (`-f`, `-r`) | VCF `FILTER` Defaults (`--vcf-*`) | Clinical Override Guidance |
+| :--- | :--- | :--- | :--- | :--- |
+| `--preset wgs` | 30×–100× germline or paired T/N WGS; 0-based BED (`-c 1 -S 2 -E 3 -g 4`, UCSC BED8 kept in `SimpleMode`) | `-f 0.05`, `-r 2` | `--vcf-af 0.05`, `--vcf-min-depth 10`, `--vcf-min-vd 3`, `--vcf-mapq 20` (`--vcf-qmean 22.5`) | For `< 5%` VAF subclonal somatic WGS, add **`-f 0.01`** (which also resets the VCF AF floor to `0.01` unless `--vcf-af` is passed explicitly). |
+| `--preset wes` | 100×–500× germline or paired T/N WES / broad capture; 0-based BED (`-c 1 -S 2 -E 3 -g 4`) | `-f 0.01`, `-r 2` | `--vcf-af 0.02`, `--vcf-min-depth 20`, `--vcf-min-vd 4`, `--vcf-mapq 20` (`--vcf-qmean 22.5`) | Add `--paired-strict` when germline/LOH rescue should be suppressed in tumor-normal WES. |
+| `--preset amplicon` | Targeted 8-col PCR or SPE amplicon BED (`-a 10:0.95`, `dedup = false`; rejects `-R` and `-i`) | `-f 0.01`, `-r 2` | `--vcf-af 0.01`, `--vcf-min-depth 50`, `--vcf-min-vd 5`, `--vcf-mapq 20` (`--vcf-qmean 22.5`) | Add **`-sp`** (`--amplicon-single-primer`) for QIAseq V3 / ArcherDX SPE panels; supports paired `-b "tumor\|normal"` natively under `COMPAT_OFF`. |
+| `--preset ctdna` | 1,000×–50,000× liquid-biopsy / cfDNA hybrid capture; 0-based BED (`-c 1 -S 2 -E 3 -g 4`) | `-f 0.001`, `-r 3` | `--vcf-af 0.002`, `--vcf-min-depth 100`, `--vcf-min-vd 4`, `--vcf-qmean 25`, `--vcf-mapq 20` | For paired T/N somatic cfDNA/WBC workflows, add **`--paired-strict`** (`var2vcf_paired.pl -M`) to disable germline rescue. |
+
+Deferred long-read presets (`--preset hifi` and `--preset ont`) fail fast with `VardictError::Unsupported` ([`palakpsheth/VarDictRust#96`](https://github.com/palakpsheth/VarDictRust/issues/96)).
 
 ---
 

@@ -371,6 +371,15 @@ class TestCollectV110CompatMetrics(unittest.TestCase):
         self.assertIn("https://doi.org/10.1038/s41597-022-01359-6", dois)
         self.assertNotIn("10.1038/s41597-022-01359-2", upstream_txt)
 
+        for sh_rel in (
+            "harness/get_wave4_public_slices.sh",
+            "harness/verify_presets_public_data.sh",
+            "harness/verify_wave4_public_data.sh",
+        ):
+            sh_txt = (ROOT / sh_rel).read_text(encoding="utf-8")
+            self.assertIn("10.1038/s41597-022-01359-6", sh_txt, f"Missing verified Gong 2022 DOI in {sh_rel}")
+            self.assertNotIn("10.1038/s41597-022-01359-2", sh_txt, f"Stale Gong 2022 DOI left in {sh_rel}")
+
 
 if __name__ == "__main__":
     unittest.main()
