@@ -57,6 +57,7 @@ pub fn simple_post_process(
             }),
             splice,
             strict_bounds,
+            None,
         )
     } else {
         simple_post_process_core(
@@ -67,6 +68,7 @@ pub fn simple_post_process(
                 .map(|(&pos, vars)| (pos, std::borrow::Cow::Borrowed(vars))),
             splice,
             strict_bounds,
+            None,
         )
     }
 }
@@ -95,12 +97,31 @@ pub(crate) fn simple_post_process_owned(
 
 /// Owned fast-path counterpart of [`simple_post_process`] using pre-merged chromosome
 /// target intervals when `strict_bounds` is supplied (`#369`, `AR-4`).
+#[cfg(test)]
 pub(crate) fn simple_post_process_owned_with_bounds(
+    config: &Config,
+    region: &Region,
+    aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    strict_bounds: Option<&[(i32, i32)]>,
+) -> Vec<Variant> {
+    simple_post_process_owned_with_bounds_and_ref(
+        config,
+        region,
+        aligned_variants,
+        splice,
+        strict_bounds,
+        None,
+    )
+}
+
+pub(crate) fn simple_post_process_owned_with_bounds_and_ref(
     config: &Config,
     region: &Region,
     mut aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
     strict_bounds: Option<&[(i32, i32)]>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
 ) -> Vec<Variant> {
     if config.compat.coordinate_sorted_vars {
         let mut keys: Vec<i32> = aligned_variants.keys().copied().collect();
@@ -115,6 +136,7 @@ pub(crate) fn simple_post_process_owned_with_bounds(
             }),
             splice,
             strict_bounds,
+            ref_info,
         )
     } else {
         simple_post_process_core(
@@ -125,8 +147,41 @@ pub(crate) fn simple_post_process_owned_with_bounds(
                 .map(|(pos, vars)| (pos, std::borrow::Cow::Owned(vars))),
             splice,
             strict_bounds,
+            ref_info,
         )
     }
+}
+
+fn dedup_normalized_simple_variants(vrefs: &mut Vec<Variant>) {
+    if vrefs.len() <= 1 {
+        return;
+    }
+    let old = std::mem::take(vrefs);
+    let mut out: Vec<Variant> = Vec::with_capacity(old.len());
+    let mut seen: rustc_hash::FxHashMap<(i32, String, String), usize> =
+        rustc_hash::FxHashMap::default();
+    for v in old {
+        if v.null_record {
+            out.push(v);
+            continue;
+        }
+        let key = (v.start_pos, v.ref_allele.clone(), v.var_allele.clone());
+        match seen.entry(key) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(out.len());
+                out.push(v);
+            }
+            std::collections::hash_map::Entry::Occupied(e) => {
+                let idx = *e.get();
+                if let Some(cur) = out.get_mut(idx) {
+                    if crate::variations::post_norm_candidate_beats(&v, cur) {
+                        *cur = v;
+                    }
+                }
+            }
+        }
+    }
+    *vrefs = out;
 }
 
 fn simple_post_process_core<'a>(
@@ -135,11 +190,15 @@ fn simple_post_process_core<'a>(
     entries: impl IntoIterator<Item = (i32, std::borrow::Cow<'a, Vars>)>,
     splice: &rustc_hash::FxHashSet<String>,
     strict_bounds: Option<&[(i32, i32)]>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
 ) -> Vec<Variant> {
     let mut vrefs = Vec::new();
 
     let reset_crispr = config.crispr_cutting_site.unwrap_or(0) == 0;
     let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
+    let do_left_align = crate::variations::canonical_left_align_enabled(config);
+    let indel_only_shift3 = config.compat.indel_only_shift3;
+    let ref_ctx = ref_info.map(|(r, len)| (r, region.chr.as_str(), len));
     let skip_eq_non_pileup = !config.pileup && config.compat.sanitize_iupac_alt_alleles;
     let preserve_shifted_ref = config.pileup && config.compat.pileup_preserve_shifted_ref;
 
@@ -196,9 +255,7 @@ fn simple_post_process_core<'a>(
                     vref.var_type.clear();
                     vref.var_type.push_str(&vtype_cow);
                 }
-                if vref.var_type == "Complex" {
-                    vref.adj_complex_compat(refresh_vt);
-                }
+                vref.normalize_postprocess(ref_ctx, do_left_align, refresh_vt, indel_only_shift3);
                 if reset_crispr {
                     vref.crispr = 0;
                 }
@@ -281,11 +338,9 @@ fn simple_post_process_core<'a>(
                     vref.var_type.clear();
                     vref.var_type.push_str(&vtype_cow);
                 }
-                if vref.var_type == "Complex" {
-                    vref.adj_complex_compat(refresh_vt);
-                    if skip_eq_non_pileup && vref.ref_allele == vref.var_allele {
-                        continue;
-                    }
+                vref.normalize_postprocess(ref_ctx, do_left_align, refresh_vt, indel_only_shift3);
+                if skip_eq_non_pileup && vref.ref_allele == vref.var_allele {
+                    continue;
                 }
                 if reset_crispr {
                     vref.crispr = 0;
@@ -310,6 +365,10 @@ fn simple_post_process_core<'a>(
         vrefs.retain(|v| crate::variant_within_strict_bounds(merged_bounds, v, allow_padded_sv));
     } else if config.compat.strict_region_bounds {
         vrefs.retain(|v| v.start_pos >= 1);
+    }
+
+    if config.compat.canonical_vcf_complex_left_align && !config.pileup {
+        dedup_normalized_simple_variants(&mut vrefs);
     }
 
     // VCF mode: ports var2vcf_valid.pl:41,129-137 — bucket rows by the RAW .var
@@ -1449,5 +1508,121 @@ mod tests {
                 (140, "AC", "GT", "Complex"),
             ]
         );
+    }
+
+    #[test]
+    fn test_wave6_switch35_switch38_and_ruling3_simple_postprocess() {
+        let splice = rustc_hash::FxHashSet::default();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(90),
+            end: Pos1(150),
+            gene: "EGFR".to_string(),
+            amplicon: None,
+        };
+
+        // 1. Switch 35 (a) + (d): repeat-shifted complex delins at pos=105 ("AGAGA" -> "GA") on ...TAAGAGAG...
+        let mut map_delins = crate::javamap::JavaHashMap::new();
+        let mut vars_105 = Vars::new();
+        let mut v_delins = mk_variant(105, 109, "AGAGA", "GA", 0.35);
+        v_delins.pos_coverage = 14;
+        v_delins.total_pos_cov = 40;
+        v_delins.left_seq = "CGTACGTACGTACGTACGTA".get(..18).unwrap().to_string() + "TA"; // ends with "TA" at 103..=104
+        v_delins.right_seq = "GAAGTGAC".to_string();
+        vars_105.variants.push(v_delins);
+        map_delins.insert(105, vars_105);
+
+        let mut cfg_sw35 = Config::default();
+        cfg_sw35.emit_intermediate = true;
+        cfg_sw35.compat.canonical_vcf_complex_left_align = true;
+        let out_sw35 = simple_post_process(&cfg_sw35, &region, &map_delins, &splice);
+        assert_eq!(out_sw35.len(), 1);
+        assert_eq!(out_sw35[0].start_pos, 103);
+        assert_eq!(out_sw35[0].end_pos, 106);
+        assert_eq!(out_sw35[0].ref_allele, "TAAG");
+        assert_eq!(out_sw35[0].var_allele, "T");
+        assert_eq!(out_sw35[0].var_type, "Deletion");
+
+        // (d) Bypass under -3 (three_prime = true) and CRISPR (crispr_cutting_site = Some(108)):
+        let mut cfg_3p = cfg_sw35.clone();
+        cfg_3p.three_prime = true;
+        let out_3p = simple_post_process(&cfg_3p, &region, &map_delins, &splice);
+        assert_eq!(out_3p[0].start_pos, 105);
+        assert_eq!(out_3p[0].ref_allele, "AGAG");
+        assert_eq!(out_3p[0].var_allele, "G");
+
+        let mut cfg_crispr = cfg_sw35.clone();
+        cfg_crispr.crispr_cutting_site = Some(108);
+        let out_crispr = simple_post_process(&cfg_crispr, &region, &map_delins, &splice);
+        assert_eq!(out_crispr[0].start_pos, 105);
+        assert_eq!(out_crispr[0].ref_allele, "AGAG");
+        assert_eq!(out_crispr[0].var_allele, "G");
+
+        // 2. Ruling 3: split repeat indels at pos=100 (VD=8) and pos=102 (VD=3) both normalizing to (100, "CAT", "C"):
+        let mut map_split = crate::javamap::JavaHashMap::new();
+        let mut vars_100 = Vars::new();
+        let mut v100 = mk_variant(100, 102, "CAT", "C", 0.40);
+        v100.pos_coverage = 8;
+        v100.total_pos_cov = 20;
+        v100.left_seq = "GGGGGG".to_string();
+        v100.right_seq = "ATGGGG".to_string();
+        vars_100.variants.push(v100);
+        map_split.insert(100, vars_100);
+
+        let mut vars_102 = Vars::new();
+        let mut v102 = mk_variant(102, 104, "TAT", "T", 0.45);
+        v102.pos_coverage = 3;
+        v102.total_pos_cov = 20;
+        v102.left_seq = "GGGGGGCA".to_string(); // 100='C', 101='A'
+        v102.right_seq = "GGGG".to_string();
+        vars_102.variants.push(v102);
+        map_split.insert(102, vars_102);
+
+        let mut cfg_dedup = cfg_sw35.clone();
+        cfg_dedup.compat.coordinate_sorted_vars = true;
+        let out_dedup = simple_post_process(&cfg_dedup, &region, &map_split, &splice);
+        assert_eq!(
+            out_dedup.len(),
+            1,
+            "split repeat indels must deduplicate to 1 row"
+        );
+        assert_eq!(out_dedup[0].start_pos, 100);
+        assert_eq!(out_dedup[0].ref_allele, "CAT");
+        assert_eq!(out_dedup[0].var_allele, "C");
+        assert_eq!(out_dedup[0].pos_coverage, 8);
+
+        // 3. Switch 38: Complex ("CA"->"CG", shift3=2) trimmed by adj_complex to SNV "A"->"G" resets shift3=0;
+        //    real deletion ("AAAG"->"A", shift3=2) keeps shift3=2.
+        let mut map_s38 = crate::javamap::JavaHashMap::new();
+        let mut vars_110 = Vars::new();
+        let mut v_ca_cg = mk_variant(110, 111, "CA", "CG", 0.30);
+        v_ca_cg.shift3 = 2;
+        v_ca_cg.msi = 4.0;
+        v_ca_cg.msint = 1;
+        vars_110.variants.push(v_ca_cg);
+        map_s38.insert(110, vars_110);
+
+        let mut vars_120 = Vars::new();
+        let mut v_real_del = mk_variant(120, 123, "AAAG", "A", 0.30);
+        v_real_del.shift3 = 2;
+        v_real_del.msi = 3.0;
+        v_real_del.msint = 1;
+        vars_120.variants.push(v_real_del);
+        map_s38.insert(120, vars_120);
+
+        let mut cfg_s38 = Config::default();
+        cfg_s38.emit_intermediate = true;
+        cfg_s38.compat.indel_only_shift3 = true;
+        cfg_s38.compat.coordinate_sorted_vars = true;
+        let out_s38 = simple_post_process(&cfg_s38, &region, &map_s38, &splice);
+        assert_eq!(out_s38.len(), 2);
+        assert_eq!(out_s38[0].ref_allele, "A");
+        assert_eq!(out_s38[0].var_allele, "G");
+        assert_eq!(out_s38[0].shift3, 0);
+        assert_eq!(out_s38[0].msi, 4.0);
+        assert_eq!(out_s38[0].msint, 1);
+        assert_eq!(out_s38[1].ref_allele, "AAAG");
+        assert_eq!(out_s38[1].var_allele, "A");
+        assert_eq!(out_s38[1].shift3, 2);
     }
 }

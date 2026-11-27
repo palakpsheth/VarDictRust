@@ -6370,13 +6370,18 @@ fn run_with_writer_inner<W: EngineWriter>(
             let chr_strict_slice = strict_chr_bounds_clone
                 .as_ref()
                 .map(|m| m.get(&builder_region.chr).map_or(&[][..], Vec::as_slice));
-            let variants = crate::postprocess::simple::simple_post_process_owned_with_bounds(
-                &config_clone,
-                &builder_region,
-                aligned_variants,
-                &var_data.splice,
-                chr_strict_slice,
-            );
+            let chr_len_i32 = chromosomes_lengths_clone
+                .get(&builder_region.chr)
+                .map_or(0, |&len| len.min(i32::MAX as usize) as i32);
+            let variants =
+                crate::postprocess::simple::simple_post_process_owned_with_bounds_and_ref(
+                    &config_clone,
+                    &builder_region,
+                    aligned_variants,
+                    &var_data.splice,
+                    chr_strict_slice,
+                    Some((&reference, chr_len_i32)),
+                );
 
             if config_clone.emit_intermediate {
                 let exact_tie = config_clone.compat.exact_binary_half_even;
@@ -6740,6 +6745,39 @@ std::thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+fn load_amplicon_segment_postprocess_ref(
+    segment: &[crate::regions::Region],
+    config: &config::Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+) -> Option<(crate::reference::Reference, i32)> {
+    if !crate::variations::canonical_left_align_enabled(config) || config.reference.is_empty() {
+        return None;
+    }
+    let first = segment.first()?;
+    let min_start = segment.iter().map(|r| r.start.0).min()?.max(1);
+    let max_end = segment.iter().map(|r| r.end.0).max()?.max(min_start);
+    let span_reg = crate::regions::Region {
+        chr: first.chr.clone(),
+        start: crate::types::Pos1(min_start),
+        end: crate::types::Pos1(max_end),
+        gene: first.gene.clone(),
+        amplicon: None,
+    };
+    let mut reference = crate::reference::Reference::new();
+    crate::reference::get_reference(
+        &span_reg,
+        config.max_region_len,
+        chromosomes_lengths,
+        config,
+        &mut reference,
+    )
+    .ok()?;
+    let chr_len = chromosomes_lengths
+        .get(&first.chr)
+        .map_or(0, |&len| len.min(i32::MAX as usize) as i32);
+    Some((reference, chr_len))
+}
+
 /// Amplicon mode: process each amplicon region separately, then combine via
 /// amplicon post-processing. Ports AmpliconMode.java.
 fn run_amplicon<W: EngineWriter>(
@@ -6936,9 +6974,14 @@ fn run_amplicon<W: EngineWriter>(
             let strict_chr_bounds = strict_chr_intervals_worker
                 .as_ref()
                 .and_then(|m| m.get(&current_region.chr));
+            let seg_post_ref = load_amplicon_segment_postprocess_ref(
+                &segment,
+                &config_clone,
+                &chromosomes_lengths_clone,
+            );
             let mut sweep = crate::postprocess::amplicon::AmpliconCoverSweep::new(&segment);
             let mut results = Vec::new();
-            crate::postprocess::amplicon::amplicon_post_process_streaming(
+            crate::postprocess::amplicon::amplicon_post_process_streaming_with_ref(
                 &config_clone,
                 current_region,
                 &vars_per_amplicon,
@@ -6947,6 +6990,7 @@ fn run_amplicon<W: EngineWriter>(
                     (!cov.is_empty()).then_some((p, cov))
                 }),
                 &splice,
+                seg_post_ref.as_ref().map(|(r, len)| (r, *len)),
                 &mut |av| {
                     if let Some(b) = strict_chr_bounds {
                         if !variant_within_strict_bounds(
@@ -7058,15 +7102,21 @@ fn run_amplicon<W: EngineWriter>(
                     // materialized (audit-amplicon-expand): the lazy union iterator yields
                     // exactly the positions (and segment-ordered covering lists) the old
                     // per-base BTreeMap held, in the same ascending order.
+                    let seg_post_ref = load_amplicon_segment_postprocess_ref(
+                        &segment,
+                        config,
+                        chromosomes_lengths,
+                    );
                     let exact_tie = config.compat.exact_binary_half_even;
                     if config.emit_intermediate {
                         let mut row_buf = String::new();
-                        crate::postprocess::amplicon::amplicon_post_process_streaming(
+                        crate::postprocess::amplicon::amplicon_post_process_streaming_with_ref(
                             config,
                             current_region,
                             &vars_per_amplicon,
                             crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
+                            seg_post_ref.as_ref().map(|(r, len)| (r, *len)),
                             &mut |av| {
                                 if let Some(b) = strict_chr_bounds {
                                     if !variant_within_strict_bounds(
@@ -7091,12 +7141,13 @@ fn run_amplicon<W: EngineWriter>(
                         )?;
                     } else {
                         let mut scratch = String::with_capacity(512);
-                        crate::postprocess::amplicon::amplicon_post_process_streaming(
+                        crate::postprocess::amplicon::amplicon_post_process_streaming_with_ref(
                             config,
                             current_region,
                             &vars_per_amplicon,
                             crate::postprocess::amplicon::amplicon_position_ref_stream(&segment),
                             &splice,
+                            seg_post_ref.as_ref().map(|(r, len)| (r, *len)),
                             &mut |av| {
                                 if let Some(b) = strict_chr_bounds {
                                     if !variant_within_strict_bounds(
@@ -7563,8 +7614,11 @@ fn run_somatic<W: EngineWriter>(
             let chr_strict_slice = strict_chr_bounds_clone
                 .as_ref()
                 .map(|m| m.get(&builder_region.chr).map_or(&[][..], Vec::as_slice));
+            let chr_len_i32 = chromosomes_lengths_clone
+                .get(&builder_region.chr)
+                .map_or(0, |&len| len.min(i32::MAX as usize) as i32);
             let somatic_variants =
-                crate::postprocess::somatic::somatic_post_process_owned_with_bounds(
+                crate::postprocess::somatic::somatic_post_process_owned_with_bounds_and_ref(
                     &config_clone,
                     &builder_region,
                     aligned1,
@@ -7573,6 +7627,7 @@ fn run_somatic<W: EngineWriter>(
                     Some(&pipeline_fn),
                     combined_max_rl,
                     chr_strict_slice,
+                    Some((&reference, chr_len_i32)),
                 );
 
             // Output 55-column format (or 61-column with --fisher), or the
@@ -8001,7 +8056,7 @@ fn compute_somatic_amplicon_segment_variants(
     //    drop `vars_per_amplicon_bam1` immediately before starting BAM2!
     let mut max_rl_per_amplicon: Vec<i32> = Vec::with_capacity(segment.len());
     let mut combined_max_rl: i32 = 0;
-    let (aligned1, tumor_concordance, splice1) = {
+    let (aligned1, tumor_concordance, splice1, seg_post_ref) = {
         #[cfg(test)]
         let _bam1_guard = {
             LIVE_BAM1_VARS_LISTS.with(|c| c.set(c.get().saturating_add(1)));
@@ -8025,13 +8080,16 @@ fn compute_somatic_amplicon_segment_variants(
             vars_per_amplicon_bam1.push(aligned);
             splice = next_splice;
         }
-        let (agg1, conc1) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars(
+        let seg_post_ref =
+            load_amplicon_segment_postprocess_ref(segment, config, chromosomes_lengths);
+        let (agg1, conc1) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars_with_ref(
             config,
             segment,
             vars_per_amplicon_bam1,
             &splice,
+            seg_post_ref.as_ref().map(|(r, len)| (r, *len)),
         );
-        (agg1, conc1, splice)
+        (agg1, conc1, splice, seg_post_ref)
     };
 
     #[cfg(test)]
@@ -8061,11 +8119,12 @@ fn compute_somatic_amplicon_segment_variants(
             vars_per_amplicon_bam2.push(aligned);
             splice = next_splice;
         }
-        let (agg2, conc2) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars(
+        let (agg2, conc2) = crate::postprocess::amplicon::aggregate_sample_amplicon_vars_with_ref(
             config,
             segment,
             vars_per_amplicon_bam2,
             &splice,
+            seg_post_ref.as_ref().map(|(r, len)| (r, *len)),
         );
         (agg2, conc2, splice)
     };
@@ -8173,16 +8232,18 @@ fn compute_somatic_amplicon_segment_variants(
     };
 
     // 4. Run somatic post-processing with merged `insert_start..=insert_end` bounds.
-    let mut somatic_variants = crate::postprocess::somatic::somatic_post_process_owned_with_bounds(
-        config,
-        &segment_region,
-        aligned1,
-        aligned2,
-        &splice,
-        Some(&pipeline_fn),
-        combined_max_rl,
-        strict_chr_bounds,
-    );
+    let mut somatic_variants =
+        crate::postprocess::somatic::somatic_post_process_owned_with_bounds_and_ref(
+            config,
+            &segment_region,
+            aligned1,
+            aligned2,
+            &splice,
+            Some(&pipeline_fn),
+            combined_max_rl,
+            strict_chr_bounds,
+            seg_post_ref.as_ref().map(|(r, len)| (r, *len)),
+        );
     if config.compat.suppress_pileup_sentinels {
         somatic_variants.retain(|sv| !sv.variant1.null_record);
     }
