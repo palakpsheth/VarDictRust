@@ -329,19 +329,15 @@ fn hash_qname(qname: &[u8]) -> u64 {
     hasher.finish()
 }
 
-/// Rebalances every 2nd agreed overlapping FR mate-pair observation under `-u`
+/// Records an agreed overlapping FR mate-pair observation under `-u`
 /// (`CompatProfile::mate_overlap_both_strands`, `Clinical-Genomics/BALSAMIC#1396`,
-/// `AstraZeneca-NGS/VarDictJava#239`) from `rev` (where VarDict's `-u` credits all
-/// overlapping pairs because `!direction` skips the forward mate) to `fwd`,
-/// conserving `fwd + rev == cnt` (`VD` / `RD`) and leaving `DP` untouched.
+/// `AstraZeneca-NGS/VarDictJava#239`). The `rev -> fwd` transfer runs once after
+/// pileup and realignment subtractions finish via [`VariationData::finalize_overlap_strand_rebalance`],
+/// preventing mid-stream `0.saturating_sub(1)` underflows on 3'-shifted insertions.
 #[inline]
 fn rebalance_agreed_overlap_strand(var: &mut Variation) {
     if var.rev > 0 {
         var.overlap_agreed_pairs = var.overlap_agreed_pairs.saturating_add(1);
-        if var.overlap_agreed_pairs.is_multiple_of(2) {
-            var.rev -= 1;
-            var.fwd = var.fwd.saturating_add(1);
-        }
     }
 }
 
@@ -3580,7 +3576,15 @@ impl<'a> CigarParser<'a> {
     /// `duplicateReads` from `InitialData` in `initFromScope(scope)` BEFORE the
     /// `processor.nextRecord()` loop at `:86`, so both fields are 0 here in the
     /// production pipeline and `duprate` always evaluates to `0.0`.
-    pub fn into_variation_data(mut self) -> VariationData {
+    #[must_use]
+    pub fn into_variation_data(self) -> VariationData {
+        let mut vd = self.into_variation_data_unrebalanced();
+        vd.finalize_overlap_strand_rebalance();
+        vd
+    }
+
+    #[must_use]
+    pub(crate) fn into_variation_data_unrebalanced(mut self) -> VariationData {
         self.finish_ref_coverage();
         let duprate = match (self.config.compat.live_duprate, self.live_read_counts) {
             (true, Some((live_total, live_dup))) => {
@@ -3641,6 +3645,7 @@ impl<'a> CigarParser<'a> {
             splice_count: self.splice_count,
             duprate,
             sv_structures_filtered: false,
+            overlap_strand_rebalanced: false,
             // G3 (mate-window ownership): the pileup region is the owning
             // tile's active range (whole region in whole-region runs). Merge
             // temps built over mate windows are discarded, never emitted

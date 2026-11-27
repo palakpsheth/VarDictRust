@@ -7,9 +7,9 @@ description: Use when opening, updating, reviewing, recertifying, or merging pul
 
 ## Overview
 
-Every change to `VarDictRust` lands via a feature branch off `origin/main` and a pull request completing `.github/pull_request_template.md` (`AGENTS.md` §§0, 0b, 14, 15, 18). Direct pushes to `main` are blocked by `.githooks/pre-push`.
+Every change to `VarDictRust` lands via a feature branch off `origin/main` and a pull request completing `.github/pull_request_template.md` (`AGENTS.md` §§0, 0b, 0c, 14, 15, 18). Direct pushes to `main` are blocked by `.githooks/pre-push`.
 
-**Core principle:** Evidence before completion (`AGENTS.md` §0) and Class-0 integrity (`AGENTS.md` §0b). Never hand-edit `benchmarks/evidence/*.json`, never relax `--eps` or `--cols`, never regress default `--compat=vardictjava` parity, and never mark engine checkboxes `N/A` when engine, `Cargo.*`, `harness/`, or workflow files change.
+**Core principle:** Evidence before completion (`AGENTS.md` §0), Class-0 integrity (`AGENTS.md` §0b), and real-data empirical grounding (`AGENTS.md` §0c). Every calling, normalization, statistical, or performance finding and autonomous ruling must be validated on real public sequencing BAMs/CRAMs and truth callsets (`scratch/g4`: GIAB `HG002`/`CMRG`/`HG008`, FDA `SEQC2`, `COLO829`, `Wave-4`), never on synthetic micro-BAMs or theory alone. Never hand-edit `benchmarks/evidence/*.json`, never relax `--eps` or `--cols`, never regress default `--compat=vardictjava` parity, and never mark engine checkboxes `N/A` when engine, `Cargo.*`, `harness/`, or workflow files change.
 
 ---
 
@@ -112,6 +112,12 @@ Every PR in `VarDictRust` **must** complete both the multi-skill review gate and
    GH_PROMPT_DISABLED=1 GH_PAGER=cat gh pr merge <PR> --repo palakpsheth/VarDictRust --squash --delete-branch \
      --subject "<type>(<scope>): <concise summary> (#<PR>)" \
      --body-file /tmp/squash_body.md
+   # If `gh pr edit` or `gh pr merge` fails on GitHub's deprecated classic `projectCards` GraphQL query,
+   # merge via the REST API with explicit `commit_title` and `commit_message` instead:
+   # gh api -X PUT repos/palakpsheth/VarDictRust/pulls/<PR>/merge \
+   #   -f merge_method=squash \
+   #   -f commit_title="<type>(<scope>): <concise summary> (#<PR>)" \
+   #   -F commit_message=@/tmp/squash_body.md
    ```
 
 ---
@@ -120,6 +126,7 @@ Every PR in `VarDictRust` **must** complete both the multi-skill review gate and
 
 | Excuse / Rationalization | Reality / Mandatory Action |
 | :--- | :--- |
+| "My synthetic unit test in `engine_behavior.rs` passed, so my calling, normalization, statistical, or performance ruling is proven." | **Forbidden (`AGENTS.md` §0c).** Synthetic fixtures lock in minimal regressions *after* empirical validation; every scientific finding or ruling must first be tested against real public sequencing BAMs/CRAMs and truth callsets (`scratch/g4`: GIAB, SEQC2, COLO829, Wave-4) via read-level inspection and `rtg vcfeval` / `bcftools norm`. |
 | "Only a comment or variable name changed in `crates/`; I'll manually update `engine_fingerprint` in `benchmarks/evidence/*.json`." | **Class-0 Integrity Violation (`AGENTS.md` §0b).** Never hand-edit `benchmarks/evidence/*.json`. Routine feature/bugfix PRs run `bash harness/pr_check.sh` (`<25s`, `--no-record`) without touching `benchmarks/evidence/*.json`; release certification PRs (`release/vX.Y.Z`) run `bash harness/recertify.sh`. |
 | "I only bumped `Cargo.toml` and `harness/tests/*`, so I'll mark the engine checkboxes `N/A` in the PR body." | `.githooks/pre-push` classifies `Cargo.*` and `harness/` as `CODE_CHANGES`. Run `bash harness/pr_check.sh` (6/6) and check `[x]` the Tier A engine checkboxes (marking the Tier B Release Recertification checkbox `N/A — deferred to release cut per two-tier testing policy` on routine PRs, or running `recertify.sh` + `acceptance.sh` on `release/vX.Y.Z` PRs). |
 | "I'll post one top-level PR comment instead of replying to each inline review comment." | Reply directly to each inline review thread (`/pulls/<PR>/comments/<id>/replies`) and resolve every review thread via `resolveReviewThread` so reviewers and auditors can trace every resolution. |

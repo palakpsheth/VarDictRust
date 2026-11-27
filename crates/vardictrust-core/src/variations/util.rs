@@ -301,6 +301,9 @@ pub fn adj_cnt(
     var_to_add.qstd = true;
     var_to_add.add_dir(true, variant.get_dir(true));
     var_to_add.add_dir(false, variant.get_dir(false));
+    var_to_add.overlap_agreed_pairs = var_to_add
+        .overlap_agreed_pairs
+        .saturating_add(variant.overlap_agreed_pairs);
 
     if let Some(ref_var) = reference_var {
         ref_var.cnt = ref_var.cnt.saturating_sub(variant.cnt);
@@ -312,6 +315,9 @@ pub fn adj_cnt(
         ref_var.nm -= variant.nm;
         ref_var.sub_dir(true, variant.get_dir(true));
         ref_var.sub_dir(false, variant.get_dir(false));
+        ref_var.overlap_agreed_pairs = ref_var
+            .overlap_agreed_pairs
+            .saturating_sub(variant.overlap_agreed_pairs);
         correct_cnt(ref_var);
     }
 }
@@ -356,6 +362,9 @@ pub fn adj_ref_factor(ref_var: &mut Variation, mut factor_f: f64) {
     ref_var.nm -= factor_f * ref_var.nm;
     ref_var.sub_dir(true, (factor_f * (ref_var.get_dir(true) as f64)) as i32);
     ref_var.sub_dir(false, (factor_f * (ref_var.get_dir(false) as f64)) as i32);
+    ref_var.overlap_agreed_pairs = i64::from(ref_var.overlap_agreed_pairs)
+        .saturating_sub((factor_f * f64::from(ref_var.overlap_agreed_pairs)) as i64)
+        .clamp(0, i64::from(u32::MAX)) as u32;
 
     correct_cnt(ref_var);
 }
@@ -386,6 +395,9 @@ pub fn adj_ref_cnt(tv: &Variation, ref_var: &mut Variation, len: i32) {
     ref_var.nm -= f * tv.nm;
     ref_var.sub_dir(true, (f * (tv.get_dir(true) as f64)) as i32);
     ref_var.sub_dir(false, (f * (tv.get_dir(false) as f64)) as i32);
+    ref_var.overlap_agreed_pairs = ref_var
+        .overlap_agreed_pairs
+        .saturating_sub((f * f64::from(tv.overlap_agreed_pairs)) as u32);
     correct_cnt(ref_var);
 }
 
@@ -1293,7 +1305,11 @@ pub(crate) mod tests {
         ref_var.fwd = 60;
         ref_var.rev = 40;
         ref_var.pmean = 200.0;
-        adj_ref_factor(&mut ref_var, 1.0);
+        ref_var.overlap_agreed_pairs = u32::MAX;
+        adj_ref_factor(&mut ref_var, -1.0);
+        assert_eq!(ref_var.overlap_agreed_pairs, u32::MAX);
+        adj_ref_factor(&mut ref_var, f64::INFINITY);
+        assert_eq!(ref_var.overlap_agreed_pairs, 0);
         assert_eq!(ref_var.cnt, 0);
         assert!(ref_var.pmean.is_finite());
 

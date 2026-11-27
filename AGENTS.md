@@ -35,6 +35,14 @@ If a check fails, **your code (or your understanding) is wrong — fix the port,
 
 ---
 
+<a id="0c-real-data-empirical-grounding"></a>
+## 0c. Real-data empirical grounding — never base findings or rulings on synthetic data or theory alone
+**Every scientific, calling, normalization, statistical, or performance finding and autonomous ruling MUST be grounded in real sequencing data.**
+- Before adopting or certifying any calling heuristic, allele-consolidation policy, strand/statistical model, `CompatProfile` switch, or performance claim, validate it empirically against real public sequencing BAMs/CRAMs and orthogonal truth callsets (e.g. `scratch/g4`: NIST GIAB `HG002` + `CMRG`, NIST GIAB `HG008`, FDA `SEQC2 HCC1395/HCC1395BL`, `COLO829`, `Wave-4` `QIAseq` SPE ctDNA & `Illumina` Amplicon PE) using read-level inspection (`QNAME`, CIGAR, pileup `-p -D`) and truth-set evaluation (`rtg vcfeval`, `bcftools norm`).
+- Synthetic micro-BAMs and unit tests (`engine_behavior.rs`, `fixtures/micro/`) exist to lock in minimal deterministic regression cases *after* behavior is proven on real sequencing alignments; they are **never** sufficient on their own to justify a scientific finding or design ruling.
+
+---
+
 *The four behavioral principles below are Andrej Karpathy's ([multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)), reproduced and merged with VarDictRust-specific notes (marked **VR:**) as that file invites.*
 
 **Tradeoff:** these guidelines bias toward caution over speed. For trivial tasks, use judgment. They override habit, not the project rules in §5–§18.
@@ -224,6 +232,7 @@ bash harness/slice.sh <in.bam> <chr:start-end> <out.bam>
 6. `gitleaks protect --staged` (commit) / `gitleaks detect --source .` (push) clean.
 7. The PR body completes `.github/pull_request_template.md`, which is authoritative on what may be skipped: engine-gate boxes are either run or marked **N/A with a one-line justification** under the template's docs/infra-only note (the same code-change filter the pre-push hook enforces).
 8. **Mandatory Multi-Skill Review & Copilot Review Thread Resolution Gate:** Every PR must be reviewed and fixed through `/ponytail-review`, `/rust-router`, and `/pragmatic-rust-guidelines` before merge. Every PR must also wait for `copilot-pull-request-reviewer[bot]` (and any other automated or human reviewers) to finish its review — never merge solely because CI checks are green while Copilot review is pending or in progress. Every review comment must be refuted or fixed with an inline reply (`repos/<owner>/<repo>/pulls/<PR>/comments/<ID>/replies`) and every review thread must be resolved (`resolveReviewThread` GraphQL mutation) before squash-merging.
+9. **Real-Data Empirical Grounding (`§0c`):** Any PR introducing or modifying calling, normalization, statistical, or performance rulings must validate its claims on real public sequencing BAMs/CRAMs and truth sets (`scratch/g4`), never on synthetic fixtures alone.
 
 ## 16. Repo layout
 ```
