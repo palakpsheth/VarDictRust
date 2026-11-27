@@ -204,7 +204,7 @@ vardictrust --preset ctdna -G GRCh38.fa -b cfdna.bam -N CFDNA \
   --vcf-all-alleles -th 8 --output cfdna.vcf.gz --tbi hotspot_0based.bed
 ```
 
-*Note for UMI / duplex ctDNA assays:* collapse molecular barcodes upstream (e.g., `fgbio` or `UMI-tools`) before running `--preset ctdna`; native in-caller UMI collapsing and `--preset hifi|ont` target `v2.0` ([`ROADMAP.md`](ROADMAP.md)). For exact `VarDictJava v1.8.3` default parity (`--compat=vardictjava`), omit `--preset` and use recipes `1–5` below.
+*Note for UMI / duplex ctDNA assays:* collapse molecular barcodes upstream (e.g., `fgbio` or `UMI-tools`) before running `--preset ctdna`; native in-caller UMI collapsing and `--preset hifi|ont` target `v2.0` ([`ROADMAP.md`](ROADMAP.md)). For exact `VarDictJava v1.8.3` default parity (`--compat=vardictjava`), omit `--preset` and `--compat=off` in recipes `1–5` below (recipe `3`'s paired somatic `-sp` example passes `--compat=off` because upstream `VarDictJava v1.8.3` lacks paired somatic amplicon VCF support and `-sp`).
 
 > [!WARNING]
 > **The Silent BED Coordinate Trap (`-c 1 -S 2 -E 3 -z` When `--preset` Is Omitted):**
