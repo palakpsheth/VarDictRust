@@ -135,12 +135,115 @@ fn collect_sorted_region_positions(
 }
 
 type RefCtx<'a> = Option<(&'a crate::reference::Reference, &'a str, i32)>;
-type NormAlleleKey = (i32, String, String);
+type NormAlleleKey = (i32, i32, String, String);
 
 #[inline]
-fn norm_keys_contains(keys: &[NormAlleleKey], pos: i32, ref_a: &str, var_a: &str) -> bool {
-    keys.iter()
-        .any(|(p, r, v)| *p == pos && r.as_str() == ref_a && v.as_str() == var_a)
+fn norm_keys_contains(
+    keys: &[NormAlleleKey],
+    pos: i32,
+    end_pos: i32,
+    ref_a: &str,
+    var_a: &str,
+) -> bool {
+    let match_end = var_a.starts_with('<');
+    keys.iter().any(|(p, e, r, v)| {
+        *p == pos && r.as_str() == ref_a && v.as_str() == var_a && (!match_end || *e == end_pos)
+    })
+}
+
+fn build_somatic_pileup_ref_row(
+    config: &Config,
+    ref1: Option<Variant>,
+    ref2: Option<Variant>,
+    sv1: String,
+    sv2: String,
+) -> Option<SomaticVariant> {
+    let exact_tie = config.compat.exact_binary_half_even;
+    match (ref1, ref2) {
+        (Some(mut r1), Some(mut r2)) => {
+            r1.var_type = String::new();
+            r2.var_type = String::new();
+            reconcile_variant_dp_with_tie(
+                &mut r1,
+                config.compat.reconcile_vd_dp,
+                config.compat.reconcile_rd_vd_dp,
+                config.compat.reconcile_strand_and_hq_sums,
+                exact_tie,
+            );
+            reconcile_variant_dp_with_tie(
+                &mut r2,
+                config.compat.reconcile_vd_dp,
+                config.compat.reconcile_rd_vd_dp,
+                config.compat.reconcile_strand_and_hq_sums,
+                exact_tie,
+            );
+            Some(SomaticVariant {
+                variant1: r1,
+                variant2: Some(r2),
+                status: GERMLINE.to_string(),
+                sv1,
+                sv2,
+                end_is_variant2: true,
+                tumor_amplicon: None,
+                normal_amplicon: None,
+                v2_ref_variant: None,
+            })
+        }
+        (Some(mut r1), None) => {
+            r1.var_type = String::new();
+            reconcile_variant_dp_with_tie(
+                &mut r1,
+                config.compat.reconcile_vd_dp,
+                config.compat.reconcile_rd_vd_dp,
+                config.compat.reconcile_strand_and_hq_sums,
+                exact_tie,
+            );
+            Some(SomaticVariant {
+                variant1: r1,
+                variant2: None,
+                status: SAMPLE_SPECIFIC.to_string(),
+                sv1,
+                sv2: String::new(),
+                end_is_variant2: false,
+                tumor_amplicon: None,
+                normal_amplicon: None,
+                v2_ref_variant: None,
+            })
+        }
+        (None, Some(mut r2)) => {
+            r2.var_type = String::new();
+            reconcile_variant_dp_with_tie(
+                &mut r2,
+                config.compat.reconcile_vd_dp,
+                config.compat.reconcile_rd_vd_dp,
+                config.compat.reconcile_strand_and_hq_sums,
+                exact_tie,
+            );
+            let mut tumor = Variant::new();
+            tumor.start_pos = r2.start_pos;
+            tumor.end_pos = r2.end_pos;
+            tumor.ref_allele = r2.ref_allele.clone();
+            tumor.var_allele = r2.var_allele.clone();
+            tumor.var_type = String::new();
+            tumor.shift3 = r2.shift3;
+            tumor.msi = r2.msi;
+            tumor.msint = r2.msint;
+            tumor.left_seq = r2.left_seq.clone();
+            tumor.right_seq = r2.right_seq.clone();
+            Some(SomaticVariant {
+                variant1: tumor,
+                variant2: Some(r2),
+                status: DELETION.to_string(),
+                sv1: String::new(),
+                sv2,
+                end_is_variant2: true,
+                tumor_amplicon: None,
+                normal_amplicon: None,
+                v2_ref_variant: None,
+            })
+        }
+        (None, None) => None,
+    }
 }
 
 fn dispatch_somatic_position(
@@ -156,6 +259,24 @@ fn dispatch_somatic_position(
     ref_ctx: RefCtx<'_>,
 ) {
     let pre_len = results.len();
+    let preserve_shifted_ref = config.pileup && config.compat.pileup_preserve_shifted_ref;
+    let saved_refs = if preserve_shifted_ref {
+        let r1 = v1
+            .as_deref()
+            .and_then(|vs| vs.ref_variant.as_ref())
+            .filter(|rv| rv.start_pos == position)
+            .cloned();
+        let r2 = v2
+            .as_deref()
+            .and_then(|vs| vs.ref_variant.as_ref())
+            .filter(|rv| rv.start_pos == position)
+            .cloned();
+        let sv1 = v1.as_deref().map_or_else(String::new, |vs| vs.sv.clone());
+        let sv2 = v2.as_deref().map_or_else(String::new, |vs| vs.sv.clone());
+        Some((r1, r2, sv1, sv2))
+    } else {
+        None
+    };
     match (v1, v2) {
         (None, None) => {}
         (None, Some(v2)) => {
@@ -196,6 +317,33 @@ fn dispatch_somatic_position(
                 results.remove(idx);
             }
         }
+    }
+    if let Some((r1, r2, sv1, sv2)) = saved_refs {
+        if u32::try_from(position).is_ok_and(|pu| pu >= region.start.0 && pu <= region.end.0)
+            && results.len() > pre_len
+            && !results
+                .get(pre_len..)
+                .is_some_and(|s| s.iter().any(|sv| sv.variant1.start_pos == position))
+        {
+            if let Some(ref_row) = build_somatic_pileup_ref_row(config, r1, r2, sv1, sv2) {
+                results.push(ref_row);
+                if let Some(s) = results.get_mut(pre_len..) {
+                    if config.compat.coordinate_sorted_vars {
+                        s.sort_by_key(|sv| sv.variant1.start_pos);
+                    } else if !s.is_empty() {
+                        s.rotate_right(1);
+                    }
+                }
+            }
+        }
+    } else if !config.pileup
+        && config.compat.recompute_vartype_after_adj_complex
+        && !crate::variations::canonical_left_align_enabled(config)
+        && results.len().saturating_sub(pre_len) > 1
+    {
+        let mut pos_tail = results.split_off(pre_len);
+        dedup_somatic_same_class_slice(&mut pos_tail);
+        results.extend(pos_tail);
     }
 }
 
@@ -341,6 +489,60 @@ pub(crate) fn somatic_post_process_owned_with_bounds(
 pub(crate) fn somatic_post_process_owned_with_bounds_and_ref(
     config: &Config,
     region: &Region,
+    aligned_variants_bam1: JavaHashMap<i32, Vars>,
+    aligned_variants_bam2: JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    pipeline: Option<&PositionPipelineFn<'_>>,
+    max_read_length: i32,
+    strict_bounds: Option<&[(i32, i32)]>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
+) -> Vec<SomaticVariant> {
+    somatic_post_process_owned_inner(
+        config,
+        region,
+        aligned_variants_bam1,
+        aligned_variants_bam2,
+        splice,
+        pipeline,
+        max_read_length,
+        strict_bounds,
+        ref_info,
+        true,
+    )
+}
+
+pub(crate) fn somatic_post_process_owned_unfinalized_with_bounds_and_ref(
+    config: &Config,
+    region: &Region,
+    aligned_variants_bam1: JavaHashMap<i32, Vars>,
+    aligned_variants_bam2: JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    pipeline: Option<&PositionPipelineFn<'_>>,
+    max_read_length: i32,
+    strict_bounds: Option<&[(i32, i32)]>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
+) -> Vec<SomaticVariant> {
+    somatic_post_process_owned_inner(
+        config,
+        region,
+        aligned_variants_bam1,
+        aligned_variants_bam2,
+        splice,
+        pipeline,
+        max_read_length,
+        strict_bounds,
+        ref_info,
+        false,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal somatic postprocess runner threads optional combine callback, strict bounds, reference context, and seam finalize gate"
+)]
+fn somatic_post_process_owned_inner(
+    config: &Config,
+    region: &Region,
     mut aligned_variants_bam1: JavaHashMap<i32, Vars>,
     mut aligned_variants_bam2: JavaHashMap<i32, Vars>,
     splice: &rustc_hash::FxHashSet<String>,
@@ -348,6 +550,7 @@ pub(crate) fn somatic_post_process_owned_with_bounds_and_ref(
     max_read_length: i32,
     strict_bounds: Option<&[(i32, i32)]>,
     ref_info: Option<(&crate::reference::Reference, i32)>,
+    run_finalize: bool,
 ) -> Vec<SomaticVariant> {
     let mut results = Vec::new();
     let mut splice: std::borrow::Cow<'_, rustc_hash::FxHashSet<String>> =
@@ -383,7 +586,9 @@ pub(crate) fn somatic_post_process_owned_with_bounds_and_ref(
         );
     }
 
-    finalize_somatic_post_passes(config, &splice, &mut results);
+    if run_finalize {
+        finalize_somatic_post_passes(config, &splice, &mut results);
+    }
 
     if let Some(merged_bounds) = strict_bounds {
         results.retain(|sv| somatic_variant_within_strict_bounds(config, merged_bounds, sv));
@@ -459,13 +664,44 @@ fn reconcile_variant_dp(
     reconcile_rd_vd_dp: bool,
     reconcile_strand_hq: bool,
 ) {
+    reconcile_variant_dp_with_tie(
+        vp,
+        reconcile_vd_dp,
+        reconcile_rd_vd_dp,
+        reconcile_strand_hq,
+        false,
+    );
+}
+
+#[inline]
+fn reconcile_variant_dp_with_tie(
+    vp: &mut Variant,
+    reconcile_vd_dp: bool,
+    reconcile_rd_vd_dp: bool,
+    reconcile_strand_hq: bool,
+    exact_tie: bool,
+) {
+    let old_dp = vp.total_pos_cov;
+    let old_vd = vp.pos_coverage;
+    let old_hicnt = vp.hicnt;
+    let old_hicov = vp.hicov;
+    let is_ref_site =
+        !vp.ref_allele.is_empty() && vp.ref_allele == vp.var_allele && vp.pos_coverage == 0;
     if reconcile_strand_hq {
-        let (vd, fwd, rev, hicnt, _) =
-            crate::tovars::reconcile_strand_and_hq(vp.pos_coverage, vp.fwd, vp.rev, vp.hicnt);
-        vp.pos_coverage = vd;
-        vp.fwd = fwd;
-        vp.rev = rev;
-        vp.hicnt = hicnt;
+        if is_ref_site {
+            vp.fwd = vp.fwd.max(0);
+            vp.rev = vp.rev.max(0);
+            vp.hicnt = vp.hicnt.max(0);
+            vp.hicov = vp.hicov.max(vp.hicnt);
+        } else {
+            let (vd, fwd, rev, hicnt, _) =
+                crate::tovars::reconcile_strand_and_hq(vp.pos_coverage, vp.fwd, vp.rev, vp.hicnt);
+            vp.pos_coverage = vd;
+            vp.fwd = fwd;
+            vp.rev = rev;
+            vp.hicnt = hicnt;
+            vp.hicov = vp.hicov.max(hicnt).max(0);
+        }
     }
     if reconcile_vd_dp || reconcile_rd_vd_dp {
         vp.ref_fwd_cov = vp.ref_fwd_cov.max(0);
@@ -474,10 +710,69 @@ fn reconcile_variant_dp(
         let min_dp = if reconcile_rd_vd_dp {
             rd.saturating_add(vp.pos_coverage.max(0))
         } else {
-            rd
+            rd.max(vp.pos_coverage.max(0))
         };
         vp.total_pos_cov = vp.total_pos_cov.max(0).max(min_dp);
+        if vp.total_pos_cov != old_dp || vp.pos_coverage != old_vd {
+            vp.frequency = if vp.pos_coverage > 0 && vp.total_pos_cov > 0 {
+                crate::types::round_half_even_compat(
+                    (vp.pos_coverage as f64 / vp.total_pos_cov as f64).clamp(0.0, 1.0),
+                    4,
+                    exact_tie,
+                )
+            } else {
+                0.0
+            };
+            vp.extra_freq =
+                if vp.pos_coverage <= 0 || vp.total_pos_cov <= 0 || !vp.extra_freq.is_finite() {
+                    0.0
+                } else if old_dp > 0 && vp.total_pos_cov != old_dp {
+                    crate::types::round_half_even_compat(
+                        (vp.extra_freq * (old_dp as f64) / (vp.total_pos_cov as f64))
+                            .clamp(0.0, 1.0),
+                        4,
+                        exact_tie,
+                    )
+                } else {
+                    vp.extra_freq.clamp(0.0, 1.0)
+                };
+        }
     }
+    if !is_ref_site
+        && (reconcile_vd_dp || reconcile_rd_vd_dp || reconcile_strand_hq)
+        && (vp.hicnt != old_hicnt || vp.hicov != old_hicov)
+    {
+        vp.hi_freq = if vp.hicnt > 0 && vp.hicov > 0 {
+            crate::types::round_half_even_compat(
+                (vp.hicnt as f64 / vp.hicov as f64).clamp(0.0, 1.0),
+                4,
+                exact_tie,
+            )
+        } else {
+            0.0
+        };
+    }
+}
+
+fn dedup_somatic_same_class_slice(results: &mut Vec<SomaticVariant>) {
+    crate::variations::dedup_post_norm_vec(results, |sv| {
+        if sv.variant1.null_record {
+            return None;
+        }
+        let has_t = sv.variant1.pos_coverage > 0;
+        let has_n = sv.variant2.as_ref().is_some_and(|v2| v2.pos_coverage > 0);
+        let presence_class: u8 = match (has_t, has_n) {
+            (true, true) => 0,
+            (true, false) => 1,
+            _ => 2,
+        };
+        let score_var = if presence_class == 2 {
+            sv.variant2.as_ref().unwrap_or(&sv.variant1)
+        } else {
+            &sv.variant1
+        };
+        Some((presence_class, &sv.variant1, score_var))
+    });
 }
 
 /// Region-level post-normalization passes for `Switch 36` (cross-position / cross-class
@@ -497,24 +792,7 @@ pub(crate) fn finalize_somatic_post_passes(
     //    Key by sample-presence class (`0 = paired`, `1 = tumor-only`, `2 = normal-only`)
     //    so a normal-absent row never clobbers a paired row when `Switch 36` is off.
     if do_left_align {
-        crate::variations::dedup_post_norm_vec(results, |sv| {
-            if sv.variant1.null_record {
-                return None;
-            }
-            let has_t = sv.variant1.pos_coverage > 0;
-            let has_n = sv.variant2.as_ref().is_some_and(|v2| v2.pos_coverage > 0);
-            let presence_class: u8 = match (has_t, has_n) {
-                (true, true) => 0,
-                (true, false) => 1,
-                _ => 2,
-            };
-            let score_var = if presence_class == 2 {
-                sv.variant2.as_ref().unwrap_or(&sv.variant1)
-            } else {
-                &sv.variant1
-            };
-            Some((presence_class, &sv.variant1, score_var))
-        });
+        dedup_somatic_same_class_slice(results);
     }
 
     // 2. Cross-position / cross-class split-allele reconciliation (`Switch 36`,
@@ -1045,10 +1323,25 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                 GERMLINE
             };
             let mut v1nt_out = v1nt.clone();
-            if do_left_align && v1nt_out.ref_allele.len() != v1nt_out.var_allele.len() {
-                v1nt_out.var_type = v1nt_out.var_type();
-                v1nt_out.normalize_postprocess(ref_ctx, true, refresh_vt, indel_only_shift3);
-                v2var.normalize_postprocess(ref_ctx, true, refresh_vt, indel_only_shift3);
+            if do_left_align || refresh_vt {
+                let vt1 = v1nt_out.var_type_cow();
+                if v1nt_out.var_type != vt1.as_ref() {
+                    v1nt_out.var_type.clear();
+                    v1nt_out.var_type.push_str(&vt1);
+                }
+                v1nt_out.normalize_postprocess(
+                    ref_ctx,
+                    do_left_align,
+                    refresh_vt,
+                    indel_only_shift3,
+                );
+                v2var.normalize_postprocess(ref_ctx, do_left_align, refresh_vt, indel_only_shift3);
+                if skip_eq_non_pileup
+                    && (v1nt_out.ref_allele == v1nt_out.var_allele
+                        || v2var.ref_allele == v2var.var_allele)
+                {
+                    continue;
+                }
             } else if v2var.var_type == COMPLEX {
                 v1nt_out.adj_complex_compat(refresh_vt);
                 if skip_eq_non_pileup && v1nt_out.ref_allele == v1nt_out.var_allele {
@@ -1078,6 +1371,7 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                 norm_keys_contains(
                     keys,
                     v1nt_out.start_pos,
+                    v1nt_out.end_pos,
                     &v1nt_out.ref_allele,
                     &v1nt_out.var_allele,
                 )
@@ -1112,6 +1406,7 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                 norm_keys_contains(
                     keys,
                     v2var_out.start_pos,
+                    v2var_out.end_pos,
                     &v2var_out.ref_allele,
                     &v2var_out.var_allele,
                 )
@@ -1406,15 +1701,35 @@ fn print_variations_from_first_sample_inner_with_ref(
                     && !norm_keys_contains(
                         &called_norm_keys,
                         vref.start_pos,
+                        vref.end_pos,
                         &vref.ref_allele,
                         &vref.var_allele,
                     )
                 {
                     called_norm_keys.push((
                         vref.start_pos,
+                        vref.end_pos,
                         vref.ref_allele.clone(),
                         vref.var_allele.clone(),
                     ));
+                }
+                if do_left_align || refresh_vt {
+                    let vt2 = v2nt_var.var_type_cow();
+                    if v2nt_var.var_type != vt2.as_ref() {
+                        v2nt_var.var_type.clear();
+                        v2nt_var.var_type.push_str(&vt2);
+                    }
+                    v2nt_var.normalize_postprocess(
+                        ref_ctx,
+                        do_left_align,
+                        refresh_vt,
+                        indel_only_shift3,
+                    );
+                } else if indel_only_shift3
+                    && !vref.var_allele.starts_with('<')
+                    && vref.ref_allele.len() == vref.var_allele.len()
+                {
+                    v2nt_var.shift3 = 0;
                 }
                 let type_str = determinate_type(
                     config,
@@ -1425,14 +1740,6 @@ fn print_variations_from_first_sample_inner_with_ref(
                 );
                 if has_more_v1 {
                     v2.to_mut().update_variant_by_desc(nt, v2nt_var.clone());
-                }
-                if do_left_align && v2nt_var.ref_allele.len() != v2nt_var.var_allele.len() {
-                    v2nt_var.normalize_postprocess(ref_ctx, true, refresh_vt, indel_only_shift3);
-                } else if indel_only_shift3
-                    && !vref.var_allele.starts_with('<')
-                    && vref.ref_allele.len() == vref.var_allele.len()
-                {
-                    v2nt_var.shift3 = 0;
                 }
                 results.push(SomaticVariant {
                     variant1: vref,
@@ -1457,12 +1764,14 @@ fn print_variations_from_first_sample_inner_with_ref(
                     && !norm_keys_contains(
                         &called_norm_keys,
                         vref.start_pos,
+                        vref.end_pos,
                         &vref.ref_allele,
                         &vref.var_allele,
                     )
                 {
                     called_norm_keys.push((
                         vref.start_pos,
+                        vref.end_pos,
                         vref.ref_allele.clone(),
                         vref.var_allele.clone(),
                     ));
@@ -1539,12 +1848,14 @@ fn print_variations_from_first_sample_inner_with_ref(
                     && !norm_keys_contains(
                         &called_norm_keys,
                         vref.start_pos,
+                        vref.end_pos,
                         &vref.ref_allele,
                         &vref.var_allele,
                     )
                 {
                     called_norm_keys.push((
                         vref.start_pos,
+                        vref.end_pos,
                         vref.ref_allele.clone(),
                         vref.var_allele.clone(),
                     ));
@@ -1559,11 +1870,12 @@ fn print_variations_from_first_sample_inner_with_ref(
                         {
                             let mut rv = v2_owned.ref_variant.take();
                             if let Some(ref mut vp) = rv {
-                                reconcile_variant_dp(
+                                reconcile_variant_dp_with_tie(
                                     vp,
                                     config.compat.reconcile_vd_dp,
                                     config.compat.reconcile_rd_vd_dp,
                                     config.compat.reconcile_strand_and_hq_sums,
+                                    config.compat.exact_binary_half_even,
                                 );
                             }
                             rv
@@ -1754,11 +2066,12 @@ fn print_variations_from_second_sample(
                         None => Variant::new(),
                     }
                 };
-                reconcile_variant_dp(
+                reconcile_variant_dp_with_tie(
                     &mut var_for_print,
                     config.compat.reconcile_vd_dp,
                     config.compat.reconcile_rd_vd_dp,
                     config.compat.reconcile_strand_and_hq_sums,
+                    config.compat.exact_binary_half_even,
                 );
                 var_for_print.ref_allele = v2var.ref_allele.clone();
                 var_for_print.var_allele = v2var.var_allele.clone();
@@ -1964,34 +2277,56 @@ fn combine_analysis_with_bounds(
         var2.pstd = true; // :453 isAtLeastAt2Positions
         var2.qstd = true; // :454 hasAtLeast2DiffQualities
 
+        let exact_tie = config.compat.exact_binary_half_even;
         if config.compat.reconcile_vd_dp
             || config.compat.reconcile_rd_vd_dp
             || config.compat.reconcile_strand_and_hq_sums
         {
-            if config.compat.reconcile_vd_dp {
+            if config.compat.reconcile_vd_dp || config.compat.reconcile_rd_vd_dp {
                 var2.hicnt = combined_var.hicnt.saturating_sub(variant1.hicnt).max(0);
             }
-            reconcile_variant_dp(
+            reconcile_variant_dp_with_tie(
                 &mut var2,
                 config.compat.reconcile_vd_dp,
                 config.compat.reconcile_rd_vd_dp,
                 config.compat.reconcile_strand_and_hq_sums,
+                exact_tie,
             );
             if config.compat.reconcile_vd_dp || config.compat.reconcile_rd_vd_dp {
                 var2.total_pos_cov = var2.total_pos_cov.max(var2.pos_coverage.max(0));
-            }
-            if config.compat.reconcile_vd_dp {
                 var2.hicov = combined_var
                     .hicov
                     .saturating_sub(variant1.hicov)
-                    .max(var2.hicnt);
-                var2.hi_freq = if var2.hi_freq.is_finite() {
-                    var2.hi_freq.clamp(0.0, 1.0)
+                    .max(var2.hicnt)
+                    .max(0);
+                let comb_ef = if combined_var.extra_freq.is_finite() {
+                    combined_var.extra_freq
                 } else {
                     0.0
                 };
-                var2.extra_freq = if var2.extra_freq.is_finite() {
-                    var2.extra_freq.clamp(0.0, 1.0)
+                let v1_ef = if variant1.extra_freq.is_finite() {
+                    variant1.extra_freq
+                } else {
+                    0.0
+                };
+                let normal_extracnt = (comb_ef * (combined_var.total_pos_cov.max(0) as f64)
+                    - v1_ef * (variant1.total_pos_cov.max(0) as f64))
+                    .max(0.0);
+                var2.extra_freq = if var2.pos_coverage > 0 && var2.total_pos_cov > 0 {
+                    crate::types::round_half_even_compat(
+                        (normal_extracnt / (var2.total_pos_cov as f64)).clamp(0.0, 1.0),
+                        4,
+                        exact_tie,
+                    )
+                } else {
+                    0.0
+                };
+                var2.hi_freq = if var2.hicnt > 0 && var2.hicov > 0 {
+                    crate::types::round_half_even_compat(
+                        (var2.hicnt as f64 / var2.hicov as f64).clamp(0.0, 1.0),
+                        4,
+                        exact_tie,
+                    )
                 } else {
                     0.0
                 };
@@ -2005,7 +2340,11 @@ fn combine_analysis_with_bounds(
         }
 
         var2.frequency = if config.compat.reconcile_vd_dp || config.compat.reconcile_rd_vd_dp {
-            (var2.pos_coverage as f64 / var2.total_pos_cov as f64).clamp(0.0, 1.0)
+            crate::types::round_half_even_compat(
+                (var2.pos_coverage as f64 / var2.total_pos_cov as f64).clamp(0.0, 1.0),
+                4,
+                exact_tie,
+            )
         } else {
             var2.pos_coverage as f64 / var2.total_pos_cov as f64
         }; // :460
@@ -2079,12 +2418,20 @@ fn determinate_type(
     // is_noise mutates vtc (zeroes coverage), matching Java's isNoise side effect
     // which propagates to the variant used in the output.
     if vtc.is_noise(config.base_qual, config.lofreq) {
-        reconcile_variant_dp(
+        reconcile_variant_dp_with_tie(
             vtc,
             false,
             config.compat.reconcile_rd_vd_dp,
             config.compat.reconcile_strand_and_hq_sums,
+            config.compat.exact_binary_half_even,
         );
+        if config.compat.reconcile_vd_dp
+            || config.compat.reconcile_rd_vd_dp
+            || config.compat.reconcile_strand_and_hq_sums
+        {
+            vtc.extra_freq = 0.0;
+            vtc.hi_freq = 0.0;
+        }
         if *vartype == SNV {
             return STRONG_SOMATIC.to_string();
         }
@@ -4065,10 +4412,45 @@ mod tests {
                 assert_eq!(var2.frequency, 1.0);
                 assert_eq!(var2.hicnt, 2);
                 assert_eq!(var2.hicov, 2);
-                assert_eq!(var2.hi_freq, 0.0);
+                // F-02 syncs `HIAF` directly to reconciled `HICNT / HICOV` (`2 / 2 == 1.0`),
+                // eliminating the pre-F-02 `HICNT=2, HICOV=2, HIAF=0.0` contradiction.
+                assert_eq!(var2.hi_freq, 1.0);
                 assert_eq!(var2.extra_freq, 0.0);
             }
             _ => panic!("expected Germline rescue under COMPAT_OFF"),
+        }
+        let zero_hi_pipe = |_r: &Region,
+                            _sp: &mut rustc_hash::FxHashSet<String>,
+                            _mrl: &mut i32,
+                            _p: i32|
+         -> Result<Option<Vars>, VardictError> {
+            let mut pv = Vars::new();
+            let mut comb = base_rescue.clone();
+            comb.pos_coverage = 6;
+            comb.total_pos_cov = 20;
+            comb.hicnt = 2; // <= base_rescue.hicnt (3) -> subtracted HICNT == 0 -> HIAF == 0.0
+            comb.hicov = 10;
+            comb.hi_freq = 0.1;
+            comb.extra_freq = 0.1;
+            pv.variants.push(comb);
+            Ok(Some(pv))
+        };
+        match combine_analysis(
+            &strict_cfg,
+            &zero_hi_pipe,
+            &base_rescue,
+            "chr1",
+            150,
+            &mut sp_cow,
+            &mut mrl,
+        ) {
+            CombineVerdict::Germline(var2_zero_hi) => {
+                assert_eq!(var2_zero_hi.hicnt, 0);
+                assert_eq!(var2_zero_hi.hicov, 0);
+                assert_eq!(var2_zero_hi.hi_freq, 0.0);
+                assert_eq!(var2_zero_hi.extra_freq, 0.0);
+            }
+            _ => panic!("expected Germline zero-HICNT rescue under COMPAT_OFF"),
         }
 
         // 2) `combine_analysis` VD > DP + HIAF > 1.0 / ADJAF > 1.0 clamping:
@@ -6135,5 +6517,264 @@ mod tests {
         );
         assert_eq!(rows[0].variant1.pos_coverage, 14);
         assert_eq!(rows[0].variant2.as_ref().unwrap().pos_coverage, 6);
+    }
+
+    #[test]
+    fn lane1_f02_f03_f09_f11_s02_somatic_regressions() {
+        let region = test_region(); // chr1:100-200
+        let splice = rustc_hash::FxHashSet::default();
+
+        // 1. F-02: combine_analysis AF / ADJAF / HIAF sync after DP reconciliation + is_noise zeroes extra_freq/hi_freq
+        let mut cfg_off = test_config();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+
+        let mut bam1_f02 = crate::javamap::JavaHashMap::new();
+        let mut v1_120 = Vars::new();
+        let mut t120 = make_good_variant("-12", "ACGTACGTACGTG", "A", 0.10);
+        t120.start_pos = 120;
+        t120.end_pos = 132;
+        t120.pos_coverage = 4; // < min_reads (2) + 3 -> triggers combine_analysis
+        t120.hicnt = 4;
+        t120.hicov = 35;
+        t120.total_pos_cov = 40;
+        t120.ref_fwd_cov = 18;
+        t120.ref_rev_cov = 18;
+        t120.extra_freq = 0.10; // extracnt_t = 4
+        t120.hi_freq = 4.0 / 35.0;
+        v1_120.variants.push(t120);
+        bam1_f02.insert(120, v1_120);
+
+        // Locus 130: SNV where Normal has 1 low-qual noise read with stale extra_freq = 0.25 -> must zero extra_freq & hi_freq!
+        let mut v1_130 = Vars::new();
+        let mut t130 = make_good_variant("G", "A", "G", 0.40);
+        t130.start_pos = 130;
+        t130.end_pos = 130;
+        t130.pos_coverage = 16;
+        t130.hicnt = 16;
+        t130.total_pos_cov = 40;
+        v1_130.variants.push(t130);
+        bam1_f02.insert(130, v1_130);
+
+        let mut bam2_f02 = crate::javamap::JavaHashMap::new();
+        let mut v2_120 = Vars::new();
+        let mut rv2_120 = Variant::new();
+        rv2_120.total_pos_cov = 70;
+        rv2_120.ref_fwd_cov = 35;
+        rv2_120.ref_rev_cov = 30;
+        v2_120.ref_variant = Some(rv2_120);
+        bam2_f02.insert(120, v2_120);
+
+        let mut v2_130 = Vars::new();
+        let mut n130 = Variant::new();
+        n130.description = "G".to_string();
+        n130.start_pos = 130;
+        n130.end_pos = 130;
+        n130.ref_allele = "A".to_string();
+        n130.var_allele = "G".to_string();
+        n130.pos_coverage = 1;
+        n130.fwd = 1;
+        n130.total_pos_cov = 40;
+        n130.ref_fwd_cov = 20;
+        n130.ref_rev_cov = 25; // RD = 45 > 40 - 1 -> reconcile_rd_vd_dp raises DP to 45!
+        n130.frequency = 0.025;
+        n130.mean_quality = 4.0; // triggers is_noise!
+        n130.extra_freq = 0.25;
+        n130.hi_freq = 0.25;
+        v2_130.variants.push(n130);
+        bam2_f02.insert(130, v2_130);
+
+        let comb_pipe = |_reg: &Region,
+                         _sp: &mut rustc_hash::FxHashSet<String>,
+                         _mrl: &mut i32,
+                         pos: i32|
+         -> Result<Option<Vars>, VardictError> {
+            assert_eq!(pos, 120);
+            let mut cv = Vars::new();
+            let mut c = make_good_variant("-12", "ACGTACGTACGTG", "A", 0.15);
+            c.start_pos = 120;
+            c.end_pos = 132;
+            c.pos_coverage = 15; // normal VD = 15 - 4 = 11
+            c.hicnt = 14; // normal hicnt = 14 - 4 = 10
+            c.hicov = 90; // normal hicov = 90 - 35 = 55
+            c.total_pos_cov = 100; // raw sub DP = 60, but normal RD = (53-18)+(48-18) = 35+30 = 65 -> reconciled DP = 65 + 11 = 76!
+            c.ref_fwd_cov = 53;
+            c.ref_rev_cov = 48;
+            c.extra_freq = 0.10; // extracnt_comb = 10 -> normal_extracnt = 10 - 4 = 6
+            cv.variants.push(c);
+            Ok(Some(cv))
+        };
+
+        let out_f02 = somatic_post_process_at(
+            &cfg_off,
+            &region,
+            &bam1_f02,
+            &bam2_f02,
+            &splice,
+            Some(&comb_pipe),
+            100,
+        );
+        assert_eq!(out_f02.len(), 2);
+        let n_comb = out_f02[0].variant2.as_ref().unwrap();
+        assert_eq!(n_comb.total_pos_cov, 76);
+        assert_eq!(
+            n_comb.frequency,
+            crate::types::round_half_even_compat(11.0 / 76.0, 4, true)
+        );
+        assert_eq!(
+            n_comb.extra_freq,
+            crate::types::round_half_even_compat(6.0 / 76.0, 4, true)
+        );
+        assert_eq!(
+            n_comb.hi_freq,
+            crate::types::round_half_even_compat(10.0 / 55.0, 4, true)
+        );
+        let n_noise = out_f02[1].variant2.as_ref().unwrap();
+        assert_eq!(out_f02[1].status, "StrongSomatic");
+        assert_eq!(n_noise.pos_coverage, 0);
+        assert_eq!(n_noise.extra_freq, 0.0);
+        assert_eq!(n_noise.hi_freq, 0.0);
+
+        // 2. F-03: Switch 28 `pileup_preserve_shifted_ref` in somatic `-p`
+        let mut cfg_p = cfg_off.clone();
+        cfg_p.pileup = true;
+        let mut bam1_p = crate::javamap::JavaHashMap::new();
+        let mut v1_p105 = Vars::new();
+        let mut rv1_105 = Variant::new();
+        rv1_105.start_pos = 105;
+        rv1_105.end_pos = 105;
+        rv1_105.ref_allele = "A".to_string();
+        rv1_105.var_allele = "A".to_string();
+        rv1_105.total_pos_cov = 30;
+        rv1_105.ref_fwd_cov = 15;
+        rv1_105.ref_rev_cov = 15;
+        v1_p105.ref_variant = Some(rv1_105);
+        let mut del104 = make_good_variant("-1", "CA", "C", 0.50);
+        del104.start_pos = 104;
+        del104.end_pos = 105;
+        v1_p105.variants.push(del104);
+        bam1_p.insert(105, v1_p105);
+
+        let mut bam2_p = crate::javamap::JavaHashMap::new();
+        let mut v2_p105 = Vars::new();
+        let mut rv2_105 = Variant::new();
+        rv2_105.start_pos = 105;
+        rv2_105.end_pos = 105;
+        rv2_105.ref_allele = "A".to_string();
+        rv2_105.var_allele = "A".to_string();
+        rv2_105.total_pos_cov = 30;
+        rv2_105.ref_fwd_cov = 15;
+        rv2_105.ref_rev_cov = 15;
+        v2_p105.ref_variant = Some(rv2_105);
+        bam2_p.insert(105, v2_p105);
+
+        let out_p = somatic_post_process_at(&cfg_p, &region, &bam1_p, &bam2_p, &splice, None, 100);
+        let p_starts: Vec<(i32, &str, &str)> = out_p
+            .iter()
+            .map(|sv| {
+                (
+                    sv.variant1.start_pos,
+                    sv.variant1.ref_allele.as_str(),
+                    sv.variant1.var_allele.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            p_starts,
+            vec![(104, "CA", "C"), (105, "A", "A")],
+            "F-03: somatic -p --compat=off must preserve reference pileup row at 105 when all calls shifted to 104"
+        );
+
+        // 3. F-09: Distinct-END symbolic <DUP>s in Tumor vs Normal must NOT suppress each other via NormAlleleKey
+        let mut bam1_sv = crate::javamap::JavaHashMap::new();
+        let mut v1_sv = Vars::new();
+        let mut t_dup200 = make_good_variant("<dup100>", "A", "<DUP>", 0.35);
+        t_dup200.start_pos = 100;
+        t_dup200.end_pos = 200;
+        v1_sv.variants.push(t_dup200);
+        bam1_sv.insert(101, v1_sv);
+
+        let mut bam2_sv = crate::javamap::JavaHashMap::new();
+        let mut v2_sv = Vars::new();
+        let mut n_dup350 = make_good_variant("<dup250>", "A", "<DUP>", 0.45);
+        n_dup350.start_pos = 100;
+        n_dup350.end_pos = 350;
+        v2_sv.variants.push(n_dup350);
+        bam2_sv.insert(101, v2_sv);
+
+        let out_sv =
+            somatic_post_process_at(&cfg_off, &region, &bam1_sv, &bam2_sv, &splice, None, 100);
+        let sv_ends: Vec<(i32, &str)> = out_sv
+            .iter()
+            .map(|sv| (sv.variant1.end_pos, sv.status.as_str()))
+            .collect();
+        assert_eq!(
+            sv_ends,
+            vec![(200, "StrongSomatic"), (350, "StrongLOH")],
+            "F-09: Tumor <DUP> END=200 must NOT suppress Normal <DUP> END=350"
+        );
+
+        // 4. F-11 & S-02: v2nt_var equal-length Complex->SNV normalization sync + Switch 29 same-position dedup
+        let mut bam1_f11 = crate::javamap::JavaHashMap::new();
+        let mut v1_150 = Vars::new();
+        let mut t_cplx = make_good_variant("CG", "CA", "CG", 0.50);
+        t_cplx.start_pos = 150;
+        t_cplx.end_pos = 151;
+        t_cplx.var_type = "MNV".to_string(); // as produced by ToVarsBuilder!
+        t_cplx.left_seq = "ACGTACGTACGTACGTACGT".to_string();
+        t_cplx.right_seq = "GGGGGGGGGGGGGGGGGGGG".to_string();
+        v1_150.variants.push(t_cplx);
+        bam1_f11.insert(150, v1_150);
+
+        let mut bam2_f11 = crate::javamap::JavaHashMap::new();
+        let mut v2_150 = Vars::new();
+        let mut n_cplx = make_good_variant("CG", "CA", "CG", 0.50);
+        n_cplx.start_pos = 150;
+        n_cplx.end_pos = 151;
+        n_cplx.var_type = "MNV".to_string();
+        n_cplx.left_seq = "ACGTACGTACGTACGTACGT".to_string();
+        n_cplx.right_seq = "GGGGGGGGGGGGGGGGGGGG".to_string();
+        v2_150.variants.push(n_cplx);
+        bam2_f11.insert(150, v2_150);
+
+        let out_f11 =
+            somatic_post_process_at(&cfg_off, &region, &bam1_f11, &bam2_f11, &splice, None, 100);
+        assert_eq!(out_f11.len(), 1);
+        let v2_norm = out_f11[0].variant2.as_ref().unwrap();
+        assert_eq!(v2_norm.start_pos, 151);
+        assert_eq!(v2_norm.end_pos, 151);
+        assert_eq!(v2_norm.ref_allele, "A");
+        assert_eq!(v2_norm.var_allele, "G");
+        assert_eq!(v2_norm.left_seq, out_f11[0].variant1.left_seq);
+
+        // S-02 same-position collision dedup under isolated Switch 29 (do_left_align == false)
+        let mut cfg_sw29 = test_config();
+        cfg_sw29.compat.recompute_vartype_after_adj_complex = true;
+        let mut bam1_s02 = crate::javamap::JavaHashMap::new();
+        let mut v1_160 = Vars::new();
+        let mut c1 = make_good_variant("GT", "GA", "GT", 0.25);
+        c1.start_pos = 160;
+        c1.end_pos = 161;
+        c1.pos_coverage = 4;
+        let mut c2 = make_good_variant("GTC", "GAC", "GTC", 0.60);
+        c2.start_pos = 160;
+        c2.end_pos = 162;
+        c2.pos_coverage = 12;
+        v1_160.variants.push(c1);
+        v1_160.variants.push(c2);
+        bam1_s02.insert(160, v1_160);
+        let mut bam2_s02 = crate::javamap::JavaHashMap::new();
+        let mut v2_160 = Vars::new();
+        let mut rv2_160 = Variant::new();
+        rv2_160.total_pos_cov = 20;
+        v2_160.ref_variant = Some(rv2_160);
+        bam2_s02.insert(160, v2_160);
+        let out_s02 =
+            somatic_post_process_at(&cfg_sw29, &region, &bam1_s02, &bam2_s02, &splice, None, 100);
+        assert_eq!(
+            out_s02.len(),
+            1,
+            "S-02: somatic same-position Switch 29 collisions must deduplicate"
+        );
+        assert_eq!(out_s02[0].variant1.pos_coverage, 12);
     }
 }

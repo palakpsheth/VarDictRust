@@ -366,6 +366,18 @@ fn simple_post_process_core<'a>(
             }
         }
 
+        if !config.pileup
+            && refresh_vt
+            && !do_left_align
+            && vrefs.len().saturating_sub(pos_start) > 1
+        {
+            let mut pos_tail = vrefs.split_off(pos_start);
+            crate::variations::dedup_post_norm_vec(&mut pos_tail, |v| {
+                (!v.null_record).then_some((0u8, v, v))
+            });
+            vrefs.extend(pos_tail);
+        }
+
         if let Some((last, prior)) = vrefs.get_mut(pos_start..).and_then(|s| s.split_last_mut()) {
             for r in prior {
                 r.sv.clear();
@@ -396,19 +408,34 @@ fn simple_post_process_core<'a>(
     // Bucketing must use the raw start (what simple_36 writes), NOT the
     // ToVarsBuilder position key: indels and SNVs can share one key while
     // having different raw starts, and different keys can share a raw start.
+    // Under `--compat=off` / `--preset` (`F-05`), symbolic SVs additionally sub-key
+    // by `(end_pos, SvTag)` so distinct-`END` or distinct-type SVs never overwrite
+    // co-anchored SNVs or other symbolic SVs.
     if !skip_vcf_bucketing && !config.emit_intermediate && !config.vcf_all_alleles {
         let exact_tie = config.compat.exact_binary_half_even;
-        let mut buckets: BTreeMap<i32, Variant> = BTreeMap::new();
+        let multi_sv =
+            config.compat.canonical_sv_vcf_anchoring || config.compat.standard_dup_symbolic_alt;
+        let prefer_nonref_zero = config.pileup && config.compat.pileup_preserve_shifted_ref;
+        let mut buckets: BTreeMap<crate::SingleAlleleBucketKey, Variant> = BTreeMap::new();
         for v in vrefs {
             let v_af = crate::types::round_half_even_compat(v.frequency, 4, exact_tie);
-            match buckets.entry(v.start_pos) {
+            let bkey =
+                crate::single_allele_bucket_key(v.start_pos, v.end_pos, &v.var_allele, multi_sv);
+            match buckets.entry(bkey) {
                 std::collections::btree_map::Entry::Vacant(e) => {
                     e.insert(v);
                 }
                 std::collections::btree_map::Entry::Occupied(mut e) => {
-                    let cur_af =
-                        crate::types::round_half_even_compat(e.get().frequency, 4, exact_tie);
-                    if v_af > cur_af {
+                    let cur = e.get();
+                    let cur_af = crate::types::round_half_even_compat(cur.frequency, 4, exact_tie);
+                    let nonref_beats_zero_ref = prefer_nonref_zero
+                        && v_af == 0.0
+                        && cur_af == 0.0
+                        && v.pos_coverage > 0
+                        && v.ref_allele != v.var_allele
+                        && cur.pos_coverage == 0
+                        && cur.ref_allele == cur.var_allele;
+                    if v_af > cur_af || nonref_beats_zero_ref {
                         e.insert(v);
                     }
                 }
@@ -1673,5 +1700,102 @@ mod tests {
         assert_eq!(out_s38[1].ref_allele, "AAAG");
         assert_eq!(out_s38[1].var_allele, "A");
         assert_eq!(out_s38[1].shift3, 2);
+    }
+
+    #[test]
+    fn lane1_f05_and_s02_simple_multi_end_sv_and_switch29_same_pos_dedup() {
+        let splice = rustc_hash::FxHashSet::default();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(900),
+            end: Pos1(1500),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+
+        // Part A (F-05): Co-anchored SNVs + distinct-END / distinct-type symbolic SVs at start_pos = 999
+        let mut sv_map = crate::javamap::JavaHashMap::new();
+        let mut vars_999 = Vars::new();
+        vars_999.sv = "4-2-1".to_string();
+        vars_999.variants.push(mk_variant(999, 999, "A", "G", 0.35));
+        vars_999.variants.push(mk_variant(999, 999, "A", "T", 0.20));
+        vars_999
+            .variants
+            .push(mk_variant(999, 1100, "A", "<DUP>", 0.30));
+        vars_999
+            .variants
+            .push(mk_variant(999, 1250, "A", "<DUP>", 0.45));
+        vars_999
+            .variants
+            .push(mk_variant(999, 1100, "A", "<INV>", 0.25));
+        sv_map.insert(999, vars_999);
+
+        let mut cfg_vj = Config::default();
+        cfg_vj.freq = 0.01;
+        cfg_vj.min_reads = 2;
+        cfg_vj.read_pos = 5.0;
+        cfg_vj.base_qual = 22.5;
+        cfg_vj.qratio = 1.5;
+        let out_vj = simple_post_process(&cfg_vj, &region, &sv_map, &splice);
+        assert_eq!(
+            out_vj.len(),
+            1,
+            "default --compat=vardictjava must collapse start_pos=999 to single top-AF winner"
+        );
+        assert_eq!(out_vj[0].var_allele, "<DUP>");
+        assert_eq!(out_vj[0].end_pos, 1250);
+
+        let mut cfg_off = cfg_vj.clone();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+        let out_off = simple_post_process(&cfg_off, &region, &sv_map, &splice);
+        let summary_off: Vec<(i32, i32, &str, &str)> = out_off
+            .iter()
+            .map(|v| {
+                (
+                    v.start_pos,
+                    v.end_pos,
+                    v.ref_allele.as_str(),
+                    v.var_allele.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary_off,
+            vec![
+                (999, 999, "A", "G"),
+                (999, 1100, "A", "<DUP>"),
+                (999, 1100, "A", "<INV>"),
+                (999, 1250, "A", "<DUP>"),
+            ],
+            "F-05: --compat=off single-allele VCF must keep top concrete allele plus each distinct (END, SVTYPE) symbolic SV"
+        );
+
+        // Part B (S-02): Same-position distinct raw descriptions normalizing to identical allele under Switch 29 alone
+        let mut s02_map = crate::javamap::JavaHashMap::new();
+        let mut vars_1010 = Vars::new();
+        let mut c1 = mk_variant(1010, 1011, "GA", "GT", 0.30);
+        c1.description = "GT".to_string();
+        c1.pos_coverage = 4;
+        c1.total_pos_cov = 20;
+        let mut c2 = mk_variant(1010, 1012, "GAC", "GTC", 0.60);
+        c2.description = "GTC".to_string();
+        c2.pos_coverage = 12;
+        c2.total_pos_cov = 20;
+        vars_1010.variants.push(c1);
+        vars_1010.variants.push(c2);
+        s02_map.insert(1010, vars_1010);
+
+        let mut cfg_sw29 = Config::default();
+        cfg_sw29.emit_intermediate = true;
+        cfg_sw29.compat.recompute_vartype_after_adj_complex = true;
+        let out_sw29 = simple_post_process(&cfg_sw29, &region, &s02_map, &splice);
+        assert_eq!(
+            out_sw29.len(),
+            1,
+            "S-02: same-position Switch 29 trimmed collisions must deduplicate to 1 row"
+        );
+        assert_eq!(out_sw29[0].start_pos, 1011);
+        assert_eq!(out_sw29[0].var_allele, "T");
+        assert_eq!(out_sw29[0].pos_coverage, 12);
     }
 }
