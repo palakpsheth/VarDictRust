@@ -158,6 +158,10 @@ pub struct CigarParser<'a> {
     pub total_reads: i32,
     pub duplicate_reads: i32,
     live_read_counts: Option<(u64, u64)>,
+    /// Parent BED/region 1-based start on split sub-tiles (`Some(orig_start)` when
+    /// `region.start > orig_start`), enabling in-tile `ref_coverage` continuity for
+    /// deletions/MNVs anchored in `[orig_start, region.start)` that span into `region`.
+    pub split_parent_start: Option<crate::types::Pos1>,
     /// Per-read scratch buffers reused across [`CigarParser::parse_cigar`]
     /// calls (zero per-read allocation after warmup). Never read across
     /// calls: refilled from each record before use.
@@ -382,6 +386,7 @@ impl<'a> CigarParser<'a> {
             total_reads,
             duplicate_reads,
             live_read_counts: None,
+            split_parent_start: None,
             scratch_seq: Vec::new(),
             scratch_qual: Vec::new(),
             scratch_cigar_str: String::new(),
@@ -1520,6 +1525,34 @@ impl<'a> CigarParser<'a> {
                                         }
                                     }
                                 }
+                            } else if !in_u_rebalance
+                                && (grafted || !buf_ss.is_empty())
+                                && !buf_s.contains('N')
+                                && !buf_s.contains('n')
+                                && self.split_parent_start.is_some_and(|orig_s| {
+                                    pos >= i32::try_from(orig_s.0).unwrap_or(i32::MAX)
+                                        && pos < region_start
+                                })
+                            {
+                                let shift = if buf_s.starts_with('+') && buf_s.contains('&') {
+                                    1
+                                } else {
+                                    0
+                                };
+                                for qi in 1..=(qbases - shift) {
+                                    let cov_pos = start.saturating_sub(qi).saturating_add(1);
+                                    if cov_pos >= region_start && cov_pos <= region_end {
+                                        inc_cnt(&mut self.ref_coverage, cov_pos, 1);
+                                    }
+                                }
+                                if start_with_deletion {
+                                    let first = (i64::from(start) + 1).max(i64::from(region_start));
+                                    let last = (i64::from(start) + i64::from(ddlen) - 1)
+                                        .min(i64::from(region_end));
+                                    if first <= last {
+                                        self.record_deletion_ref_coverage(first, last);
+                                    }
+                                }
                             }
                         }
 
@@ -2597,6 +2630,17 @@ impl<'a> CigarParser<'a> {
                 if tmpq >= self.config.base_qual {
                     self.record_overlap_desc(*start, false, &desc_string);
                 }
+            }
+        } else if !in_u_rebalance
+            && self.split_parent_start.is_some_and(|orig_s| {
+                *start >= i32::try_from(orig_s.0).unwrap_or(i32::MAX) && *start < region_start
+            })
+        {
+            let first = i64::from(*start).max(i64::from(region_start));
+            let last =
+                (i64::from(*start) + i64::from(cigar_element_len) - 1).min(i64::from(region_end));
+            if first <= last {
+                self.record_deletion_ref_coverage(first, last);
             }
         }
 

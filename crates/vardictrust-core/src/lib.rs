@@ -1177,6 +1177,7 @@ fn run_pipeline_on_records_ext(
         0,
         seed_max_read_length,
     );
+    parser.split_parent_start = parent_original_start;
     if let Some(seed_splice) = initial_splice {
         parser.splice = seed_splice;
     }

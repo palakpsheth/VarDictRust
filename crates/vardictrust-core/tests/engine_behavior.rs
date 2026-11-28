@@ -1629,6 +1629,11 @@ mod concurrency {
         tumor_recs.extend(insertion_pair(331));
         tumor_recs.extend(insertion_pair(581));
         tumor_recs.extend(deletion_pair(500, 3));
+        // Seam-spanning 25-bp CIGAR deletions anchored at 240/340/590 extending across
+        // tile cuts 250, 350, and 600 into downstream SNV positions.
+        tumor_recs.extend(deletion_pair(240, 25));
+        tumor_recs.extend(deletion_pair(340, 25));
+        tumor_recs.extend(deletion_pair(590, 25));
         tumor_recs.sort_by_key(|r| r.alignment_start());
         let tumor_bam = dir.path().join("tumor.bam");
         indexed_bam(&tumor_bam, "chr1", 2000, &tumor_recs).expect("write tumor bam");
@@ -2040,6 +2045,12 @@ mod concurrency {
                 "chr20:46842754-46845755:testbed",
                 "\t<INV>\t",
             ),
+            (
+                "VarDictJava/testdata/fastas/hs38DH.fa",
+                "VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA12878.chrom20.INVSimpleSV.bam",
+                "20:1961050-1961650:testbed",
+                "\t<INV>\t",
+            ),
         ];
 
         for (fa_rel, bam_rel, region, expected_sv_tag) in sv_cases {
@@ -2084,6 +2095,48 @@ mod concurrency {
                 tiled_var, untiled_var,
                 "tiled (tile_size=Some(200)) SV .var row set must match untiled None on {bam_rel}"
             );
+        }
+
+        // 1b. Paired somatic seam-spanning 35-bp deletion (`chr1:756285` spanning `756317..756320`
+        // across `tile_size = Some(200)`): verify `DP=15` conservation under both compat modes.
+        let colo_pair = format!(
+            "{}|{}",
+            droot
+                .join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829-18_S3-sort.bam")
+                .display(),
+            droot
+                .join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/Colo829-19_S4-sort.bam")
+                .display()
+        );
+        for compat in [
+            vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3,
+            vardictrust_core::config::COMPAT_OFF,
+        ] {
+            let colo_untiled_cfg = Config {
+                reference: droot
+                    .join("VarDictJava/testdata/fastas/hg19.fa")
+                    .to_string_lossy()
+                    .into_owned(),
+                sample: "Colo829-18_S3-sort".to_string(),
+                bam: colo_pair.clone(),
+                threads: 1,
+                region: Some("chr1:755917-756517".to_string()),
+                freq: 0.01,
+                af_threshold: 0.01,
+                compat,
+                tile_size: None,
+                ..Config::default()
+            };
+            let mut colo_tiled_cfg = colo_untiled_cfg.clone();
+            colo_tiled_cfg.tile_size = Some(200);
+            colo_tiled_cfg.threads = 4;
+            let colo_u_vcf = run_core_vcf(&colo_untiled_cfg).expect("Colo829 untiled VCF");
+            let colo_t_vcf = run_core_vcf(&colo_tiled_cfg).expect("Colo829 tiled VCF");
+            assert!(
+                colo_u_vcf.contains("chr1\t756320\t.\tG\tA\t") && colo_u_vcf.contains(";DP=15;"),
+                "expected DP=15 at chr1:756320 in Colo829 untiled VCF"
+            );
+            assert_eq!(colo_t_vcf, colo_u_vcf);
         }
 
         // 2. `-i` splice junction output: `tile_size = Some(200)` vs `None` byte-for-byte

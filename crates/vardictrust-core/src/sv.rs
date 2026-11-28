@@ -2783,6 +2783,82 @@ pub fn find_sv(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
+    let mut empty_spans = Vec::new();
+    find_sv_paths(
+        var_data,
+        &[],
+        reference,
+        chr,
+        curseg_start,
+        curseg_end,
+        config,
+        chromosomes_lengths,
+        &mut empty_spans,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "split-tile SV endpoint hydration shares pileup/reference/BAM context"
+)]
+fn ensure_split_tile_sv_pos_piled(
+    pos: i32,
+    bam_paths: &[String],
+    var_data: &mut crate::variations::VariationData,
+    reference: &mut Reference,
+    chr: &str,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    bam_piled_spans: &mut Vec<(i32, i32)>,
+) -> Result<(), VardictError> {
+    if var_data.split_parent_start.is_none() || bam_paths.is_empty() || pos <= 0 {
+        return Ok(());
+    }
+    if spans_contain(bam_piled_spans, pos, pos) {
+        return Ok(());
+    }
+    let eff_max_rl = var_data.max_read_length.max(50);
+    let lo = pos.saturating_sub(eff_max_rl).max(1);
+    let hi = pos.saturating_add(eff_max_rl);
+    ensure_mate_fasta_loaded(
+        chr,
+        pos,
+        pos,
+        300,
+        lo.saturating_sub(eff_max_rl),
+        hi.saturating_add(eff_max_rl),
+        chromosomes_lengths,
+        config,
+        reference,
+    )?;
+    partial_pipeline_paths_subintervals(
+        bam_paths,
+        var_data,
+        reference,
+        chr,
+        lo,
+        hi,
+        bam_piled_spans,
+        config,
+        chromosomes_lengths,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal find_sv helper threads BAM paths andiled-span tracker for split-tile endpoints"
+)]
+fn find_sv_paths(
+    var_data: &mut crate::variations::VariationData,
+    bam_paths: &[String],
+    reference: &mut Reference,
+    chr: &str,
+    curseg_start: i32,
+    curseg_end: i32,
+    config: &Config,
+    chromosomes_lengths: &HashMap<String, usize>,
+    bam_piled_spans: &mut Vec<(i32, i32)>,
+) -> Result<(), VardictError> {
     if var_data.soft_clips_5_end.is_empty() && var_data.soft_clips_3_end.is_empty() {
         return Ok(());
     }
@@ -2924,6 +3000,18 @@ pub fn find_sv(
                 sv.splits = sv.splits.saturating_add(cnt5);
                 sv.clusters = sv.clusters.saturating_add(1);
 
+                for end_pt in [bp_adj, p5_adj.saturating_add(1)] {
+                    ensure_split_tile_sv_pos_piled(
+                        end_pt,
+                        bam_paths,
+                        var_data,
+                        reference,
+                        chr,
+                        config,
+                        chromosomes_lengths,
+                        bam_piled_spans,
+                    )?;
+                }
                 let bp_cov = var_data.ref_coverage.get(&bp_adj).copied().unwrap_or(0);
                 let pair_split_cov = pairs.saturating_add(sc5v_variation.cnt);
                 if bp_cov < pair_split_cov {
@@ -3072,6 +3160,18 @@ pub fn find_sv(
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p5_adj, &vn);
             crate::variations::util::adj_cnt(vref_mut, &sc5v_variation, None);
 
+            for end_pt in [p5_adj, bp] {
+                ensure_split_tile_sv_pos_piled(
+                    end_pt,
+                    bam_paths,
+                    var_data,
+                    reference,
+                    chr,
+                    config,
+                    chromosomes_lengths,
+                    bam_piled_spans,
+                )?;
+            }
             let p5_cov = var_data.ref_coverage.get(&p5_adj).copied().unwrap_or(0);
             var_data
                 .ref_coverage
@@ -3202,6 +3302,18 @@ pub fn find_sv(
                 sv.splits = sv.splits.saturating_add(cnt3);
                 sv.clusters = sv.clusters.saturating_add(1);
 
+                for end_pt in [p3_adj, bp_adj] {
+                    ensure_split_tile_sv_pos_piled(
+                        end_pt,
+                        bam_paths,
+                        var_data,
+                        reference,
+                        chr,
+                        config,
+                        chromosomes_lengths,
+                        bam_piled_spans,
+                    )?;
+                }
                 if !var_data.ref_coverage.contains_key(&p3_adj) {
                     var_data
                         .ref_coverage
@@ -3345,6 +3457,18 @@ pub fn find_sv(
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p3_adj, &vn);
             crate::variations::util::adj_cnt(vref_mut, &sc3v_variation, None);
 
+            for end_pt in [p3_adj, bp] {
+                ensure_split_tile_sv_pos_piled(
+                    end_pt,
+                    bam_paths,
+                    var_data,
+                    reference,
+                    chr,
+                    config,
+                    chromosomes_lengths,
+                    bam_piled_spans,
+                )?;
+            }
             let p3_cov = var_data.ref_coverage.get(&p3_adj).copied().unwrap_or(0);
             var_data
                 .ref_coverage
@@ -4903,14 +5027,16 @@ pub fn find_all_sv_paths(
     if verbose_log(config) {
         crate::verbose_eprintln!("Start Structural Variants\n");
     }
-    find_sv(
+    find_sv_paths(
         var_data,
+        bam_paths,
         reference,
         chr,
         i32::try_from(pileup_region.start.0).unwrap_or(i32::MAX),
         i32::try_from(pileup_region.end.0).unwrap_or(i32::MAX),
         config,
         chromosomes_lengths,
+        &mut bam_piled_spans,
     )?;
 
     if verbose_log(config) {
