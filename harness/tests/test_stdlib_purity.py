@@ -54,6 +54,7 @@ ALLOWED_LOCAL_MODULES = frozenset([
     "toml_lite",
     "convert_fastas",
     "sync_evidence_docs",
+    "verify_public_data",
 ])
 
 

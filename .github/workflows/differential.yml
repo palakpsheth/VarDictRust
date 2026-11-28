@@ -104,7 +104,8 @@ jobs:
         id: self-tests
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Diff Step 5/6] Running oracle-backed Level 6 self-tests..."
+          echo "[$(date '+%H:%M:%S')] [Diff Step 5/6] Running portable invariants gate and oracle-backed Level 6 self-tests..."
+          bash harness/run_portable_invariants.sh
           TMP_GS=$(mktemp -d)
           trap 'rm -rf "$TMP_GS"' EXIT
           (

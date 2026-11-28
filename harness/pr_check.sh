@@ -34,7 +34,7 @@ if git rev-parse --verify origin/main >/dev/null 2>&1; then
   fi
 fi
 
-# Stage 1: Hygiene (fmt, lint_ratchet, 3-mode clippy, unit + integration + robustness tests, release binary)
+# Stage 1: Hygiene (fmt, lint_ratchet, 3-mode clippy, fuzz compile, unit + integration + robustness tests, release binary)
 st_t0=$SECONDS
 echo "$(ts) [Stage 1/6] Running workspace hygiene and unit tests..."
 cargo fmt --all -- --check
@@ -42,6 +42,8 @@ bash harness/lint_ratchet.sh --scan-only
 cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
+cargo check --manifest-path crates/vardictrust-core/fuzz/Cargo.toml --bins --target-dir target/fuzz-check
+rm -rf target/fuzz-check
 cargo test --workspace --bins --lib --tests
 cargo build -q --release
 echo "$(ts) [Stage 1/6] PASS ($((SECONDS - st_t0))s)"
@@ -79,7 +81,7 @@ SLICE_IDS=(micro s1a s1b tiny s3 s4 s5 s6 s7 s8 s9)
     printf '%d\n' "$rc" > "$SLICE_KEEP_TMP/micro.rc.tmp" && mv "$SLICE_KEEP_TMP/micro.rc.tmp" "$SLICE_KEEP_TMP/micro.rc"
   } &
   for id in s1a s1b tiny s3 s4 s5 s6 s7 s8 s9; do
-    while [ "$(jobs -rp | wc -l)" -ge 8 ]; do
+    while [ "$(jobs -rp | wc -l)" -ge "${JOBS:-8}" ]; do
       wait -n 2>/dev/null || sleep 0.02
     done
     {
@@ -114,6 +116,9 @@ echo "$(ts) All 10 Tier-2 standard slices (s1a..s9) + micro passed."
 
 echo "$(ts) Running 17-modality extended coverage suite (--no-record)..."
 bash harness/run_extended_coverage.sh --no-record
+
+echo "$(ts) Running portable CI invariants gate..."
+bash harness/run_portable_invariants.sh
 
 if [ ! -d "$DATA_ROOT/scratch/g4/multimodal" ]; then
   echo "ERROR: Multimodal data directory $DATA_ROOT/scratch/g4/multimodal is missing; cannot complete Stage 4 PR gate." >&2
