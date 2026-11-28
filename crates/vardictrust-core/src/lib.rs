@@ -1077,6 +1077,7 @@ fn run_pipeline_on_records(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -1135,6 +1136,7 @@ fn run_pipeline_on_records_ext(
     max_rl_steps: &[MaxRlStep],
     post_pileup_max_read_length: Option<i32>,
     parent_original_start: Option<crate::types::Pos1>,
+    parent_original_end: Option<crate::types::Pos1>,
     parent_active_bam_limit: Option<usize>,
     parent_live_read_counts: Option<(u64, u64)>,
 ) -> Result<crate::variations::VariationData, VardictError> {
@@ -1295,7 +1297,7 @@ fn run_pipeline_on_records_ext(
         }
     }
     let mut var_data = parser.into_variation_data_unrebalanced();
-    var_data.split_parent_start = parent_original_start;
+    var_data.split_parent_end = parent_original_end;
     if let Some(post_max) = post_pileup_max_read_length {
         var_data.max_read_length = var_data.max_read_length.max(post_max);
     }
@@ -7040,39 +7042,23 @@ fn run_with_writer_inner<W: EngineWriter>(
                 &region_for_pileup
             };
             let is_split_tile = tile.start != tile.original_start || tile.end != tile.original_end;
-            let (
-                steps_slice,
-                post_max_rl,
-                parent_orig_start,
-                parent_active_bams,
-                parent_read_counts,
-            ) = if is_split_tile && !multi_tile_seeds.is_empty() {
-                if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
-                    (
-                        seed.bam1_steps.as_slice(),
-                        Some(seed.bam1_final),
-                        Some(tile.original_start),
-                        Some(seed.bam1_active_bams),
-                        Some(seed.bam1_read_counts),
-                    )
+            let parent_orig_start = is_split_tile.then_some(tile.original_start);
+            let parent_orig_end = is_split_tile.then_some(tile.original_end);
+            let (steps_slice, post_max_rl, parent_active_bams, parent_read_counts) =
+                if is_split_tile && !multi_tile_seeds.is_empty() {
+                    if let Some(seed) = multi_tile_seeds.get(&multi_tile_key(&tile)) {
+                        (
+                            seed.bam1_steps.as_slice(),
+                            Some(seed.bam1_final),
+                            Some(seed.bam1_active_bams),
+                            Some(seed.bam1_read_counts),
+                        )
+                    } else {
+                        (&[] as &[MaxRlStep], None, None, None)
+                    }
                 } else {
-                    (
-                        &[] as &[MaxRlStep],
-                        None,
-                        Some(tile.original_start),
-                        None,
-                        None,
-                    )
-                }
-            } else {
-                (
-                    &[] as &[MaxRlStep],
-                    None,
-                    is_split_tile.then_some(tile.original_start),
-                    None,
-                    None,
-                )
-            };
+                    (&[] as &[MaxRlStep], None, None, None)
+                };
             let var_data = run_pipeline_on_records_ext(
                 &bam_list,
                 &tile.chr,
@@ -7093,6 +7079,7 @@ fn run_with_writer_inner<W: EngineWriter>(
                 steps_slice,
                 post_max_rl,
                 parent_orig_start,
+                parent_orig_end,
                 parent_active_bams,
                 parent_read_counts,
             )?;
@@ -8665,6 +8652,7 @@ fn run_somatic<W: EngineWriter>(
                     is_split_tile.then_some(tile.original_start),
                 )
             };
+            let parent_orig_end = is_split_tile.then_some(tile.original_end);
 
             let mut reference = crate::reference::Reference::new();
             let mut var_data1 = run_pipeline_on_records_ext(
@@ -8683,6 +8671,7 @@ fn run_somatic<W: EngineWriter>(
                 steps1,
                 post1,
                 parent_orig_start,
+                parent_orig_end,
                 active1,
                 counts1,
             )?;
@@ -8746,6 +8735,7 @@ fn run_somatic<W: EngineWriter>(
                 steps2,
                 post_bam2,
                 parent_orig_start,
+                parent_orig_end,
                 active2,
                 counts2,
             )?;

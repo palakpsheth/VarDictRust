@@ -2783,7 +2783,6 @@ pub fn find_sv(
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
 ) -> Result<(), VardictError> {
-    let mut empty_spans = Vec::new();
     find_sv_paths(
         var_data,
         &[],
@@ -2793,7 +2792,7 @@ pub fn find_sv(
         curseg_end,
         config,
         chromosomes_lengths,
-        &mut empty_spans,
+        &[],
     )
 }
 
@@ -2803,50 +2802,167 @@ pub fn find_sv(
 )]
 fn ensure_split_tile_sv_pos_piled(
     pos: i32,
+    is_anchor: bool,
     bam_paths: &[String],
     var_data: &mut crate::variations::VariationData,
-    reference: &mut Reference,
+    reference: &Reference,
     chr: &str,
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
-    bam_piled_spans: &mut Vec<(i32, i32)>,
+    bam_piled_spans: &[(i32, i32)],
+    hydrated_anchors: &mut rustc_hash::FxHashSet<i32>,
 ) -> Result<(), VardictError> {
-    if var_data.split_parent_start.is_none() || bam_paths.is_empty() || pos <= 0 {
+    let (Some(orig_s_p1), Some(orig_e_p1)) =
+        (var_data.split_parent_start, var_data.split_parent_end)
+    else {
+        return Ok(());
+    };
+    let orig_s = i32::try_from(orig_s_p1.0).unwrap_or(i32::MAX);
+    let orig_e = i32::try_from(orig_e_p1.0).unwrap_or(i32::MAX);
+    if bam_paths.is_empty()
+        || pos <= 0
+        || pos < orig_s
+        || pos > orig_e
+        || spans_contain(bam_piled_spans, pos, pos)
+    {
         return Ok(());
     }
-    if spans_contain(bam_piled_spans, pos, pos) {
+    if is_anchor {
+        if !hydrated_anchors.insert(pos) {
+            return Ok(());
+        }
+    } else if var_data.ref_coverage.contains_key(&pos) {
         return Ok(());
     }
+
+    let pos_u32 = pos as u32;
     let eff_max_rl = var_data.max_read_length.max(50);
     let lo = pos.saturating_sub(eff_max_rl).max(1);
     let hi = pos.saturating_add(eff_max_rl);
-    ensure_mate_fasta_loaded(
-        chr,
-        pos,
-        pos,
-        300,
-        lo.saturating_sub(eff_max_rl),
-        hi.saturating_add(eff_max_rl),
-        chromosomes_lengths,
+    let need_lo = lo.saturating_sub(eff_max_rl);
+    let need_hi = hi.saturating_add(eff_max_rl);
+    let chr_len_u32 = saturated_chr_len(chromosomes_lengths, chr);
+    let chr_len = i32::try_from(chr_len_u32).unwrap_or(i32::MAX);
+    let (check_lo, check_hi) = if chr_len > 0 && pos <= chr_len {
+        let clo = need_lo.min(pos).clamp(1, chr_len);
+        let chi = need_hi.max(pos).clamp(clo, chr_len);
+        (clo, chi)
+    } else {
+        let clo = need_lo.min(pos).max(1);
+        let chi = need_hi.max(pos).max(clo);
+        (clo, chi)
+    };
+
+    let mut tmp_ref: Option<Reference> = None;
+    if !config.reference.is_empty()
+        && (reference.get_base(chr, pos_u32).is_none()
+            || !is_loaded(chr, check_lo as u32, check_hi as u32, reference))
+    {
+        let mut local_ref = Reference::new();
+        ensure_mate_fasta_loaded(
+            chr,
+            pos,
+            pos,
+            300,
+            need_lo,
+            need_hi,
+            chromosomes_lengths,
+            config,
+            &mut local_ref,
+        )?;
+        tmp_ref = Some(local_ref);
+    }
+    let active_ref = tmp_ref.as_ref().unwrap_or(reference);
+
+    let query_start = crate::types::Pos0(pos_u32 - 1);
+    let query_end = crate::types::Pos0(pos_u32);
+    let sub_region = crate::regions::Region {
+        chr: chr.to_string(),
+        start: Pos1(pos_u32),
+        end: Pos1(pos_u32),
+        gene: String::new(),
+        amplicon: None,
+    };
+    let mut parser = crate::cigar::parse::CigarParser::new(
+        active_ref,
+        &sub_region,
         config,
-        reference,
-    )?;
-    partial_pipeline_paths_subintervals(
-        bam_paths,
-        var_data,
-        reference,
-        chr,
-        lo,
-        hi,
-        bam_piled_spans,
-        config,
-        chromosomes_lengths,
-    )
+        true,
+        0,
+        0,
+        var_data.max_read_length,
+    );
+    parser.split_parent_start = var_data.split_parent_start;
+
+    let mut feeds = Vec::with_capacity(bam_paths.len());
+    for single_bam in bam_paths.iter().filter(|s| !s.is_empty()) {
+        feeds.push(crate::bam::query_region_iter(
+            std::path::Path::new(single_bam.as_str()),
+            chr,
+            query_start,
+            query_end,
+            config,
+        )?);
+    }
+    let mut preprocessor = crate::bam::RecordPreprocessor::new();
+    let mut r = crate::bam::SamRecord::new();
+    for (idx, mut feed) in feeds.into_iter().enumerate() {
+        preprocessor.reset_for_next_bam();
+        parser.reset_for_next_bam();
+        let mut any_passed = false;
+        while feed.next_into(&mut r)? {
+            if preprocessor.preprocess_record(&r, config) {
+                any_passed = true;
+                parser.parse_cigar(&r)?;
+            }
+        }
+        if idx > 0 && !any_passed {
+            break;
+        }
+    }
+    let sub_vd = parser.into_variation_data_unrebalanced();
+
+    if !is_anchor {
+        if let Some(&c) = sub_vd.ref_coverage.get(&pos) {
+            var_data.ref_coverage.entry(pos).or_insert(c);
+        }
+        return Ok(());
+    }
+
+    let unowned = var_data.owning_range.is_some_and(|(s, e)| {
+        let s_i = i32::try_from(s.0).unwrap_or(i32::MAX);
+        let e_i = i32::try_from(e.0).unwrap_or(i32::MAX);
+        pos < s_i || pos > e_i
+    });
+    if !var_data.ref_coverage.contains_key(&pos) || unowned {
+        if let Some(&c) = sub_vd.ref_coverage.get(&pos) {
+            var_data.ref_coverage.entry(pos).or_insert(c);
+        }
+        if let Some(var_map) = sub_vd.non_insertion_variants.get(&pos).cloned() {
+            let was_absent = !var_data.non_insertion_variants.contains_key(&pos)
+                && !var_data.insertion_variants.contains_key(&pos);
+            if was_absent || unowned {
+                var_data.merge_planted.insert(pos);
+            }
+            let dest = var_data
+                .non_insertion_variants
+                .get_or_put_with(pos, crate::variations::VariationMap::new);
+            if unowned {
+                dest.merge_planted = true;
+            }
+            for (allele, var) in var_map.map {
+                if !dest.map.contains_key(&allele) {
+                    dest.map.insert(allele, var);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "internal find_sv helper threads BAM paths andiled-span tracker for split-tile endpoints"
+    reason = "internal find_sv helper threads BAM paths and piled-span tracker for split-tile endpoints"
 )]
 fn find_sv_paths(
     var_data: &mut crate::variations::VariationData,
@@ -2857,7 +2973,7 @@ fn find_sv_paths(
     curseg_end: i32,
     config: &Config,
     chromosomes_lengths: &HashMap<String, usize>,
-    bam_piled_spans: &mut Vec<(i32, i32)>,
+    bam_piled_spans: &[(i32, i32)],
 ) -> Result<(), VardictError> {
     if var_data.soft_clips_5_end.is_empty() && var_data.soft_clips_3_end.is_empty() {
         return Ok(());
@@ -2912,6 +3028,7 @@ fn find_sv_paths(
     let softp2sv = build_softp2sv_map(&var_data.sv_structures);
     let mut key_buf = crate::types::StackBuf::<16>::new();
     let mut key_heap = String::new();
+    let mut hydrated_anchors: rustc_hash::FxHashSet<i32> = rustc_hash::FxHashSet::default();
 
     for tuple5 in tmp5 {
         let p5 = tuple5.position;
@@ -2983,6 +3100,21 @@ fn find_sv_paths(
                 )?;
                 let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
+                for (end_pt, is_anchor) in [(bp_adj, true), (p5_adj.saturating_add(1), false)] {
+                    ensure_split_tile_sv_pos_piled(
+                        end_pt,
+                        is_anchor,
+                        bam_paths,
+                        var_data,
+                        reference,
+                        chr,
+                        config,
+                        chromosomes_lengths,
+                        bam_piled_spans,
+                        &mut hydrated_anchors,
+                    )?;
+                }
+
                 let vref = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     bp_adj,
@@ -3000,18 +3132,6 @@ fn find_sv_paths(
                 sv.splits = sv.splits.saturating_add(cnt5);
                 sv.clusters = sv.clusters.saturating_add(1);
 
-                for end_pt in [bp_adj, p5_adj.saturating_add(1)] {
-                    ensure_split_tile_sv_pos_piled(
-                        end_pt,
-                        bam_paths,
-                        var_data,
-                        reference,
-                        chr,
-                        config,
-                        chromosomes_lengths,
-                        bam_piled_spans,
-                    )?;
-                }
                 let bp_cov = var_data.ref_coverage.get(&bp_adj).copied().unwrap_or(0);
                 let pair_split_cov = pairs.saturating_add(sc5v_variation.cnt);
                 if bp_cov < pair_split_cov {
@@ -3145,6 +3265,21 @@ fn find_sv_paths(
                 }
             };
 
+            for (end_pt, is_anchor) in [(p5_adj, true), (bp, false)] {
+                ensure_split_tile_sv_pos_piled(
+                    end_pt,
+                    is_anchor,
+                    bam_paths,
+                    var_data,
+                    reference,
+                    chr,
+                    config,
+                    chromosomes_lengths,
+                    bam_piled_spans,
+                    &mut hydrated_anchors,
+                )?;
+            }
+
             let vref =
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p5_adj, &vn);
             vref.tile_planted = true;
@@ -3160,18 +3295,6 @@ fn find_sv_paths(
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p5_adj, &vn);
             crate::variations::util::adj_cnt(vref_mut, &sc5v_variation, None);
 
-            for end_pt in [p5_adj, bp] {
-                ensure_split_tile_sv_pos_piled(
-                    end_pt,
-                    bam_paths,
-                    var_data,
-                    reference,
-                    chr,
-                    config,
-                    chromosomes_lengths,
-                    bam_piled_spans,
-                )?;
-            }
             let p5_cov = var_data.ref_coverage.get(&p5_adj).copied().unwrap_or(0);
             var_data
                 .ref_coverage
@@ -3285,6 +3408,21 @@ fn find_sv_paths(
                 )?;
                 let del_key = fmt_del_key(dellen, &mut key_buf, &mut key_heap);
 
+                for (end_pt, is_anchor) in [(p3_adj, true), (bp_adj, false)] {
+                    ensure_split_tile_sv_pos_piled(
+                        end_pt,
+                        is_anchor,
+                        bam_paths,
+                        var_data,
+                        reference,
+                        chr,
+                        config,
+                        chromosomes_lengths,
+                        bam_piled_spans,
+                        &mut hydrated_anchors,
+                    )?;
+                }
+
                 let vref = crate::variations::get_variation(
                     &mut var_data.non_insertion_variants,
                     p3_adj,
@@ -3302,18 +3440,6 @@ fn find_sv_paths(
                 sv.splits = sv.splits.saturating_add(cnt3);
                 sv.clusters = sv.clusters.saturating_add(1);
 
-                for end_pt in [p3_adj, bp_adj] {
-                    ensure_split_tile_sv_pos_piled(
-                        end_pt,
-                        bam_paths,
-                        var_data,
-                        reference,
-                        chr,
-                        config,
-                        chromosomes_lengths,
-                        bam_piled_spans,
-                    )?;
-                }
                 if !var_data.ref_coverage.contains_key(&p3_adj) {
                     var_data
                         .ref_coverage
@@ -3442,6 +3568,21 @@ fn find_sv_paths(
                 }
             };
 
+            for (end_pt, is_anchor) in [(p3_adj, true), (bp, false)] {
+                ensure_split_tile_sv_pos_piled(
+                    end_pt,
+                    is_anchor,
+                    bam_paths,
+                    var_data,
+                    reference,
+                    chr,
+                    config,
+                    chromosomes_lengths,
+                    bam_piled_spans,
+                    &mut hydrated_anchors,
+                )?;
+            }
+
             let vref =
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p3_adj, &vn);
             vref.tile_planted = true;
@@ -3457,18 +3598,6 @@ fn find_sv_paths(
                 crate::variations::get_variation(&mut var_data.non_insertion_variants, p3_adj, &vn);
             crate::variations::util::adj_cnt(vref_mut, &sc3v_variation, None);
 
-            for end_pt in [p3_adj, bp] {
-                ensure_split_tile_sv_pos_piled(
-                    end_pt,
-                    bam_paths,
-                    var_data,
-                    reference,
-                    chr,
-                    config,
-                    chromosomes_lengths,
-                    bam_piled_spans,
-                )?;
-            }
             let p3_cov = var_data.ref_coverage.get(&p3_adj).copied().unwrap_or(0);
             var_data
                 .ref_coverage
@@ -5036,7 +5165,7 @@ pub fn find_all_sv_paths(
         i32::try_from(pileup_region.end.0).unwrap_or(i32::MAX),
         config,
         chromosomes_lengths,
-        &mut bam_piled_spans,
+        &bam_piled_spans,
     )?;
 
     if verbose_log(config) {
@@ -5213,6 +5342,7 @@ fn partial_pipeline_subinterval_into(
         0,
         var_data.max_read_length,
     );
+    parser.split_parent_start = var_data.split_parent_start;
     let mut feeds = Vec::with_capacity(bam_paths.len());
     for single_bam in bam_paths.iter().filter(|s| !s.is_empty()) {
         feeds.push(crate::bam::query_region_iter(

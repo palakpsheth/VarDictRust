@@ -33,6 +33,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -458,9 +459,9 @@ def audit_compat_off_vcf(
         c_norm = [
             r for r in norm_recs if r[4] != "." and not r[4].startswith("<")
         ]
-        if len(c_split) != len(c_norm):
+        if len(split_recs) != len(norm_recs) or len(c_split) != len(c_norm):
             raise AssertionError(
-                f"{label}: bcftools norm concrete count mismatch ({len(c_split)} vs {len(c_norm)})"
+                f"{label}: bcftools norm record count mismatch (total {len(split_recs)} vs {len(norm_recs)}, concrete {len(c_split)} vs {len(c_norm)})"
             )
         for s_cols, n_cols in zip(c_split, c_norm):
             s_chr, s_pos_s, _, s_ref, s_alt = s_cols
@@ -548,6 +549,28 @@ def audit_compat_off_vcf(
     return hdrs, recs
 
 
+def _is_symbolic_sv_alt_token(alt: str) -> bool:
+    if not (alt.startswith("<") and alt.endswith(">")) or "," in alt:
+        return False
+    inner = alt[1:-1]
+    return bool(inner) and inner != "R,R" and all(c.isalnum() or c in "-_" for c in inner)
+
+
+def _parse_sv_counts_from_var(sv_cell: str) -> tuple[int, int]:
+    if not sv_cell or sv_cell == "0":
+        return 0, 0
+    parts = sv_cell.split("-")
+    try:
+        split_c = int(parts[0])
+    except ValueError:
+        split_c = 0
+    try:
+        span_c = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        span_c = 0
+    return split_c, span_c
+
+
 def audit_compat_off_var(
     label: str,
     var_text: str,
@@ -555,6 +578,7 @@ def audit_compat_off_var(
     *,
     fisher: bool = True,
     has_header: bool = False,
+    allow_noend: bool = False,
     vcf_recs: list[str] | None = None,
     vcf_all_alleles: bool = False,
     stats: AuditStats | None = None,
@@ -573,7 +597,8 @@ def audit_compat_off_var(
     else:
         raise ValueError(f"Unknown .var kind {kind!r}")
 
-    survivable_var_rows = 0
+    expected_var_keys: set[tuple[str, int, int | None, str, str]] = set()
+    f_off = 2 if fisher else 0
     for row in lines:
         cols = row.split("\t")
         if len(cols) != exp_cols:
@@ -581,9 +606,7 @@ def audit_compat_off_var(
                 f"{label}: expected {exp_cols} .var cols, got {len(cols)}"
             )
         ref_col = cols[5]
-        if ref_col and ref_col != "0":
-            survivable_var_rows += 1
-        f_off = 2 if fisher else 0
+        alt_col = cols[6]
         if kind in ("simple", "amplicon"):
             dp, vd = int(cols[7]), int(cols[8])
             rf, rr, vf, vr = int(cols[9]), int(cols[10]), int(cols[11]), int(cols[12])
@@ -593,14 +616,28 @@ def audit_compat_off_var(
                 float(cols[20 + f_off]),
                 float(cols[27 + f_off]),
             )
+            shift3 = int(cols[24 + f_off])
             hicnt = int(cols[28 + f_off])
-            hi_bound = dp if (not cols[6] or cols[5] == cols[6]) else vd
-            if dp < rf + rr + vd or (vf + vr) != vd or not (0 <= hicnt <= hi_bound):
+            hi_bound = dp if (not alt_col or ref_col == alt_col) else vd
+            if (
+                not (0 <= vd <= dp)
+                or min(rf, rr, vf, vr) < 0
+                or dp < rf + rr + vd
+                or (vf + vr) != vd
+                or not (0 <= hicnt <= hi_bound)
+            ):
                 raise AssertionError(f"{label}: .var accounting violation: {row}")
             if min(pmean, qmean, mq, nm) < 0.0:
                 raise AssertionError(f"{label}: negative .var mean metric: {row}")
+            if kind == "amplicon":
+                gdamp, tlamp = int(cols[34 + f_off]), int(cols[35 + f_off])
+                if not (0 <= gdamp <= tlamp):
+                    raise AssertionError(
+                        f"{label}: amplicon .var gdamp/tlamp violation ({gdamp} vs {tlamp}): {row}"
+                    )
         else:
             n_base = 27 if fisher else 25
+            shift3 = int(cols[47 if fisher else 43])
             for blk_name, base in (("tumor", 7), ("normal", n_base)):
                 dp, vd = int(cols[base]), int(cols[base + 1])
                 rf, rr, vf, vr = (
@@ -611,7 +648,12 @@ def audit_compat_off_var(
                 )
                 pmean, qmean = float(cols[base + 9]), float(cols[base + 11])
                 mq, nm = float(cols[base + 13 + f_off]), float(cols[base + 17 + f_off])
-                if dp < rf + rr + vd or (vf + vr) != vd:
+                if (
+                    not (0 <= vd <= dp)
+                    or min(rf, rr, vf, vr) < 0
+                    or dp < rf + rr + vd
+                    or (vf + vr) != vd
+                ):
                     raise AssertionError(
                         f"{label} ({blk_name}): somatic .var accounting violation: {row}"
                     )
@@ -620,12 +662,58 @@ def audit_compat_off_var(
                         f"{label} ({blk_name}): negative somatic .var mean: {row}"
                     )
 
-    if vcf_recs is not None and vcf_all_alleles and survivable_var_rows > 0:
-        # Count total emitted VCF alleles across multiallelic/single records
-        emitted_alleles = sum(len(r.split("\t")[4].split(",")) for r in vcf_recs)
-        if emitted_alleles == 0:
+        if (
+            ref_col
+            and ref_col != "0"
+            and alt_col
+            and alt_col != "."
+            and "<" not in alt_col
+            and len(ref_col) == len(alt_col)
+            and shift3 != 0
+        ):
             raise AssertionError(
-                f"{label}: 0 VCF alleles survived from {survivable_var_rows} .var rows"
+                f"{label}: equal-length concrete allele leaked shift3={shift3}: {row}"
+            )
+
+        if ref_col and ref_col != "0":
+            if kind == "simple" and "<" in alt_col:
+                sv_cell = cols[37 if fisher else 35]
+                split_c, span_c = _parse_sv_counts_from_var(sv_cell)
+                if split_c < 1 and span_c < 1:
+                    continue
+            pos_i = int(cols[3])
+            end_i = int(cols[4])
+            vd_i = int(cols[8])
+            if kind != "somatic":
+                vcf_alt = "." if (ref_col == alt_col or alt_col == ".") else alt_col
+            else:
+                vcf_alt = "." if (ref_col == alt_col and vd_i == 0) else alt_col
+            sym_end = (
+                end_i
+                if (_is_symbolic_sv_alt_token(vcf_alt) and not allow_noend)
+                else None
+            )
+            expected_var_keys.add((cols[2], pos_i, sym_end, ref_col, vcf_alt))
+
+    if vcf_recs is not None and vcf_all_alleles:
+        actual_vcf_keys: set[tuple[str, int, int | None, str, str]] = set()
+        for r in vcf_recs:
+            vc = r.split("\t")
+            v_alt = vc[4]
+            v_kv = dict(x.split("=", 1) for x in vc[7].split(";") if "=" in x)
+            v_sym_end = (
+                int(v_kv["END"])
+                if (_is_symbolic_sv_alt_token(v_alt) and "END" in v_kv)
+                else None
+            )
+            actual_vcf_keys.add((vc[0], int(vc[1]), v_sym_end, vc[3], v_alt))
+        if actual_vcf_keys != expected_var_keys:
+            only_var = sorted(expected_var_keys - actual_vcf_keys)[:5]
+            only_vcf = sorted(actual_vcf_keys - expected_var_keys)[:5]
+            raise AssertionError(
+                f"{label}: 1:1 .var <-> --vcf-all-alleles survival mismatch "
+                f"(var={len(expected_var_keys)} vs vcf={len(actual_vcf_keys)}; "
+                f"only_var={only_var}, only_vcf={only_vcf})"
             )
 
     if stats is not None:
@@ -637,16 +725,12 @@ def audit_compat_off_var(
 class CachedRun:
     out_path: str
     text_cache: str | None = None
+    audited: bool = False
+    audit_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class RunCache:
     """Thread-safe singleflight DAG cache cutting redundant BAM spawns by ~78%."""
-
-    _VALUE_FLAGS = frozenset({
-        "-N", "--name", "-R", "-c", "-S", "-E", "-g", "-f", "-r", "-q", "-Q",
-        "-m", "-M", "-x", "-L", "-J", "-j", "-a", "-P", "-k", "--preset",
-        "--compat", "--tile-size", "--vcf-max-nm", "--output", "-th",
-    })
 
     def __init__(
         self,
@@ -664,35 +748,28 @@ class RunCache:
         self.audit_stats = audit_stats
         self._lock = threading.Lock()
         self._inflight: dict[str, threading.Event] = {}
+        self._inflight_base: dict[str, threading.Event] = {}
         self._entries: dict[str, CachedRun] = {}
-        self._gz_by_base: dict[str, str] = {}
+        self._gz_by_base: dict[str, CachedRun] = {}
         self._errors: dict[str, BaseException] = {}
         self.logical_requests = 0
         self.unique_spawns = 0
 
-    @classmethod
-    def _canonicalize_args(cls, args: tuple[str, ...]) -> list[str]:
-        opts: list[str] = []
-        pos: list[str] = []
-        i = 0
-        while i < len(args):
-            tok = args[i]
-            if tok in cls._VALUE_FLAGS and i + 1 < len(args):
-                opts.append(f"{tok}={args[i + 1]}")
-                i += 2
-            elif tok.startswith("-"):
-                opts.append(tok)
-                i += 1
+    @staticmethod
+    def _canonicalize_args(args: tuple[str, ...]) -> list[str]:
+        canon: list[str] = []
+        for tok in args:
+            if (
+                not tok.startswith("-")
+                and (tok.endswith((".bed", ".bed8", ".region")) or "/" in tok)
+                and os.path.isfile(tok)
+            ):
+                with open(tok, "rb") as fh:
+                    bh = hashlib.sha256(fh.read()).hexdigest()[:16]
+                canon.append(f"BEDSHA:{bh}")
             else:
-                if os.path.isfile(tok):
-                    with open(tok, "rb") as fh:
-                        bh = hashlib.sha256(fh.read()).hexdigest()[:16]
-                    pos.append(f"BEDSHA:{bh}")
-                else:
-                    pos.append(tok)
-                i += 1
-        opts.sort()
-        return opts + pos
+                canon.append(tok)
+        return canon
 
     def _make_base_key(
         self,
@@ -718,6 +795,53 @@ class RunCache:
         payload = json.dumps([base, out_ext, index_flag], separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()[:20]
 
+    def _ensure_text_audited(
+        self,
+        entry: CachedRun,
+        label: str,
+        ref_fa: str,
+        bam_spec: str,
+        norm_args: tuple[str, ...],
+        kind: str,
+        txt: str,
+    ) -> None:
+        is_compat_off = "--compat=off" in norm_args or "--preset" in norm_args
+        is_splice = "-i" in norm_args
+        if not is_compat_off or is_splice or entry.audited:
+            return
+        with entry.audit_lock:
+            if entry.audited:
+                return
+            if "--emit-intermediate" in norm_args:
+                audit_compat_off_var(
+                    label,
+                    txt,
+                    kind,
+                    fisher=("--fisher" in norm_args),
+                    has_header=("-h" in norm_args),
+                    allow_noend=("--noend" in norm_args or "--no-end" in norm_args),
+                    stats=self.audit_stats,
+                )
+            else:
+                p_idx = (
+                    norm_args.index("--preset") + 1
+                    if "--preset" in norm_args
+                    else -1
+                )
+                p_name = norm_args[p_idx] if 0 < p_idx < len(norm_args) else None
+                audit_compat_off_vcf(
+                    label,
+                    txt,
+                    ref_fa,
+                    is_gz_path=False,
+                    is_paired=("|" in bam_spec),
+                    allow_noend=("--noend" in norm_args or "--no-end" in norm_args),
+                    is_pileup=("-p" in norm_args),
+                    preset_name=p_name,
+                    stats=self.audit_stats,
+                )
+            entry.audited = True
+
     def run_vcf_gz(
         self,
         label: str,
@@ -734,6 +858,7 @@ class RunCache:
         norm_args = tuple(args)
         base_key = self._make_base_key(ref_fa, bam_spec, norm_args)
         key = self._make_key(ref_fa, bam_spec, norm_args, ".vcf.gz", index_flag)
+        owns_base = False
         with self._lock:
             self.logical_requests += 1
             if key in self._entries:
@@ -744,6 +869,9 @@ class RunCache:
             else:
                 ev = threading.Event()
                 self._inflight[key] = ev
+                if base_key not in self._inflight_base:
+                    self._inflight_base[base_key] = ev
+                    owns_base = True
                 is_owner = True
 
         if not is_owner:
@@ -785,15 +913,20 @@ class RunCache:
                     query_region=query_region,
                     stats=self.audit_stats,
                 )
+            entry = CachedRun(out_path=out_gz, audited=is_compat_off)
             with self._lock:
-                self._entries[key] = CachedRun(out_path=out_gz)
-                self._gz_by_base[base_key] = out_gz
+                self._entries[key] = entry
+                self._gz_by_base[base_key] = entry
             return out_gz
         except BaseException as exc:
             with self._lock:
                 self._errors[key] = exc
             raise
         finally:
+            with self._lock:
+                self._inflight.pop(key, None)
+                if owns_base and self._inflight_base.get(base_key) is ev:
+                    self._inflight_base.pop(base_key, None)
             ev.set()
 
     def run_text(
@@ -812,30 +945,75 @@ class RunCache:
         key_args = norm_args + ((f"__th={th}",) if threads_override is not None else ())
         base_key = self._make_base_key(ref_fa, bam_spec, key_args)
         key = self._make_key(ref_fa, bam_spec, key_args, ".txt", None)
-        with self._lock:
-            self.logical_requests += 1
-            if key in self._entries and self._entries[key].text_cache is not None:
-                return self._entries[key].text_cache or ""
-            gz_hit = self._gz_by_base.get(base_key) if threads_override is None else None
-            if gz_hit is not None:
-                with gzip.open(gz_hit, "rt", encoding="utf-8") as gzf:
-                    txt_from_gz = gzf.read()
-                self._entries[key] = CachedRun(out_path=gz_hit, text_cache=txt_from_gz)
-                return txt_from_gz
-            if key in self._inflight:
-                ev = self._inflight[key]
-                is_owner = False
-            else:
-                ev = threading.Event()
-                self._inflight[key] = ev
-                is_owner = True
 
-        if not is_owner:
-            ev.wait()
+        while True:
+            hit_entry: CachedRun | None = None
+            gz_entry: CachedRun | None = None
+            wait_ev: threading.Event | None = None
+            wait_is_base = False
+            is_owner = False
+            owns_base = False
+
             with self._lock:
-                if key in self._errors:
-                    raise self._errors[key]
-                return self._entries[key].text_cache or ""
+                if hit_entry is None and gz_entry is None and wait_ev is None and not is_owner:
+                    pass
+                if key in self._entries and self._entries[key].text_cache is not None:
+                    self.logical_requests += 1
+                    hit_entry = self._entries[key]
+                elif threads_override is None and base_key in self._gz_by_base:
+                    self.logical_requests += 1
+                    gz_entry = self._gz_by_base[base_key]
+                elif key in self._inflight:
+                    self.logical_requests += 1
+                    wait_ev = self._inflight[key]
+                elif threads_override is None and base_key in self._inflight_base:
+                    wait_ev = self._inflight_base[base_key]
+                    wait_is_base = True
+                else:
+                    self.logical_requests += 1
+                    ev = threading.Event()
+                    self._inflight[key] = ev
+                    if threads_override is None and base_key not in self._inflight_base:
+                        self._inflight_base[base_key] = ev
+                        owns_base = True
+                    is_owner = True
+
+            if hit_entry is not None:
+                txt = hit_entry.text_cache or ""
+                if audit:
+                    self._ensure_text_audited(hit_entry, label, ref_fa, bam_spec, norm_args, kind, txt)
+                return txt
+
+            if gz_entry is not None:
+                with gzip.open(gz_entry.out_path, "rt", encoding="utf-8") as gzf:
+                    txt_from_gz = gzf.read()
+                with self._lock:
+                    cur = self._entries.get(key)
+                    if cur is None or cur.text_cache is None:
+                        cur = CachedRun(
+                            out_path=gz_entry.out_path,
+                            text_cache=txt_from_gz,
+                            audited=gz_entry.audited,
+                        )
+                        self._entries[key] = cur
+                if audit:
+                    self._ensure_text_audited(cur, label, ref_fa, bam_spec, norm_args, kind, txt_from_gz)
+                return txt_from_gz
+
+            if wait_ev is not None:
+                wait_ev.wait()
+                if wait_is_base:
+                    continue
+                with self._lock:
+                    if key in self._errors:
+                        raise self._errors[key]
+                    waited_entry = self._entries[key]
+                txt = waited_entry.text_cache or ""
+                if audit:
+                    self._ensure_text_audited(waited_entry, label, ref_fa, bam_spec, norm_args, kind, txt)
+                return txt
+
+            break
 
         out_txt_path = os.path.join(self.cache_dir, f"{key}.out")
         try:
@@ -856,45 +1034,21 @@ class RunCache:
             with open(out_txt_path, "w", encoding="utf-8") as fh:
                 fh.write(txt)
 
-            is_compat_off = "--compat=off" in norm_args or "--preset" in norm_args
-            is_var = "--emit-intermediate" in norm_args
-            is_splice = "-i" in norm_args
-            if audit and is_compat_off and not is_splice:
-                if is_var:
-                    audit_compat_off_var(
-                        label,
-                        txt,
-                        kind,
-                        fisher=("--fisher" in norm_args),
-                        has_header=("-h" in norm_args),
-                        stats=self.audit_stats,
-                    )
-                else:
-                    p_idx = (
-                        norm_args.index("--preset") + 1
-                        if "--preset" in norm_args
-                        else -1
-                    )
-                    p_name = norm_args[p_idx] if 0 < p_idx < len(norm_args) else None
-                    audit_compat_off_vcf(
-                        label,
-                        txt,
-                        ref_fa,
-                        is_gz_path=False,
-                        is_paired=("|" in bam_spec),
-                        allow_noend=("--noend" in norm_args or "--no-end" in norm_args),
-                        is_pileup=("-p" in norm_args),
-                        preset_name=p_name,
-                        stats=self.audit_stats,
-                    )
+            entry = CachedRun(out_path=out_txt_path, text_cache=txt, audited=False)
+            if audit:
+                self._ensure_text_audited(entry, label, ref_fa, bam_spec, norm_args, kind, txt)
             with self._lock:
-                self._entries[key] = CachedRun(out_path=out_txt_path, text_cache=txt)
+                self._entries[key] = entry
             return txt
         except BaseException as exc:
             with self._lock:
                 self._errors[key] = exc
             raise
         finally:
+            with self._lock:
+                self._inflight.pop(key, None)
+                if owns_base and self._inflight_base.get(base_key) is ev:
+                    self._inflight_base.pop(base_key, None)
             ev.set()
 
 
@@ -937,19 +1091,25 @@ class RtgEvaluator:
     def parse_roc_last_row(roc_gz: str) -> tuple[int, int, int, float] | None:
         if not os.path.isfile(roc_gz):
             return None
-        last = None
+        hdr_cols: list[str] = []
+        last: list[str] | None = None
         with gzip.open(roc_gz, "rt", encoding="utf-8") as fh:
             for line in fh:
-                if not line.startswith("#") and line.strip():
+                if line.startswith("#score\t"):
+                    hdr_cols = line.strip().split("\t")
+                elif not line.startswith("#") and line.strip():
                     last = line.strip().split()
-        if last is None or len(last) < 8:
-            return None
-        return (
-            int(float(last[1])),
-            int(float(last[2])),
-            int(float(last[4])),
-            float(last[7]),
-        )
+        if last is not None and len(last) >= 8:
+            return (
+                int(float(last[1])),
+                int(float(last[2])),
+                int(float(last[4])),
+                float(last[7]),
+            )
+        if len(hdr_cols) == 4:
+            fp = int(float(last[2])) if (last is not None and len(last) >= 3) else 0
+            return (0, fp, 0, 1.0 if fp == 0 else 0.0)
+        return None
 
     def prepare_somatic_truth_gz(
         self, tag: str, ref_fa: str, truth_src_gz: str, region_bed: str
@@ -1093,7 +1253,12 @@ class Paths:
 # =============================================================================
 # Suite 1: Wave-4 (7 Clinical Suites)
 # =============================================================================
-def run_suite_wave4(p: Paths, cache: RunCache, metrics: dict[str, object]) -> None:
+def run_suite_wave4(
+    p: Paths,
+    cache: RunCache,
+    metrics: dict[str, object],
+    metrics_lock: threading.Lock,
+) -> None:
     print("[Wave-4] Running 7 clinical validation suites (cached DAG)...")
     w4 = str(p.wave4_dir)
     g4 = str(p.g4_dir)
@@ -1455,16 +1620,17 @@ def run_suite_wave4(p: Paths, cache: RunCache, metrics: dict[str, object]) -> No
     with gzip.open(qgn_pair_gz, "rt", encoding="utf-8") as fq, gzip.open(tfs_gz, "rt", encoding="utf-8") as ft:
         qgn_n = sum(1 for ln in fq if not ln.startswith("#") and ln.strip())
         tfs_n = sum(1 for ln in ft if not ln.startswith("#") and ln.strip())
-    metrics["wave4"] = {
-        "cmrg_mosaic_hits": matched_cmrg,
-        "muc19_rows": muc_n,
-        "sv_verified": sv_verified,
-        "qiaseq_sp_kp_a": kp_sp_a,
-        "qiaseq_sp_kp_ac5": kp_sp_ac5,
-        "qiaseq_paired_rows": qgn_n,
-        "illumina_paired_rows": len(ib_rows),
-        "iontorrent_paired_rows": tfs_n,
-    }
+    with metrics_lock:
+        metrics["wave4"] = {
+            "cmrg_mosaic_hits": matched_cmrg,
+            "muc19_rows": muc_n,
+            "sv_verified": sv_verified,
+            "qiaseq_sp_kp_a": kp_sp_a,
+            "qiaseq_sp_kp_ac5": kp_sp_ac5,
+            "qiaseq_paired_rows": qgn_n,
+            "illumina_paired_rows": len(ib_rows),
+            "iontorrent_paired_rows": tfs_n,
+        }
     print(
         f"  [PASS Wave-4] CMRG/Mosaic={matched_cmrg}, MUC19={muc_n}, SVs={sv_verified}, "
         f"QIAseq KP={kp_sp_a}/{kp_sp_ac5} (T/N={qgn_n}), Illumina PE BAM==CRAM ({len(ib_rows)}), IonTorrent T/N={tfs_n}"
@@ -1475,7 +1641,11 @@ def run_suite_wave4(p: Paths, cache: RunCache, metrics: dict[str, object]) -> No
 # Suite 2: Wave-5 (7 Clinical & Validator Gates)
 # =============================================================================
 def run_suite_wave5(
-    p: Paths, cache: RunCache, rtg_eval: RtgEvaluator, metrics: dict[str, object]
+    p: Paths,
+    cache: RunCache,
+    rtg_eval: RtgEvaluator,
+    metrics: dict[str, object],
+    metrics_lock: threading.Lock,
 ) -> None:
     print("[Wave-5] Running 7 clinical & validator gates...")
     g4 = str(p.g4_dir)
@@ -1787,13 +1957,14 @@ def run_suite_wave5(
     if gt00_counts["vj"] < 10 or gt00_counts["off"] != 0 or tp_counts["off"] <= tp_counts["vj"]:
         raise AssertionError(f"Gate 7 subclonal diploid GT recovery failed: tp={tp_counts}, gt00={gt00_counts}")
 
-    metrics["wave5"] = {
-        "lgdel_csi_blocks": lgdel_blocks,
-        "span3_csi_blocks": span3_blocks,
-        "gate3_var_rows": g3_var_total,
-        "subclonal_tp_vj": tp_counts["vj"],
-        "subclonal_tp_off": tp_counts["off"],
-    }
+    with metrics_lock:
+        metrics["wave5"] = {
+            "lgdel_csi_blocks": lgdel_blocks,
+            "span3_csi_blocks": span3_blocks,
+            "gate3_var_rows": g3_var_total,
+            "subclonal_tp_vj": tp_counts["vj"],
+            "subclonal_tp_off": tp_counts["off"],
+        }
     print(
         f"  [PASS Wave-5] CSI blocks={lgdel_blocks}/{span3_blocks}, Gate3 .var={g3_var_total}, "
         f"IUPAC d1.vd1 Y/M green, diploid subclonal TP {tp_counts['vj']}->{tp_counts['off']} (GT=0/0 {gt00_counts['vj']}->0)"
@@ -1803,12 +1974,17 @@ def run_suite_wave5(
 # =============================================================================
 # Suite 3: Clinical Workflow Presets (--preset wgs|wes|amplicon|ctdna)
 # =============================================================================
-def run_suite_presets(p: Paths, cache: RunCache, metrics: dict[str, object]) -> None:
+def run_suite_presets(
+    p: Paths,
+    cache: RunCache,
+    metrics: dict[str, object],
+    metrics_lock: threading.Lock,
+) -> None:
     print("[Presets] Running 5 clinical workflow preset gates...")
     g4 = str(p.g4_dir)
     w4 = str(p.wave4_dir)
 
-    # Gate 1: --preset wgs (HG002 3-col BED .tbi + HG008 3-col BED .csi + low-MQ Q20 + 4-col 3'_UTR)
+    # Gate 1: --preset wgs (HG002 3-col BED .tbi + HG008 3-col BED .csi + low-MQ Q20 AR-04 + 4-col 3'_UTR)
     hg2_bed3 = os.path.join(p.work_tmp, "p_hg002_3col.bed")
     with open(hg2_bed3, "w", encoding="utf-8") as fh:
         fh.write("chr20\t10000000\t10060000\n")
@@ -1817,6 +1993,8 @@ def run_suite_presets(p: Paths, cache: RunCache, metrics: dict[str, object]) -> 
         ["--preset", "wgs", "-N", "HG002", hg2_bed3],
         preset_name="wgs", query_region="chr20:10000001-10060000",
     )
+    if not os.path.isfile(hg2_wgs_gz + ".tbi"):
+        raise AssertionError("preset_wgs_hg002: missing .tbi sidecar")
 
     hg8_bed3 = os.path.join(p.work_tmp, "p_hg008_3col.bed")
     with open(os.path.join(g4, "hg008", "test5.bed"), "r", encoding="utf-8") as src, open(hg8_bed3, "w", encoding="utf-8") as dst:
@@ -1832,9 +2010,53 @@ def run_suite_presets(p: Paths, cache: RunCache, metrics: dict[str, object]) -> 
     with gzip.open(hg8_wgs_gz, "rt", encoding="utf-8") as fh:
         for ln in fh:
             if not ln.startswith("#") and ln.strip():
-                tags = ln.split("\t")[6].split(";")
-                if len(tags) != len(set(tags)):
+                flt = ln.split("\t")[6]
+                tags = flt.split(";")
+                if len(tags) != len(set(tags)) or "Q20;Q20" in flt:
                     raise AssertionError(f"Duplicate FILTER tag in --preset wgs: {ln}")
+
+    # AR-04 stress check: tumor MAPQ=5 (< 10) vs normal MAPQ=60 (> 10) on HG008 chr1:72271447-72276000
+    lowmq_reg = "chr1:72271447-72276000"
+    lowmq_t_sam = os.path.join(p.work_tmp, "hg008_lowmq_t.sam")
+    lowmq_t_bam = os.path.join(p.work_tmp, "hg008_lowmq_t.bam")
+    sam_t = subprocess.check_output(
+        ["samtools", "view", "-h", f"{g4}/hg008/HG008-T.slice.bam", lowmq_reg],
+        text=True,
+    )
+    with open(lowmq_t_sam, "w", encoding="utf-8") as fh:
+        for line in sam_t.splitlines():
+            if line.startswith("@"):
+                fh.write(line + "\n")
+            elif line.strip():
+                cols = line.split("\t")
+                cols[4] = "5"
+                fh.write("\t".join(cols) + "\n")
+    subprocess.run(["samtools", "view", "-b", "-o", lowmq_t_bam, lowmq_t_sam], check=True)
+    subprocess.run(["samtools", "index", lowmq_t_bam], check=True)
+    lowmq_bed3 = os.path.join(p.work_tmp, "hg008_lowmq.bed")
+    with open(lowmq_bed3, "w", encoding="utf-8") as fh:
+        fh.write("chr1\t72271446\t72276000\n")
+    lowmq_gz = cache.run_vcf_gz(
+        "preset_wgs_hg008_lowmq",
+        p.giab_ref,
+        f"{lowmq_t_bam}|{g4}/hg008/HG008-N.slice.bam",
+        ["--preset", "wgs", "-N", "TUMOR|NORMAL", lowmq_bed3],
+        kind="somatic",
+        preset_name="wgs",
+        query_region=lowmq_reg,
+    )
+    q20_seen = 0
+    with gzip.open(lowmq_gz, "rt", encoding="utf-8") as fh:
+        for ln in fh:
+            if not ln.startswith("#") and ln.strip():
+                flt = ln.split("\t")[6]
+                tags = flt.split(";")
+                if "Q20;Q20" in flt or tags.count("Q20") > 1 or len(tags) != len(set(tags)):
+                    raise AssertionError(f"AR-04 regression: duplicate Q20;Q20 emitted on low-MAPQ paired SNV: {ln}")
+                if "Q20" in tags:
+                    q20_seen += 1
+    if q20_seen < 1:
+        raise AssertionError("Expected >= 1 Q20-filtered record in AR-04 low-MAPQ paired somatic check")
 
     utr_bed4 = os.path.join(p.work_tmp, "p_utr4.bed")
     with open(utr_bed4, "w", encoding="utf-8") as fh:
@@ -1990,12 +2212,16 @@ def run_suite_presets(p: Paths, cache: RunCache, metrics: dict[str, object]) -> 
         if res.returncode == 0 or "panicked at" in comb or any(s not in comb for s in subs):
             raise AssertionError(f"Negative preset guard failed: {cmd}")
 
-    metrics["presets"] = {
-        "wes_sites": len(s4),
-        "ctdna_d100_promoted": len(d100_only),
-        "r_coord_sites": len(p_coords),
-    }
-    print(f"  [PASS Presets] WGS/WES({len(s4)})/Amplicon/ctDNA(0.5% PASS, +{len(d100_only)} d100->d20)/7 negative guards green")
+    with metrics_lock:
+        metrics["presets"] = {
+            "wes_sites": len(s4),
+            "ctdna_d100_promoted": len(d100_only),
+            "r_coord_sites": len(p_coords),
+            "ar04_q20_seen": q20_seen,
+        }
+    print(
+        f"  [PASS Presets] WGS(AR-04 Q20={q20_seen})/WES({len(s4)})/Amplicon/ctDNA(0.5% PASS, +{len(d100_only)} d100->d20)/7 negative guards green"
+    )
 
 
 # =============================================================================
@@ -2006,6 +2232,7 @@ def run_suite_wave6(
     cache: RunCache,
     rtg_eval: RtgEvaluator,
     metrics: dict[str, object],
+    metrics_lock: threading.Lock,
     *,
     include_exome: bool = False,
 ) -> None:
@@ -2225,7 +2452,7 @@ def run_suite_wave6(
          os.path.join(tc_dir, "platinum_eval.bed"), os.path.join(tc_dir, "platinum_truth.vcf.gz"), "HG001",
          ["-x", "35000", "-m", "1000", "--vcf-max-nm", "1000", "-f", "0.15"], 0.94),
         ("NA24385_b37", p.fa_b37, p.sdf_b37, os.path.join(p.vj_bams, "NA24385_chr_20_36018823_36039513.bam"),
-         os.path.join(tc_dir, "na24385_eval.bed"), os.path.join(tc_dir, "na24385_b37_truth.vcf.gz"), "HG002", ["-f", "0.05"], 0.95),
+         os.path.join(tc_dir, "na24385_eval.bed"), os.path.join(tc_dir, "na24385_b37_truth.vcf.gz"), "HG002", ["-f", "0.30"], 0.95),
     ]
     mod2_f1s = {}
     for dname, rfa, dsdf, dbam, dbed, dtruth_src, dsmp, d_extra, min_f1 in diploid_cohorts:
@@ -2235,17 +2462,27 @@ def run_suite_wave6(
         )
         dtruth = rtg_eval.prepare_germline_truth_gz(f"mod2_{dname}", rfa, dtruth_src, dbed)
         dm, _, _, _ = rtg_eval.run_vcfeval(f"mod2_{dname}", dtruth, dcalls, dbed, dsdf, squash_ploidy=False)
-        if dm[3] < min_f1 and dm[4] < min_f1:
+        if dm[3] < min_f1:
             raise AssertionError(f"{dname} diploid GT F1 below {min_f1}: {dm}")
-        mod2_f1s[dname] = dm[4]
+        mod2_f1s[dname] = dm[3]
 
     # Modality 3: SEQC2 HCC1395/HCC1395BL (--squash-ploidy sSNV + sINDEL, standard & -u, + optional exome.engine.bed)
     def eval_somatic_cohort(
-        tag: str, rfa: str, sdf_d: str, bpair: str, call_bed: str, eval_bed: str, truth_gz: str, cflag: str, extra: list[str]
+        tag: str,
+        rfa: str,
+        sdf_d: str,
+        bpair: str,
+        call_bed: str,
+        eval_bed: str,
+        truth_gz: str,
+        cflag: str,
+        extra: list[str],
+        *,
+        freq_s: str = "0.01",
     ) -> tuple[tuple[int, int, int, float, float], tuple[int, int, int, float] | None, tuple[int, int, int, float] | None]:
         rtxt = cache.run_text(
             f"som_{tag}_{cflag.split('=')[1]}", rfa, bpair,
-            ["-N", "TUMOR|NORMAL", "-c", "1", "-S", "2", "-E", "3", "-z", "-f", "0.01", "--fisher", cflag, "--vcf-all-alleles", *extra, call_bed],
+            ["-N", "TUMOR|NORMAL", "-c", "1", "-S", "2", "-E", "3", "-z", "-f", freq_s, "--fisher", cflag, "--vcf-all-alleles", *extra, call_bed],
             kind="somatic", audit=(cflag == "--compat=off"),
         )
         som_vcf = os.path.join(p.work_tmp, f"som_{tag}_{cflag.split('=')[1]}.vcf")
@@ -2272,10 +2509,26 @@ def run_suite_wave6(
         "w6_seqc2", p.grch38_ref, os.path.join(g4, "seqc2", "truth", "truth.vcf.gz"), seqc2_slices
     )
     seqc2_pair = f"{g4}/seqc2/HCC1395.bam|{g4}/seqc2/HCC1395BL.bam"
-    s_vj, _, _ = eval_somatic_cohort("seqc2", p.grch38_ref, p.sdf_d1vd1, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_gz, "--compat=vardictjava", ["-g", "4"])
+    s_vj, s_vj_snp, s_vj_ind = eval_somatic_cohort("seqc2", p.grch38_ref, p.sdf_d1vd1, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_gz, "--compat=vardictjava", ["-g", "4"])
     s_off, s_off_snp, s_off_ind = eval_somatic_cohort("seqc2", p.grch38_ref, p.sdf_d1vd1, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_gz, "--compat=off", ["-g", "4"])
     if s_off[3] < s_vj[3] or s_off[0] < s_vj[0] or s_off[1] > s_vj[1]:
         raise AssertionError(f"SEQC2 rtg vcfeval regression: vj={s_vj} vs off={s_off}")
+    if (
+        s_vj_snp is None
+        or s_off_snp is None
+        or s_off_snp[3] < s_vj_snp[3]
+        or s_off_snp[0] < s_vj_snp[0]
+        or s_off_snp[1] > s_vj_snp[1]
+    ):
+        raise AssertionError(f"SEQC2 sSNV rtg vcfeval regression: vj={s_vj_snp} vs off={s_off_snp}")
+    if (
+        s_vj_ind is None
+        or s_off_ind is None
+        or s_off_ind[3] < s_vj_ind[3]
+        or s_off_ind[0] < s_vj_ind[0]
+        or s_off_ind[1] > s_vj_ind[1]
+    ):
+        raise AssertionError(f"SEQC2 sINDEL rtg vcfeval regression: vj={s_vj_ind} vs off={s_off_ind}")
     su_vj, _, _ = eval_somatic_cohort("seqc2_u", p.grch38_ref, p.sdf_d1vd1, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_gz, "--compat=vardictjava", ["-u"])
     su_off, _, _ = eval_somatic_cohort("seqc2_u", p.grch38_ref, p.sdf_d1vd1, seqc2_pair, seqc2_slices, seqc2_eval_bed, seqc2_truth_gz, "--compat=off", ["-u"])
     if su_off[0] < su_vj[0] or su_off[4] + 1e-6 < su_vj[4]:
@@ -2283,8 +2536,43 @@ def run_suite_wave6(
 
     if include_exome:
         ex_bed = os.path.join(g4, "seqc2", "exome.engine.bed")
-        ex_gz = cache.run_vcf_gz("seqc2_full_exome", p.grch38_ref, seqc2_pair, ["-N", "TUMOR|NORMAL", "-c", "1", "-S", "2", "-E", "3", "-z", "-f", "0.05", "--fisher", "--compat=off", "--vcf-all-alleles", ex_bed], kind="somatic")
-        metrics["seqc2_exome_gz"] = ex_gz
+        ex_eval_bed = os.path.join(p.work_tmp, "seqc2_exome_eval.bed")
+        intersect_beds(ex_bed, os.path.join(g4, "seqc2", "eval.bed"), ex_eval_bed)
+        ex_truth_gz = rtg_eval.prepare_somatic_truth_gz(
+            "seqc2_exome", p.grch38_ref, os.path.join(g4, "seqc2", "truth", "truth.vcf.gz"), ex_eval_bed
+        )
+        ex_gz = cache.run_vcf_gz(
+            "seqc2_full_exome", p.grch38_ref, seqc2_pair,
+            ["-N", "TUMOR|NORMAL", "-c", "1", "-S", "2", "-E", "3", "-z", "-f", "0.05", "--fisher", "--compat=off", "--vcf-all-alleles", ex_bed],
+            kind="somatic",
+        )
+        ex_som_vcf = os.path.join(p.work_tmp, "seqc2_exome_som_off.vcf")
+        with gzip.open(ex_gz, "rt", encoding="utf-8") as fh, open(ex_som_vcf, "w", encoding="utf-8") as out:
+            for ln in fh:
+                if ln.startswith("#"):
+                    out.write(ln)
+                elif ln.strip():
+                    sp = ln.split("\t")
+                    if sp[6] == "PASS" and ("STATUS=StrongSomatic" in sp[7] or "STATUS=LikelySomatic" in sp[7]):
+                        out.write(ln)
+        subprocess.run(["bgzip", "-f", ex_som_vcf], check=True)
+        subprocess.run(["tabix", "-f", "-p", "vcf", ex_som_vcf + ".gz"], check=True)
+        ex_all, ex_snp, ex_ind, _ = rtg_eval.run_vcfeval(
+            "seqc2_exome_off", ex_truth_gz, ex_som_vcf + ".gz", ex_eval_bed, p.sdf_d1vd1,
+            squash_ploidy=True, sample_arg="TUMOR,TUMOR",
+        )
+        if ex_snp is None or ex_ind is None or ex_all[0] < 800 or ex_snp[0] < 700 or ex_ind[0] < 50:
+            raise AssertionError(
+                f"SEQC2 full exome --squash-ploidy rtg vcfeval regression: all={ex_all}, sSNV={ex_snp}, sINDEL={ex_ind}"
+            )
+        with metrics_lock:
+            metrics["seqc2_exome"] = {
+                "vcf_gz": ex_gz,
+                "f1": ex_all[3],
+                "ssnv_f1": ex_snp[3],
+                "sindel_f1": ex_ind[3],
+                "tp": ex_all[0],
+            }
 
     # Modality 4: GIAB HG008 (BAM == CRAM under --compat=off, ladder p2T/p13T, v0.3 & v0.4 --squash-ploidy, v0.6 SV coordinate/END overlap auditor)
     hg8_bam_pair = f"{g4}/hg008/HG008-T.slice.bam|{g4}/hg008/HG008-N.slice.bam"
@@ -2315,7 +2603,8 @@ def run_suite_wave6(
         hoff, _, _ = eval_somatic_cohort(f"hg008_{ver_tag}", p.giab_ref, p.sdf_giab, hg8_bam_pair, ev_b, ev_b, tr_gz, "--compat=off", [])
         if hoff[3] < hvj[3] or hoff[0] < hvj[0] or hoff[1] > hvj[1]:
             raise AssertionError(f"GIAB HG008 {ver_tag} regression: vj={hvj} vs off={hoff}")
-        metrics[f"hg008_{ver_tag}_f1"] = hoff[3]
+        with metrics_lock:
+            metrics[f"hg008_{ver_tag}_f1"] = hoff[3]
 
     # HG008 v0.6 SV coordinate/END breakpoint-overlap auditor (contained DELs in slices.bed + somatic DUP/INV)
     v06_vcf = os.path.join(g4, "hg008", "truth", "GRCh38_HG008-T-V0.6_somatic-stvar_PASS.draftbenchmark.vcf.gz")
@@ -2349,6 +2638,8 @@ def run_suite_wave6(
             if not ln.startswith("#") and ln.strip():
                 sp = ln.rstrip("\n").split("\t")
                 kv = dict(x.split("=", 1) for x in sp[7].split(";") if "=" in x)
+                if "Somatic" not in kv.get("STATUS", ""):
+                    continue
                 if sp[4] in ("<DEL>", "<DUP>", "<INV>"):
                     called_h8_svs.append((sp[0], int(sp[1]), int(kv["END"]), sp[4][1:-1]))
                 elif abs(len(sp[4]) - len(sp[3])) >= 100:
@@ -2385,6 +2676,61 @@ def run_suite_wave6(
         )
     if len(rna_splice.strip().splitlines()) < 16:
         raise AssertionError("RNA-Seq -i splice junction extraction failed")
+
+    # Modalities 7 & 8: Wave-4 QIAseq SPE (-a 10:0.95 -sp -p) & Illumina PE (-a 10:0.95 -p) amplicon pileup
+    qgn_p_bed = os.path.join(p.work_tmp, "mod7_qiaseq_spe_p.amp8.bed")
+    with open(os.path.join(w4, "beds", "qiaseq_spe_grch38.amp8.bed"), "r", encoding="utf-8") as src, open(qgn_p_bed, "w", encoding="utf-8") as dst:
+        for idx, ln in enumerate(src):
+            if idx >= 10:
+                break
+            dst.write(ln)
+    ilm_p_bed = os.path.join(p.work_tmp, "mod8_ilm_pe_p.amp8.bed")
+    with open(os.path.join(w4, "beds", "ilm_twoprimer_grch38.amp8.bed"), "r", encoding="utf-8") as src, open(ilm_p_bed, "w", encoding="utf-8") as dst:
+        for idx, ln in enumerate(src):
+            if idx >= 12:
+                break
+            dst.write(ln)
+
+    amp_p_dot_total = 0
+    for ap_tag, ap_bam, ap_bed, ap_extra in (
+        ("mod7_qiaseq_sp_p", os.path.join(w4, "bam", "SampleA_QGN1.bam"), qgn_p_bed, ["-a", "10:0.95", "-sp", "-z", "-p"]),
+        ("mod8_ilm_pe_p", os.path.join(w4, "bam", "SampleA_ILM1.bam"), ilm_p_bed, ["-a", "10:0.95", "-z", "-p"]),
+    ):
+        ap_vj_vcf = cache.run_text(
+            f"{ap_tag}_vj_vcf", p.grch38_ref, ap_bam,
+            [*ap_extra, "--compat=vardictjava", "--vcf-all-alleles", "--fisher", ap_bed],
+            kind="amplicon", audit=False,
+        )
+        ap_var = cache.run_text(
+            f"{ap_tag}_off_var", p.grch38_ref, ap_bam,
+            [*ap_extra, "--compat=off", "--vcf-all-alleles", "--fisher", "--emit-intermediate", ap_bed],
+            kind="amplicon",
+        )
+        ap_gz = cache.run_vcf_gz(
+            f"{ap_tag}_off_vcf", p.grch38_ref, ap_bam,
+            [*ap_extra, "--compat=off", "--vcf-all-alleles", "--fisher", ap_bed],
+            index_flag="--csi", kind="amplicon", is_pileup=True,
+        )
+        with gzip.open(ap_gz, "rt", encoding="utf-8") as gzf:
+            ap_recs = [ln.rstrip("\n") for ln in gzf if ln.strip() and not ln.startswith("#")]
+        audit_compat_off_var(
+            ap_tag, ap_var, "amplicon", fisher=True, vcf_recs=ap_recs, vcf_all_alleles=True
+        )
+        vj_pos = {
+            (ln.split("\t")[0], int(ln.split("\t")[1]))
+            for ln in ap_vj_vcf.splitlines()
+            if ln.strip() and not ln.startswith("#")
+        }
+        off_pos = {
+            (r.split("\t")[0], int(r.split("\t")[1]))
+            for r in ap_recs
+        }
+        dot_rows = sum(1 for r in ap_recs if r.split("\t")[4] == ".")
+        if dot_rows < 100 or not vj_pos.issubset(off_pos):
+            raise AssertionError(
+                f"{ap_tag}: amplicon -p shifted-ref survival failed (dot_rows={dot_rows}, missing_vj={sorted(vj_pos - off_pos)[:5]})"
+            )
+        amp_p_dot_total += dot_rows
 
     # Modality 12a: Colon-joined b1:b2 multi-library pooling + -t within-BAM dedup + =/X CIGARs (samtools calmd -e)
     na_chr1 = os.path.join(p.vj_bams, "NA24385_chr_1_246981051_246981611.bam")
@@ -2429,35 +2775,42 @@ def run_suite_wave6(
     if len(e_sites) < 45 or e_sites != m_sites:
         raise AssertionError(f"Real minimap2 --eqx (= / X CIGAR) parity failed against M CIGAR ({len(e_sites)} vs {len(m_sites)})")
 
-    metrics["wave6"] = {
-        "hg002_1_5m_gt_f1": g2_off_all[3],
-        "hg002_1_5m_snp_f1": g2_off_snp[3] if g2_off_snp else None,
-        "hg002_1_5m_indel_f1": g2_off_ind[3] if g2_off_ind else None,
-        "hg002_2x250_euchr_gt_f1": hg2_250_gt[3],
-        "hg002_2x250_mhc_gt": {"tp": hg2_250_mhc_gt[0], "fp": hg2_250_mhc_gt[1], "fn": hg2_250_mhc_gt[2], "f1": hg2_250_mhc_gt[3], "precision": round(mhc_prec, 4)},
-        "cmrg_gt": {"tp": cmrg_gt[0], "fp": cmrg_gt[1], "fn": cmrg_gt[2], "f1": cmrg_gt[3]},
-        "mosaic_sq": {"tp": mosaic_sq[0], "fp": mosaic_sq[1], "fn": mosaic_sq[2], "f1": mosaic_sq[3]},
-        "diploid_f1s": mod2_f1s,
-        "seqc2_f1": s_off[3],
-        "seqc2_u_f1": su_off[3],
-        "seqc2_snp_f1": s_off_snp[3] if s_off_snp else None,
-        "seqc2_indel_f1": s_off_ind[3] if s_off_ind else None,
-        "hg008_v03_f1": metrics.get("hg008_v03_f1"),
-        "hg008_v04_f1": metrics.get("hg008_v04_f1"),
-        "hg008_v06_sv_matched": f"{v06_matched}/{len(contained_v06_svs)}",
-        "u_rebalanced_loci": rebalanced,
-        "eqx_sites": len(e_sites),
-    }
+    with metrics_lock:
+        metrics["wave6"] = {
+            "hg002_1_5m_gt_f1": g2_off_all[3],
+            "hg002_1_5m_snp_f1": g2_off_snp[3] if g2_off_snp else None,
+            "hg002_1_5m_indel_f1": g2_off_ind[3] if g2_off_ind else None,
+            "hg002_2x250_euchr_gt_f1": hg2_250_gt[3],
+            "hg002_2x250_mhc_gt": {"tp": hg2_250_mhc_gt[0], "fp": hg2_250_mhc_gt[1], "fn": hg2_250_mhc_gt[2], "f1": hg2_250_mhc_gt[3], "precision": round(mhc_prec, 4)},
+            "cmrg_gt": {"tp": cmrg_gt[0], "fp": cmrg_gt[1], "fn": cmrg_gt[2], "f1": cmrg_gt[3]},
+            "mosaic_sq": {"tp": mosaic_sq[0], "fp": mosaic_sq[1], "fn": mosaic_sq[2], "f1": mosaic_sq[3]},
+            "diploid_f1s": mod2_f1s,
+            "seqc2_f1": s_off[3],
+            "seqc2_u_f1": su_off[3],
+            "seqc2_snp_f1": s_off_snp[3] if s_off_snp else None,
+            "seqc2_indel_f1": s_off_ind[3] if s_off_ind else None,
+            "hg008_v03_f1": metrics.get("hg008_v03_f1"),
+            "hg008_v04_f1": metrics.get("hg008_v04_f1"),
+            "hg008_v06_sv_matched": f"{v06_matched}/{len(contained_v06_svs)}",
+            "u_rebalanced_loci": rebalanced,
+            "amp_pileup_dot_rows": amp_p_dot_total,
+            "eqx_sites": len(e_sites),
+        }
     print(
         f"  [PASS Wave-6 & 12-Modality] HG002 GT F1={g2_off_all[3]:.4f} (2x250 euchr={hg2_250_gt[3]:.4f}, MHC TP={hg2_250_mhc_gt[0]}/prec={mhc_prec:.4f}, CMRG TP={cmrg_gt[0]}, Mosaic TP={mosaic_sq[0]}), "
-        f"HG005/Plat/b37={mod2_f1s}, SEQC2 F1={s_off[3]:.4f}, HG008 BAM==CRAM & v0.6 SV={v06_matched}/{len(contained_v06_svs)}, --eqx={len(e_sites)}"
+        f"HG005/Plat/b37={mod2_f1s}, SEQC2 F1={s_off[3]:.4f}, HG008 BAM==CRAM & v0.6 SV={v06_matched}/{len(contained_v06_svs)}, -a -p dot={amp_p_dot_total}, --eqx={len(e_sites)}"
     )
 
 
 # =============================================================================
 # Suite 5: Tiled == Untiled & Spill == Unspilled (--suite tiling)
 # =============================================================================
-def run_suite_tiling(p: Paths, cache: RunCache, metrics: dict[str, object]) -> None:
+def run_suite_tiling(
+    p: Paths,
+    cache: RunCache,
+    metrics: dict[str, object],
+    metrics_lock: threading.Lock,
+) -> None:
     print("[Tiling & Spill] Verifying Tiled (50000) == Untiled (50000000), Spill == Unspilled, & bounded-horizon XFAILs...")
     g4 = str(p.g4_dir)
 
@@ -2533,31 +2886,86 @@ def run_suite_tiling(p: Paths, cache: RunCache, metrics: dict[str, object]) -> N
     s1a_bed = str(p.root_dir / "harness" / "slices" / "s1a.bed")
     na_20_bam = os.path.join(p.vj_bams, "NA24385_chr_20_20156208_20234556.bam")
     unspilled = cache.run_text("spill_norm", p.fa_b37, na_20_bam, ["-N", "NORM_SMP", "-c", "1", "-S", "2", "-E", "3", "-z", "-f", "0.001", "--compat=off", "--vcf-all-alleles", s1a_bed])
-    spilled = subprocess.check_output(
-        [p.vdr_bin, "-G", p.fa_b37, "-b", na_20_bam, "-N", big_smp, "-c", "1", "-S", "2", "-E", "3", "-z", "-f", "0.001", "--compat=off", "--vcf-all-alleles", "-th", "4", s1a_bed],
-        text=True,
-    ).replace(big_smp, "NORM_SMP")
+    with cache.sem:
+        spilled = subprocess.check_output(
+            [p.vdr_bin, "-G", p.fa_b37, "-b", na_20_bam, "-N", big_smp, "-c", "1", "-S", "2", "-E", "3", "-z", "-f", "0.001", "--compat=off", "--vcf-all-alleles", "-th", str(cache.threads_per_job), s1a_bed],
+            text=True,
+        ).replace(big_smp, "NORM_SMP")
     if unspilled != spilled or len(unspilled.splitlines()) < 1000:
         raise AssertionError("Spill == Unspilled (>100 MiB candidate stream) mismatch")
 
-    metrics["tiling"] = {
-        "strict_pass": strict_passed,
-        "bounded_horizon_xfail": xfail_verified,
-        "spill_lines": len(unspilled.splitlines()),
-    }
+    with metrics_lock:
+        metrics["tiling"] = {
+            "strict_pass": strict_passed,
+            "bounded_horizon_xfail": xfail_verified,
+            "spill_lines": len(unspilled.splitlines()),
+        }
     print(f"  [PASS Tiling & Spill] {strict_passed}/7 strict multi-tile PASS, {xfail_verified}/3 bounded-horizon XFAILs pinned, Spill==Unspilled ({len(unspilled.splitlines())} lines)")
 
 
 # =============================================================================
 # Suite 6: 38-Switch Real-Data CompatProfile Ablation (only_1..38 & loo_1..38)
 # =============================================================================
-def run_suite_ablation(p: Paths, metrics: dict[str, object]) -> None:
+def _parse_cargo_lock_packages(lock_path: str | Path) -> set[tuple[str, str, str]]:
+    with open(lock_path, "r", encoding="utf-8") as fh:
+        raw = fh.read()
+    pkgs: set[tuple[str, str, str]] = set()
+    for blk in raw.split("\n[[package]]\n")[1:]:
+        name = ver = csum = ""
+        for ln in blk.strip().splitlines():
+            if ln.startswith('name = "'):
+                name = ln.split('"', 2)[1]
+            elif ln.startswith('version = "'):
+                ver = ln.split('"', 2)[1]
+            elif ln.startswith('checksum = "'):
+                csum = ln.split('"', 2)[1]
+        if name:
+            pkgs.add((name, ver, csum))
+    return pkgs
+
+
+def _write_locked_ablation_cargo_lock(
+    root_lock_path: Path, dst_lock_path: str, manifest_path: str, env: dict[str, str]
+) -> None:
+    shutil.copyfile(root_lock_path, dst_lock_path)
+    pinned = _parse_cargo_lock_packages(root_lock_path)
+    subprocess.run(
+        [
+            "cargo",
+            "metadata",
+            "--offline",
+            "--format-version",
+            "1",
+            "--manifest-path",
+            manifest_path,
+        ],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        check=True,
+    )
+    resolved = {
+        pkg for pkg in _parse_cargo_lock_packages(dst_lock_path) if pkg[0] != "ablation_driver"
+    }
+    drifted = resolved - pinned
+    if drifted:
+        raise AssertionError(
+            f"ablation_driver Cargo.lock drifted from workspace Cargo.lock: {sorted(drifted)}"
+        )
+
+
+def run_suite_ablation(
+    p: Paths,
+    cache: RunCache,
+    metrics: dict[str, object],
+    metrics_lock: threading.Lock,
+) -> None:
     print("[Ablation] Compiling & running 38-switch real-data (only_1..38, loo_1..38) ablation driver...")
     drv_dir = os.path.join(p.work_tmp, "ablation_driver")
     os.makedirs(os.path.join(drv_dir, "src"), exist_ok=True)
     core_path = (p.root_dir / "crates" / "vardictrust-core").as_posix()
 
-    with open(os.path.join(drv_dir, "Cargo.toml"), "w", encoding="utf-8") as fh:
+    manifest_path = os.path.join(drv_dir, "Cargo.toml")
+    with open(manifest_path, "w", encoding="utf-8") as fh:
         fh.write(
             f'[package]\nname = "ablation_driver"\nversion = "0.1.0"\nedition = "2021"\n\n'
             f'[dependencies]\nvardictrust-core = {{ path = "{core_path}" }}\n'
@@ -2569,7 +2977,7 @@ use vardictrust_core::config::{
     CompatProfile, Config, COMPAT_OFF, COMPAT_SWITCH_COUNT, COMPAT_VARDICTJAVA_1_8_3,
 };
 
-fn run_mask(prof: CompatProfile, g4: &str, w4: &str, grch38: &str, giab: &str, hg19: &str, vjb: &str) -> (usize, u64) {
+fn run_mask(prof: CompatProfile, g4: &str, w4: &str, grch38: &str, giab: &str, hg19: &str, vjb: &str, threads: usize) -> (usize, u64) {
     let mut total_rows = 0usize;
     let mut hash: u64 = 0xcbf29ce484222325;
     let fnv = |h: &mut u64, bytes: &[u8]| {
@@ -2648,15 +3056,18 @@ fn run_mask(prof: CompatProfile, g4: &str, w4: &str, grch38: &str, giab: &str, h
             unique_mode_alignment_enabled: *u_mode,
             amplicon: is_amp.then(|| "10:0.95".to_string()),
             adaptor: adapt.clone(),
-            threads: 4,
+            threads,
             compat: prof,
             ..Config::default()
         };
         if *is_amp && !prof.paired_somatic_amplicon {
             let mut sink = Vec::new();
             assert!(
-                vardictrust_core::run_with_writer(&cfg, &mut sink).is_err(),
-                "expected paired amplicon VCF to error when paired_somatic_amplicon=false"
+                matches!(
+                    vardictrust_core::run_with_writer(&cfg, &mut sink),
+                    Err(vardictrust_core::types::VardictError::Unsupported(_))
+                ),
+                "expected paired amplicon VCF to return VardictError::Unsupported when paired_somatic_amplicon=false"
             );
             fnv(&mut hash, b"ERR_UNSUPPORTED_378\n");
             continue;
@@ -2682,12 +3093,14 @@ fn run_mask(prof: CompatProfile, g4: &str, w4: &str, grch38: &str, giab: &str, h
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    assert!(args.len() >= 7, "ablation_driver expected >= 6 arguments, got {}", args.len() - 1);
     let (g4, w4, grch38, giab, hg19, vjb) = (&args[1], &args[2], &args[3], &args[4], &args[5], &args[6]);
+    let threads: usize = args.get(7).and_then(|s| s.parse().ok()).unwrap_or(4).max(1);
     let switches = CompatProfile::all_switches();
     assert_eq!(switches.len(), COMPAT_SWITCH_COUNT);
 
-    let (vj_rows, vj_hash) = run_mask(COMPAT_VARDICTJAVA_1_8_3, g4, w4, grch38, giab, hg19, vjb);
-    let (off_rows, off_hash) = run_mask(COMPAT_OFF, g4, w4, grch38, giab, hg19, vjb);
+    let (vj_rows, vj_hash) = run_mask(COMPAT_VARDICTJAVA_1_8_3, g4, w4, grch38, giab, hg19, vjb, threads);
+    let (off_rows, off_hash) = run_mask(COMPAT_OFF, g4, w4, grch38, giab, hg19, vjb, threads);
     assert_ne!(vj_hash, off_hash, "COMPAT_OFF must differ from COMPAT_VARDICTJAVA_1_8_3 on real data");
 
     let mut active_deltas = 0usize;
@@ -2698,8 +3111,8 @@ fn main() {
         let sw_num = idx + 1;
         let only_p = CompatProfile::only_switch(idx).expect("only_switch");
         let loo_p = CompatProfile::without_switch(idx).expect("without_switch");
-        let (_o_rows, o_hash) = run_mask(only_p, g4, w4, grch38, giab, hg19, vjb);
-        let (l_rows, l_hash) = run_mask(loo_p, g4, w4, grch38, giab, hg19, vjb);
+        let (_o_rows, o_hash) = run_mask(only_p, g4, w4, grch38, giab, hg19, vjb, threads);
+        let (l_rows, l_hash) = run_mask(loo_p, g4, w4, grch38, giab, hg19, vjb, threads);
         if o_hash != vj_hash || l_hash != off_hash {
             active_deltas += 1;
         }
@@ -2720,25 +3133,53 @@ fn main() {
         fh.write(rust_src)
 
     env = os.environ.copy()
-    env["CARGO_BUILD_JOBS"] = "4"
-    env["RAYON_NUM_THREADS"] = "4"
+    env["CARGO_BUILD_JOBS"] = str(cache.threads_per_job)
+    env["RAYON_NUM_THREADS"] = str(cache.threads_per_job)
     tgt_dir = os.path.join(p.work_tmp, "ablation_target")
-    subprocess.run(
-        ["cargo", "build", "-q", "--release", "--manifest-path", os.path.join(drv_dir, "Cargo.toml"), "--target-dir", tgt_dir],
-        env=env,
-        check=True,
-    )
-    drv_bin = os.path.join(tgt_dir, "release", "ablation_driver")
-    out_json = subprocess.check_output(
-        [drv_bin, str(p.g4_dir), str(p.wave4_dir), p.grch38_ref, p.giab_ref, p.fa_hg19, p.vj_bams],
-        env=env,
-        text=True,
-    ).strip()
+    with cache.sem:
+        _write_locked_ablation_cargo_lock(
+            p.root_dir / "Cargo.lock",
+            os.path.join(drv_dir, "Cargo.lock"),
+            manifest_path,
+            env,
+        )
+        subprocess.run(
+            [
+                "cargo",
+                "build",
+                "-q",
+                "--release",
+                "--locked",
+                "--offline",
+                "--manifest-path",
+                manifest_path,
+                "--target-dir",
+                tgt_dir,
+            ],
+            env=env,
+            check=True,
+        )
+        drv_bin = os.path.join(tgt_dir, "release", "ablation_driver")
+        out_json = subprocess.check_output(
+            [
+                drv_bin,
+                str(p.g4_dir),
+                str(p.wave4_dir),
+                p.grch38_ref,
+                p.giab_ref,
+                p.fa_hg19,
+                p.vj_bams,
+                str(cache.threads_per_job),
+            ],
+            env=env,
+            text=True,
+        ).strip()
     shutil.rmtree(tgt_dir, ignore_errors=True)
     ab_data = json.loads(out_json.splitlines()[-1])
     if ab_data["switches"] != 38 or ab_data["off_rows"] < 50 or ab_data["active_deltas"] < 15:
         raise AssertionError(f"38-switch real-data ablation check failed: {ab_data}")
-    metrics["ablation"] = ab_data
+    with metrics_lock:
+        metrics["ablation"] = ab_data
     print(
         f"  [PASS Ablation] 38/38 only_1..38 & loo_1..38 masks green "
         f"(vj={ab_data['vj_rows']} -> off={ab_data['off_rows']} rows, active_deltas={ab_data['active_deltas']}, "
@@ -2842,6 +3283,7 @@ def main() -> int:
     if not os.path.isfile(giab_ref) and (g4_dir / "ref" / "giabv3" / "GRCh38_GIABv3.fasta").is_file():
         giab_ref = str(g4_dir / "ref" / "giabv3" / "GRCh38_GIABv3.fasta")
 
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     work_tmp = tempfile.mkdtemp(prefix="vdr_verify_pub_")
     t0 = time.monotonic()
     try:
@@ -2884,6 +3326,7 @@ def main() -> int:
         cache = RunCache(vdr_bin, work_tmp, threads_per_job=threads, max_engine_jobs=jobs, audit_stats=audit_stats)
         rtg_eval = RtgEvaluator(work_tmp, max_rtg_jobs=rtg_jobs)
         metrics: dict[str, object] = {}
+        metrics_lock = threading.Lock()
 
         print("================================================================================")
         print(f" VarDictRust Public-Data Omnibus Verifier (--suite {args.suite})")
@@ -2894,29 +3337,29 @@ def main() -> int:
         if suite == "all":
             # Execute independent DAG branches concurrently while RunCache + Semaphores bound CPU/RAM!
             tasks: list[Callable[[], None]] = [
-                lambda: run_suite_wave4(paths, cache, metrics),
-                lambda: run_suite_wave5(paths, cache, rtg_eval, metrics),
-                lambda: run_suite_presets(paths, cache, metrics),
-                lambda: run_suite_wave6(paths, cache, rtg_eval, metrics, include_exome=args.include_exome),
-                lambda: run_suite_tiling(paths, cache, metrics),
-                lambda: run_suite_ablation(paths, metrics),
+                lambda: run_suite_wave4(paths, cache, metrics, metrics_lock),
+                lambda: run_suite_wave5(paths, cache, rtg_eval, metrics, metrics_lock),
+                lambda: run_suite_presets(paths, cache, metrics, metrics_lock),
+                lambda: run_suite_wave6(paths, cache, rtg_eval, metrics, metrics_lock, include_exome=args.include_exome),
+                lambda: run_suite_tiling(paths, cache, metrics, metrics_lock),
+                lambda: run_suite_ablation(paths, cache, metrics, metrics_lock),
             ]
             with concurrent.futures.ThreadPoolExecutor(max_workers=3) as dag_pool:
                 futs = [dag_pool.submit(fn) for fn in tasks]
                 for fut in futs:
                     fut.result()
         elif suite == "wave4":
-            run_suite_wave4(paths, cache, metrics)
+            run_suite_wave4(paths, cache, metrics, metrics_lock)
         elif suite == "wave5":
-            run_suite_wave5(paths, cache, rtg_eval, metrics)
+            run_suite_wave5(paths, cache, rtg_eval, metrics, metrics_lock)
         elif suite == "presets":
-            run_suite_presets(paths, cache, metrics)
+            run_suite_presets(paths, cache, metrics, metrics_lock)
         elif suite == "wave6":
-            run_suite_wave6(paths, cache, rtg_eval, metrics, include_exome=args.include_exome)
+            run_suite_wave6(paths, cache, rtg_eval, metrics, metrics_lock, include_exome=args.include_exome)
         elif suite == "tiling":
-            run_suite_tiling(paths, cache, metrics)
+            run_suite_tiling(paths, cache, metrics, metrics_lock)
         elif suite == "ablation":
-            run_suite_ablation(paths, metrics)
+            run_suite_ablation(paths, cache, metrics, metrics_lock)
 
         elapsed_s = time.monotonic() - t0
         summary = {

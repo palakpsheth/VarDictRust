@@ -142,7 +142,6 @@ t=1; for e in hg008-truth seqc2-truth hg002-truth hg005-truth na24385-b37-truth;
 ITEM_T0=$SECONDS; echo "$(ts) [Acceptance 7/8] Starting Hygiene (fmt, clippy, fuzz, audit, deny, gitleaks)..."
 t=1; run cargo fmt --all -- --check || t=0; run cargo clippy --all-targets --all-features -- -D warnings || t=0
 run cargo check --manifest-path crates/vardictrust-core/fuzz/Cargo.toml --bins --target-dir target/fuzz-check || t=0
-rm -rf target/fuzz-check
 run cargo audit || t=0; run cargo deny --all-features check advisories licenses bans sources || t=0
 if command -v gitleaks >/dev/null 2>&1; then
   run gitleaks detect --source . -v || t=0

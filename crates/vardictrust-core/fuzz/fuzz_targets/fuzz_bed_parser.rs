@@ -97,14 +97,15 @@ fn fuzz_cli_and_preset_config(data: &[u8]) {
     assert_eq!(preset_cfg.compat, COMPAT_OFF);
     assert_eq!(preset_cfg.preset, Some(preset));
 
+    let orig_vd = preset_cfg.vcf_min_vd.as_ref().map(|t| t.value);
     let explicit_min_reads = u32::from(data.get(1).copied().unwrap_or(1) % 8);
     let explicit_base_qual = f64::from(data.get(2).copied().unwrap_or(10) % 35) * 0.5;
     preset_cfg.min_reads = explicit_min_reads;
     preset_cfg.base_qual = explicit_base_qual;
 
-    if let Some(ref cur_vd) = preset_cfg.vcf_min_vd {
-        let explicit_vd = i32::try_from(explicit_min_reads).unwrap_or(i32::MAX);
-        if explicit_vd < cur_vd.value {
+    let explicit_vd = i32::try_from(explicit_min_reads).unwrap_or(i32::MAX);
+    if let Some(cur_vd) = orig_vd {
+        if explicit_vd < cur_vd {
             preset_cfg.vcf_min_vd = Some(VcfThreshold::new(explicit_vd));
         }
     }
@@ -114,38 +115,35 @@ fn fuzz_cli_and_preset_config(data: &[u8]) {
         preset_cfg.vcf_qmean = Some(VcfThreshold::new(clamped_q));
     }
     assert!(preset_cfg.validate_vcf_thresholds().is_ok());
-    if let Some(ref vd_thr) = preset_cfg.vcf_min_vd {
-        assert!(
-            vd_thr.value
-                <= i32::try_from(explicit_min_reads)
-                    .unwrap_or(i32::MAX)
-                    .max(vd_thr.value)
-        );
-        assert!(vd_thr.value >= 0);
+    if let (Some(ref vd_thr), Some(cur_vd)) = (&preset_cfg.vcf_min_vd, orig_vd) {
+        assert!(vd_thr.value >= 0 && vd_thr.value <= cur_vd && vd_thr.value <= explicit_vd);
     }
     if let Some(ref q_thr) = preset_cfg.vcf_qmean {
         assert!(q_thr.value >= 0.0 && q_thr.value <= cur_qmean);
     }
 
-    for &(tok, expected) in &[
-        ("wgs", Some(WorkflowPreset::Wgs)),
-        ("wes", Some(WorkflowPreset::Wes)),
-        ("amplicon", Some(WorkflowPreset::Amplicon)),
-        ("ctdna", Some(WorkflowPreset::Ctdna)),
-        ("hifi", None),
-        ("ont", None),
-    ] {
-        match (parse_workflow_preset(tok), expected) {
-            (Ok(got), Some(exp)) => assert_eq!(got, exp),
-            (Err(VardictError::Unsupported(_)), None) => {}
-            other => panic!("unexpected parse_workflow_preset({tok:?}): {other:?}"),
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        for &(tok, expected) in &[
+            ("wgs", Some(WorkflowPreset::Wgs)),
+            ("wes", Some(WorkflowPreset::Wes)),
+            ("amplicon", Some(WorkflowPreset::Amplicon)),
+            ("ctdna", Some(WorkflowPreset::Ctdna)),
+            ("hifi", None),
+            ("ont", None),
+        ] {
+            match (parse_workflow_preset(tok), expected) {
+                (Ok(got), Some(exp)) => assert_eq!(got, exp),
+                (Err(VardictError::Unsupported(_)), None) => {}
+                other => panic!("unexpected parse_workflow_preset({tok:?}): {other:?}"),
+            }
         }
-    }
-    assert_eq!(
-        parse_compat_target("vardictjava").ok(),
-        Some(COMPAT_VARDICTJAVA_1_8_3.target)
-    );
-    assert_eq!(parse_compat_target("off").ok(), Some(COMPAT_OFF.target));
+        assert_eq!(
+            parse_compat_target("vardictjava").ok(),
+            Some(COMPAT_VARDICTJAVA_1_8_3.target)
+        );
+        assert_eq!(parse_compat_target("off").ok(), Some(COMPAT_OFF.target));
+    });
 
     if let Ok(tok) = std::str::from_utf8(&data[..data.len().min(96)]) {
         let first_line = tok.lines().next().unwrap_or(tok);

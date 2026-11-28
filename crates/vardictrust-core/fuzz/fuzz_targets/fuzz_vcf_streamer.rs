@@ -433,17 +433,21 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
             for &s_col in &[9usize, 10usize] {
                 let sample_str = cols.get(s_col).copied().unwrap_or("");
                 let s_fields: Vec<&str> = sample_str.split(':').collect();
-                if s_fields.len() >= fmt_fields.len() {
-                    let shift = s_fields.len() - fmt_fields.len();
-                    if let Some(q_v) = qual_idx.and_then(|i| s_fields.get(i + shift).copied()) {
-                        parse_nonneg_metric(kind, "FORMAT/QUAL", q_v, line);
-                    }
-                    if let Some(mq_v) = mq_idx.and_then(|i| s_fields.get(i + shift).copied()) {
-                        parse_nonneg_metric(kind, "FORMAT/MQ", mq_v, line);
-                    }
-                    if let Some(nm_v) = nm_idx.and_then(|i| s_fields.get(i + shift).copied()) {
-                        parse_nonneg_metric(kind, "FORMAT/NM", nm_v, line);
-                    }
+                assert!(
+                    s_fields.len() >= fmt_fields.len(),
+                    "{kind} sample col {s_col} has fewer fields ({}) than FORMAT ({}): {line:?}",
+                    s_fields.len(),
+                    fmt_fields.len()
+                );
+                let shift = s_fields.len() - fmt_fields.len();
+                if let Some(q_v) = qual_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                    parse_nonneg_metric(kind, "FORMAT/QUAL", q_v, line);
+                }
+                if let Some(mq_v) = mq_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                    parse_nonneg_metric(kind, "FORMAT/MQ", mq_v, line);
+                }
+                if let Some(nm_v) = nm_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                    parse_nonneg_metric(kind, "FORMAT/NM", nm_v, line);
                 }
             }
         }

@@ -158,9 +158,10 @@ pub struct CigarParser<'a> {
     pub total_reads: i32,
     pub duplicate_reads: i32,
     live_read_counts: Option<(u64, u64)>,
-    /// Parent BED/region 1-based start on split sub-tiles (`Some(orig_start)` when
-    /// `region.start > orig_start`), enabling in-tile `ref_coverage` continuity for
-    /// deletions/MNVs anchored in `[orig_start, region.start)` that span into `region`.
+    /// Parent BED/region 1-based start on split sub-tiles (`None` on untiled runs).
+    ///
+    /// Set to `Some(orig_start)` when `region` is a split sub-tile, enabling in-tile `ref_coverage`
+    /// continuity for deletions and MNVs anchored in `[orig_start, region.start)` that span into `region`.
     pub split_parent_start: Option<crate::types::Pos1>,
     /// Per-read scratch buffers reused across [`CigarParser::parse_cigar`]
     /// calls (zero per-read allocation after warmup). Never read across
@@ -1539,7 +1540,7 @@ impl<'a> CigarParser<'a> {
                                 } else {
                                     0
                                 };
-                                for qi in 1..=(qbases - shift) {
+                                for qi in 1..=qbases.saturating_sub(shift) {
                                     let cov_pos = start.saturating_sub(qi).saturating_add(1);
                                     if cov_pos >= region_start && cov_pos <= region_end {
                                         inc_cnt(&mut self.ref_coverage, cov_pos, 1);
@@ -3702,7 +3703,8 @@ impl<'a> CigarParser<'a> {
             // temps built over mate windows are discarded, never emitted
             // through, so stamping unconditionally is safe.
             owning_range: Some((self.region.start, self.region.end)),
-            split_parent_start: None,
+            split_parent_start: self.split_parent_start,
+            split_parent_end: None,
             merge_planted: BTreeSet::new(),
         }
     }

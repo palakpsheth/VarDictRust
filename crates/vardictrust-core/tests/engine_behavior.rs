@@ -2133,10 +2133,59 @@ mod concurrency {
             let colo_u_vcf = run_core_vcf(&colo_untiled_cfg).expect("Colo829 untiled VCF");
             let colo_t_vcf = run_core_vcf(&colo_tiled_cfg).expect("Colo829 tiled VCF");
             assert!(
-                colo_u_vcf.contains("chr1\t756320\t.\tG\tA\t") && colo_u_vcf.contains(";DP=15;"),
+                colo_u_vcf
+                    .lines()
+                    .any(|l| l.starts_with("chr1\t756320\t.\tG\tA\t") && l.contains(";DP=15;")),
                 "expected DP=15 at chr1:756320 in Colo829 untiled VCF"
             );
             assert_eq!(colo_t_vcf, colo_u_vcf);
+        }
+
+        // 1c. Out-of-BED far breakpoint (`bp = 1961372 > orig_end = 1961350`) on
+        // `NA12878.chrom20.INVSimpleSV.bam` (`-R 20:1961050-1961350:testbed`, `tile_size = Some(100)`
+        // vs `None`): verify `ensure_split_tile_sv_pos_piled` does NOT hydrate `bp > orig_end`.
+        let inv_oob_bam = droot
+            .join("VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests/NA12878.chrom20.INVSimpleSV.bam")
+            .to_string_lossy()
+            .into_owned();
+        for compat in [
+            vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3,
+            vardictrust_core::config::COMPAT_OFF,
+        ] {
+            let oob_untiled_cfg = Config {
+                reference: droot
+                    .join("VarDictJava/testdata/fastas/hs38DH.fa")
+                    .to_string_lossy()
+                    .into_owned(),
+                sample: extract_sample_name(&inv_oob_bam, None),
+                bam: inv_oob_bam.clone(),
+                threads: 1,
+                zero_based: true,
+                zero_based_defined: true,
+                region: Some("20:1961050-1961350:testbed".to_string()),
+                freq: 0.001,
+                af_threshold: 0.001,
+                compat,
+                tile_size: None,
+                ..Config::default()
+            };
+            let mut oob_tiled_cfg = oob_untiled_cfg.clone();
+            oob_tiled_cfg.tile_size = Some(100);
+            oob_tiled_cfg.threads = 4;
+            let oob_u_vcf = run_core_vcf(&oob_untiled_cfg).expect("out-of-BED INV untiled VCF");
+            let oob_t_vcf = run_core_vcf(&oob_tiled_cfg).expect("out-of-BED INV tiled VCF");
+            assert!(
+                oob_u_vcf
+                    .lines()
+                    .any(|l| l.starts_with("20\t196117")
+                        && l.contains(";DP=107;")
+                        && l.contains(";SPLITREAD=2;")),
+                "expected DP=107 (unhydrated out-of-BED bp=1961372) on INV in NA12878.chrom20.INVSimpleSV untiled VCF ({compat:?})"
+            );
+            assert_eq!(
+                oob_t_vcf, oob_u_vcf,
+                "out-of-BED bp > orig_end must NOT be hydrated on split tiles ({compat:?})"
+            );
         }
 
         // 2. `-i` splice junction output: `tile_size = Some(200)` vs `None` byte-for-byte

@@ -18,7 +18,7 @@ unnecessary_mut_passed = "allow"
 
 [dependencies]
 libfuzzer-sys = "0.4"
-noodles = { version = "0.119", features = ["bam", "cram", "sam", "fasta", "bgzf"] }
+noodles = { version = "0.119", features = ["bam", "cram", "sam", "fasta", "bgzf", "csi", "core"] }
 noodles-bgzf = "0.52.0"
 tempfile = "3"
 vardictrust-core = { path = ".." }

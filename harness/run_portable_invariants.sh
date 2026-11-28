@@ -35,6 +35,14 @@ elif [ -n "${HOME:-}" ] && [ -d "$HOME/miniconda3/envs/vardict-oracle/bin" ]; th
   esac
 fi
 
+for _req_tool in bcftools tabix samtools perl; do
+  if ! command -v "$_req_tool" >/dev/null 2>&1; then
+    echo "ERROR: required tool '$_req_tool' not found on PATH" >&2
+    exit 1
+  fi
+done
+unset _req_tool
+
 VARDICTRUST_BIN="${VARDICTRUST_BIN:-${VARDICT_BIN:-$ROOT_DIR/target/release/vardictrust}}"
 if [ ! -x "$VARDICTRUST_BIN" ]; then
   cargo build -q --release -p vardictrust --manifest-path "$ROOT_DIR/Cargo.toml"
@@ -42,7 +50,9 @@ fi
 
 ASSET_ROOT="$ROOT_DIR"
 DATA_ROOT="$(resolve_data_root "$ROOT_DIR")"
-if [ ! -f "$ASSET_ROOT/VarDictJava/testdata/fastas/hg19.fa" ]; then
+if [ ! -f "$ASSET_ROOT/VarDictJava/testdata/fastas/hg19.fa" ] \
+  || [ ! -d "$ASSET_ROOT/VarDictJava/src/test/resources/com/astrazeneca/vardict/integrationtests" ] \
+  || [ ! -f "$ASSET_ROOT/VarDictJava/VarDict/var2vcf_valid.pl" ]; then
   if [ -f "$DATA_ROOT/VarDictJava/testdata/fastas/hg19.fa" ] && [ -f "$DATA_ROOT/VarDictJava/testdata/fastas/hs38DH.fa" ]; then
     ASSET_ROOT="$DATA_ROOT"
   else
@@ -69,25 +79,35 @@ vdr, root_dir, asset_root, tmp = sys.argv[1:5]
 sys.path.insert(0, os.path.join(root_dir, "harness"))
 import compare_vcf  # noqa: E402
 
+for req_tool in ("bcftools", "tabix", "samtools", "perl"):
+    if shutil.which(req_tool) is None:
+        raise SystemExit(f"ERROR: required tool {req_tool!r} not found on PATH")
+
 fa_b37 = os.path.join(asset_root, "VarDictJava", "testdata", "fastas", "GRCh37.fa")
 fa_hg19 = os.path.join(asset_root, "VarDictJava", "testdata", "fastas", "hg19.fa")
 fa_hg38 = os.path.join(asset_root, "VarDictJava", "testdata", "fastas", "hg38.fa")
 fa_hs38dh = os.path.join(asset_root, "VarDictJava", "testdata", "fastas", "hs38DH.fa")
-vj_bams = os.path.join(
-    root_dir, "VarDictJava", "src", "test", "resources", "com", "astrazeneca", "vardict", "integrationtests"
-)
-slices_dir = os.path.join(root_dir, "harness", "slices")
-perl_valid = os.path.join(root_dir, "VarDictJava", "VarDict", "var2vcf_valid.pl")
-perl_paired = os.path.join(root_dir, "VarDictJava", "VarDict", "var2vcf_paired.pl")
 
+vj_bams_rel = ("VarDictJava", "src", "test", "resources", "com", "astrazeneca", "vardict", "integrationtests")
+vj_bams = os.path.join(root_dir, *vj_bams_rel)
+if not os.path.isdir(vj_bams):
+    vj_bams = os.path.join(asset_root, *vj_bams_rel)
+
+slices_dir = os.path.join(root_dir, "harness", "slices")
+
+perl_valid = os.path.join(root_dir, "VarDictJava", "VarDict", "var2vcf_valid.pl")
+if not os.path.isfile(perl_valid):
+    perl_valid = os.path.join(asset_root, "VarDictJava", "VarDict", "var2vcf_valid.pl")
+
+perl_paired = os.path.join(root_dir, "VarDictJava", "VarDict", "var2vcf_paired.pl")
+if not os.path.isfile(perl_paired):
+    perl_paired = os.path.join(asset_root, "VarDictJava", "VarDict", "var2vcf_paired.pl")
+
+if not os.path.isdir(vj_bams):
+    raise SystemExit(f"ERROR: missing portable BAM directory {vj_bams}")
 for req in (fa_b37, fa_hg19, fa_hg38, fa_hs38dh, perl_valid, perl_paired):
     if not os.path.isfile(req):
         raise SystemExit(f"ERROR: missing portable asset {req}")
-
-has_bcftools = shutil.which("bcftools") is not None
-has_tabix = shutil.which("tabix") is not None
-has_samtools = shutil.which("samtools") is not None
-has_perl = shutil.which("perl") is not None
 
 valid_alt_re = re.compile(r"^(?:[ACGTN]+|<[A-Za-z0-9_-]+>)(?:,(?:[ACGTN]+|<[A-Za-z0-9_-]+>))*$")
 
@@ -212,20 +232,56 @@ def audit_universal(label: str, vcf_text: str, ref_fa: str, kind: str, vcf_gz_pa
     if vcf_gz_path:
         if verify_bgzf_header(vcf_gz_path) < 1:
             raise AssertionError(f"{label}: empty BGZF stream {vcf_gz_path}")
-        if has_bcftools:
-            split_out = subprocess.check_output(["bcftools", "norm", "-m", "-any", vcf_gz_path], stderr=subprocess.DEVNULL, text=True)
-            subprocess.check_output(
-                ["bcftools", "norm", "--check-ref", "e", "-f", ref_fa, "-"],
-                input=split_out, stderr=subprocess.DEVNULL, text=True
+        split_out = subprocess.check_output(
+            ["bcftools", "norm", "-m", "-any", vcf_gz_path],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=120,
+        )
+        norm_out = subprocess.check_output(
+            ["bcftools", "norm", "--check-ref", "e", "-f", ref_fa, "-"],
+            input=split_out,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=120,
+        )
+        split_recs = [l.split("\t", 5)[:5] for l in split_out.splitlines() if l and not l.startswith("#")]
+        norm_recs = [l.split("\t", 5)[:5] for l in norm_out.splitlines() if l and not l.startswith("#")]
+        c_split = [r for r in split_recs if r[4] != "." and not r[4].startswith("<")]
+        c_norm = [r for r in norm_recs if r[4] != "." and not r[4].startswith("<")]
+        if len(split_recs) != len(norm_recs) or len(c_split) != len(c_norm):
+            raise AssertionError(
+                f"{label}: bcftools norm record count mismatch ({len(split_recs)}->{len(norm_recs)}, concrete {len(c_split)}->{len(c_norm)})"
             )
-            if query_reg:
-                bcf_q = subprocess.check_output(["bcftools", "view", "-H", "-r", query_reg, vcf_gz_path], text=True)
-                if not bcf_q.strip():
-                    raise AssertionError(f"{label}: empty bcftools view -r {query_reg} on {vcf_gz_path}")
-                if has_tabix:
-                    tbx_q = subprocess.check_output(["tabix", vcf_gz_path, query_reg], text=True)
-                    if [l.split("\t")[:5] for l in bcf_q.splitlines() if l.strip()] != [l.split("\t")[:5] for l in tbx_q.splitlines() if l.strip()]:
-                        raise AssertionError(f"{label}: tabix vs bcftools view -r mismatch on {query_reg}")
+        for s_cols, n_cols in zip(c_split, c_norm):
+            s_chr, s_pos_s, _, s_ref, s_alt = s_cols
+            n_chr, n_pos_s, _, n_ref, n_alt = n_cols
+            t_pos = int(s_pos_s)
+            t_ref, t_alt = s_ref, s_alt
+            while len(t_ref) > 1 and len(t_alt) > 1 and t_ref[-1] == t_alt[-1]:
+                t_ref, t_alt = t_ref[:-1], t_alt[:-1]
+            while len(t_ref) > 1 and len(t_alt) > 1 and t_ref[0] == t_alt[0]:
+                t_ref, t_alt = t_ref[1:], t_alt[1:]
+                t_pos += 1
+            if (s_chr, t_pos, t_ref, t_alt) != (n_chr, int(n_pos_s), n_ref, n_alt):
+                raise AssertionError(
+                    f"{label}: non-canonical allele rewritten by bcftools norm: {(s_chr, t_pos, t_ref, t_alt)} != {(n_chr, int(n_pos_s), n_ref, n_alt)}"
+                )
+        if query_reg:
+            bcf_q = subprocess.check_output(
+                ["bcftools", "view", "-H", "-r", query_reg, vcf_gz_path],
+                text=True,
+                timeout=120,
+            )
+            if not bcf_q.strip():
+                raise AssertionError(f"{label}: empty bcftools view -r {query_reg} on {vcf_gz_path}")
+            tbx_q = subprocess.check_output(
+                ["tabix", vcf_gz_path, query_reg],
+                text=True,
+                timeout=120,
+            )
+            if [l.split("\t")[:5] for l in bcf_q.splitlines() if l.strip()] != [l.split("\t")[:5] for l in tbx_q.splitlines() if l.strip()]:
+                raise AssertionError(f"{label}: tabix vs bcftools view -r mismatch on {query_reg}")
     return len(recs)
 
 
@@ -245,18 +301,20 @@ def gate1_compat_off_and_presets() -> str:
         subprocess.run(
             [vdr, "-G", fa, "-b", bam, "-R", reg, "--compat=off", "--vcf-all-alleles", "--fisher", "--output", gz, "--csi", "-th", "2", *extra],
             check=True,
+            timeout=120,
         )
         if not os.path.isfile(gz + ".csi"):
             raise AssertionError(f"{tag}: missing .csi sidecar")
         var_txt = subprocess.check_output(
             [vdr, "-G", fa, "-b", bam, "-R", reg, "--compat=off", "--vcf-all-alleles", "--fisher", "--emit-intermediate", "-th", "2", *extra],
             text=True,
+            timeout=120,
         )
         with gzip.open(gz, "rt", encoding="utf-8") as fh:
             vcf_txt = fh.read()
         total += audit_universal(tag, vcf_txt, fa, kind, gz, reg, var_txt)
 
-    # 1b) --preset {wgs, wes, amplicon, ctdna} with --output .vcf.gz --csi / --tbi
+    # 1b) --preset {wgs, wes, amplicon, ctdna} with --output .vcf.gz --tbi / --csi
     bed_wgs = os.path.join(tmp, "p_wgs.bed")
     with open(bed_wgs, "w", encoding="utf-8") as fh:
         fh.write("1\t246981050\t246981611\n")
@@ -268,17 +326,21 @@ def gate1_compat_off_and_presets() -> str:
         fh.write("chrX\t7811669\t7811868\tGENE1\t0\t+\t7811680\t7811860\n")
 
     preset_checks = [
-        ("wgs", "simple", fa_b37, na_bam, bed_wgs, "1:246981051-246981611", []),
-        ("wes", "somatic", fa_hg19, hcc_pair, bed_wes4, "chrX:7811670-7811868", ["--fisher"]),
-        ("amplicon", "amplicon", fa_hg19, os.path.join(vj_bams, "Colo829-18_S3-sort.bam"), os.path.join(slices_dir, "s6.bed"), "chr1:933867-934466", []),
-        ("ctdna", "simple", fa_b37, na_bam, bed_wgs, "1:246981051-246981611", []),
+        ("wgs", "simple", fa_b37, na_bam, bed_wgs, "1:246981051-246981611", "--tbi", []),
+        ("wes", "somatic", fa_hg19, hcc_pair, bed_wes4, "chrX:7811670-7811868", "--csi", ["--fisher"]),
+        ("amplicon", "amplicon", fa_hg19, os.path.join(vj_bams, "Colo829-18_S3-sort.bam"), os.path.join(slices_dir, "s6.bed"), "chr1:933867-934466", "--csi", []),
+        ("ctdna", "simple", fa_b37, na_bam, bed_wgs, "1:246981051-246981611", "--tbi", []),
     ]
-    for pname, pkind, fa, bam, bed_p, qreg, pextra in preset_checks:
+    for pname, pkind, fa, bam, bed_p, qreg, idx_flag, pextra in preset_checks:
         pgz = os.path.join(tmp, f"preset_{pname}.vcf.gz")
+        idx_ext = ".tbi" if idx_flag == "--tbi" else ".csi"
         subprocess.run(
-            [vdr, "--preset", pname, *pextra, "-G", fa, "-b", bam, "--output", pgz, "--csi", "-th", "2", bed_p],
+            [vdr, "--preset", pname, *pextra, "-G", fa, "-b", bam, "--output", pgz, idx_flag, "-th", "2", bed_p],
             check=True,
+            timeout=120,
         )
+        if not os.path.isfile(pgz + idx_ext):
+            raise AssertionError(f"preset_{pname}: missing {idx_ext} sidecar")
         with gzip.open(pgz, "rt", encoding="utf-8") as fh:
             ptxt = fh.read()
         if f"##VarDictRustPreset={pname}\n" not in ptxt:
@@ -289,6 +351,7 @@ def gate1_compat_off_and_presets() -> str:
     wes8_txt = subprocess.check_output(
         [vdr, "--preset", "wes", "--fisher", "-G", fa_hg19, "-b", hcc_pair, "-th", "2", bed_wes8],
         text=True,
+        timeout=120,
     )
     if "AMPBIAS" in wes8_txt or "GDAMP=" in wes8_txt:
         raise AssertionError("UCSC 8-col BED8 hijacked --preset wes into PCR amplicon schema")
@@ -321,8 +384,8 @@ def gate2_tiled_vs_untiled() -> str:
     checked = 0
     for name, fa, bam, args, ts, min_rows in cases:
         for compat in ("--compat=vardictjava", "--compat=off"):
-            u = subprocess.check_output([vdr, "-G", fa, "-b", bam, compat, "--tile-size", "50000000", "-th", "1", *args], text=True)
-            t = subprocess.check_output([vdr, "-G", fa, "-b", bam, compat, "--tile-size", ts, "-th", "2", *args], text=True)
+            u = subprocess.check_output([vdr, "-G", fa, "-b", bam, compat, "--tile-size", "50000000", "-th", "1", *args], text=True, timeout=120)
+            t = subprocess.check_output([vdr, "-G", fa, "-b", bam, compat, "--tile-size", ts, "-th", "2", *args], text=True, timeout=120)
             rows = [l for l in u.splitlines() if l.strip() and not l.startswith("#")]
             if len(rows) < min_rows:
                 raise AssertionError(f"Gate 2 {name} ({compat}): expected >= {min_rows} rows, got {len(rows)}")
@@ -339,8 +402,8 @@ def gate2_tiled_vs_untiled() -> str:
     ]
     for sname, sfa, sbam, sargs in seam_cases:
         for compat in ("--compat=vardictjava", "--compat=off"):
-            su = subprocess.check_output([vdr, "-G", sfa, "-b", sbam, compat, "--tile-size", "50000000", "-th", "1", *sargs], text=True)
-            st = subprocess.check_output([vdr, "-G", sfa, "-b", sbam, compat, "--tile-size", "200", "-th", "2", *sargs], text=True)
+            su = subprocess.check_output([vdr, "-G", sfa, "-b", sbam, compat, "--tile-size", "50000000", "-th", "1", *sargs], text=True, timeout=120)
+            st = subprocess.check_output([vdr, "-G", sfa, "-b", sbam, compat, "--tile-size", "200", "-th", "2", *sargs], text=True, timeout=120)
             if su != st:
                 raise AssertionError(f"Gate 2 {sname} ({compat}): spanning-deletion / SV tile-seam Tiled != Untiled")
             checked += 1
@@ -357,7 +420,7 @@ def make_scoped_bam_and_cram(src_bam: str, ref_fa: str, chrom: str, prefix: str)
                 break
     if fai_len is None:
         raise AssertionError(f"{chrom} missing from {ref_fa}.fai")
-    sam_raw = subprocess.check_output(["samtools", "view", "-h", src_bam, chrom], text=True)
+    sam_raw = subprocess.check_output(["samtools", "view", "-h", src_bam, chrom], text=True, timeout=120)
     sam_clean = os.path.join(tmp, f"{prefix}.sam")
     with open(sam_clean, "w", encoding="utf-8") as out:
         out.write(f"@HD\tVN:1.6\tSO:coordinate\n@SQ\tSN:{chrom}\tLN:{fai_len}\n")
@@ -371,16 +434,14 @@ def make_scoped_bam_and_cram(src_bam: str, ref_fa: str, chrom: str, prefix: str)
                 out.write("\t".join(cols) + "\n")
     out_bam = os.path.join(tmp, f"{prefix}.bam")
     out_cram = os.path.join(tmp, f"{prefix}.cram")
-    subprocess.run(["samtools", "view", "-b", "-o", out_bam, sam_clean], check=True)
-    subprocess.run(["samtools", "index", out_bam], check=True)
-    subprocess.run(["samtools", "view", "-C", "-T", ref_fa, "-o", out_cram, out_bam], check=True)
-    subprocess.run(["samtools", "index", out_cram], check=True)
+    subprocess.run(["samtools", "view", "-b", "-o", out_bam, sam_clean], check=True, timeout=120)
+    subprocess.run(["samtools", "index", out_bam], check=True, timeout=120)
+    subprocess.run(["samtools", "view", "-C", "-T", ref_fa, "-o", out_cram, out_bam], check=True, timeout=120)
+    subprocess.run(["samtools", "index", out_cram], check=True, timeout=120)
     return out_bam, out_cram
 
 
 def gate3_portable_bam_vs_cram() -> str:
-    if not has_samtools:
-        raise AssertionError("Gate 3 requires samtools on PATH for live BAM->CRAM conversion")
     na_bam_src = os.path.join(vj_bams, "NA24385_chr_1_246981051_246981611.bam")
     na_bam, na_cram = make_scoped_bam_and_cram(na_bam_src, fa_b37, "1", "na24385_cram")
 
@@ -393,10 +454,12 @@ def gate3_portable_bam_vs_cram() -> str:
         b_out = subprocess.check_output(
             [vdr, "-G", fa_b37, "-b", na_bam, "-N", "NA24385", "-R", "1:246981051-246981611", "-f", "0.01", compat, "-th", "2"],
             text=True,
+            timeout=120,
         )
         c_out = subprocess.check_output(
             [vdr, "-G", fa_b37, "-b", na_cram, "-N", "NA24385", "-R", "1:246981051-246981611", "-f", "0.01", compat, "-th", "2"],
             text=True,
+            timeout=120,
         )
         b_rows = [l for l in b_out.splitlines() if not l.startswith("#")]
         c_rows = [l for l in c_out.splitlines() if not l.startswith("#")]
@@ -408,12 +471,14 @@ def gate3_portable_bam_vs_cram() -> str:
              "-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z", "-f", "0.001", compat, "-th", "2",
              os.path.join(slices_dir, "s4.bed")],
             text=True,
+            timeout=120,
         )
         pc_out = subprocess.check_output(
             [vdr, "-G", fa_hg19, "-b", f"{hcc_t_cram}|{hcc_n_cram}", "-N", "TUMOR|NORMAL",
              "-c", "1", "-S", "2", "-E", "3", "-g", "4", "-z", "-f", "0.001", compat, "-th", "2",
              os.path.join(slices_dir, "s4.bed")],
             text=True,
+            timeout=120,
         )
         pb_rows = [l for l in pb_out.splitlines() if not l.startswith("#")]
         pc_rows = [l for l in pc_out.splitlines() if not l.startswith("#")]
@@ -423,8 +488,6 @@ def gate3_portable_bam_vs_cram() -> str:
 
 
 def gate4_perl_all_alleles_parity() -> str:
-    if not has_perl:
-        raise AssertionError("Gate 4 requires perl on PATH for var2vcf_{valid,paired}.pl -A parity")
     na_bam = os.path.join(vj_bams, "NA24385_chr_1_246981051_246981611.bam")
     colo_pair = f"{vj_bams}/Colo829-18_S3-sort.bam|{vj_bams}/Colo829-19_S4-sort.bam"
     hcc_pair = f"{vj_bams}/HCC2218_BL_realigins.bam|{vj_bams}/HCC2218_C_realigins.bam"
@@ -460,9 +523,9 @@ def gate4_perl_all_alleles_parity() -> str:
     ]
     total_compared = 0
     for cname, base_cmd, perl_cmd, rust_vcf_flags in perl_cases:
-        var_out = subprocess.check_output([*base_cmd, "--emit-intermediate"], text=True)
-        perl_vcf = subprocess.check_output(perl_cmd, input=var_out, text=True)
-        rust_vcf = subprocess.check_output([*base_cmd, *rust_vcf_flags], text=True)
+        var_out = subprocess.check_output([*base_cmd, "--emit-intermediate"], text=True, timeout=120)
+        perl_vcf = subprocess.check_output(perl_cmd, input=var_out, text=True, timeout=120)
+        rust_vcf = subprocess.check_output([*base_cmd, *rust_vcf_flags], text=True, timeout=120)
         p_path = os.path.join(tmp, f"{cname}_perl.vcf")
         r_path = os.path.join(tmp, f"{cname}_rust.vcf")
         with open(p_path, "w", encoding="utf-8") as fp:
@@ -484,7 +547,8 @@ def gate4_perl_all_alleles_parity() -> str:
     return f"Gate 4 PASS (4/4 single, amplicon & paired --vcf-all-alleles == var2vcf_*.pl -A, {total_compared} alleles)"
 
 
-with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+max_workers = min(4, max(1, (os.cpu_count() or 2) // 2))
+with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
     futs = [
         pool.submit(gate1_compat_off_and_presets),
         pool.submit(gate2_tiled_vs_untiled),

@@ -749,7 +749,7 @@ fn run_corpus_case(fname: &str) {
 
     let paired = bam_arg.contains('|');
     let total_bam_bytes: u64 = bam_arg
-        .split('|')
+        .split(['|', ':'])
         .map(|p| fs::metadata(p).map_or(u64::MAX / 2, |m| m.len()))
         .fold(0u64, u64::saturating_add);
     let region_span = end_val

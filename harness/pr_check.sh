@@ -43,7 +43,6 @@ cargo clippy --workspace --all-targets --no-default-features -- -D warnings
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --all-targets --all-features -- -D warnings
 cargo check --manifest-path crates/vardictrust-core/fuzz/Cargo.toml --bins --target-dir target/fuzz-check
-rm -rf target/fuzz-check
 cargo test --workspace --bins --lib --tests
 cargo build -q --release
 echo "$(ts) [Stage 1/6] PASS ($((SECONDS - st_t0))s)"
