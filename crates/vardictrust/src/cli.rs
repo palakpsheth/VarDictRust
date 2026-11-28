@@ -1929,6 +1929,29 @@ impl Cli {
             Some((val, raw)) => (*val, Some(raw.clone())),
             None => (base.vcf_pval, base.vcf_pval_raw),
         };
+        let resolved_min_reads = self.min_reads.first().copied().unwrap_or(base.min_reads);
+        let resolved_base_qual = self.base_qual.first().copied().unwrap_or(base.base_qual);
+        let mut resolved_vcf_min_vd = self.vcf_min_vd.first().cloned().or(base.vcf_min_vd);
+        let mut resolved_vcf_qmean = self.vcf_qmean.first().cloned().or(base.vcf_qmean);
+        if resolved_preset.is_some() {
+            if !self.min_reads.is_empty() && self.vcf_min_vd.is_empty() {
+                if let Some(ref cur) = resolved_vcf_min_vd {
+                    let explicit_vd = i32::try_from(resolved_min_reads).unwrap_or(i32::MAX);
+                    if explicit_vd < cur.value {
+                        resolved_vcf_min_vd =
+                            Some(vardictrust_core::config::VcfThreshold::new(explicit_vd));
+                    }
+                }
+            }
+            if !self.base_qual.is_empty() && self.vcf_qmean.is_empty() {
+                let cur_qmean = resolved_vcf_qmean.as_ref().map_or(22.5, |t| t.value);
+                let explicit_q = resolved_base_qual.max(0.0);
+                if explicit_q < cur_qmean {
+                    resolved_vcf_qmean =
+                        Some(vardictrust_core::config::VcfThreshold::new(explicit_q));
+                }
+            }
+        }
 
         let mut cfg = vardictrust_core::config::Config {
             exception_counter: base.exception_counter,
@@ -1968,8 +1991,8 @@ impl Cli {
                 Some(_) => 0,
                 None => base.realign,
             },
-            min_reads: self.min_reads.first().copied().unwrap_or(base.min_reads),
-            base_qual: self.base_qual.first().copied().unwrap_or(base.base_qual),
+            min_reads: resolved_min_reads,
+            base_qual: resolved_base_qual,
             map_qual: self.map_qual.first().copied().or(base.map_qual),
             read_pos: self
                 .read_pos
@@ -2101,8 +2124,8 @@ impl Cli {
                 None
             }),
             vcf_min_depth: self.vcf_min_depth.first().cloned().or(base.vcf_min_depth),
-            vcf_min_vd: self.vcf_min_vd.first().cloned().or(base.vcf_min_vd),
-            vcf_qmean: self.vcf_qmean.first().cloned().or(base.vcf_qmean),
+            vcf_min_vd: resolved_vcf_min_vd,
+            vcf_qmean: resolved_vcf_qmean,
             vcf_mapq: self.vcf_mapq.first().cloned().or(base.vcf_mapq),
             vcf_pmean: self.vcf_pmean.first().cloned().or(base.vcf_pmean),
             vcf_sn: self.vcf_sn.first().cloned().or(base.vcf_sn),
@@ -5472,5 +5495,189 @@ mod tests {
             man_txt.contains("\\-\\-preset <PRESET>"),
             "manpage missing --preset synopsis:\n{man_txt}"
         );
+    }
+
+    #[test]
+    fn test_lane3_s06_preset_min_reads_and_base_qual_clamp_vcf_floors() {
+        use vardictrust_core::config::{VcfThreshold, WorkflowPreset};
+        use vardictrust_core::types::VardictError;
+
+        let parse_res =
+            |raw_flags: &[&str]| -> Result<vardictrust_core::config::Config, VardictError> {
+                let raw = args(raw_flags);
+                check_unsupported(&raw)?;
+                let norm = super::normalize_args(&raw);
+                let cli =
+                    Cli::try_parse_from(&norm).map_err(|e| VardictError::Parse(e.to_string()))?;
+                cli.to_config()
+            };
+
+        // 1. Explicit -r 1 and -r 2 clamp preset vcf_min_vd downward across all 4 presets
+        //    (without resetting to None, which would fall back to v2/v3!).
+        for (preset_str, exp_preset) in [
+            ("wgs", WorkflowPreset::Wgs),
+            ("wes", WorkflowPreset::Wes),
+            ("amplicon", WorkflowPreset::Amplicon),
+            ("ctdna", WorkflowPreset::Ctdna),
+        ] {
+            let r1 = parse_res(&[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "--preset",
+                preset_str,
+                "-r",
+                "1",
+                "targets.bed",
+            ])
+            .unwrap();
+            assert_eq!(r1.preset, Some(exp_preset));
+            assert_eq!(r1.min_reads, 1);
+            assert_eq!(
+                r1.vcf_min_vd,
+                Some(VcfThreshold::new(1)),
+                "--preset {preset_str} -r 1 must clamp vcf_min_vd to Some(1)"
+            );
+
+            let r2 = parse_res(&[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "--preset",
+                preset_str,
+                "-r",
+                "2",
+                "targets.bed",
+            ])
+            .unwrap();
+            assert_eq!(r2.min_reads, 2);
+            assert_eq!(
+                r2.vcf_min_vd,
+                Some(VcfThreshold::new(2)),
+                "--preset {preset_str} -r 2 must clamp vcf_min_vd to Some(2)"
+            );
+
+            // 2. Explicit -q 15 clamps vcf_qmean downward across all 4 presets
+            let q15 = parse_res(&[
+                "-G",
+                "r.fa",
+                "-b",
+                "a.bam",
+                "--preset",
+                preset_str,
+                "-q",
+                "15",
+                "targets.bed",
+            ])
+            .unwrap();
+            assert!((q15.base_qual - 15.0).abs() < f64::EPSILON);
+            assert_eq!(
+                q15.vcf_qmean,
+                Some(VcfThreshold::new(15.0)),
+                "--preset {preset_str} -q 15 must clamp vcf_qmean to Some(15.0)"
+            );
+        }
+
+        // 3. Explicit -r / -q ABOVE preset VCF floor do NOT raise vcf_min_vd / vcf_qmean
+        let ctdna_hi = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "ctdna",
+            "-r",
+            "8",
+            "-q",
+            "30",
+            "targets.bed",
+        ])
+        .unwrap();
+        assert_eq!(ctdna_hi.min_reads, 8);
+        assert_eq!(ctdna_hi.vcf_min_vd, Some(VcfThreshold::new(4)));
+        assert!((ctdna_hi.base_qual - 30.0).abs() < f64::EPSILON);
+        assert_eq!(ctdna_hi.vcf_qmean, Some(VcfThreshold::new(25.0)));
+
+        // 4. Explicit --vcf-min-vd and --vcf-qmean ALWAYS take precedence over -r and -q
+        let explicit_vcf = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "ctdna",
+            "-r",
+            "1",
+            "--vcf-min-vd",
+            "6",
+            "-q",
+            "15",
+            "--vcf-qmean",
+            "28",
+            "-f",
+            "0.0005",
+            "targets.bed",
+        ])
+        .unwrap();
+        assert_eq!(explicit_vcf.min_reads, 1);
+        assert_eq!(
+            explicit_vcf.vcf_min_vd,
+            Some(VcfThreshold::with_raw(6, "6".to_string()))
+        );
+        assert!((explicit_vcf.base_qual - 15.0).abs() < f64::EPSILON);
+        assert_eq!(
+            explicit_vcf.vcf_qmean,
+            Some(VcfThreshold::with_raw(28.0, "28".to_string()))
+        );
+        assert_eq!(explicit_vcf.vcf_af, None);
+
+        // 5. Non-preset default (--compat=vardictjava) preserves None vcf_min_vd / vcf_qmean
+        let parity_rq = parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "-r",
+            "1",
+            "-q",
+            "15",
+            "targets.bed",
+        ])
+        .unwrap();
+        assert_eq!(parity_rq.vcf_min_vd, None);
+        assert_eq!(parity_rq.vcf_qmean, None);
+
+        // 6. Invalid flags fail fast
+        assert!(parse_res(&[
+            "-G", "r.fa", "-b", "a.bam", "--preset", "ctdna", "-r", "-1", "t.bed"
+        ])
+        .is_err());
+        assert!(parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "ctdna",
+            "--vcf-min-vd",
+            "-1",
+            "t.bed"
+        ])
+        .is_err());
+        assert!(parse_res(&[
+            "-G",
+            "r.fa",
+            "-b",
+            "a.bam",
+            "--preset",
+            "ctdna",
+            "--vcf-qmean",
+            "-5",
+            "t.bed"
+        ])
+        .is_err());
+        assert!(parse_res(&["-G", "r.fa", "-b", "a.bam", "-Z", "0.5", "t.bed"]).is_err());
     }
 }

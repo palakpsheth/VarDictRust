@@ -7208,10 +7208,15 @@ mod vcf_all_alleles_and_compat_off {
         };
         let mut clean_som_s18 = clean_som_vj.clone();
         clean_som_s18.compat = sw18_only;
+        let clean_som_s18_vcf = run_core_vcf(&clean_som_s18).expect("clean som s18");
+        assert!(
+            clean_som_s18_vcf.contains("##VarDictRustCompat=off\n"),
+            "S-08: isolated Switch 18 must stamp ##VarDictRustCompat=off"
+        );
         assert_eq!(
             run_core_vcf(&clean_som_vj).expect("clean som vj"),
-            run_core_vcf(&clean_som_s18).expect("clean som s18"),
-            "Switch 18 negative control must have 0-byte VCF diff on clean biallelic somatic locus"
+            clean_som_s18_vcf.replacen("##VarDictRustCompat=off\n", "", 1),
+            "Switch 18 negative control must have 0-byte VCF body diff on clean biallelic somatic locus"
         );
 
         // =========================================================================
@@ -7331,10 +7336,15 @@ mod vcf_all_alleles_and_compat_off {
         no_ad_vj.adaptor.clear();
         let mut no_ad_s19 = no_ad_vj.clone();
         no_ad_s19.compat = sw19_only;
+        let no_ad_s19_vcf = run_core_vcf(&no_ad_s19).expect("no_ad s19");
+        assert!(
+            no_ad_s19_vcf.contains("##VarDictRustCompat=off\n"),
+            "S-08: isolated Switch 19 must stamp ##VarDictRustCompat=off"
+        );
         assert_eq!(
             run_core_vcf(&no_ad_vj).expect("no_ad vj"),
-            run_core_vcf(&no_ad_s19).expect("no_ad s19"),
-            "Switch 19 negative control (empty adaptor) must have 0-byte VCF diff"
+            no_ad_s19_vcf.replacen("##VarDictRustCompat=off\n", "", 1),
+            "Switch 19 negative control (empty adaptor) must have 0-byte VCF body diff"
         );
 
         // =========================================================================
@@ -7605,10 +7615,15 @@ mod vcf_all_alleles_and_compat_off {
         // Negative control for Switch 21: non-amplicon somatic run has 0-byte diff vs default
         let mut clean_som_s21 = clean_som_vj.clone();
         clean_som_s21.compat = sw21_only;
+        let clean_som_s21_vcf = run_core_vcf(&clean_som_s21).expect("clean som s21");
+        assert!(
+            clean_som_s21_vcf.contains("##VarDictRustCompat=off\n"),
+            "S-08: isolated Switch 21 must stamp ##VarDictRustCompat=off"
+        );
         assert_eq!(
             run_core_vcf(&clean_som_vj).expect("clean som vj"),
-            run_core_vcf(&clean_som_s21).expect("clean som s21"),
-            "Switch 21 negative control must have 0-byte VCF diff on non-amplicon somatic pair"
+            clean_som_s21_vcf.replacen("##VarDictRustCompat=off\n", "", 1),
+            "Switch 21 negative control must have 0-byte VCF body diff on non-amplicon somatic pair"
         );
     }
 
@@ -9105,10 +9120,15 @@ mod vcf_all_alleles_and_compat_off {
                 cfg.compat = *sw_prof;
                 let got_vcf = run_via_core_run(&cfg, &format!("iso_{sw_name}_{case_name}"), false);
                 let got_var = run_via_core_run(&cfg, &format!("iso_{sw_name}_{case_name}"), true);
+                assert!(
+                    got_vcf.contains("##VarDictRustCompat=off\n"),
+                    "S-08: isolated {sw_name} must stamp ##VarDictRustCompat=off on {case_name}"
+                );
+                let got_vcf_body = got_vcf.replacen("##VarDictRustCompat=off\n", "", 1);
                 if sw_idx == case_idx {
                     assert_ne!(
-                        got_vcf, baseline_vcfs[case_idx],
-                        "{sw_name} MUST change its targeted {case_name} VCF"
+                        got_vcf_body, baseline_vcfs[case_idx],
+                        "{sw_name} MUST change its targeted {case_name} VCF body"
                     );
                     assert_ne!(
                         got_var, baseline_vars[case_idx],
@@ -9118,7 +9138,7 @@ mod vcf_all_alleles_and_compat_off {
                     diag_vars.push(got_var);
                 } else {
                     assert_eq!(
-                        got_vcf, baseline_vcfs[case_idx],
+                        got_vcf_body, baseline_vcfs[case_idx],
                         "OFF-TARGET VCF DIFF: {sw_name} unexpectedly altered {case_name}"
                     );
                     assert_eq!(
@@ -9195,8 +9215,13 @@ mod vcf_all_alleles_and_compat_off {
         cfg35_3p.three_prime = true;
         let mut cfg35_3p_sw35 = cfg35_3p.clone();
         cfg35_3p_sw35.compat = sw35;
+        let vcf_3p_sw35 = run_core_vcf(&cfg35_3p_sw35).expect("3p + sw35");
+        assert!(
+            vcf_3p_sw35.contains("##VarDictRustCompat=off\n"),
+            "S-08: isolated Switch 35 with -3 must stamp ##VarDictRustCompat=off"
+        );
         assert_eq!(
-            run_core_vcf(&cfg35_3p_sw35).expect("3p + sw35"),
+            vcf_3p_sw35.replacen("##VarDictRustCompat=off\n", "", 1),
             run_core_vcf(&cfg35_3p).expect("3p + vj"),
             "-3 (three_prime) must bypass canonical_vcf_complex_left_align"
         );
@@ -9204,8 +9229,13 @@ mod vcf_all_alleles_and_compat_off {
         cfg35_crispr.crispr_cutting_site = Some(105);
         let mut cfg35_crispr_sw35 = cfg35_crispr.clone();
         cfg35_crispr_sw35.compat = sw35;
+        let vcf_crispr_sw35 = run_core_vcf(&cfg35_crispr_sw35).expect("crispr + sw35");
+        assert!(
+            vcf_crispr_sw35.contains("##VarDictRustCompat=off\n"),
+            "S-08: isolated Switch 35 with -J must stamp ##VarDictRustCompat=off"
+        );
         assert_eq!(
-            run_core_vcf(&cfg35_crispr_sw35).expect("crispr + sw35"),
+            vcf_crispr_sw35.replacen("##VarDictRustCompat=off\n", "", 1),
             run_core_vcf(&cfg35_crispr).expect("crispr + vj"),
             "CRISPR (-J) must bypass canonical_vcf_complex_left_align"
         );

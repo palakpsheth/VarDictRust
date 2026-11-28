@@ -251,6 +251,334 @@ impl Default for CompatProfile {
     }
 }
 
+/// Canonical count of [`CompatProfile`] switches (`1..=38`).
+pub const COMPAT_SWITCH_COUNT: usize = 38;
+
+/// Descriptor for one [`CompatProfile`] boolean switch (`0..COMPAT_SWITCH_COUNT`).
+#[derive(Clone, Copy, Debug)]
+pub struct CompatSwitchSpec {
+    pub index: usize,
+    pub name: &'static str,
+    pub get: fn(&CompatProfile) -> bool,
+    pub set: fn(&mut CompatProfile, bool),
+}
+
+impl CompatProfile {
+    /// Return all [`COMPAT_SWITCH_COUNT`] switches in canonical `1..=38` order.
+    ///
+    /// Includes a compile-time-exhaustive destructure of [`CompatProfile`] so adding
+    /// a new switch field is a compile error until [`COMPAT_SWITCH_COUNT`] and
+    /// [`Self::all_switches`] are updated together.
+    pub fn all_switches() -> [CompatSwitchSpec; COMPAT_SWITCH_COUNT] {
+        let CompatProfile {
+            target: _,
+            sanitize_sample_info: _,
+            standard_dup_symbolic_alt: _,
+            shift3_3prime_alleles: _,
+            strict_region_bounds: _,
+            suppress_pileup_sentinels: _,
+            live_duprate: _,
+            preserve_mixed_sex_contigs: _,
+            cigar_homopolymer_merge: _,
+            eqx_cigar_read_length: _,
+            preserve_discordant_svs: _,
+            mark_dup_sv_inclusive_end: _,
+            sv_lazy_mate_pileup: _,
+            exact_binary_half_even: _,
+            reconcile_vd_dp: _,
+            coordinate_sorted_vars: _,
+            exact_35_overlap: _,
+            exact_cigar_dlen_match: _,
+            somatic_continue_after_bad_var: _,
+            adaptor_all_consensus_dirs: _,
+            canonical_sv_vcf_anchoring: _,
+            paired_somatic_amplicon: _,
+            cigar_strip_outer_hard_clips: _,
+            nonnegative_subtracted_means: _,
+            reconcile_strand_and_hq_sums: _,
+            reconcile_rd_vd_dp: _,
+            sanitize_iupac_alt_alleles: _,
+            sv_respect_min_len: _,
+            pileup_preserve_shifted_ref: _,
+            recompute_vartype_after_adj_complex: _,
+            strict_vcf_ad_number_r: _,
+            omit_nonsv_vcf_end: _,
+            canonical_vcf_gt: _,
+            sclip_majority_count_first: _,
+            mate_overlap_both_strands: _,
+            canonical_vcf_complex_left_align: _,
+            somatic_reconcile_split_alleles: _,
+            adj_snv_full_sclip_match: _,
+            indel_only_shift3: _,
+        } = COMPAT_OFF;
+
+        [
+            CompatSwitchSpec {
+                index: 0,
+                name: "sanitize_sample_info",
+                get: |p| p.sanitize_sample_info,
+                set: |p, v| p.sanitize_sample_info = v,
+            },
+            CompatSwitchSpec {
+                index: 1,
+                name: "standard_dup_symbolic_alt",
+                get: |p| p.standard_dup_symbolic_alt,
+                set: |p, v| p.standard_dup_symbolic_alt = v,
+            },
+            CompatSwitchSpec {
+                index: 2,
+                name: "shift3_3prime_alleles",
+                get: |p| p.shift3_3prime_alleles,
+                set: |p, v| p.shift3_3prime_alleles = v,
+            },
+            CompatSwitchSpec {
+                index: 3,
+                name: "strict_region_bounds",
+                get: |p| p.strict_region_bounds,
+                set: |p, v| p.strict_region_bounds = v,
+            },
+            CompatSwitchSpec {
+                index: 4,
+                name: "suppress_pileup_sentinels",
+                get: |p| p.suppress_pileup_sentinels,
+                set: |p, v| p.suppress_pileup_sentinels = v,
+            },
+            CompatSwitchSpec {
+                index: 5,
+                name: "live_duprate",
+                get: |p| p.live_duprate,
+                set: |p, v| p.live_duprate = v,
+            },
+            CompatSwitchSpec {
+                index: 6,
+                name: "preserve_mixed_sex_contigs",
+                get: |p| p.preserve_mixed_sex_contigs,
+                set: |p, v| p.preserve_mixed_sex_contigs = v,
+            },
+            CompatSwitchSpec {
+                index: 7,
+                name: "cigar_homopolymer_merge",
+                get: |p| p.cigar_homopolymer_merge,
+                set: |p, v| p.cigar_homopolymer_merge = v,
+            },
+            CompatSwitchSpec {
+                index: 8,
+                name: "eqx_cigar_read_length",
+                get: |p| p.eqx_cigar_read_length,
+                set: |p, v| p.eqx_cigar_read_length = v,
+            },
+            CompatSwitchSpec {
+                index: 9,
+                name: "preserve_discordant_svs",
+                get: |p| p.preserve_discordant_svs,
+                set: |p, v| p.preserve_discordant_svs = v,
+            },
+            CompatSwitchSpec {
+                index: 10,
+                name: "mark_dup_sv_inclusive_end",
+                get: |p| p.mark_dup_sv_inclusive_end,
+                set: |p, v| p.mark_dup_sv_inclusive_end = v,
+            },
+            CompatSwitchSpec {
+                index: 11,
+                name: "sv_lazy_mate_pileup",
+                get: |p| p.sv_lazy_mate_pileup,
+                set: |p, v| p.sv_lazy_mate_pileup = v,
+            },
+            CompatSwitchSpec {
+                index: 12,
+                name: "exact_binary_half_even",
+                get: |p| p.exact_binary_half_even,
+                set: |p, v| p.exact_binary_half_even = v,
+            },
+            CompatSwitchSpec {
+                index: 13,
+                name: "reconcile_vd_dp",
+                get: |p| p.reconcile_vd_dp,
+                set: |p, v| p.reconcile_vd_dp = v,
+            },
+            CompatSwitchSpec {
+                index: 14,
+                name: "coordinate_sorted_vars",
+                get: |p| p.coordinate_sorted_vars,
+                set: |p, v| p.coordinate_sorted_vars = v,
+            },
+            CompatSwitchSpec {
+                index: 15,
+                name: "exact_35_overlap",
+                get: |p| p.exact_35_overlap,
+                set: |p, v| p.exact_35_overlap = v,
+            },
+            CompatSwitchSpec {
+                index: 16,
+                name: "exact_cigar_dlen_match",
+                get: |p| p.exact_cigar_dlen_match,
+                set: |p, v| p.exact_cigar_dlen_match = v,
+            },
+            CompatSwitchSpec {
+                index: 17,
+                name: "somatic_continue_after_bad_var",
+                get: |p| p.somatic_continue_after_bad_var,
+                set: |p, v| p.somatic_continue_after_bad_var = v,
+            },
+            CompatSwitchSpec {
+                index: 18,
+                name: "adaptor_all_consensus_dirs",
+                get: |p| p.adaptor_all_consensus_dirs,
+                set: |p, v| p.adaptor_all_consensus_dirs = v,
+            },
+            CompatSwitchSpec {
+                index: 19,
+                name: "canonical_sv_vcf_anchoring",
+                get: |p| p.canonical_sv_vcf_anchoring,
+                set: |p, v| p.canonical_sv_vcf_anchoring = v,
+            },
+            CompatSwitchSpec {
+                index: 20,
+                name: "paired_somatic_amplicon",
+                get: |p| p.paired_somatic_amplicon,
+                set: |p, v| p.paired_somatic_amplicon = v,
+            },
+            CompatSwitchSpec {
+                index: 21,
+                name: "cigar_strip_outer_hard_clips",
+                get: |p| p.cigar_strip_outer_hard_clips,
+                set: |p, v| p.cigar_strip_outer_hard_clips = v,
+            },
+            CompatSwitchSpec {
+                index: 22,
+                name: "nonnegative_subtracted_means",
+                get: |p| p.nonnegative_subtracted_means,
+                set: |p, v| p.nonnegative_subtracted_means = v,
+            },
+            CompatSwitchSpec {
+                index: 23,
+                name: "reconcile_strand_and_hq_sums",
+                get: |p| p.reconcile_strand_and_hq_sums,
+                set: |p, v| p.reconcile_strand_and_hq_sums = v,
+            },
+            CompatSwitchSpec {
+                index: 24,
+                name: "reconcile_rd_vd_dp",
+                get: |p| p.reconcile_rd_vd_dp,
+                set: |p, v| p.reconcile_rd_vd_dp = v,
+            },
+            CompatSwitchSpec {
+                index: 25,
+                name: "sanitize_iupac_alt_alleles",
+                get: |p| p.sanitize_iupac_alt_alleles,
+                set: |p, v| p.sanitize_iupac_alt_alleles = v,
+            },
+            CompatSwitchSpec {
+                index: 26,
+                name: "sv_respect_min_len",
+                get: |p| p.sv_respect_min_len,
+                set: |p, v| p.sv_respect_min_len = v,
+            },
+            CompatSwitchSpec {
+                index: 27,
+                name: "pileup_preserve_shifted_ref",
+                get: |p| p.pileup_preserve_shifted_ref,
+                set: |p, v| p.pileup_preserve_shifted_ref = v,
+            },
+            CompatSwitchSpec {
+                index: 28,
+                name: "recompute_vartype_after_adj_complex",
+                get: |p| p.recompute_vartype_after_adj_complex,
+                set: |p, v| p.recompute_vartype_after_adj_complex = v,
+            },
+            CompatSwitchSpec {
+                index: 29,
+                name: "strict_vcf_ad_number_r",
+                get: |p| p.strict_vcf_ad_number_r,
+                set: |p, v| p.strict_vcf_ad_number_r = v,
+            },
+            CompatSwitchSpec {
+                index: 30,
+                name: "omit_nonsv_vcf_end",
+                get: |p| p.omit_nonsv_vcf_end,
+                set: |p, v| p.omit_nonsv_vcf_end = v,
+            },
+            CompatSwitchSpec {
+                index: 31,
+                name: "canonical_vcf_gt",
+                get: |p| p.canonical_vcf_gt,
+                set: |p, v| p.canonical_vcf_gt = v,
+            },
+            CompatSwitchSpec {
+                index: 32,
+                name: "sclip_majority_count_first",
+                get: |p| p.sclip_majority_count_first,
+                set: |p, v| p.sclip_majority_count_first = v,
+            },
+            CompatSwitchSpec {
+                index: 33,
+                name: "mate_overlap_both_strands",
+                get: |p| p.mate_overlap_both_strands,
+                set: |p, v| p.mate_overlap_both_strands = v,
+            },
+            CompatSwitchSpec {
+                index: 34,
+                name: "canonical_vcf_complex_left_align",
+                get: |p| p.canonical_vcf_complex_left_align,
+                set: |p, v| p.canonical_vcf_complex_left_align = v,
+            },
+            CompatSwitchSpec {
+                index: 35,
+                name: "somatic_reconcile_split_alleles",
+                get: |p| p.somatic_reconcile_split_alleles,
+                set: |p, v| p.somatic_reconcile_split_alleles = v,
+            },
+            CompatSwitchSpec {
+                index: 36,
+                name: "adj_snv_full_sclip_match",
+                get: |p| p.adj_snv_full_sclip_match,
+                set: |p, v| p.adj_snv_full_sclip_match = v,
+            },
+            CompatSwitchSpec {
+                index: 37,
+                name: "indel_only_shift3",
+                get: |p| p.indel_only_shift3,
+                set: |p, v| p.indel_only_shift3 = v,
+            },
+        ]
+    }
+
+    /// Construct a [`CompatProfile`] with `target = CompatTarget::Off` and only switch `index` enabled.
+    pub fn only_switch(index: usize) -> Option<Self> {
+        let switches = Self::all_switches();
+        let spec = switches.get(index)?;
+        let mut p = COMPAT_VARDICTJAVA_1_8_3;
+        p.target = CompatTarget::Off;
+        (spec.set)(&mut p, true);
+        Some(p)
+    }
+
+    /// Construct a [`CompatProfile`] from [`COMPAT_OFF`] with only switch `index` disabled.
+    pub fn without_switch(index: usize) -> Option<Self> {
+        let switches = Self::all_switches();
+        let spec = switches.get(index)?;
+        let mut p = COMPAT_OFF;
+        (spec.set)(&mut p, false);
+        Some(p)
+    }
+
+    /// Construct a [`CompatProfile`] from a 38-bit bitmask (`bit i` controls switch `i`).
+    pub fn from_mask(mask: u64) -> Self {
+        let active_mask = mask & ((1u64 << COMPAT_SWITCH_COUNT) - 1);
+        let mut p = COMPAT_VARDICTJAVA_1_8_3;
+        p.target = if active_mask == 0 {
+            CompatTarget::VardictJava183
+        } else {
+            CompatTarget::Off
+        };
+        for spec in Self::all_switches() {
+            (spec.set)(&mut p, ((mask >> spec.index) & 1) != 0);
+        }
+        p
+    }
+}
+
 /// Parse a `--compat <TARGET>` string into [`CompatTarget`].
 ///
 /// # Errors
@@ -2286,5 +2614,87 @@ mod tests {
         assert_eq!(ctdna.vcf_min_vd, Some(VcfThreshold::new(4)));
         assert_eq!(ctdna.vcf_qmean, Some(VcfThreshold::new(25.0)));
         assert_eq!(ctdna.vcf_mapq, Some(VcfThreshold::new(20.0)));
+    }
+
+    #[test]
+    fn test_lane3_compat_profile_all_switches_exhaustive_roundtrip() {
+        let specs = CompatProfile::all_switches();
+        assert_eq!(specs.len(), COMPAT_SWITCH_COUNT);
+        assert_eq!(specs[0].name, "sanitize_sample_info");
+        assert_eq!(specs[COMPAT_SWITCH_COUNT - 1].name, "indel_only_shift3");
+
+        let mut seen_names = std::collections::HashSet::new();
+        for (idx, spec) in specs.iter().enumerate() {
+            assert_eq!(spec.index, idx, "spec index mismatch at {idx}");
+            assert!(!spec.name.is_empty(), "empty switch name at {idx}");
+            assert!(
+                seen_names.insert(spec.name),
+                "duplicate switch name '{}' at {idx}",
+                spec.name
+            );
+            assert!(
+                !(spec.get)(&COMPAT_VARDICTJAVA_1_8_3),
+                "switch {} ('{}') must be false in COMPAT_VARDICTJAVA_1_8_3",
+                idx,
+                spec.name
+            );
+            assert!(
+                (spec.get)(&COMPAT_OFF),
+                "switch {} ('{}') must be true in COMPAT_OFF",
+                idx,
+                spec.name
+            );
+        }
+
+        // Round-trip COMPAT_VARDICTJAVA_1_8_3 -> COMPAT_OFF and COMPAT_OFF -> COMPAT_VARDICTJAVA_1_8_3
+        let mut built_off = COMPAT_VARDICTJAVA_1_8_3;
+        built_off.target = CompatTarget::Off;
+        for spec in &specs {
+            (spec.set)(&mut built_off, true);
+        }
+        assert_eq!(built_off, COMPAT_OFF);
+
+        let mut built_vj = COMPAT_OFF;
+        built_vj.target = CompatTarget::VardictJava183;
+        for spec in &specs {
+            (spec.set)(&mut built_vj, false);
+        }
+        assert_eq!(built_vj, COMPAT_VARDICTJAVA_1_8_3);
+
+        // only_switch(0..38) and without_switch(0..38) + out-of-range None
+        assert_eq!(CompatProfile::only_switch(COMPAT_SWITCH_COUNT), None);
+        assert_eq!(CompatProfile::only_switch(usize::MAX), None);
+        assert_eq!(CompatProfile::without_switch(COMPAT_SWITCH_COUNT), None);
+        assert_eq!(CompatProfile::without_switch(usize::MAX), None);
+
+        let full_mask = (1u64 << COMPAT_SWITCH_COUNT) - 1;
+        assert_eq!(CompatProfile::from_mask(0), COMPAT_VARDICTJAVA_1_8_3);
+        assert_eq!(
+            CompatProfile::from_mask(1u64 << COMPAT_SWITCH_COUNT),
+            COMPAT_VARDICTJAVA_1_8_3,
+            "bits above COMPAT_SWITCH_COUNT must be masked out"
+        );
+        assert_eq!(CompatProfile::from_mask(full_mask), COMPAT_OFF);
+        assert_eq!(CompatProfile::from_mask(u64::MAX), COMPAT_OFF);
+
+        for i in 0..COMPAT_SWITCH_COUNT {
+            let only =
+                CompatProfile::only_switch(i).expect("only_switch in 0..38 must return Some");
+            assert_eq!(only.target, CompatTarget::Off);
+            assert_ne!(only, COMPAT_VARDICTJAVA_1_8_3);
+            assert_eq!(CompatProfile::from_mask(1u64 << i), only);
+
+            let without =
+                CompatProfile::without_switch(i).expect("without_switch in 0..38 must return Some");
+            assert_eq!(without.target, CompatTarget::Off);
+            assert_ne!(without, COMPAT_OFF);
+            assert_ne!(without, COMPAT_VARDICTJAVA_1_8_3);
+            assert_eq!(CompatProfile::from_mask(full_mask & !(1u64 << i)), without);
+
+            for (j, spec) in specs.iter().enumerate() {
+                assert_eq!((spec.get)(&only), i == j);
+                assert_eq!((spec.get)(&without), i != j);
+            }
+        }
     }
 }

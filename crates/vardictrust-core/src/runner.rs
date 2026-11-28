@@ -86,9 +86,10 @@ pub const CRAM_WORKER_THREAD_STACK_FLOOR_BYTES: usize = 64 * 1024 * 1024;
 #[inline]
 pub(crate) fn bam_spec_has_cram(bam_spec: &str) -> bool {
     bam_spec
-        .split(['|', ':'])
+        .split('|')
         .map(str::trim)
         .filter(|s| !s.is_empty())
+        .flat_map(crate::bam::split_colon_bam_paths)
         .any(|part| {
             std::path::Path::new(part)
                 .extension()
@@ -1316,5 +1317,29 @@ mod tests {
             let expected_drained: Vec<u8> = (0..TOTAL_BATCHES).map(|i| (i & 0xff) as u8).collect();
             assert_eq!(drained, expected_drained);
         }
+    }
+
+    #[test]
+    fn test_lane3_s08_bam_spec_has_cram_colon_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let non_cram_with_colon = dir.path().join("archive.cram:bak");
+        std::fs::write(&non_cram_with_colon, b"not a cram").unwrap();
+        assert!(
+            !bam_spec_has_cram(non_cram_with_colon.to_str().unwrap()),
+            "existing single file 'archive.cram:bak' must not split on ':' to false-positive as .cram"
+        );
+
+        let colon_dir = dir.path().join("job:42");
+        std::fs::create_dir_all(&colon_dir).unwrap();
+        let cram_in_colon_dir = colon_dir.join("sample.cram");
+        std::fs::write(&cram_in_colon_dir, b"").unwrap();
+        assert!(bam_spec_has_cram(cram_in_colon_dir.to_str().unwrap()));
+
+        let bam_in_colon_dir = colon_dir.join("sample.bam");
+        std::fs::write(&bam_in_colon_dir, b"").unwrap();
+        assert!(!bam_spec_has_cram(bam_in_colon_dir.to_str().unwrap()));
+
+        assert!(bam_spec_has_cram("t1.bam:t2.cram|n.bam"));
+        assert!(!bam_spec_has_cram("t1.bam:t2.bam|n.bam"));
     }
 }
