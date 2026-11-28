@@ -40,8 +40,17 @@ fn populate_sclip(sclip: &mut Sclip, overhang: &[u8], tie_probe: bool) {
     sclip.variation.qstd = true;
     for (idx, &raw) in overhang.iter().take(24).enumerate() {
         let pos_in_clip = idx as i32;
-        let maj_base = bases[usize::from(raw) % 4];
-        let min_base = bases[(usize::from(raw) + 1) % 4];
+        let maj_base = match raw {
+            b'A' | b'C' | b'G' | b'T' => raw,
+            b'a' | b'c' | b'g' | b't' => raw.to_ascii_uppercase(),
+            _ => bases[usize::from(raw) % 4],
+        };
+        let min_base = match maj_base {
+            b'A' => b'C',
+            b'C' => b'G',
+            b'G' => b'T',
+            _ => b'A',
+        };
         let nt_entry = sclip.nt.entry(pos_in_clip).or_default();
         let seq_entry = sclip.seq.entry(pos_in_clip).or_default();
         if tie_probe && idx == 0 {

@@ -998,7 +998,8 @@ pub fn amplicon_select_vcf_rows_compat(
     amplicon_select_vcf_rows_inner(results, exact_binary_half_even, false, false)
 }
 
-pub(crate) fn amplicon_select_vcf_rows_for_config(
+/// Global top-1-per-bucket VCF row selector honoring active `Config` and `CompatProfile` rules.
+pub fn amplicon_select_vcf_rows_for_config(
     results: Vec<AmpliconVariant>,
     config: &Config,
 ) -> Vec<AmpliconVariant> {

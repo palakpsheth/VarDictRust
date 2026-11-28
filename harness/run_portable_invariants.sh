@@ -66,6 +66,8 @@ trap 'rm -rf "$WORK_TMP"' EXIT INT TERM
 T0_MS="$(now_ms)"
 
 python3 - "$VARDICTRUST_BIN" "$ROOT_DIR" "$ASSET_ROOT" "$WORK_TMP" <<'PY'
+from __future__ import annotations
+
 import concurrent.futures
 import gzip
 import os

@@ -869,8 +869,13 @@ fuzz_target!(|data: &[u8]| {
         }
     }
 
-    // 1/8-gated end-to-end `run_with_writer` `Tiled (tile_size = Some(64)) == Untiled` check.
-    if (mode_bits & 0x07) == 0 && !high_coord_mode && eff_len <= 512 && !config.splice {
+    // 1/8-gated end-to-end `run_with_writer` `Tiled (tile_size = Some(64)) == Untiled` check,
+    // sampled from `payload.last()` so both `config.realign == 0` and `config.realign == 1` reach this oracle.
+    if (payload.last().copied().unwrap_or(0) & 0x07) == 0
+        && !high_coord_mode
+        && eff_len <= 512
+        && !config.splice
+    {
         exercise_tiled_vs_untiled(&config, payload, extra_param);
     }
 });

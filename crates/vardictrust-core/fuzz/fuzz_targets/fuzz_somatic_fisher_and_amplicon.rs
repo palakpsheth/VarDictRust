@@ -14,7 +14,7 @@ use vardictrust_core::output::vcf::{
 };
 use vardictrust_core::postprocess::amplicon::{
     aggregate_sample_amplicon_vars, amplicon_post_process, amplicon_post_process_streaming,
-    amplicon_retain_strict_bounds, amplicon_select_vcf_rows_compat,
+    amplicon_retain_strict_bounds, amplicon_select_vcf_rows_for_config,
 };
 use vardictrust_core::postprocess::simple::simple_post_process;
 use vardictrust_core::postprocess::somatic::{somatic_post_process_at, PositionPipelineFn};
@@ -1316,27 +1316,18 @@ fuzz_target!(|data: &[u8]| {
         );
     }
     let finalized_streamed = if !amp_cfg.emit_intermediate && !amp_cfg.vcf_all_alleles {
-        amplicon_select_vcf_rows_compat(streamed_amp, amp_cfg.compat.exact_binary_half_even)
+        amplicon_select_vcf_rows_for_config(streamed_amp, &amp_cfg)
     } else {
         streamed_amp
     };
-    let compat_vcf_bucket_customized = !amp_cfg.emit_intermediate
-        && !amp_cfg.vcf_all_alleles
-        && (amp_cfg.compat.canonical_sv_vcf_anchoring
-            || amp_cfg.compat.standard_dup_symbolic_alt
-            || (amp_cfg.pileup && amp_cfg.compat.pileup_preserve_shifted_ref));
-    if !compat_vcf_bucket_customized {
-        assert_eq!(batch_amp.len(), finalized_streamed.len());
-        for (lhs, rhs) in batch_amp.iter().zip(finalized_streamed.iter()) {
-            assert_eq!(lhs.variant.start_pos, rhs.variant.start_pos);
-            assert_eq!(lhs.variant.var_allele, rhs.variant.var_allele);
-            assert_eq!(lhs.gdamp, rhs.gdamp);
-            assert_eq!(lhs.tlamp, rhs.tlamp);
-            assert_eq!(lhs.ncamp, rhs.ncamp);
-            assert_eq!(lhs.ampflag, rhs.ampflag);
-        }
-    } else {
-        assert!(finalized_streamed.len() <= batch_amp.len());
+    assert_eq!(batch_amp.len(), finalized_streamed.len());
+    for (lhs, rhs) in batch_amp.iter().zip(finalized_streamed.iter()) {
+        assert_eq!(lhs.variant.start_pos, rhs.variant.start_pos);
+        assert_eq!(lhs.variant.var_allele, rhs.variant.var_allele);
+        assert_eq!(lhs.gdamp, rhs.gdamp);
+        assert_eq!(lhs.tlamp, rhs.tlamp);
+        assert_eq!(lhs.ncamp, rhs.ncamp);
+        assert_eq!(lhs.ampflag, rhs.ampflag);
     }
     for lhs in &batch_amp {
         assert!(
