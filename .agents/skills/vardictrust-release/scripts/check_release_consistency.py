@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """VarDictRust Release Consistency & Evidence Validator (stdlib-only).
 
-Verifies that all version-bearing files, workspace test counts (828 total:
-599 core lib + 110 corpus_parity + 44 engine_behavior + 2 amplicon_stream_mem
-+ 3 cram_stack + 35 CLI bin + 35 CLI integration binary tests), engine
+Verifies that all version-bearing files, workspace test counts (859 total:
+625 core lib + 110 corpus_parity + 48 engine_behavior + 2 amplicon_stream_mem
++ 3 cram_stack + 36 CLI bin + 35 CLI integration binary tests), engine
 fingerprints (FP & PERF_FP), and 16 benchmarks/evidence/*.json SHA-256
 manifests are synchronized for a target release version and phase.
 """
@@ -21,13 +21,13 @@ import sys
 VALID_PHASES = ("pre-tag", "post-tag", "post-bioconda", "post-nfcore")
 
 EXPECTED_TEST_COUNTS = {
-    "total_workspace": 828,
-    "core_lib": 599,
+    "total_workspace": 859,
+    "core_lib": 625,
     "corpus_parity": 110,
-    "engine_behavior": 44,
+    "engine_behavior": 48,
     "amplicon_stream_mem": 2,
     "cram_stack": 3,
-    "cli_bin": 35,
+    "cli_bin": 36,
     "cli_integration": 35,
     "harness_self_tests": 37,
 }
@@ -1093,6 +1093,12 @@ def check_pre_tag_surfaces(
     )
 
     # 15. docs/testing/test-matrix-and-ci-audit.md
+    int_suite_total = (
+        tc["engine_behavior"]
+        + tc["amplicon_stream_mem"]
+        + tc["cram_stack"]
+        + tc["cli_integration"]
+    )
     require_regex(
         repo_root,
         "docs/testing/test-matrix-and-ci-audit.md",
@@ -1105,6 +1111,27 @@ def check_pre_tag_surfaces(
         "docs/testing/test-matrix-and-ci-audit.md",
         rf"\b{tc['total_workspace']}\b",
         f"test-matrix-and-ci-audit.md cites {tc['total_workspace']} workspace tests",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "docs/testing/test-matrix-and-ci-audit.md",
+        rf"\({tc['total_workspace']} workspace tests\)",
+        f"test-matrix-and-ci-audit.md §9 cites ({tc['total_workspace']} workspace tests)",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "docs/testing/test-matrix-and-ci-audit.md",
+        rf"{tc['core_lib'] + tc['cli_bin']} library and CLI binary unit tests \(`{tc['core_lib']}` core lib \+ `{tc['cli_bin']}` CLI bin",
+        f"test-matrix-and-ci-audit.md §10.1 Step 3 cites {tc['core_lib'] + tc['cli_bin']} unit tests ({tc['core_lib']} core lib + {tc['cli_bin']} CLI bin)",
+        errors,
+    )
+    require_regex(
+        repo_root,
+        "docs/testing/test-matrix-and-ci-audit.md",
+        rf"`engine_behavior` \({tc['engine_behavior']} tests\).*\(`{int_suite_total}` tests total\)",
+        f"test-matrix-and-ci-audit.md §10.1 Step 4 cites engine_behavior ({tc['engine_behavior']} tests) and ({int_suite_total} tests total)",
         errors,
     )
     require_regex(

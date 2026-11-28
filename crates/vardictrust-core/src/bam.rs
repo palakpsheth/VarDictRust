@@ -2365,8 +2365,7 @@ impl noodles::bgzf::io::Seek for CachedBgzfReader {
 
 type RawBamReader = noodles::bam::io::Reader<CachedBgzfReader>;
 type PathSlot = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<SharedBamMeta>>>>;
-type PooledReaderEntry = (std::sync::Arc<SharedBamMeta>, RawBamReader);
-type BamReaderPoolMap = HashMap<PathBuf, Vec<PooledReaderEntry>>;
+type BamReaderPoolMap = ReaderPoolMap<SharedBamMeta, RawBamReader>;
 type BamMetaTlsSlots = [Option<(u64, std::sync::Arc<SharedBamMeta>)>; 2];
 
 static META_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, PathSlot>>> =
@@ -2470,53 +2469,116 @@ pub fn clear_bam_caches() {
     BAM_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
-type ReaderPoolMap<M, R> = HashMap<PathBuf, Vec<(std::sync::Arc<M>, R)>>;
+trait PoolMeta {
+    fn meta_id(&self) -> u64;
+}
 
-fn pop_from_pool<M: 'static, R: 'static>(
+impl PoolMeta for SharedBamMeta {
+    #[inline]
+    fn meta_id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl PoolMeta for SharedCramMeta {
+    #[inline]
+    fn meta_id(&self) -> u64 {
+        self.id
+    }
+}
+
+type ReaderPoolMap<M, R> = HashMap<PathBuf, Vec<(u64, std::sync::Arc<M>, R)>>;
+
+#[inline]
+fn sweep_stale_pool_entries<M: PoolMeta, R>(map: &mut ReaderPoolMap<M, R>, cur_epoch: u64) {
+    map.retain(|_, vec| {
+        vec.retain(|(ep, m, _)| tls_epoch_valid(*ep, cur_epoch, m.meta_id()));
+        !vec.is_empty()
+    });
+}
+
+fn pop_from_pool<M: PoolMeta + 'static, R: 'static>(
     pool: &'static std::thread::LocalKey<RefCell<ReaderPoolMap<M, R>>>,
     path: &Path,
     meta: &std::sync::Arc<M>,
+    cur_epoch: u64,
 ) -> Option<R> {
     pool.try_with(|cell| {
         let mut map = cell.try_borrow_mut().ok()?;
-        let vec = map.get_mut(path)?;
-        while let Some((pooled_meta, reader)) = vec.pop() {
-            if std::sync::Arc::ptr_eq(&pooled_meta, meta) {
-                return Some(reader);
+        sweep_stale_pool_entries(&mut map, cur_epoch);
+        let mut hit = None;
+        if let Some(vec) = map.get_mut(path) {
+            while let Some((_, pooled_meta, reader)) = vec.pop() {
+                if std::sync::Arc::ptr_eq(&pooled_meta, meta) {
+                    hit = Some(reader);
+                    break;
+                }
+            }
+            if vec.is_empty() {
+                map.remove(path);
             }
         }
-        None
+        hit
     })
     .ok()
     .flatten()
 }
 
-fn return_to_pool<M: 'static, R: 'static>(
+fn return_to_pool<M: PoolMeta + 'static, R: 'static>(
     pool: &'static std::thread::LocalKey<RefCell<ReaderPoolMap<M, R>>>,
     path: &Path,
+    reader_epoch: u64,
     meta: std::sync::Arc<M>,
     reader: R,
 ) {
+    let cur_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
     let _ = pool.try_with(|cell| {
         if let Ok(mut map) = cell.try_borrow_mut() {
+            sweep_stale_pool_entries(&mut map, cur_epoch);
+            if !tls_epoch_valid(reader_epoch, cur_epoch, meta.meta_id()) {
+                return;
+            }
             if let Some(vec) = map.get_mut(path) {
-                vec.retain(|(m, _)| std::sync::Arc::ptr_eq(m, &meta));
+                vec.retain(|(_, m, _)| std::sync::Arc::ptr_eq(m, &meta));
                 if vec.len() < MAX_POOLED_READERS_PER_PATH {
-                    vec.push((meta, reader));
+                    vec.push((reader_epoch, meta, reader));
                 }
             } else if MAX_POOLED_READERS_PER_PATH > 0 {
-                map.insert(path.to_path_buf(), vec![(meta, reader)]);
+                map.insert(path.to_path_buf(), vec![(reader_epoch, meta, reader)]);
             }
         }
     });
 }
 
-fn pop_pooled_reader(path: &Path, meta: &std::sync::Arc<SharedBamMeta>) -> Option<RawBamReader> {
-    pop_from_pool(&BAM_READER_POOL, path, meta)
+fn pop_pooled_reader(
+    path: &Path,
+    meta: &std::sync::Arc<SharedBamMeta>,
+    cur_epoch: u64,
+) -> Option<RawBamReader> {
+    pop_from_pool(&BAM_READER_POOL, path, meta, cur_epoch)
 }
 
-fn return_pooled_reader(path: &Path, meta: std::sync::Arc<SharedBamMeta>, reader: RawBamReader) {
-    return_to_pool(&BAM_READER_POOL, path, meta, reader);
+fn return_pooled_reader(
+    path: &Path,
+    reader_epoch: u64,
+    meta: std::sync::Arc<SharedBamMeta>,
+    reader: RawBamReader,
+) {
+    return_to_pool(&BAM_READER_POOL, path, reader_epoch, meta, reader);
+}
+
+#[inline]
+fn sweep_stale_tls_slots<T>(slots: &mut [Option<T>; 2], mut is_valid: impl FnMut(&T) -> bool) {
+    let [s0, s1] = slots;
+    if s0.as_ref().is_some_and(|v| !is_valid(v)) {
+        *s0 = None;
+    }
+    if s1.as_ref().is_some_and(|v| !is_valid(v)) {
+        *s1 = None;
+    }
+    if s0.is_none() && s1.is_some() {
+        *s0 = s1.take();
+    }
 }
 
 #[inline]
@@ -2524,6 +2586,7 @@ fn lookup_bam_meta_tls(path: &Path, cur_epoch: u64) -> Option<std::sync::Arc<Sha
     BAM_META_TLS
         .try_with(|tls| {
             let mut slots = tls.try_borrow_mut().ok()?;
+            sweep_stale_tls_slots(&mut slots, |(ep, m)| tls_epoch_valid(*ep, cur_epoch, m.id));
             let [s0, s1] = &mut *slots;
             if let Some((ep, meta)) = s0.as_ref() {
                 if tls_epoch_valid(*ep, cur_epoch, meta.id) && meta.path.as_path() == path {
@@ -2547,6 +2610,7 @@ fn lookup_bam_meta_tls(path: &Path, cur_epoch: u64) -> Option<std::sync::Arc<Sha
 fn insert_bam_meta_tls(cur_epoch: u64, meta: &std::sync::Arc<SharedBamMeta>) {
     let _ = BAM_META_TLS.try_with(|tls| {
         if let Ok(mut slots) = tls.try_borrow_mut() {
+            sweep_stale_tls_slots(&mut slots, |(ep, m)| tls_epoch_valid(*ep, cur_epoch, m.id));
             let [s0, s1] = &mut *slots;
             if s0.as_ref().is_some_and(|(_, m)| m.path == meta.path) {
                 *s0 = Some((cur_epoch, std::sync::Arc::clone(meta)));
@@ -2560,15 +2624,15 @@ fn insert_bam_meta_tls(cur_epoch: u64, meta: &std::sync::Arc<SharedBamMeta>) {
 
 fn acquire_bam_meta_and_reader(
     path: &Path,
-) -> Result<(std::sync::Arc<SharedBamMeta>, RawBamReader), crate::types::VardictError> {
+) -> Result<(u64, std::sync::Arc<SharedBamMeta>, RawBamReader), crate::types::VardictError> {
     let cur_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
     if let Some(meta) = lookup_bam_meta_tls(path, cur_epoch) {
-        if let Some(reader) = pop_pooled_reader(path, &meta) {
-            return Ok((meta, reader));
+        if let Some(reader) = pop_pooled_reader(path, &meta, cur_epoch) {
+            return Ok((cur_epoch, meta, reader));
         }
         let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
         let reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, meta.id));
-        return Ok((meta, reader));
+        return Ok((cur_epoch, meta, reader));
     }
 
     let slot = {
@@ -2626,17 +2690,17 @@ fn acquire_bam_meta_and_reader(
                     *slot_guard = Some(std::sync::Arc::clone(&meta));
                     insert_bam_meta_tls(cur_epoch, &meta);
                 }
-                return Ok((meta, reader));
+                return Ok((cur_epoch, meta, reader));
             }
         }
     };
 
-    if let Some(reader) = pop_pooled_reader(path, &meta) {
-        return Ok((meta, reader));
+    if let Some(reader) = pop_pooled_reader(path, &meta, cur_epoch) {
+        return Ok((cur_epoch, meta, reader));
     }
     let file = std::fs::File::open(path).map_err(crate::types::VardictError::Io)?;
     let reader = noodles::bam::io::Reader::from(CachedBgzfReader::new(file, meta.id));
-    Ok((meta, reader))
+    Ok((cur_epoch, meta, reader))
 }
 
 /// Reads reference sequence lengths (`SN` -> `LN`) from a BAM/CRAM header,
@@ -2657,8 +2721,8 @@ pub fn read_reference_lengths(
         }
         Ok(lengths)
     } else {
-        let (meta, reader) = acquire_bam_meta_and_reader(path)?;
-        return_pooled_reader(path, std::sync::Arc::clone(&meta), reader);
+        let (epoch, meta, reader) = acquire_bam_meta_and_reader(path)?;
+        return_pooled_reader(path, epoch, std::sync::Arc::clone(&meta), reader);
         let mut lengths = HashMap::with_capacity(meta.header.reference_sequences().len());
         for (name, ref_seq) in meta.header.reference_sequences().iter() {
             lengths.insert(
@@ -2721,6 +2785,7 @@ pub struct BamFeed {
 }
 
 struct BamFeedInner {
+    epoch: u64,
     meta: std::sync::Arc<SharedBamMeta>,
     reader: Option<RawBamReader>,
     tainted: bool,
@@ -2744,7 +2809,7 @@ impl Drop for BamFeedInner {
             return;
         };
         let meta = std::sync::Arc::clone(&self.meta);
-        return_pooled_reader(&self.meta.path, meta, reader);
+        return_pooled_reader(&self.meta.path, self.epoch, meta, reader);
     }
 }
 
@@ -3884,6 +3949,9 @@ fn lookup_cram_meta_tls(
     CRAM_META_TLS
         .try_with(|tls| {
             let mut slots = tls.try_borrow_mut().ok()?;
+            sweep_stale_tls_slots(&mut slots, |(ep, _, _, m)| {
+                tls_epoch_valid(*ep, cur_epoch, m.id)
+            });
             let [s0, s1] = &mut *slots;
             if let Some((ep, cached_cram, cached_fasta, meta)) = s0.as_ref() {
                 if tls_epoch_valid(*ep, cur_epoch, meta.id)
@@ -3918,6 +3986,9 @@ fn insert_cram_meta_tls(
 ) {
     let _ = CRAM_META_TLS.try_with(|tls| {
         if let Ok(mut slots) = tls.try_borrow_mut() {
+            sweep_stale_tls_slots(&mut slots, |(ep, _, _, m)| {
+                tls_epoch_valid(*ep, cur_epoch, m.id)
+            });
             let [s0, s1] = &mut *slots;
             if s0
                 .as_ref()
@@ -3945,16 +4016,18 @@ fn insert_cram_meta_tls(
 fn pop_pooled_cram_reader(
     path: &Path,
     meta: &std::sync::Arc<SharedCramMeta>,
+    cur_epoch: u64,
 ) -> Option<RawCramReader> {
-    pop_from_pool(&CRAM_READER_POOL, path, meta)
+    pop_from_pool(&CRAM_READER_POOL, path, meta, cur_epoch)
 }
 
 fn return_pooled_cram_reader(
     path: &Path,
+    reader_epoch: u64,
     meta: std::sync::Arc<SharedCramMeta>,
     reader: RawCramReader,
 ) {
-    return_to_pool(&CRAM_READER_POOL, path, meta, reader);
+    return_to_pool(&CRAM_READER_POOL, path, reader_epoch, meta, reader);
 }
 
 fn prevalidate_cram_file_header(path: &Path, file: &mut std::fs::File) -> std::io::Result<()> {
@@ -4217,7 +4290,7 @@ fn acquire_cram_meta(
     }
     if BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire) == cur_epoch {
         *slot_guard = Some(std::sync::Arc::clone(&meta));
-        return_pooled_cram_reader(path, std::sync::Arc::clone(&meta), reader);
+        return_pooled_cram_reader(path, cur_epoch, std::sync::Arc::clone(&meta), reader);
         insert_cram_meta_tls(cur_epoch, path, fasta_path, &meta);
     }
     Ok(meta)
@@ -4332,6 +4405,49 @@ impl Drop for CramContigPinGuard {
     }
 }
 
+#[inline]
+fn has_bam_or_cram_extension_ci(seg: &str) -> bool {
+    Path::new(seg)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("bam") || e.eq_ignore_ascii_case("cram"))
+}
+
+/// Splits a colon-delimited BAM/CRAM specification into non-empty file path slices.
+///
+/// Preserves untrimmed segments and single-file paths whose directory or filename contains `:`
+/// (`AR-17`, shared with `lib.rs::parse_colon_bams` and `runner.rs`).
+pub(crate) fn split_colon_bam_paths(spec: &str) -> Vec<&str> {
+    if spec.is_empty() {
+        return Vec::new();
+    }
+    let raw_parts: Vec<&str> = spec.split(':').collect();
+    let non_empty: Vec<&str> = raw_parts
+        .iter()
+        .copied()
+        .filter(|s| !s.is_empty())
+        .collect();
+    if non_empty.is_empty() {
+        return Vec::new();
+    }
+    if spec.contains(':') {
+        let keep_unsplit = Path::new(spec).exists()
+            || (!raw_parts.iter().any(|s| s.is_empty())
+                && raw_parts
+                    .get(..raw_parts.len().saturating_sub(1))
+                    .is_some_and(|left_parts| {
+                        !left_parts.is_empty()
+                            && left_parts.iter().all(|seg| {
+                                !has_bam_or_cram_extension_ci(seg) && !Path::new(seg).exists()
+                            })
+                    }));
+        if keep_unsplit {
+            return vec![spec];
+        }
+    }
+    non_empty
+}
+
 /// Warms and pins `chr` in [`SharedFastaRepo`] when `bam_spec` contains at least one
 /// `.cram` file with `.crai` containers on `chr`; returns a zero-cost empty guard for BAM specs.
 pub(crate) fn pin_cram_contig_for_spec(
@@ -4344,10 +4460,12 @@ pub(crate) fn pin_cram_contig_for_spec(
         return CramContigPinGuard { inner: None };
     }
     let chr_bytes = chr.as_bytes();
-    for raw_part in bam_spec.split(['|', ':']).map(str::trim) {
-        if raw_part.is_empty() {
-            continue;
-        }
+    for raw_part in bam_spec
+        .split('|')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .flat_map(split_colon_bam_paths)
+    {
         let path = Path::new(raw_part);
         if !is_cram_path(path) {
             continue;
@@ -4648,14 +4766,17 @@ fn lookup_cram_container_tls(cur_epoch: u64, key: (u64, u64)) -> Option<CachedCr
     CRAM_LAST_CONTAINER_TLS
         .try_with(|tls| {
             let mut slots = tls.try_borrow_mut().ok()?;
+            sweep_stale_tls_slots(&mut slots, |(ep, (meta_id, _), _)| {
+                tls_epoch_valid(*ep, cur_epoch, *meta_id)
+            });
             let [s0, s1] = &mut *slots;
             if let Some((ep, k, block)) = s0.as_ref() {
-                if *ep == cur_epoch && *k == key {
+                if tls_epoch_valid(*ep, cur_epoch, k.0) && *k == key {
                     return Some(std::sync::Arc::clone(block));
                 }
             }
             if let Some((ep, k, block)) = s1.as_ref() {
-                if *ep == cur_epoch && *k == key {
+                if tls_epoch_valid(*ep, cur_epoch, k.0) && *k == key {
                     let hit = std::sync::Arc::clone(block);
                     std::mem::swap(s0, s1);
                     return Some(hit);
@@ -4669,8 +4790,15 @@ fn lookup_cram_container_tls(cur_epoch: u64, key: (u64, u64)) -> Option<CachedCr
 
 #[inline]
 fn store_cram_container_tls(cur_epoch: u64, key: (u64, u64), block: CachedCramBlock) {
+    let live_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
     let _ = CRAM_LAST_CONTAINER_TLS.try_with(|tls| {
         if let Ok(mut slots) = tls.try_borrow_mut() {
+            sweep_stale_tls_slots(&mut slots, |(ep, (meta_id, _), _)| {
+                tls_epoch_valid(*ep, live_epoch, *meta_id)
+            });
+            if !tls_epoch_valid(cur_epoch, live_epoch, key.0) {
+                return;
+            }
             let [s0, s1] = &mut *slots;
             if s0.as_ref().is_some_and(|(_, k, _)| *k == key) {
                 *s0 = Some((cur_epoch, key, block));
@@ -6308,7 +6436,9 @@ fn fetch_cram_container_in(
             _ => None,
         });
 
-    let mut reader = match pop_pooled_cram_reader(path, meta) {
+    let pool_epoch =
+        start_epoch.unwrap_or_else(|| BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire));
+    let mut reader = match pop_pooled_cram_reader(path, meta, pool_epoch) {
         Some(r) => r,
         None => noodles::cram::io::Reader::new(std::fs::File::open(path)?),
     };
@@ -6410,10 +6540,10 @@ fn fetch_cram_container_in(
 
     match inmem_outcome {
         Some(Ok(Some(_bytes_read))) => {
-            return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
+            return_pooled_cram_reader(path, pool_epoch, std::sync::Arc::clone(meta), reader);
         }
         Some(Ok(None)) => {
-            return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
+            return_pooled_cram_reader(path, pool_epoch, std::sync::Arc::clone(meta), reader);
             if let Some(g) = inflight_guard {
                 g.complete(None, max_cached_bytes, start_epoch);
             }
@@ -6426,7 +6556,7 @@ fn fetch_cram_container_in(
             reader.seek(SeekFrom::Start(container_offset))?;
             let bytes_read = reader.read_container(&mut container)?;
             if bytes_read == 0 {
-                return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
+                return_pooled_cram_reader(path, pool_epoch, std::sync::Arc::clone(meta), reader);
                 if let Some(g) = inflight_guard {
                     g.complete(None, max_cached_bytes, start_epoch);
                 }
@@ -6464,7 +6594,7 @@ fn fetch_cram_container_in(
                 )?;
             }
             reader.get_mut().seek(SeekFrom::Start(post_container_pos))?;
-            return_pooled_cram_reader(path, std::sync::Arc::clone(meta), reader);
+            return_pooled_cram_reader(path, pool_epoch, std::sync::Arc::clone(meta), reader);
         }
     }
 
@@ -6843,7 +6973,7 @@ pub fn query_region_iter(
     } else {
         use noodles::csi::BinningIndex as _;
 
-        let (meta, reader) = acquire_bam_meta_and_reader(bam_path)?;
+        let (epoch, meta, reader) = acquire_bam_meta_and_reader(bam_path)?;
 
         // Preserve the query_region empty-window short-circuit after
         // meta/reader acquisition so a missing BAM with an empty window
@@ -6853,6 +6983,7 @@ pub fn query_region_iter(
         if start_pos > end_pos {
             return Ok(RecordFeed::Bam(Box::new(BamFeed {
                 inner: BamFeedInner {
+                    epoch,
                     meta,
                     reader: Some(reader),
                     tainted: false,
@@ -6873,7 +7004,7 @@ pub fn query_region_iter(
         let region = match build_noodles_region(chr, start_pos, end_pos) {
             Ok(r) => r,
             Err(err) => {
-                return_pooled_reader(bam_path, meta, reader);
+                return_pooled_reader(bam_path, epoch, meta, reader);
                 return Err(err);
             }
         };
@@ -6883,7 +7014,7 @@ pub fn query_region_iter(
             .reference_sequences()
             .get_index_of(region.name())
         else {
-            return_pooled_reader(bam_path, meta, reader);
+            return_pooled_reader(bam_path, epoch, meta, reader);
             return Err(crate::types::VardictError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
@@ -6895,13 +7026,14 @@ pub fn query_region_iter(
         let chunks = match meta.index.query(reference_sequence_id, region.interval()) {
             Ok(c) => c,
             Err(e) => {
-                return_pooled_reader(bam_path, meta, reader);
+                return_pooled_reader(bam_path, epoch, meta, reader);
                 return Err(crate::types::VardictError::Io(e));
             }
         };
 
         Ok(RecordFeed::Bam(Box::new(BamFeed {
             inner: BamFeedInner {
+                epoch,
                 meta,
                 reader: Some(reader),
                 tainted: false,
@@ -7016,6 +7148,81 @@ pub enum DupKey {
     UnmappedMateCigar(i32, Vec<(u32, CigarKind)>),
 }
 
+fn normalize_dup_cigar_strip_hp(mut cigar: &[(u32, CigarKind)]) -> Vec<(u32, CigarKind)> {
+    while let Some((&(len, kind), rest)) = cigar.split_first() {
+        if len > 0 && matches!(kind, CigarKind::HardClip | CigarKind::Pad) {
+            cigar = rest;
+        } else {
+            break;
+        }
+    }
+    while let Some((&(len, kind), rest)) = cigar.split_last() {
+        if len > 0 && matches!(kind, CigarKind::HardClip | CigarKind::Pad) {
+            cigar = rest;
+        } else {
+            break;
+        }
+    }
+    let mut out: Vec<(u32, CigarKind)> = Vec::with_capacity(cigar.len());
+    for &(len, kind) in cigar {
+        if len > 0 && kind == CigarKind::Pad {
+            continue;
+        }
+        if len > 0 {
+            if let Some(&mut (ref mut prev_len, prev_kind)) = out.last_mut() {
+                if *prev_len > 0 && prev_kind == kind {
+                    *prev_len = prev_len.saturating_add(len);
+                    continue;
+                }
+            }
+        }
+        out.push((len, kind));
+    }
+    out
+}
+
+impl DupKey {
+    /// Constructs a deduplication key for `record` (`RecordPreprocessor.java:108-127`).
+    ///
+    /// Strips outer positive `H`/`P` and interior positive `P` on `UnmappedMateCigar` when
+    /// `cigar_strip_outer_hard_clips` (`Switch 22`) is active, returning `None` on unkeyed
+    /// single-end reads or out-of-`i32` coordinates.
+    pub fn from_record(
+        record: &SamRecord,
+        eqx_cigar_read_length: bool,
+        cigar_strip_outer_hard_clips: bool,
+    ) -> Option<Self> {
+        let alignment_start_val = record
+            .alignment_start
+            .map_or(Some(0), |p| i32::try_from(p.0).ok())?;
+        let mate_alignment_start_val = record
+            .mate_alignment_start
+            .map_or(Some(0), |p| i32::try_from(p.0).ok())?;
+        if mate_alignment_start_val < 10 {
+            Some(DupKey::MatePos(
+                alignment_start_val,
+                RecordPreprocessor::get_mate_ref_key(record),
+                mate_alignment_start_val,
+            ))
+        } else {
+            let is_paired = (record.flags & 0x1) != 0;
+            let is_mate_unmapped = (record.flags & 0x8) != 0;
+            if is_paired && is_mate_unmapped {
+                let mut ops = if cigar_strip_outer_hard_clips {
+                    normalize_dup_cigar_strip_hp(&record.cigar)
+                } else {
+                    record.cigar.clone()
+                };
+                if eqx_cigar_read_length {
+                    crate::cigar::parse::coalesce_eqx_into_match(&mut ops);
+                }
+                Some(DupKey::UnmappedMateCigar(alignment_start_val, ops))
+            } else {
+                None
+            }
+        }
+    }
+}
 impl std::hash::Hash for DupKey {
     #[inline]
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -7168,43 +7375,22 @@ impl RecordPreprocessor {
         // 5. Duplicated reads filter (removeDuplicatedReads)
         if config.dedup {
             let alignment_start_val = record.alignment_start.map(|p| p.0 as i32).unwrap_or(0);
-            let mate_alignment_start_val =
-                record.mate_alignment_start.map(|p| p.0 as i32).unwrap_or(0);
 
             if alignment_start_val != self.first_matching_position {
                 self.duplicates.clear();
             }
 
-            if mate_alignment_start_val < 10 {
-                // POS-RNEXT-PNEXT
-                let key = DupKey::MatePos(
-                    alignment_start_val,
-                    Self::get_mate_ref_key(record),
-                    mate_alignment_start_val,
-                );
+            if let Some(key) = DupKey::from_record(
+                record,
+                config.compat.eqx_cigar_read_length,
+                config.compat.cigar_strip_outer_hard_clips,
+            ) {
                 if self.duplicates.contains(&key) {
                     self.duplicate_reads = self.duplicate_reads.saturating_add(1);
                     return false;
                 }
                 self.duplicates.insert(key);
                 self.first_matching_position = alignment_start_val;
-            } else {
-                let is_paired = (record.flags & 0x1) != 0;
-                let is_mate_unmapped = (record.flags & 0x8) != 0;
-                if is_paired && is_mate_unmapped {
-                    // POS-CIGAR
-                    let mut ops = record.cigar.clone();
-                    if config.compat.eqx_cigar_read_length {
-                        crate::cigar::parse::coalesce_eqx_into_match(&mut ops);
-                    }
-                    let key = DupKey::UnmappedMateCigar(alignment_start_val, ops);
-                    if self.duplicates.contains(&key) {
-                        self.duplicate_reads = self.duplicate_reads.saturating_add(1);
-                        return false;
-                    }
-                    self.duplicates.insert(key);
-                    self.first_matching_position = alignment_start_val;
-                }
             }
         }
 
@@ -14614,5 +14800,221 @@ mod tests {
         assert!(!pre_off.preprocess_record(&r_74eq_1x_75eq, &cfg_off));
         assert!(!pre_off.preprocess_record(&r_150m, &cfg_off));
         assert_eq!(pre_off.duplicate_reads, 2);
+    }
+
+    #[test]
+    fn test_lane3_s08_colon_cram_pin_epoch_pool_sweep_and_dupkey_outer_hp() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::io::Write as _;
+        use noodles::sam::alignment::record::cigar::{op::Kind, Op};
+        use noodles::sam::alignment::record::{Flags, MappingQuality};
+        use noodles::sam::alignment::record_buf::{Cigar, RecordBuf};
+        use noodles::sam::header::record::value::{map::ReferenceSequence, Map};
+        use std::io::Write as _;
+        use std::num::NonZeroUsize;
+        use std::sync::atomic::Ordering;
+
+        // 1. split_colon_bam_paths & pin_cram_contig_for_spec with ':' in directory name
+        let temp_dir = tempfile::tempdir().unwrap();
+        let colon_sub = temp_dir.path().join("job:1");
+        std::fs::create_dir_all(&colon_sub).unwrap();
+        let ref_fa = colon_sub.join("ref.fa");
+        let ref_fai = colon_sub.join("ref.fa.fai");
+        let cram_in_colon = colon_sub.join("sample.cram");
+        let cram_old = colon_sub.join("old_pool.cram");
+        let cram_b = colon_sub.join("other.cram");
+        let bam_old = colon_sub.join("old.bam");
+        let bam_new = colon_sub.join("new.bam");
+
+        let contig_len = 500usize;
+        {
+            let mut fa = std::fs::File::create(&ref_fa).unwrap();
+            let mut fai = std::fs::File::create(&ref_fai).unwrap();
+            fa.write_all(b">chr1\n").unwrap();
+            fa.write_all(&vec![b'A'; contig_len]).unwrap();
+            fa.write_all(b"\n").unwrap();
+            writeln!(
+                fai,
+                "chr1\t{contig_len}\t6\t{contig_len}\t{}",
+                contig_len + 1
+            )
+            .unwrap();
+        }
+        let header = noodles::sam::Header::builder()
+            .add_reference_sequence(
+                "chr1",
+                Map::<ReferenceSequence>::new(NonZeroUsize::try_from(contig_len).unwrap()),
+            )
+            .build();
+        let write_tiny_cram = |dest: &Path| {
+            let fasta_reader = noodles::fasta::io::IndexedReader::new(
+                std::io::BufReader::new(std::fs::File::open(&ref_fa).unwrap()),
+                noodles::fasta::fai::fs::read(&ref_fai).unwrap(),
+            );
+            let repo = noodles::fasta::Repository::new(
+                noodles::fasta::repository::adapters::IndexedReader::new(fasta_reader),
+            );
+            let cigar: Cigar = [Op::new(Kind::Match, 50)].into_iter().collect();
+            let rec = RecordBuf::builder()
+                .set_name("r1")
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(100usize).unwrap())
+                .set_mapping_quality(MappingQuality::try_from(60u8).unwrap())
+                .set_cigar(cigar)
+                .set_sequence(vec![b'A'; 50].into())
+                .set_quality_scores(vec![35u8; 50].into())
+                .build();
+            let mut w = noodles::cram::io::writer::Builder::default()
+                .set_reference_sequence_repository(repo)
+                .build_from_path(dest)
+                .unwrap();
+            w.write_alignment_header(&header).unwrap();
+            w.write_alignment_record(&header, &rec).unwrap();
+            w.try_finish(&header).unwrap();
+            let crai = noodles::cram::fs::index(dest).unwrap();
+            noodles::cram::crai::fs::write(dest.with_extension("cram.crai"), &crai).unwrap();
+        };
+        write_tiny_cram(&cram_in_colon);
+        write_tiny_cram(&cram_old);
+        write_tiny_cram(&cram_b);
+        write_indexed_bam(&bam_old, 500, &["old_r1"]);
+        write_indexed_bam(&bam_new, 500, &["new_r1"]);
+
+        assert_eq!(
+            split_colon_bam_paths(cram_in_colon.to_str().unwrap()),
+            vec![cram_in_colon.to_str().unwrap()]
+        );
+        assert_eq!(
+            split_colon_bam_paths("a.cram:b.bam"),
+            vec!["a.cram", "b.bam"]
+        );
+
+        let cfg_cram = Config {
+            reference: ref_fa.to_str().unwrap().to_string(),
+            ..Config::default()
+        };
+        let pin = pin_cram_contig_for_spec(cram_in_colon.to_str().unwrap(), "chr1", &cfg_cram);
+        assert!(
+            pin.inner.is_some(),
+            "pin_cram_contig_for_spec must pin chr1 when CRAM directory contains ':'"
+        );
+        drop(pin);
+
+        // 2. Worker-thread BAM_READER_POOL / CRAM_READER_POOL & CRAM_LAST_CONTAINER_TLS stale-epoch sweep
+        let (tx_step, rx_step) = std::sync::mpsc::channel::<()>();
+        let (tx_done, rx_done) = std::sync::mpsc::channel::<(bool, bool, bool)>();
+        let cfg_worker = cfg_cram.clone();
+        let cram_old_w = cram_old.clone();
+        let cram_new_w = cram_b.clone();
+        let bam_old_w = bam_old.clone();
+        let bam_new_w = bam_new.clone();
+        let worker = std::thread::spawn(move || {
+            let _prod_guard = ForceProdIdGuard::enter();
+            let _ = query_region(&bam_old_w, "chr1", Pos0(0), Pos0(300), &cfg_worker).unwrap();
+            let _ = query_region(&cram_old_w, "chr1", Pos0(0), Pos0(300), &cfg_worker).unwrap();
+            tx_done.send((true, true, true)).unwrap();
+
+            rx_step.recv().unwrap();
+            // After main thread called clear_bam_caches(), query ONLY bam_new_w and cram_new_w:
+            // bam_old_w, cram_old_w, and stale CRAM_LAST_CONTAINER_TLS slot must be swept!
+            let (old_bam_still_pooled, old_cram_still_pooled, stale_tls_container) = loop {
+                let ep_before = BAM_CACHE_EPOCH.load(Ordering::Acquire);
+                let _ = query_region(&bam_new_w, "chr1", Pos0(0), Pos0(300), &cfg_worker).unwrap();
+                let _ = query_region(&cram_new_w, "chr1", Pos0(0), Pos0(300), &cfg_worker).unwrap();
+                let cur_ep = BAM_CACHE_EPOCH.load(Ordering::Acquire);
+                if cur_ep != ep_before {
+                    continue;
+                }
+                let old_b = BAM_READER_POOL.with(|p| p.borrow().contains_key(&bam_old_w));
+                let old_c = CRAM_READER_POOL.with(|p| p.borrow().contains_key(&cram_old_w));
+                let stale_c = CRAM_LAST_CONTAINER_TLS.with(|tls| {
+                    tls.borrow()
+                        .iter()
+                        .flatten()
+                        .any(|(ep, _, _)| *ep != cur_ep)
+                });
+                break (old_b, old_c, stale_c);
+            };
+            tx_done
+                .send((
+                    old_bam_still_pooled,
+                    old_cram_still_pooled,
+                    stale_tls_container,
+                ))
+                .unwrap();
+        });
+        let _ = rx_done.recv().unwrap();
+        clear_bam_caches();
+        tx_step.send(()).unwrap();
+        let (old_bam_still_pooled, old_cram_still_pooled, stale_tls_container) =
+            rx_done.recv().unwrap();
+        worker.join().unwrap();
+        assert!(
+            !old_bam_still_pooled,
+            "stale-epoch BAM_READER_POOL entries on other paths must be swept"
+        );
+        assert!(
+            !old_cram_still_pooled,
+            "stale-epoch CRAM_READER_POOL entries on other paths must be swept"
+        );
+        assert!(
+            !stale_tls_container,
+            "stale-epoch CRAM_LAST_CONTAINER_TLS entries must be swept"
+        );
+
+        // 3. DupKey outer positive H/P and interior P stripping under Switch 22
+        let mk_unmapped_mate = |name: &[u8], cigar: Vec<(u32, CigarKind)>| SamRecord {
+            name: name.to_vec(),
+            flags: 0x1 | 0x8,
+            reference_name: Some("chr1".to_string()),
+            alignment_start: Some(Pos1(200)),
+            alignment_end: Some(Pos1(349)),
+            mapping_quality: Some(60),
+            cigar,
+            sequence: vec![b'A'; 150],
+            quality_scores: vec![b'I'; 150],
+            mate_reference_name: Some("=".to_string()),
+            mate_alignment_start: Some(Pos1(200)),
+            ..SamRecord::default()
+        };
+        let r_hp_eq = mk_unmapped_mate(
+            b"hp1",
+            vec![
+                (5, CigarKind::HardClip),
+                (50, CigarKind::SequenceMatch),
+                (2, CigarKind::Pad),
+                (100, CigarKind::SequenceMatch),
+                (3, CigarKind::HardClip),
+            ],
+        );
+        let r_plain_eq = mk_unmapped_mate(b"hp2", vec![(150, CigarKind::SequenceMatch)]);
+
+        let cfg_vj = Config {
+            dedup: true,
+            ..Config::default()
+        };
+        let mut prep_vj = RecordPreprocessor::new();
+        assert!(prep_vj.preprocess_record(&r_hp_eq, &cfg_vj));
+        assert!(prep_vj.preprocess_record(&r_plain_eq, &cfg_vj));
+        assert_eq!(prep_vj.duplicate_reads, 0);
+
+        let mut cfg_s22 = cfg_vj.clone();
+        cfg_s22.compat.cigar_strip_outer_hard_clips = true;
+        let mut prep_s22 = RecordPreprocessor::new();
+        assert!(prep_s22.preprocess_record(&r_hp_eq, &cfg_s22));
+        assert!(
+            !prep_s22.preprocess_record(&r_plain_eq, &cfg_s22),
+            "5H50=2P100=3H and 150= must deduplicate identically when cigar_strip_outer_hard_clips is active"
+        );
+        assert_eq!(
+            DupKey::from_record(&r_hp_eq, false, true),
+            DupKey::from_record(&r_plain_eq, false, true)
+        );
+        assert_ne!(
+            DupKey::from_record(&r_hp_eq, false, false),
+            DupKey::from_record(&r_plain_eq, false, false)
+        );
+        assert_eq!(prep_s22.duplicate_reads, 1);
     }
 }

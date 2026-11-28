@@ -201,6 +201,23 @@ def _load_repo_release_and_engine_macros(repo_root: Path) -> dict[str, str]:
     out["cli_flag_count"] = f"{int(consistency_mod.EXPECTED_CLI_FLAG_COUNT):,}"
     out["cli_group_count"] = str(len(consistency_mod.EXPECTED_CLI_HEADINGS))
 
+    div_txt = (repo_root / "DIVERGENCES.md").read_text(encoding="utf-8")
+    rel_block_m = re.search(
+        r"Verified Parity Baseline \(release/v[^)]+\):([\s\S]+?)(?:\n\n|\n```)",
+        div_txt,
+    )
+    if not rel_block_m:
+        raise ValueError("Could not locate Verified Parity Baseline block in DIVERGENCES.md")
+    rel_block = rel_block_m.group(1)
+    rel_core_m = re.search(r"Core Library Tests:\s*(\d+)\s+PASS", rel_block)
+    rel_ws_m = re.search(r"Total Workspace:\s*(\d+)\s+PASS", rel_block)
+    if not rel_core_m or not rel_ws_m:
+        raise ValueError(
+            "Could not extract certified release Core Library / Total Workspace test counts from DIVERGENCES.md"
+        )
+    out["release_core_lib_test_count"] = f"{int(rel_core_m.group(1)):,}"
+    out["release_workspace_test_count"] = f"{int(rel_ws_m.group(1)):,}"
+
     lib_rs = (repo_root / "crates" / "vardictrust-core" / "src" / "lib.rs").read_text(encoding="utf-8")
     bam_rs = (repo_root / "crates" / "vardictrust-core" / "src" / "bam.rs").read_text(encoding="utf-8")
     cfg_rs = (repo_root / "crates" / "vardictrust-core" / "src" / "config.rs").read_text(encoding="utf-8")

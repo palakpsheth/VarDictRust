@@ -3583,8 +3583,15 @@ impl<'a> CigarParser<'a> {
         vd
     }
 
+    /// Finalize pileup state without running `-u` mate-overlap strand rebalancing yet.
+    ///
+    /// Callers running local realignment (`realign::realign_indels` / `realign::adj_snv`) MUST
+    /// call `into_variation_data_unrebalanced()` before realignment and invoke
+    /// [`VariationData::finalize_overlap_strand_rebalance`] once after `adj_snv` so soft-clip
+    /// `sub_dir` subtractions complete before agreed overlapping FR reverse counts are halved.
+    /// Callers that do not run realignment should use [`Self::into_variation_data`] instead.
     #[must_use]
-    pub(crate) fn into_variation_data_unrebalanced(mut self) -> VariationData {
+    pub fn into_variation_data_unrebalanced(mut self) -> VariationData {
         self.finish_ref_coverage();
         let duprate = match (self.config.compat.live_duprate, self.live_read_counts) {
             (true, Some((live_total, live_dup))) => {
@@ -3651,6 +3658,7 @@ impl<'a> CigarParser<'a> {
             // temps built over mate windows are discarded, never emitted
             // through, so stamping unconditionally is safe.
             owning_range: Some((self.region.start, self.region.end)),
+            split_parent_start: None,
             merge_planted: BTreeSet::new(),
         }
     }
@@ -11401,5 +11409,99 @@ mod tests {
             !parser.ref_coverage.contains_key(&210),
             "outward F+ read under -u must break at ci=0 without adding coverage"
         );
+    }
+
+    #[test]
+    fn pr1_lane2_s04_public_unrebalanced_and_rebalance_contract() {
+        let seq = b"ACGT".repeat(50);
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 200,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq.clone());
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(200),
+            gene: "S04".to_string(),
+            amplicon: None,
+        };
+        let mut cfg = Config::default();
+        cfg.unique_mode_alignment_enabled = true;
+        cfg.compat.mate_overlap_both_strands = true;
+
+        let mut parser = CigarParser::new(&ref_genome, &region, &cfg, false, 0, 0, 100);
+        for idx in 0..4 {
+            let qname = format!("pair_{idx}").into_bytes();
+            let f_read = SamRecord {
+                name: qname.clone(),
+                flags: 0x1 | 0x2 | 0x20 | 0x40,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(20)),
+                alignment_end: Some(Pos1(69)),
+                mapping_quality: Some(60),
+                cigar: vec![(50, CigarKind::Match)],
+                sequence: seq[19..69].to_vec(),
+                quality_scores: vec![37 + 33; 50],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(40)),
+                template_length: 70,
+                nm: Some(0),
+                ..SamRecord::default()
+            };
+            let r_read = SamRecord {
+                name: qname,
+                flags: 0x1 | 0x2 | 0x10 | 0x80,
+                reference_name: Some("chr1".to_string()),
+                alignment_start: Some(Pos1(40)),
+                alignment_end: Some(Pos1(89)),
+                mapping_quality: Some(60),
+                cigar: vec![(50, CigarKind::Match)],
+                sequence: seq[39..89].to_vec(),
+                quality_scores: vec![37 + 33; 50],
+                mate_reference_name: Some("chr1".to_string()),
+                mate_alignment_start: Some(Pos1(20)),
+                template_length: -70,
+                nm: Some(0),
+                ..SamRecord::default()
+            };
+            parser.parse_cigar(&f_read).unwrap();
+            parser.parse_cigar(&r_read).unwrap();
+        }
+
+        let mut vd = parser.into_variation_data_unrebalanced();
+        assert!(!vd.overlap_strand_rebalanced);
+        {
+            let ref_ch = (seq[49] as char).to_string();
+            let v = vd
+                .non_insertion_variants
+                .get_mut(&50)
+                .unwrap()
+                .map
+                .get_mut(&ref_ch)
+                .unwrap();
+            assert_eq!((v.fwd, v.rev, v.overlap_agreed_pairs), (0, 4, 4));
+            // Simulate soft-clip realignment subtracting 2 reverse reads before finalize:
+            v.sub_dir(true, 2);
+            v.cnt -= 2;
+        }
+        vd.finalize_overlap_strand_rebalance();
+        assert!(vd.overlap_strand_rebalanced);
+        let ref_ch = (seq[49] as char).to_string();
+        let v_after = vd
+            .non_insertion_variants
+            .get(&50)
+            .unwrap()
+            .map
+            .get(&ref_ch)
+            .unwrap();
+        assert_eq!((v_after.fwd, v_after.rev), (1, 1));
     }
 }

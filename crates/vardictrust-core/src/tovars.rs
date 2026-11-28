@@ -331,6 +331,7 @@ struct NonInsBuildCtx {
     total_pos_coverage: i32,
     hicov: i32,
     duprate: f64,
+    only_tile_planted: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -358,6 +359,99 @@ fn lookup_raw_extracnt(
                 .and_then(|m| m.map.get(desc))
         })
         .map_or(0, |c| c.extracnt)
+}
+
+#[inline]
+fn is_sw26_iupac_ref_key(key: &str, eff_ref_base: u8) -> bool {
+    if key == "I" || key == "SV" {
+        return false;
+    }
+    let [b] = *key.as_bytes() else {
+        return false;
+    };
+    reduce_ref_byte_sw26(b) == eff_ref_base
+}
+
+#[inline]
+fn merge_variation_into_ref(
+    dst: &mut crate::variations::Variation,
+    src: &crate::variations::Variation,
+) {
+    if dst.cnt == 0 && dst.extracnt == 0 && dst.fwd == 0 && dst.rev == 0 {
+        *dst = src.clone();
+        return;
+    }
+    if src.cnt > 0 {
+        dst.pstd = dst.pstd || src.pstd || dst.pp != src.pp;
+        dst.qstd = dst.qstd || src.qstd || dst.pq != src.pq;
+    }
+    dst.cnt = dst.cnt.saturating_add(src.cnt);
+    dst.fwd = dst.fwd.saturating_add(src.fwd);
+    dst.rev = dst.rev.saturating_add(src.rev);
+    dst.hicnt = dst.hicnt.saturating_add(src.hicnt);
+    dst.locnt = dst.locnt.saturating_add(src.locnt);
+    dst.extracnt = dst.extracnt.saturating_add(src.extracnt);
+    dst.pmean += src.pmean;
+    dst.qmean += src.qmean;
+    dst.mqmean += src.mqmean;
+    dst.nm += src.nm;
+    dst.overlap_agreed_pairs = dst
+        .overlap_agreed_pairs
+        .saturating_add(src.overlap_agreed_pairs);
+}
+
+fn merge_iupac_ref_alleles_in_place(
+    vm: &mut crate::variations::VariationMap,
+    eff_ref_base: u8,
+    eff_ref_str: &str,
+) {
+    let alias_keys: Vec<String> = vm
+        .map
+        .keys()
+        .filter(|k| *k != eff_ref_str && is_sw26_iupac_ref_key(k, eff_ref_base))
+        .map(str::to_string)
+        .collect();
+    if alias_keys.is_empty() {
+        return;
+    }
+    for k in alias_keys {
+        if let Some(alias_var) = vm.map.shift_remove(&k) {
+            let dst = vm.map.get_or_insert_variation(eff_ref_str);
+            merge_variation_into_ref(dst, &alias_var);
+        }
+    }
+}
+
+#[inline]
+fn lookup_raw_ref_extracnt(
+    position: i32,
+    desc: &str,
+    eff_ref_base: Option<u8>,
+    sanitize_iupac: bool,
+    insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    orig_non_ins: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
+    overlay: &rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
+) -> i32 {
+    if sanitize_iupac {
+        if let Some(eff_ref) = eff_ref_base {
+            if is_sw26_iupac_ref_key(desc, eff_ref) {
+                if let Some(ov) = overlay.get(&position) {
+                    return ov.map.get(desc).map_or(0, |c| c.extracnt);
+                }
+                if let Some(orig) = orig_non_ins.get(&position) {
+                    let mut sum: i32 = 0;
+                    for (k, v) in &orig.map {
+                        if is_sw26_iupac_ref_key(k, eff_ref) {
+                            sum = sum.saturating_add(v.extracnt);
+                        }
+                    }
+                    return sum;
+                }
+                return 0;
+            }
+        }
+    }
+    lookup_raw_extracnt(position, desc, insertion_variants, orig_non_ins, overlay)
 }
 
 #[inline]
@@ -447,6 +541,43 @@ impl<'a> ToVarsBuilder<'a> {
         u32::try_from(pos).ok().and_then(|pu| self.get_ref_base(pu))
     }
 
+    #[inline]
+    fn effective_ref_base_i32(&self, pos: i32) -> Option<u8> {
+        self.get_ref_base_i32(pos).map(|b| {
+            if self.config.compat.sanitize_iupac_alt_alleles {
+                reduce_ref_byte_sw26(b)
+            } else {
+                b
+            }
+        })
+    }
+
+    #[inline]
+    fn normalize_var_map_iupac_ref<'m>(
+        &self,
+        position: i32,
+        var_map: &'m crate::variations::VariationMap,
+    ) -> std::borrow::Cow<'m, crate::variations::VariationMap> {
+        if !self.config.compat.sanitize_iupac_alt_alleles {
+            return std::borrow::Cow::Borrowed(var_map);
+        }
+        let Some(eff_ref_base) = self.effective_ref_base_i32(position) else {
+            return std::borrow::Cow::Borrowed(var_map);
+        };
+        let mut buf = [0u8; 4];
+        let eff_ref_str: &str = (eff_ref_base as char).encode_utf8(&mut buf);
+        let has_alias = var_map
+            .map
+            .keys()
+            .any(|k| k != eff_ref_str && is_sw26_iupac_ref_key(k, eff_ref_base));
+        if !has_alias {
+            return std::borrow::Cow::Borrowed(var_map);
+        }
+        let mut owned = var_map.clone();
+        merge_iupac_ref_alleles_in_place(&mut owned, eff_ref_base, eff_ref_str);
+        std::borrow::Cow::Owned(owned)
+    }
+
     /// Returns the 1-bp-upstream reference base at `anchor_pos - 1` iff `anchor_pos > 1`
     /// and `anchor_pos - 1` is loaded in `self.reference` with a non-`N`/`n` base
     /// (`CompatProfile::canonical_sv_vcf_anchoring`; `AstraZeneca-NGS/VarDictJava#398`,
@@ -456,7 +587,7 @@ impl<'a> ToVarsBuilder<'a> {
         if anchor_pos <= 1 {
             return None;
         }
-        self.get_ref_base_i32(anchor_pos - 1)
+        self.effective_ref_base_i32(anchor_pos - 1)
             .filter(|&b| b != b'N' && b != b'n')
     }
 
@@ -526,7 +657,7 @@ impl<'a> ToVarsBuilder<'a> {
             };
             if prev_pos >= 1 && var_data.insertion_variants.contains_key(&prev_pos) && prev_precedes
             {
-                if let Some((_, prev_total_cov)) =
+                if let Some((_, prev_total_cov, prev_only_planted)) =
                     self.check_position_guards(var_data, &overlay, prev_pos, &mut ref_mode)
                 {
                     self.apply_prev_insertion_overlay(
@@ -536,13 +667,16 @@ impl<'a> ToVarsBuilder<'a> {
                         &var_data.ref_coverage,
                         prev_pos,
                         prev_total_cov,
+                        prev_only_planted,
                     );
                 }
             }
         }
 
-        let (var_map, total_cov) =
+        let (raw_var_map, total_cov, only_tile_planted) =
             self.check_position_guards(var_data, &overlay, target_pos, &mut ref_mode)?;
+        let norm_var_map = self.normalize_var_map_iupac_ref(target_pos, raw_var_map);
+        let var_map: &crate::variations::VariationMap = &norm_var_map;
 
         let ins_at_pos = var_data.insertion_variants.get(&target_pos);
         let hicov = self.calc_hicov(ins_at_pos, var_map);
@@ -568,6 +702,7 @@ impl<'a> ToVarsBuilder<'a> {
                     total_pos_coverage: total_cov,
                     hicov,
                     duprate,
+                    only_tile_planted,
                 },
                 var_map,
                 &mut var,
@@ -578,6 +713,7 @@ impl<'a> ToVarsBuilder<'a> {
                 },
             );
         }
+        drop(norm_var_map);
 
         let current_total_cov = self.create_insertion(
             &var_data.insertion_variants,
@@ -590,6 +726,7 @@ impl<'a> ToVarsBuilder<'a> {
             &mut var,
             &mut debug_lines,
             hicov,
+            only_tile_planted,
         );
 
         self.sort_variants(&mut var);
@@ -704,13 +841,15 @@ impl<'a> ToVarsBuilder<'a> {
             PositionIter::Bucket(var_data.non_insertion_variants.keys())
         };
         for position in positions {
-            // `var_map`'s shared NLL borrow of `overlay` and `var_data.non_insertion_variants`
-            // ends at `create_variant` below, before `&mut overlay` is passed to `create_insertion`.
-            let Some((var_map, total_cov)) =
+            // `raw_var_map`'s shared NLL borrow of `overlay` and `var_data.non_insertion_variants`
+            // ends at `drop(norm_var_map)` below, before `&mut overlay` is passed to `create_insertion`.
+            let Some((raw_var_map, total_cov, only_tile_planted)) =
                 self.check_position_guards(var_data, &overlay, position, &mut ref_mode)
             else {
                 continue;
             };
+            let norm_var_map = self.normalize_var_map_iupac_ref(position, raw_var_map);
+            let var_map: &crate::variations::VariationMap = &norm_var_map;
 
             let ins_at_pos = var_data.insertion_variants.get(&position);
             let hicov = self.calc_hicov(ins_at_pos, var_map);
@@ -740,8 +879,10 @@ impl<'a> ToVarsBuilder<'a> {
                     &mut debug_lines,
                     sorted_keys.as_slice(),
                     hicov,
+                    only_tile_planted,
                 );
             }
+            drop(norm_var_map);
 
             let current_total_cov = self.create_insertion(
                 &var_data.insertion_variants,
@@ -754,9 +895,10 @@ impl<'a> ToVarsBuilder<'a> {
                 &mut var,
                 &mut debug_lines,
                 hicov,
+                only_tile_planted,
             );
 
-            let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
+            let ref_base = self.effective_ref_base_i32(position).unwrap_or(b'N');
             let mut ref_buf = [0u8; 4];
             let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ref_buf);
 
@@ -838,33 +980,62 @@ impl<'a> ToVarsBuilder<'a> {
             && !self.config.bam.contains('|')
     }
 
+    #[inline]
+    fn has_tile_planted_allele(
+        &self,
+        position: i32,
+        var_map: &crate::variations::VariationMap,
+        ins_at_pos: Option<&crate::variations::VariationMap>,
+    ) -> bool {
+        let eff_ref = self.effective_ref_base_i32(position);
+        let sanitize_iupac = self.config.compat.sanitize_iupac_alt_alleles;
+        let is_ref_key = |k: &str| -> bool {
+            let Some(rb) = eff_ref else {
+                return false;
+            };
+            if sanitize_iupac {
+                is_sw26_iupac_ref_key(k, rb)
+            } else {
+                k.as_bytes() == [rb]
+            }
+        };
+        var_map
+            .map
+            .iter()
+            .any(|(k, v)| k != "SV" && k != "I" && !is_ref_key(k) && v.tile_planted && v.cnt > 0)
+            || ins_at_pos.is_some_and(|im| im.map.iter().any(|(_, v)| v.tile_planted && v.cnt > 0))
+    }
+
     /// Evaluates per-position skip guards (`ToVarsBuilder.java:103-128`, G3 `merge_planted`,
-    /// and [`RefSiteMode`] elision/compaction), returning `(var_map, total_cov)` when kept.
+    /// and [`RefSiteMode`] elision/compaction), returning `(var_map, total_cov, only_tile_planted)` when kept.
     fn check_position_guards<'m>(
         &self,
         var_data: &'m VariationData,
         overlay: &'m rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
         position: i32,
         ref_mode: &mut RefSiteMode<'_>,
-    ) -> Option<(&'m crate::variations::VariationMap, i32)> {
+    ) -> Option<(&'m crate::variations::VariationMap, i32, bool)> {
         let var_map = overlay
             .get(&position)
             .or_else(|| var_data.non_insertion_variants.get(&position))?;
+        let ins_at_pos = var_data.insertion_variants.get(&position);
 
         // Skip position if there are no variants on position
-        if var_map.map.is_empty() && !var_data.insertion_variants.contains_key(&position) {
+        if var_map.map.is_empty() && ins_at_pos.is_none() {
             return None;
         }
 
         // G3 (mate-window ownership): a key planted by a mate-window
-        // merge emits only from its owning tile. Provenance comes from
-        // the sv-path `merge_planted` set or the realign-path per-map
-        // flag (set when the merge plants outside the merging tile's
-        // range); the clamp rule owns every key in single-region runs,
-        // so out-of-BED SV rows keep full mate ref-support there.
-        if (var_data.merge_planted.contains(&position) || var_map.merge_planted)
-            && !merge_key_owned(var_data.owning_range, self.region, position)
-        {
+        // merge emits unowned pileup alleles only from its owning tile,
+        // EXCEPT SV / realigned-overhang alleles explicitly planted by the
+        // current tile (`v.tile_planted`), which retain exact mate-window
+        // wild-type `ref_coverage` / `RD` while filtering incidental unowned
+        // mate-window SNVs/indels via `only_tile_planted`.
+        let unowned_merge_planted = (var_data.merge_planted.contains(&position)
+            || var_map.merge_planted
+            || ins_at_pos.is_some_and(|m| m.merge_planted))
+            && !merge_key_owned(var_data.owning_range, self.region, position);
+        if unowned_merge_planted && !self.has_tile_planted_allele(position, var_map, ins_at_pos) {
             return None;
         }
 
@@ -904,26 +1075,29 @@ impl<'a> ToVarsBuilder<'a> {
                     && !var_data
                         .insertion_variants
                         .contains_key(&position.saturating_sub(1))
-                    && var_map.map.len() == 1
                     && total_cov > 0
                 {
-                    if let (Some(sole_key), Some(ref_base)) =
-                        (var_map.map.keys().next(), self.get_ref_base_i32(position))
-                    {
-                        let mut buf = [0u8; 4];
-                        let ref_base_str = (ref_base as char).encode_utf8(&mut buf);
-                        if sole_key != "I" && sole_key != "SV" && sole_key == ref_base_str {
-                            if let Some(cnt) = var_map.map.get(sole_key) {
-                                if cnt.cnt > 0 {
-                                    out.insert(
-                                        position,
-                                        CompactRefSite {
-                                            total_cov,
-                                            duprate: var_data.duprate,
-                                            cnt: cnt.clone(),
-                                        },
-                                    );
-                                    return None;
+                    let norm_map = self.normalize_var_map_iupac_ref(position, var_map);
+                    if norm_map.map.len() == 1 {
+                        if let (Some(sole_key), Some(ref_base)) = (
+                            norm_map.map.keys().next(),
+                            self.effective_ref_base_i32(position),
+                        ) {
+                            let mut buf = [0u8; 4];
+                            let ref_base_str = (ref_base as char).encode_utf8(&mut buf);
+                            if sole_key != "I" && sole_key != "SV" && sole_key == ref_base_str {
+                                if let Some(cnt) = norm_map.map.get(sole_key) {
+                                    if cnt.cnt > 0 {
+                                        out.insert(
+                                            position,
+                                            CompactRefSite {
+                                                total_cov,
+                                                duprate: var_data.duprate,
+                                                cnt: cnt.clone(),
+                                            },
+                                        );
+                                        return None;
+                                    }
                                 }
                             }
                         }
@@ -936,7 +1110,7 @@ impl<'a> ToVarsBuilder<'a> {
             return None;
         }
 
-        Some((var_map, total_cov))
+        Some((var_map, total_cov, unowned_merge_planted))
     }
 
     /// Materialize a `Vars` container with its finalized `ref_variant` from a [`CompactRefSite`].
@@ -945,7 +1119,7 @@ impl<'a> ToVarsBuilder<'a> {
         position: i32,
         site: &CompactRefSite,
     ) -> crate::variations::Vars {
-        let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
+        let ref_base = self.effective_ref_base_i32(position).unwrap_or(b'N');
         let mut buf = [0u8; 4];
         let sole_key = (ref_base as char).encode_utf8(&mut buf);
         let mut vref = self.build_ref_variant_from_cnt(
@@ -987,6 +1161,18 @@ impl<'a> ToVarsBuilder<'a> {
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
     ) -> bool {
         let has_ins = insertion_variants.contains_key(&position);
+        if self.config.compat.sanitize_iupac_alt_alleles {
+            if has_ins || vars_at_cur_position.map.is_empty() {
+                return false;
+            }
+            let Some(eff_ref_base) = self.effective_ref_base_i32(position) else {
+                return false;
+            };
+            return vars_at_cur_position
+                .map
+                .keys()
+                .all(|k| is_sw26_iupac_ref_key(k, eff_ref_base));
+        }
         let sole_key: &str = match (vars_at_cur_position.map.len(), has_ins) {
             (1, false) => match vars_at_cur_position.map.keys().next() {
                 Some(k) => k,
@@ -1310,6 +1496,7 @@ impl<'a> ToVarsBuilder<'a> {
         tvref
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_variant(
         &self,
         duprate: f64,
@@ -1321,6 +1508,7 @@ impl<'a> ToVarsBuilder<'a> {
         debug_lines: &mut Vec<String>,
         keys: &[&str],
         hicov: i32,
+        only_tile_planted: bool,
     ) {
         self.push_non_insertion_variants(
             NonInsBuildCtx {
@@ -1328,6 +1516,7 @@ impl<'a> ToVarsBuilder<'a> {
                 total_pos_coverage,
                 hicov,
                 duprate,
+                only_tile_planted,
             },
             non_insertion_variations,
             var,
@@ -1351,7 +1540,7 @@ impl<'a> ToVarsBuilder<'a> {
     ) where
         F: FnMut(&crate::variations::Sv),
     {
-        let ref_base = self.get_ref_base_i32(ctx.position).unwrap_or(b'N');
+        let ref_base = self.effective_ref_base_i32(ctx.position).unwrap_or(b'N');
         let mut ref_buf = [0u8; 4];
         let ref_base_str: &str = (ref_base as char).encode_utf8(&mut ref_buf);
 
@@ -1366,13 +1555,17 @@ impl<'a> ToVarsBuilder<'a> {
                 if cnt.cnt == 0 {
                     continue;
                 }
+                let is_ref_allele = description_string == ref_base_str;
+                if ctx.only_tile_planted && !is_ref_allele && !cnt.tile_planted {
+                    continue;
+                }
                 let tvref = self.build_variant_from_cnt(
                     description_string,
                     cnt,
                     ctx.total_pos_coverage,
                     ctx.hicov,
                     ctx.duprate,
-                    description_string == ref_base_str,
+                    is_ref_allele,
                 );
 
                 if self.config.debug {
@@ -1412,14 +1605,30 @@ impl<'a> ToVarsBuilder<'a> {
                 if let Some(&cov_next) = ref_coverage.get(&next_pos) {
                     if ttcov < cov_next.saturating_sub(cnt.cnt) {
                         ttcov = cov_next;
-                        if let Some(ref_base) = self.get_ref_base_i32(next_pos) {
+                        if let Some(ref_base) = self.effective_ref_base_i32(next_pos) {
                             let mut buf = [0u8; 4];
                             let ref_base_str: &str = (ref_base as char).encode_utf8(&mut buf);
                             if let std::collections::hash_map::Entry::Vacant(e) =
                                 overlay.entry(next_pos)
                             {
                                 if let Some(orig) = orig_non_ins.get(&next_pos) {
-                                    e.insert(orig.clone());
+                                    let mut cloned = orig.clone();
+                                    if self.config.compat.sanitize_iupac_alt_alleles {
+                                        merge_iupac_ref_alleles_in_place(
+                                            &mut cloned,
+                                            ref_base,
+                                            ref_base_str,
+                                        );
+                                    }
+                                    e.insert(cloned);
+                                }
+                            } else if self.config.compat.sanitize_iupac_alt_alleles {
+                                if let Some(existing) = overlay.get_mut(&next_pos) {
+                                    merge_iupac_ref_alleles_in_place(
+                                        existing,
+                                        ref_base,
+                                        ref_base_str,
+                                    );
                                 }
                             }
                             if let Some(next_non_ins) = overlay.get_mut(&next_pos) {
@@ -1460,6 +1669,7 @@ impl<'a> ToVarsBuilder<'a> {
         ttcov
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_prev_insertion_overlay(
         &self,
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
@@ -1468,6 +1678,7 @@ impl<'a> ToVarsBuilder<'a> {
         ref_coverage: &rustc_hash::FxHashMap<i32, i32>,
         position: i32,
         mut total_pos_coverage: i32,
+        only_tile_planted: bool,
     ) {
         let Some(insertion_variations) = insertion_variants.get(&position) else {
             return;
@@ -1483,19 +1694,19 @@ impl<'a> ToVarsBuilder<'a> {
             {
                 continue;
             }
-            let mut ttcov = total_pos_coverage;
-            if description_string.contains('&') {
-                if let Some(&cov_next) = position
-                    .checked_add(1)
-                    .and_then(|next_pos| ref_coverage.get(&next_pos))
-                {
-                    total_pos_coverage = cov_next;
-                    ttcov = cov_next;
-                }
-            }
             if let Some(cnt) = insertion_variations.map.get(description_string) {
-                if cnt.cnt == 0 {
+                if cnt.cnt == 0 || (only_tile_planted && !cnt.tile_planted) {
                     continue;
+                }
+                let mut ttcov = total_pos_coverage;
+                if description_string.contains('&') {
+                    if let Some(&cov_next) = position
+                        .checked_add(1)
+                        .and_then(|next_pos| ref_coverage.get(&next_pos))
+                    {
+                        total_pos_coverage = cov_next;
+                        ttcov = cov_next;
+                    }
                 }
                 let _ = self.adjust_insertion_coverage_and_next_ref(
                     orig_non_ins,
@@ -1510,6 +1721,7 @@ impl<'a> ToVarsBuilder<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_insertion(
         &self,
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
@@ -1522,6 +1734,7 @@ impl<'a> ToVarsBuilder<'a> {
         var: &mut Vec<Variant>,
         debug_lines: &mut Vec<String>,
         mut hicov: i32,
+        only_tile_planted: bool,
     ) -> i32 {
         if let Some(insertion_variations) = insertion_variants.get(&position) {
             let insertion_description_strings =
@@ -1535,19 +1748,19 @@ impl<'a> ToVarsBuilder<'a> {
                 {
                     continue;
                 }
-                let mut ttcov = total_pos_coverage;
-                if description_string.contains('&') {
-                    if let Some(&cov_next) = position
-                        .checked_add(1)
-                        .and_then(|next_pos| ref_coverage.get(&next_pos))
-                    {
-                        total_pos_coverage = cov_next;
-                        ttcov = cov_next;
-                    }
-                }
                 if let Some(cnt) = insertion_variations.map.get(description_string) {
-                    if cnt.cnt == 0 {
+                    if cnt.cnt == 0 || (only_tile_planted && !cnt.tile_planted) {
                         continue;
+                    }
+                    let mut ttcov = total_pos_coverage;
+                    if description_string.contains('&') {
+                        if let Some(&cov_next) = position
+                            .checked_add(1)
+                            .and_then(|next_pos| ref_coverage.get(&next_pos))
+                        {
+                            total_pos_coverage = cov_next;
+                            ttcov = cov_next;
+                        }
                     }
                     let exact_binary_half_even = self.config.compat.exact_binary_half_even;
                     let reconcile_strand_hq = self.config.compat.reconcile_strand_and_hq_sums;
@@ -1657,7 +1870,7 @@ impl<'a> ToVarsBuilder<'a> {
         position: i32,
         var: &mut Vec<Variant>,
     ) -> f64 {
-        let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
+        let ref_base = self.effective_ref_base_i32(position).unwrap_or(b'N');
         let mut buf = [0u8; 4];
         let ref_base_str: &str = (ref_base as char).encode_utf8(&mut buf);
 
@@ -1744,14 +1957,31 @@ impl<'a> ToVarsBuilder<'a> {
 
         if total_pos_coverage_adj > ref_coverage.get(&position).copied().unwrap_or(0) {
             if let Some(next_pos) = position.checked_add(1) {
-                if let Some(next_non_ins) = overlay
-                    .get(&next_pos)
-                    .or_else(|| orig_non_ins.get(&next_pos))
-                {
-                    if let Some(ref_base_next) = self.get_ref_base_i32(next_pos) {
-                        let mut buf = [0u8; 4];
-                        let ref_base_next_str: &str = (ref_base_next as char).encode_utf8(&mut buf);
-                        if let Some(tpref) = next_non_ins.map.get(ref_base_next_str) {
+                if let Some(ref_base_next) = self.effective_ref_base_i32(next_pos) {
+                    let mut buf = [0u8; 4];
+                    let ref_base_next_str: &str = (ref_base_next as char).encode_utf8(&mut buf);
+                    if let Some(next_ov) = overlay.get(&next_pos) {
+                        if let Some(tpref) = next_ov.map.get(ref_base_next_str) {
+                            reference_forward_coverage_adj = tpref.fwd;
+                            reference_reverse_coverage_adj = tpref.rev;
+                        }
+                    } else if let Some(orig_next) = orig_non_ins.get(&next_pos) {
+                        if self.config.compat.sanitize_iupac_alt_alleles {
+                            let mut sum_f: i32 = 0;
+                            let mut sum_r: i32 = 0;
+                            let mut any = false;
+                            for (k, v) in &orig_next.map {
+                                if is_sw26_iupac_ref_key(k, ref_base_next) {
+                                    sum_f = sum_f.saturating_add(v.fwd);
+                                    sum_r = sum_r.saturating_add(v.rev);
+                                    any = true;
+                                }
+                            }
+                            if any {
+                                reference_forward_coverage_adj = sum_f;
+                                reference_reverse_coverage_adj = sum_r;
+                            }
+                        } else if let Some(tpref) = orig_next.map.get(ref_base_next_str) {
                             reference_forward_coverage_adj = tpref.fwd;
                             reference_reverse_coverage_adj = tpref.rev;
                         }
@@ -1765,7 +1995,8 @@ impl<'a> ToVarsBuilder<'a> {
         if !variations_at_pos.variants.is_empty() {
             let standard_dup_symbolic_alt = self.config.compat.standard_dup_symbolic_alt;
             let canonical_sv_vcf_anchoring = self.config.compat.canonical_sv_vcf_anchoring;
-            let sv_min_len = if self.config.compat.sv_respect_min_len {
+            let sv_respect_min_len = self.config.compat.sv_respect_min_len;
+            let sv_min_len = if sv_respect_min_len {
                 self.config
                     .sv_min_len
                     .min(crate::sv::MAX_EXPLICIT_SV_SEQ_BP as u32)
@@ -1782,6 +2013,7 @@ impl<'a> ToVarsBuilder<'a> {
                                 &mut gt1_buf,
                                 standard_dup_symbolic_alt,
                                 canonical_sv_vcf_anchoring,
+                                sv_respect_min_len,
                                 sv_min_len,
                             )
                         } else {
@@ -1794,6 +2026,7 @@ impl<'a> ToVarsBuilder<'a> {
                                 &mut gt1_buf,
                                 standard_dup_symbolic_alt,
                                 canonical_sv_vcf_anchoring,
+                                sv_respect_min_len,
                                 sv_min_len,
                             )
                         } else {
@@ -1805,6 +2038,7 @@ impl<'a> ToVarsBuilder<'a> {
                             &mut gt1_buf,
                             standard_dup_symbolic_alt,
                             canonical_sv_vcf_anchoring,
+                            sv_respect_min_len,
                             sv_min_len,
                         )
                     } else {
@@ -1817,6 +2051,7 @@ impl<'a> ToVarsBuilder<'a> {
                             &mut gt1_buf,
                             standard_dup_symbolic_alt,
                             canonical_sv_vcf_anchoring,
+                            sv_respect_min_len,
                             sv_min_len,
                         )
                     } else {
@@ -1887,7 +2122,7 @@ impl<'a> ToVarsBuilder<'a> {
                     } else {
                         position
                     };
-                    let ref_base_byte = self.get_ref_base_i32(ins_anchor_pos).unwrap_or(b'N');
+                    let ref_base_byte = self.effective_ref_base_i32(ins_anchor_pos).unwrap_or(b'N');
                     refallele.push(ref_base_byte as char);
                     varallele = String::with_capacity(1 + stripped_desc.len());
                     varallele.push(ref_base_byte as char);
@@ -1909,7 +2144,9 @@ impl<'a> ToVarsBuilder<'a> {
                         varallele.push_str(stripped_desc);
                     }
 
-                    let parse_neg_dup = standard_dup_symbolic_alt || canonical_sv_vcf_anchoring;
+                    let parse_neg_dup = standard_dup_symbolic_alt
+                        || canonical_sv_vcf_anchoring
+                        || sv_respect_min_len;
                     if parse_neg_dup {
                         if let Some(dup_val) = get_dup_num_compat(&varallele, parse_neg_dup) {
                             let dup_span = ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1);
@@ -1953,26 +2190,37 @@ impl<'a> ToVarsBuilder<'a> {
                             }
                             genotype2 = format_plus_genotype(&mut gt2_buf, dup_span);
                             varallele = "<DUP>".to_string();
-                        } else if varallele.len() > sv_min_len as usize {
-                            if canonical_sv_vcf_anchoring {
-                                // Origin C (clintval/vartovcf#107, AstraZeneca-NGS/VarDictJava#398,
-                                // ToVarsBuilder.java:692-694): varallele carries the leading 1-bp
-                                // reference base, so use exact inserted base count ins_len so
-                                // END - POS == ins_len == SVLEN and clamp refallele to 1 bp.
-                                let anchor_base =
-                                    self.get_ref_base_i32(start_position).unwrap_or(b'N');
-                                refallele.clear();
-                                refallele.push(anchor_base as char);
+                        } else {
+                            let exceeds_sv_min = if sv_respect_min_len {
                                 let ins_len =
                                     long_ins_inserted_bases(stripped_desc, description_string);
-                                end_position = start_position.saturating_add(ins_len);
-                                genotype2 = format_plus_genotype(&mut gt2_buf, i64::from(ins_len));
-                                canonical_symbolic_sv_locked = true;
+                                u32::try_from(ins_len).unwrap_or(u32::MAX) >= sv_min_len
                             } else {
-                                end_position = end_position
-                                    .saturating_add(varallele.len().min(i32::MAX as usize) as i32);
+                                varallele.len() > sv_min_len as usize
+                            };
+                            if exceeds_sv_min {
+                                if canonical_sv_vcf_anchoring {
+                                    // Origin C (clintval/vartovcf#107, AstraZeneca-NGS/VarDictJava#398,
+                                    // ToVarsBuilder.java:692-694): varallele carries the leading 1-bp
+                                    // reference base, so use exact inserted base count ins_len so
+                                    // END - POS == ins_len == SVLEN and clamp refallele to 1 bp.
+                                    let anchor_base =
+                                        self.effective_ref_base_i32(start_position).unwrap_or(b'N');
+                                    refallele.clear();
+                                    refallele.push(anchor_base as char);
+                                    let ins_len =
+                                        long_ins_inserted_bases(stripped_desc, description_string);
+                                    end_position = start_position.saturating_add(ins_len);
+                                    genotype2 =
+                                        format_plus_genotype(&mut gt2_buf, i64::from(ins_len));
+                                    canonical_symbolic_sv_locked = true;
+                                } else {
+                                    end_position = end_position.saturating_add(
+                                        varallele.len().min(i32::MAX as usize) as i32,
+                                    );
+                                }
+                                varallele = "<DUP>".to_string();
                             }
-                            varallele = "<DUP>".to_string();
                         }
                     } else {
                         if varallele.len() > sv_min_len as usize {
@@ -2013,13 +2261,15 @@ impl<'a> ToVarsBuilder<'a> {
                             scratch2,
                         );
 
-                        if get_inv_num(description_string).is_some() {
+                        let parse_neg_inv = canonical_sv_vcf_anchoring || sv_respect_min_len;
+                        if get_inv_num_compat(description_string, parse_neg_inv).is_some() {
                             varallele = "<INV>".to_string();
                             genotype2 =
                                 std::borrow::Cow::Owned(format!("<INV{}>", deletion_length));
                         }
                     } else if matches_begin_minus_number_caret(description_string)
-                        || (canonical_sv_vcf_anchoring && get_inv_num(description_string).is_some())
+                        || ((canonical_sv_vcf_anchoring || sv_respect_min_len)
+                            && get_inv_num_compat(description_string, true).is_some())
                     {
                         varallele = "<INV>".to_string();
                         genotype2 = std::borrow::Cow::Owned(format!("<INV{}>", deletion_length));
@@ -2050,7 +2300,7 @@ impl<'a> ToVarsBuilder<'a> {
                             refallele.push(b_prev as char);
                         } else {
                             start_position = del_seq_pos;
-                            let base_cur = self.get_ref_base_i32(del_seq_pos).unwrap_or(b'N');
+                            let base_cur = self.effective_ref_base_i32(del_seq_pos).unwrap_or(b'N');
                             refallele.push(base_cur as char);
                         }
                         canonical_symbolic_sv_locked = true;
@@ -2065,7 +2315,7 @@ impl<'a> ToVarsBuilder<'a> {
                             refallele.push(b_prev as char);
                         } else {
                             start_position = position;
-                            let base_cur = self.get_ref_base_i32(position).unwrap_or(b'N');
+                            let base_cur = self.effective_ref_base_i32(position).unwrap_or(b'N');
                             refallele.push(base_cur as char);
                         }
                         canonical_symbolic_del = true;
@@ -2084,7 +2334,7 @@ impl<'a> ToVarsBuilder<'a> {
                             };
                             let base_prev = anchor_lookup_pos
                                 .checked_sub(1)
-                                .and_then(|p| self.get_ref_base_i32(p))
+                                .and_then(|p| self.effective_ref_base_i32(p))
                                 .unwrap_or(b'N');
                             if varallele != "<DEL>" {
                                 varallele.clear();
@@ -2099,8 +2349,8 @@ impl<'a> ToVarsBuilder<'a> {
                         } else {
                             position
                         };
-                        if matches_some_sv_numbers(description_string) {
-                            let base_cur = self.get_ref_base_i32(del_seq_pos).unwrap_or(b'N');
+                        if matches_some_sv_numbers_compat(description_string, sv_respect_min_len) {
+                            let base_cur = self.effective_ref_base_i32(del_seq_pos).unwrap_or(b'N');
                             refallele.clear();
                             refallele.push(base_cur as char);
                         } else if can_materialize_del {
@@ -2136,7 +2386,7 @@ impl<'a> ToVarsBuilder<'a> {
                     (msi, shift3, msint_len) =
                         find_msi_metrics(scratch1.as_bytes(), scratch2.as_bytes(), &[]);
 
-                    let base_cur = self.get_ref_base_i32(position).unwrap_or(b'N');
+                    let base_cur = self.effective_ref_base_i32(position).unwrap_or(b'N');
                     refallele.push(base_cur as char);
                     varallele = description_string.clone();
                 }
@@ -2224,7 +2474,8 @@ impl<'a> ToVarsBuilder<'a> {
                         }
 
                         if varallele == "<DEL>" && !refallele.is_empty() {
-                            let ref_base = self.get_ref_base_i32(start_position).unwrap_or(b'N');
+                            let ref_base =
+                                self.effective_ref_base_i32(start_position).unwrap_or(b'N');
                             refallele.clear();
                             refallele.push(ref_base as char);
                             if let Some(&cov_prev) = start_position
@@ -2393,7 +2644,7 @@ impl<'a> ToVarsBuilder<'a> {
                                 }
                             }
                             let first_char =
-                                self.get_ref_base_i32(start_position).unwrap_or(b'N') as char;
+                                self.effective_ref_base_i32(start_position).unwrap_or(b'N') as char;
                             varallele = format!("{}{}", first_char, tva);
                         }
                         vref.crispr = n;
@@ -2521,7 +2772,10 @@ impl<'a> ToVarsBuilder<'a> {
                     vref.hi_freq = round_half_even_compat(vref.hi_freq, 4, exact_binary_half_even);
                     vref.total_pos_cov = total_pos_coverage_adj;
                 }
-                validate_ref_allele_in_place(&mut refallele);
+                validate_ref_allele_compat_in_place(
+                    &mut refallele,
+                    self.config.compat.sanitize_iupac_alt_alleles,
+                );
                 if self.config.compat.sanitize_iupac_alt_alleles {
                     validate_alt_allele_in_place(&mut varallele);
                 }
@@ -2581,11 +2835,14 @@ impl<'a> ToVarsBuilder<'a> {
                     .retain(|vref| !matches_any_sv(&vref.var_allele));
             }
         } else if let Some(ref mut vref) = variations_at_pos.ref_variant {
+            let eff_ref_base = self.effective_ref_base_i32(position);
             let raw_extracnt =
                 if self.config.compat.reconcile_vd_dp || self.config.compat.reconcile_rd_vd_dp {
-                    lookup_raw_extracnt(
+                    lookup_raw_ref_extracnt(
                         position,
                         vref.description.as_str(),
+                        eff_ref_base,
+                        self.config.compat.sanitize_iupac_alt_alleles,
                         insertion_variants,
                         orig_non_ins,
                         overlay,
@@ -2621,13 +2878,16 @@ impl<'a> ToVarsBuilder<'a> {
                 || self.config.amplicon.is_some()
                 || self.config.compat.pileup_preserve_shifted_ref)
         {
+            let eff_ref_base = self.effective_ref_base_i32(position);
             if let Some(ref mut vref) = variations_at_pos.ref_variant {
                 let raw_extracnt = if self.config.compat.reconcile_vd_dp
                     || self.config.compat.reconcile_rd_vd_dp
                 {
-                    lookup_raw_extracnt(
+                    lookup_raw_ref_extracnt(
                         position,
                         vref.description.as_str(),
+                        eff_ref_base,
+                        self.config.compat.sanitize_iupac_alt_alleles,
                         insertion_variants,
                         orig_non_ins,
                         overlay,
@@ -2711,13 +2971,17 @@ impl<'a> ToVarsBuilder<'a> {
         vref.end_pos = position;
 
         let ref_base = self.get_ref_base_i32(position).unwrap_or(b'N');
-        let valid_base = reduce_iupac_byte(ref_base) as char;
+        let (valid_base, base_ch) = if self.config.compat.sanitize_iupac_alt_alleles {
+            let reduced = reduce_ref_byte_sw26(ref_base) as char;
+            (reduced, reduced)
+        } else {
+            (reduce_iupac_byte(ref_base) as char, ref_base as char)
+        };
 
         vref.ref_allele.clear();
         vref.ref_allele.push(valid_base);
         vref.var_allele.clear();
         vref.var_allele.push(valid_base);
-        let base_ch = ref_base as char;
         let mut gt = String::with_capacity(3);
         gt.push(base_ch);
         gt.push('/');
@@ -2810,9 +3074,11 @@ fn format_plus_genotype1<'b>(
     buf: &'b mut crate::types::StackBuf<24>,
     standard_dup_symbolic_alt: bool,
     canonical_sv_vcf_anchoring: bool,
+    sv_respect_min_len: bool,
     sv_min_len: u32,
 ) -> std::borrow::Cow<'b, str> {
-    let parse_neg_dup = standard_dup_symbolic_alt || canonical_sv_vcf_anchoring;
+    let parse_neg_dup =
+        standard_dup_symbolic_alt || canonical_sv_vcf_anchoring || sv_respect_min_len;
     if parse_neg_dup {
         if let Some(dup_val) = get_dup_num_compat(desc, true) {
             let dup_span = ((2 * SV_FLANK_BP) + i64::from(dup_val)).max(1);
@@ -2823,8 +3089,13 @@ fn format_plus_genotype1<'b>(
     }
     if canonical_sv_vcf_anchoring {
         if let Some(stripped_desc) = desc.strip_prefix('+') {
-            if stripped_desc.len().saturating_add(1) > sv_min_len as usize {
-                let ins_len = long_ins_inserted_bases(stripped_desc, desc);
+            let ins_len = long_ins_inserted_bases(stripped_desc, desc);
+            let exceeds = if sv_respect_min_len {
+                u32::try_from(ins_len).unwrap_or(u32::MAX) >= sv_min_len
+            } else {
+                stripped_desc.len().saturating_add(1) > sv_min_len as usize
+            };
+            if exceeds {
                 return format_plus_genotype(buf, ins_len);
             }
         }
@@ -2850,6 +3121,21 @@ fn reduce_iupac_byte(b: u8) -> u8 {
     }
 }
 
+#[inline]
+fn reduce_iupac_byte_sw26(b: u8) -> u8 {
+    match b {
+        b'M' | b'R' | b'W' | b'V' | b'H' | b'D' | b'm' | b'r' | b'w' | b'v' | b'h' | b'd' => b'A',
+        b'S' | b'Y' | b'B' | b's' | b'y' | b'b' => b'C',
+        b'K' | b'k' => b'G',
+        other => other,
+    }
+}
+
+#[inline]
+fn reduce_ref_byte_sw26(b: u8) -> u8 {
+    reduce_iupac_byte_sw26(b).to_ascii_uppercase()
+}
+
 fn validate_ref_allele_in_place(ref_allele: &mut String) {
     if !ref_allele.bytes().any(|b| reduce_iupac_byte(b) != b) {
         return;
@@ -2857,6 +3143,23 @@ fn validate_ref_allele_in_place(ref_allele: &mut String) {
     let mut bytes = std::mem::take(ref_allele).into_bytes();
     for b in &mut bytes {
         *b = reduce_iupac_byte(*b);
+    }
+    if let Ok(s) = String::from_utf8(bytes) {
+        *ref_allele = s;
+    }
+}
+
+fn validate_ref_allele_compat_in_place(ref_allele: &mut String, sanitize_iupac: bool) {
+    if !sanitize_iupac {
+        validate_ref_allele_in_place(ref_allele);
+        return;
+    }
+    if !ref_allele.bytes().any(|b| reduce_ref_byte_sw26(b) != b) {
+        return;
+    }
+    let mut bytes = std::mem::take(ref_allele).into_bytes();
+    for b in &mut bytes {
+        *b = reduce_ref_byte_sw26(*b);
     }
     if let Ok(s) = String::from_utf8(bytes) {
         *ref_allele = s;
@@ -2871,7 +3174,7 @@ fn validate_alt_allele_in_place(alt_allele: &mut String) {
     if matches!(alt_allele.as_str(), "<DUP>" | "<DEL>" | "<INV>") {
         return;
     }
-    if !alt_allele.bytes().any(|b| reduce_iupac_byte(b) != b) {
+    if !alt_allele.bytes().any(|b| reduce_iupac_byte_sw26(b) != b) {
         return;
     }
     let mut bytes = std::mem::take(alt_allele).into_bytes();
@@ -2887,7 +3190,7 @@ fn validate_alt_allele_in_place(alt_allele: &mut String) {
             }
         }
         if let Some(slot) = bytes.get_mut(i) {
-            *slot = reduce_iupac_byte(b);
+            *slot = reduce_iupac_byte_sw26(b);
         }
         i += 1;
     }
@@ -3031,28 +3334,32 @@ fn count_repetitions_at_start(seq: &[u8], pattern: &[u8]) -> usize {
     count
 }
 
-fn get_dup_num_compat(s: &str, allow_negative: bool) -> Option<i32> {
-    if let Some(idx) = s.find("<dup") {
-        let rest = s.get(idx + 4..)?;
-        if allow_negative {
-            if let Some(after_minus) = rest.strip_prefix('-') {
-                let digits_len = after_minus
-                    .bytes()
-                    .take_while(|b| b.is_ascii_digit())
-                    .count();
-                if digits_len > 0 {
-                    let full_len = digits_len.saturating_add(1);
-                    return rest.get(..full_len)?.parse().ok();
-                }
-                return None;
+fn get_tagged_sv_num_compat(s: &str, tag: &str, allow_negative: bool) -> Option<i32> {
+    let idx = s.find(tag)?;
+    let rest = s.get(idx + tag.len()..)?;
+    if allow_negative {
+        if let Some(after_minus) = rest.strip_prefix('-') {
+            let digits_len = after_minus
+                .bytes()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+            if digits_len > 0 {
+                let full_len = digits_len.saturating_add(1);
+                return rest.get(..full_len)?.parse().ok();
             }
-        }
-        let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
-        if len > 0 {
-            return rest.get(..len)?.parse().ok();
+            return None;
         }
     }
+    let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if len > 0 {
+        return rest.get(..len)?.parse().ok();
+    }
     None
+}
+
+#[inline]
+fn get_dup_num_compat(s: &str, allow_negative: bool) -> Option<i32> {
+    get_tagged_sv_num_compat(s, "<dup", allow_negative)
 }
 
 fn get_dup_num(s: &str) -> Option<i32> {
@@ -3069,15 +3376,9 @@ fn get_begin_minus_number(s: &str) -> Option<i32> {
     None
 }
 
-fn get_inv_num(s: &str) -> Option<i32> {
-    if let Some(idx) = s.find("<inv") {
-        let rest = s.get(idx + 4..)?;
-        let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
-        if len > 0 {
-            return rest.get(..len)?.parse().ok();
-        }
-    }
-    None
+#[inline]
+fn get_inv_num_compat(s: &str, allow_negative: bool) -> Option<i32> {
+    get_tagged_sv_num_compat(s, "<inv", allow_negative)
 }
 
 fn matches_begin_minus_number_caret(s: &str) -> bool {
@@ -3089,58 +3390,36 @@ fn matches_begin_minus_number_caret(s: &str) -> bool {
     }
 }
 
-fn matches_some_sv_numbers(s: &str) -> bool {
-    if s.is_ascii() {
-        let bytes = s.as_bytes();
-        if bytes.len() < 6 {
-            return false;
-        }
-        for i in 0..=bytes.len() - 6 {
-            if bytes.get(i) == Some(&b'<') {
-                if let Some(sv_type) = bytes.get(i + 1..i + 4) {
-                    if sv_type.iter().all(|&c| c != b'<' && c != b'>') {
-                        let mut j = i + 4;
-                        let mut has_digits = false;
-                        while let Some(&b) = bytes.get(j) {
-                            if b.is_ascii_digit() {
-                                has_digits = true;
-                                j += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        if has_digits && bytes.get(j) == Some(&b'>') {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
+fn matches_some_sv_numbers_compat(s: &str, allow_neg: bool) -> bool {
+    if s.len() < 6 {
         return false;
     }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() < 6 {
-        return false;
-    }
-    for i in 0..=chars.len() - 6 {
-        if chars.get(i) == Some(&'<') {
-            if let Some(sv_type) = chars.get(i + 1..i + 4) {
-                if sv_type.iter().all(|&c| c != '<' && c != '>') {
-                    let mut j = i + 4;
-                    let mut has_digits = false;
-                    while let Some(&c) = chars.get(j) {
-                        if c.is_ascii_digit() {
-                            has_digits = true;
-                            j += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    if has_digits && chars.get(j) == Some(&'>') {
-                        return true;
-                    }
-                }
+    for (idx, _) in s.match_indices('<') {
+        let Some(tail) = s.get(idx + 1..) else {
+            continue;
+        };
+        let mut chars = tail.chars();
+        let (Some(c1), Some(c2), Some(c3)) = (chars.next(), chars.next(), chars.next()) else {
+            continue;
+        };
+        if [c1, c2, c3].iter().any(|&c| c == '<' || c == '>') {
+            continue;
+        }
+        let mut next_opt = chars.next();
+        if allow_neg && next_opt == Some('-') {
+            next_opt = chars.next();
+        }
+        let mut has_digits = false;
+        while let Some(c) = next_opt {
+            if c.is_ascii_digit() {
+                has_digits = true;
+                next_opt = chars.next();
+            } else {
+                break;
             }
+        }
+        if has_digits && next_opt == Some('>') {
+            return true;
         }
     }
     false
@@ -8217,11 +8496,11 @@ mod tests {
 
         let mut unclosed = "<dup-5RT".to_string();
         validate_alt_allele_in_place(&mut unclosed);
-        assert_eq!(unclosed, "<aup-5AT");
+        assert_eq!(unclosed, "<Aup-5AT");
 
         let mut all_iupac = "MRWVHDSYBKmrwvhdsybkACGTN".to_string();
         validate_alt_allele_in_place(&mut all_iupac);
-        assert_eq!(all_iupac, "AAAAAACCCGaaaaaacccgACGTN");
+        assert_eq!(all_iupac, "AAAAAACCCGAAAAAACCCGACGTN");
 
         // End-to-end ToVarsBuilder check: legacy preserves IUPAC ALT "R" and "+RGT",
         // while Switch 26 reduces them to "A" and "AAAGT" while keeping "<INV>" untouched!
@@ -8541,5 +8820,229 @@ mod tests {
         assert_eq!(del_on.shift3, 2, "Switch 38 must preserve indel shift3");
         assert_eq!(del_on.msi.to_bits(), del_leg.msi.to_bits());
         assert_eq!(del_on.msint, del_leg.msint);
+    }
+
+    #[test]
+    fn pr1_lane2_f12_switch26_uppercase_iupac_and_wildtype_ref_routing() {
+        // 1. Lowercase IUPAC ambiguity bases reduce to UPPERCASE A/C/G under Switch 26
+        let mut all_iupac = "MRWVHDSYBKmrwvhdsybkACGTN".to_string();
+        validate_alt_allele_in_place(&mut all_iupac);
+        assert_eq!(all_iupac, "AAAAAACCCGAAAAAACCCGACGTN");
+
+        // 2. FASTA 'Y' at pos 27 with 50 wild-type 'C' reads (24 fwd, 26 rev) + 40 ALT 'T' reads (20 fwd, 20 rev),
+        //    and FASTA 'R' at pos 60 with 15 'A' reads + 5 'M' reads (both reducing to 'A') in -p pileup mode!
+        let mut seq = vec![b'A'; 120];
+        seq[26] = b'Y'; // 1-based pos 27 ('Y' -> 'C')
+        seq[59] = b'R'; // 1-based pos 60 ('R' -> 'A')
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr6".to_string(),
+                sequence_start: 1,
+                sequence_end: 120,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr6".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+        let chr_lengths = HashMap::from([("chr6".to_string(), 120)]);
+        let region = Region {
+            chr: "chr6".to_string(),
+            start: Pos1(1),
+            end: Pos1(120),
+            gene: "IUPAC_TEST".to_string(),
+            amplicon: None,
+        };
+
+        let mk_var = |cnt: i32, fwd: i32, rev: i32, q: f64, p: f64| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = fwd;
+            v.rev = rev;
+            v.qmean = q * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = p * f64::from(cnt);
+            v.nm = 1.0 * f64::from(cnt);
+            v.pstd = true;
+            v.qstd = true;
+            v
+        };
+
+        let mut vd = VariationData::new();
+        vd.ref_coverage.insert(27, 90);
+        let mut vm27 = VariationMap::new();
+        vm27.map
+            .insert("C".to_string(), mk_var(50, 24, 26, 37.0, 65.0));
+        vm27.map
+            .insert("T".to_string(), mk_var(40, 20, 20, 36.0, 55.0));
+        vd.non_insertion_variants.insert(27, vm27);
+
+        vd.ref_coverage.insert(60, 20);
+        let mut vm60 = VariationMap::new();
+        vm60.map
+            .insert("A".to_string(), mk_var(15, 8, 7, 38.0, 70.0));
+        vm60.map
+            .insert("M".to_string(), mk_var(5, 2, 3, 34.0, 50.0));
+        vd.non_insertion_variants.insert(60, vm60);
+
+        let cfg_off = Config {
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let builder_off = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off);
+        let aligned_off = builder_off.build_aligned_variants(&vd);
+
+        // Pos 60 ('A' + 'M' on 'R' FASTA) is pure wild-type under Switch 26 -> dropped in DropAll!
+        assert!(
+            !aligned_off.contains_key(&60),
+            "pure wild-type IUPAC site must be dropped in non-pileup DropAll mode"
+        );
+
+        // Pos 27 ('C' + 'T' on 'Y' FASTA): 'C' routed to ref_variant, ONLY 'T' in variants!
+        let vars27 = aligned_off.get(&27).expect("pos 27 must emit 'T' SNV");
+        assert_eq!(
+            vars27.variants.len(),
+            1,
+            "wild-type 'C' must be omitted from variants"
+        );
+        let alt_t = &vars27.variants[0];
+        assert_eq!(alt_t.ref_allele, "C");
+        assert_eq!(alt_t.var_allele, "T");
+        assert_eq!((alt_t.ref_fwd_cov, alt_t.ref_rev_cov), (24, 26));
+        assert_eq!((alt_t.fwd, alt_t.rev), (20, 20));
+        assert_eq!(alt_t.hicov, 90);
+        assert_eq!(alt_t.genotype.as_deref(), Some("C/T"));
+        assert_eq!(alt_t.bias, "2;2");
+
+        // Pileup (-p) at pos 60: single merged reference row with genotype "A/A" (not "R/R") and weighted means!
+        let mut cfg_pile = cfg_off.clone();
+        cfg_pile.pileup = true;
+        let aligned_pile = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_pile)
+            .build_aligned_variants(&vd);
+        let vars60_pile = aligned_pile.get(&60).expect("pos 60 must emit in -p mode");
+        assert!(
+            vars60_pile.variants.is_empty(),
+            "-p must not double-emit wild-type alleles in entry.variants"
+        );
+        let rv60 = vars60_pile
+            .ref_variant
+            .as_ref()
+            .expect("pos 60 ref_variant");
+        assert_eq!(rv60.ref_allele, "A");
+        assert_eq!(rv60.var_allele, "A");
+        assert_eq!(rv60.genotype.as_deref(), Some("A/A"));
+        assert_eq!((rv60.ref_fwd_cov, rv60.ref_rev_cov), (10, 10));
+        assert_eq!(rv60.mean_quality, 37.0); // (15*38 + 5*34) / 20 = 740 / 20 = 37.0
+        assert_eq!(rv60.mean_position, 65.0); // (15*70 + 5*50) / 20 = 1300 / 20 = 65.0
+    }
+
+    #[test]
+    fn pr1_lane2_f14b_tovars_complex_ins_len_cutoff_and_neg_dup() {
+        let seq = vec![b'A'; 300];
+        let mut ref_genome = Reference::new();
+        ref_genome
+            .loaded_regions
+            .push(crate::reference::LoadedRegion {
+                chr: "chr1".to_string(),
+                sequence_start: 1,
+                sequence_end: 300,
+            });
+        ref_genome
+            .reference_sequences
+            .insert("chr1".to_string(), seq.clone());
+        ref_genome.region_sequences.push(seq);
+        let chr_lengths = HashMap::from([("chr1".to_string(), 300)]);
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(1),
+            end: Pos1(300),
+            gene: "SV_CUTOFF".to_string(),
+            amplicon: None,
+        };
+
+        let mk = |cnt: i32| -> Variation {
+            let mut v = Variation::new();
+            v.cnt = cnt;
+            v.hicnt = cnt;
+            v.fwd = cnt / 2;
+            v.rev = cnt - cnt / 2;
+            v.qmean = 35.0 * f64::from(cnt);
+            v.mqmean = 60.0 * f64::from(cnt);
+            v.pmean = 20.0 * f64::from(cnt);
+            v
+        };
+
+        // 48-bp inserted sequence with 2-bp '&CC' matched flank: ins_len == 48 < 50 (`varallele.len() == 52 > 50`)
+        let ins48_amp = format!("+{}&CC", "C".repeat(48));
+        // 80-bp `<dup-20>` symbolic token with only `sv_respect_min_len: true`
+        let dup80 = format!("+{}<dup-20>{}", "C".repeat(40), "G".repeat(40));
+
+        let mut vd = VariationData::new();
+        vd.ref_coverage.insert(50, 30);
+        vd.non_insertion_variants.insert(50, VariationMap::new());
+        let mut ins50 = VariationMap::new();
+        ins50.map.insert(ins48_amp, mk(10));
+        vd.insertion_variants.insert(50, ins50);
+
+        vd.ref_coverage.insert(120, 30);
+        vd.non_insertion_variants.insert(120, VariationMap::new());
+        let mut ins120 = VariationMap::new();
+        ins120.map.insert(dup80, mk(10));
+        vd.insertion_variants.insert(120, ins120);
+
+        // 80-bp `<inv-20>` symbolic inversion with ONLY `sv_respect_min_len: true` (`canonical_sv_vcf_anchoring: false`):
+        let inv80 = format!("-80^{}<inv-20>{}", "T".repeat(50), "T".repeat(50));
+        vd.ref_coverage.insert(200, 30);
+        let mut non_ins200 = VariationMap::new();
+        non_ins200.map.insert(inv80, mk(10));
+        let sv200 = crate::variations::VariationMap::get_sv(&mut vd.non_insertion_variants, 200);
+        sv200.r#type = "INV".to_string();
+        sv200.splits = 10;
+        if let Some(vm200) = vd.non_insertion_variants.get_mut(&200) {
+            vm200.map.extend(non_ins200.map);
+        }
+
+        let cfg = Config {
+            sv_min_len: 50,
+            compat: crate::config::CompatProfile {
+                sv_respect_min_len: true,
+                ..crate::config::COMPAT_VARDICTJAVA_1_8_3
+            },
+            ..Config::default()
+        };
+        let aligned = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg)
+            .build_aligned_variants(&vd);
+        let v50 = &aligned.get(&50).unwrap().variants[0];
+        assert_ne!(
+            v50.var_allele, "<DUP>",
+            "48-bp complex insertion (< -L 50) must remain explicit nucleotide sequence"
+        );
+        let v120 = &aligned.get(&120).unwrap().variants[0];
+        assert_eq!(v120.var_allele, "<DUP>");
+        assert_eq!(v120.end_pos - v120.start_pos + 1, 80);
+        let v200 = &aligned.get(&200).unwrap().variants[0];
+        assert_eq!(v200.var_allele, "<INV>");
+        assert_eq!(
+            v200.ref_allele, "A",
+            "isolated sv_respect_min_len must populate 1-bp REF on <inv-20> instead of empty string"
+        );
+
+        let cfg_off = Config {
+            sv_min_len: 50,
+            compat: crate::config::COMPAT_OFF,
+            ..Config::default()
+        };
+        let aligned_off = ToVarsBuilder::new(&ref_genome, &region, &chr_lengths, &cfg_off)
+            .build_aligned_variants(&vd);
+        let v50_off = &aligned_off.get(&50).unwrap().variants[0];
+        assert_ne!(
+            v50_off.var_allele, "<DUP>",
+            "48-bp complex insertion (< -L 50) under --compat=off must remain explicit nucleotide sequence"
+        );
+        let v120_off = &aligned_off.get(&120).unwrap().variants[0];
+        assert_eq!(v120_off.var_allele, "<DUP>");
+        assert_eq!(v120_off.end_pos - v120_off.start_pos, 80);
     }
 }

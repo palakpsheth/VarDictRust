@@ -59,7 +59,11 @@ pub fn simple_post_process(
             strict_bounds,
             None,
             false,
+            false,
         )
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect()
     } else {
         simple_post_process_core(
             config,
@@ -71,7 +75,11 @@ pub fn simple_post_process(
             strict_bounds,
             None,
             false,
+            false,
         )
+        .into_iter()
+        .map(|(_, v)| v)
+        .collect()
     }
 }
 
@@ -133,7 +141,11 @@ pub(crate) fn simple_post_process_owned_with_bounds_and_ref(
         strict_bounds,
         ref_info,
         false,
+        false,
     )
+    .into_iter()
+    .map(|(_, v)| v)
+    .collect()
 }
 
 pub(crate) fn simple_post_process_owned_unbucketed_with_bounds_and_ref(
@@ -152,9 +164,37 @@ pub(crate) fn simple_post_process_owned_unbucketed_with_bounds_and_ref(
         strict_bounds,
         ref_info,
         true,
+        false,
+    )
+    .into_iter()
+    .map(|(_, v)| v)
+    .collect()
+}
+
+pub(crate) fn simple_post_process_seam_owned_with_bounds_and_ref(
+    config: &Config,
+    region: &Region,
+    aligned_variants: crate::javamap::JavaHashMap<i32, Vars>,
+    splice: &rustc_hash::FxHashSet<String>,
+    strict_bounds: Option<&[(i32, i32)]>,
+    ref_info: Option<(&crate::reference::Reference, i32)>,
+) -> Vec<(i32, Variant)> {
+    simple_post_process_owned_with_bounds_and_ref_opts(
+        config,
+        region,
+        aligned_variants,
+        splice,
+        strict_bounds,
+        ref_info,
+        true,
+        true,
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal postprocess helper threads strict bounds, FASTA context, VCF bucketing, and seam deferred-dedup flags"
+)]
 fn simple_post_process_owned_with_bounds_and_ref_opts(
     config: &Config,
     region: &Region,
@@ -163,7 +203,8 @@ fn simple_post_process_owned_with_bounds_and_ref_opts(
     strict_bounds: Option<&[(i32, i32)]>,
     ref_info: Option<(&crate::reference::Reference, i32)>,
     skip_vcf_bucketing: bool,
-) -> Vec<Variant> {
+    seam_unfinalized: bool,
+) -> Vec<(i32, Variant)> {
     if config.compat.coordinate_sorted_vars {
         let mut keys: Vec<i32> = aligned_variants.keys().copied().collect();
         keys.sort_unstable();
@@ -179,6 +220,7 @@ fn simple_post_process_owned_with_bounds_and_ref_opts(
             strict_bounds,
             ref_info,
             skip_vcf_bucketing,
+            seam_unfinalized,
         )
     } else {
         simple_post_process_core(
@@ -191,15 +233,20 @@ fn simple_post_process_owned_with_bounds_and_ref_opts(
             strict_bounds,
             ref_info,
             skip_vcf_bucketing,
+            seam_unfinalized,
         )
     }
 }
 
 #[inline]
-fn dedup_normalized_simple_variants(vrefs: &mut Vec<Variant>) {
-    crate::variations::dedup_post_norm_vec(vrefs, |v| (!v.null_record).then_some((0u8, v, v)));
+fn dedup_normalized_simple_variants(vrefs: &mut Vec<(i32, Variant)>) {
+    crate::variations::dedup_post_norm_vec(vrefs, |(_, v)| (!v.null_record).then_some((0u8, v, v)));
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "internal postprocess core threads strict bounds, FASTA context, VCF bucketing, and seam deferred-dedup flags"
+)]
 fn simple_post_process_core<'a>(
     config: &Config,
     region: &Region,
@@ -208,8 +255,9 @@ fn simple_post_process_core<'a>(
     strict_bounds: Option<&[(i32, i32)]>,
     ref_info: Option<(&crate::reference::Reference, i32)>,
     skip_vcf_bucketing: bool,
-) -> Vec<Variant> {
-    let mut vrefs = Vec::new();
+    seam_unfinalized: bool,
+) -> Vec<(i32, Variant)> {
+    let mut vrefs: Vec<(i32, Variant)> = Vec::new();
 
     let reset_crispr = config.crispr_cutting_site.unwrap_or(0) == 0;
     let refresh_vt = config.compat.recompute_vartype_after_adj_complex;
@@ -243,7 +291,7 @@ fn simple_post_process_core<'a>(
                 if reset_crispr {
                     vref.crispr = 0;
                 }
-                vrefs.push(vref);
+                vrefs.push((position, vref));
             } else if !config.compat.suppress_pileup_sentinels {
                 // ports SimplePostProcessModule.java:55-58: under -p an entry
                 // with no variants and no reference variant still prints, via
@@ -251,7 +299,7 @@ fn simple_post_process_core<'a>(
                 // keep the printer defaults (genotype "", bias "0;0", flank seqs
                 // ""). CLAUDE.md §5: live-oracle output is replicated as-is and
                 // tracked upstream, never silently fixed.
-                vrefs.push(make_null_record(position));
+                vrefs.push((position, make_null_record(position)));
             }
         } else if preserve_shifted_ref {
             // AstraZeneca-NGS/VarDictJava#330: run per-variant `adj_complex_compat` + `crispr`
@@ -276,12 +324,12 @@ fn simple_post_process_core<'a>(
                 if reset_crispr {
                     vref.crispr = 0;
                 }
-                vrefs.push(vref);
+                vrefs.push((position, vref));
             }
             let has_survived = vrefs.len() > pos_start;
             let any_at_pos = vrefs
                 .get(pos_start..)
-                .is_some_and(|s| s.iter().any(|v| v.start_pos == position));
+                .is_some_and(|s| s.iter().any(|(_, v)| v.start_pos == position));
             if has_survived && !any_at_pos {
                 if let Some(rv_cow) = ref_var_cow.take().filter(|rv| rv.start_pos == position) {
                     let mut ref_var = rv_cow.into_owned();
@@ -289,10 +337,10 @@ fn simple_post_process_core<'a>(
                     if reset_crispr {
                         ref_var.crispr = 0;
                     }
-                    vrefs.push(ref_var);
+                    vrefs.push((position, ref_var));
                     if let Some(s) = vrefs.get_mut(pos_start..) {
                         if config.compat.coordinate_sorted_vars {
-                            s.sort_by_key(|v| v.start_pos);
+                            s.sort_by_key(|(_, v)| v.start_pos);
                         } else if !s.is_empty() {
                             s.rotate_right(1);
                         }
@@ -305,8 +353,8 @@ fn simple_post_process_core<'a>(
                     let null_rec = make_null_record(position);
                     let mut zero_ref = Variant::new();
                     zero_ref.var_type = String::new();
-                    vrefs.push(null_rec);
-                    vrefs.push(zero_ref);
+                    vrefs.push((position, null_rec));
+                    vrefs.push((position, zero_ref));
                     if let Some(s) = vrefs.get_mut(pos_start..) {
                         if s.len() >= 2 {
                             s.rotate_right(2);
@@ -336,7 +384,7 @@ fn simple_post_process_core<'a>(
                         if reset_crispr {
                             ref_var.crispr = 0;
                         }
-                        vrefs.push(ref_var);
+                        vrefs.push((position, ref_var));
                     } else if !config.compat.suppress_pileup_sentinels {
                         // ports SimplePostProcessModule.java:75-79: Java prints a
                         // SimpleOutputVariant wrapping null immediately (the
@@ -345,10 +393,10 @@ fn simple_post_process_core<'a>(
                         // stay 0 — that 0 leaks into .var columns 4-5 (the
                         // upstream pos-0 quirk; replicated per §5, see
                         // DIVERGENCES.md "Known non-bugs").
-                        vrefs.push(make_null_record(position));
+                        vrefs.push((position, make_null_record(position)));
                         let mut ref_var = Variant::new();
                         ref_var.var_type = String::new();
-                        vrefs.push(ref_var);
+                        vrefs.push((position, ref_var));
                     }
                 }
                 if vref.var_type != vtype_cow.as_ref() {
@@ -362,16 +410,28 @@ fn simple_post_process_core<'a>(
                 if reset_crispr {
                     vref.crispr = 0;
                 }
-                vrefs.push(vref);
+                vrefs.push((position, vref));
             }
         }
 
+        if !config.pileup
+            && refresh_vt
+            && !do_left_align
+            && vrefs.len().saturating_sub(pos_start) > 1
+        {
+            let mut pos_tail = vrefs.split_off(pos_start);
+            crate::variations::dedup_post_norm_vec(&mut pos_tail, |(_, v)| {
+                (!v.null_record).then_some((0u8, v, v))
+            });
+            vrefs.extend(pos_tail);
+        }
+
         if let Some((last, prior)) = vrefs.get_mut(pos_start..).and_then(|s| s.split_last_mut()) {
-            for r in prior {
+            for (_, r) in prior {
                 r.sv.clear();
                 r.sv.push_str(&sv_cow);
             }
-            last.sv = sv_cow.into_owned();
+            last.1.sv = sv_cow.into_owned();
         }
     }
 
@@ -379,13 +439,18 @@ fn simple_post_process_core<'a>(
         // AstraZeneca-NGS/VarDictJava#369 + AstraZeneca-NGS/VarDictJava#398:
         // retain 1-bp-upstream-padded symbolic SVs anchored at `region.start - 1`.
         let allow_padded_sv = config.compat.canonical_sv_vcf_anchoring;
-        vrefs.retain(|v| crate::variant_within_strict_bounds(merged_bounds, v, allow_padded_sv));
+        vrefs.retain(|(_, v)| {
+            crate::variant_within_strict_bounds(merged_bounds, v, allow_padded_sv)
+        });
     } else if config.compat.strict_region_bounds {
-        vrefs.retain(|v| v.start_pos >= 1);
+        vrefs.retain(|(_, v)| v.start_pos >= 1);
     }
 
-    if do_left_align && !config.pileup {
+    if !seam_unfinalized && do_left_align && !config.pileup {
         dedup_normalized_simple_variants(&mut vrefs);
+        if config.compat.coordinate_sorted_vars {
+            vrefs.sort_by_key(|(_, v)| v.start_pos);
+        }
     }
 
     // VCF mode: ports var2vcf_valid.pl:41,129-137 — bucket rows by the RAW .var
@@ -396,20 +461,35 @@ fn simple_post_process_core<'a>(
     // Bucketing must use the raw start (what simple_36 writes), NOT the
     // ToVarsBuilder position key: indels and SNVs can share one key while
     // having different raw starts, and different keys can share a raw start.
+    // Under `--compat=off` / `--preset` (`F-05`), symbolic SVs additionally sub-key
+    // by `(end_pos, SvTag)` so distinct-`END` or distinct-type SVs never overwrite
+    // co-anchored SNVs or other symbolic SVs.
     if !skip_vcf_bucketing && !config.emit_intermediate && !config.vcf_all_alleles {
         let exact_tie = config.compat.exact_binary_half_even;
-        let mut buckets: BTreeMap<i32, Variant> = BTreeMap::new();
-        for v in vrefs {
+        let multi_sv =
+            config.compat.canonical_sv_vcf_anchoring || config.compat.standard_dup_symbolic_alt;
+        let prefer_nonref_zero = config.pileup && config.compat.pileup_preserve_shifted_ref;
+        let mut buckets: BTreeMap<crate::SingleAlleleBucketKey, (i32, Variant)> = BTreeMap::new();
+        for (orig_pos, v) in vrefs {
             let v_af = crate::types::round_half_even_compat(v.frequency, 4, exact_tie);
-            match buckets.entry(v.start_pos) {
+            let bkey =
+                crate::single_allele_bucket_key(v.start_pos, v.end_pos, &v.var_allele, multi_sv);
+            match buckets.entry(bkey) {
                 std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(v);
+                    e.insert((orig_pos, v));
                 }
                 std::collections::btree_map::Entry::Occupied(mut e) => {
-                    let cur_af =
-                        crate::types::round_half_even_compat(e.get().frequency, 4, exact_tie);
-                    if v_af > cur_af {
-                        e.insert(v);
+                    let (_, cur) = e.get();
+                    let cur_af = crate::types::round_half_even_compat(cur.frequency, 4, exact_tie);
+                    let nonref_beats_zero_ref = prefer_nonref_zero
+                        && v_af == 0.0
+                        && cur_af == 0.0
+                        && v.pos_coverage > 0
+                        && v.ref_allele != v.var_allele
+                        && cur.pos_coverage == 0
+                        && cur.ref_allele == cur.var_allele;
+                    if v_af > cur_af || nonref_beats_zero_ref {
+                        e.insert((orig_pos, v));
                     }
                 }
             }
@@ -1552,6 +1632,7 @@ mod tests {
         let mut cfg_sw35 = Config::default();
         cfg_sw35.emit_intermediate = true;
         cfg_sw35.compat.canonical_vcf_complex_left_align = true;
+        cfg_sw35.compat.recompute_vartype_after_adj_complex = true;
         let out_sw35 = simple_post_process(&cfg_sw35, &region, &map_delins, &splice);
         assert_eq!(out_sw35.len(), 1);
         assert_eq!(out_sw35[0].start_pos, 103);
@@ -1673,5 +1754,102 @@ mod tests {
         assert_eq!(out_s38[1].ref_allele, "AAAG");
         assert_eq!(out_s38[1].var_allele, "A");
         assert_eq!(out_s38[1].shift3, 2);
+    }
+
+    #[test]
+    fn lane1_f05_and_s02_simple_multi_end_sv_and_switch29_same_pos_dedup() {
+        let splice = rustc_hash::FxHashSet::default();
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: Pos1(900),
+            end: Pos1(1500),
+            gene: "G".to_string(),
+            amplicon: None,
+        };
+
+        // Part A (F-05): Co-anchored SNVs + distinct-END / distinct-type symbolic SVs at start_pos = 999
+        let mut sv_map = crate::javamap::JavaHashMap::new();
+        let mut vars_999 = Vars::new();
+        vars_999.sv = "4-2-1".to_string();
+        vars_999.variants.push(mk_variant(999, 999, "A", "G", 0.35));
+        vars_999.variants.push(mk_variant(999, 999, "A", "T", 0.20));
+        vars_999
+            .variants
+            .push(mk_variant(999, 1100, "A", "<DUP>", 0.30));
+        vars_999
+            .variants
+            .push(mk_variant(999, 1250, "A", "<DUP>", 0.45));
+        vars_999
+            .variants
+            .push(mk_variant(999, 1100, "A", "<INV>", 0.25));
+        sv_map.insert(999, vars_999);
+
+        let mut cfg_vj = Config::default();
+        cfg_vj.freq = 0.01;
+        cfg_vj.min_reads = 2;
+        cfg_vj.read_pos = 5.0;
+        cfg_vj.base_qual = 22.5;
+        cfg_vj.qratio = 1.5;
+        let out_vj = simple_post_process(&cfg_vj, &region, &sv_map, &splice);
+        assert_eq!(
+            out_vj.len(),
+            1,
+            "default --compat=vardictjava must collapse start_pos=999 to single top-AF winner"
+        );
+        assert_eq!(out_vj[0].var_allele, "<DUP>");
+        assert_eq!(out_vj[0].end_pos, 1250);
+
+        let mut cfg_off = cfg_vj.clone();
+        cfg_off.compat = crate::config::COMPAT_OFF;
+        let out_off = simple_post_process(&cfg_off, &region, &sv_map, &splice);
+        let summary_off: Vec<(i32, i32, &str, &str)> = out_off
+            .iter()
+            .map(|v| {
+                (
+                    v.start_pos,
+                    v.end_pos,
+                    v.ref_allele.as_str(),
+                    v.var_allele.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary_off,
+            vec![
+                (999, 999, "A", "G"),
+                (999, 1100, "A", "<DUP>"),
+                (999, 1100, "A", "<INV>"),
+                (999, 1250, "A", "<DUP>"),
+            ],
+            "F-05: --compat=off single-allele VCF must keep top concrete allele plus each distinct (END, SVTYPE) symbolic SV"
+        );
+
+        // Part B (S-02): Same-position distinct raw descriptions normalizing to identical allele under Switch 29 alone
+        let mut s02_map = crate::javamap::JavaHashMap::new();
+        let mut vars_1010 = Vars::new();
+        let mut c1 = mk_variant(1010, 1011, "GA", "GT", 0.30);
+        c1.description = "GT".to_string();
+        c1.pos_coverage = 4;
+        c1.total_pos_cov = 20;
+        let mut c2 = mk_variant(1010, 1012, "GAC", "GTC", 0.60);
+        c2.description = "GTC".to_string();
+        c2.pos_coverage = 12;
+        c2.total_pos_cov = 20;
+        vars_1010.variants.push(c1);
+        vars_1010.variants.push(c2);
+        s02_map.insert(1010, vars_1010);
+
+        let mut cfg_sw29 = Config::default();
+        cfg_sw29.emit_intermediate = true;
+        cfg_sw29.compat.recompute_vartype_after_adj_complex = true;
+        let out_sw29 = simple_post_process(&cfg_sw29, &region, &s02_map, &splice);
+        assert_eq!(
+            out_sw29.len(),
+            1,
+            "S-02: same-position Switch 29 trimmed collisions must deduplicate to 1 row"
+        );
+        assert_eq!(out_sw29[0].start_pos, 1011);
+        assert_eq!(out_sw29[0].var_allele, "T");
+        assert_eq!(out_sw29[0].pos_coverage, 12);
     }
 }

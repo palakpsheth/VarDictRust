@@ -623,7 +623,7 @@ fn write_common_vcf_header_prefix<W: Write>(
 
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=VarDict_v1.8.2")?;
-    if config.compat.target == crate::config::CompatTarget::Off {
+    if config.compat != crate::config::COMPAT_VARDICTJAVA_1_8_3 {
         writeln!(w, "##VarDictRustCompat=off")?;
         if let Some(preset) = config.preset {
             writeln!(w, "##VarDictRustPreset={preset}")?;
@@ -2287,15 +2287,36 @@ fn format_cluster_tag_from_config(config: &Config) -> crate::types::StackBuf<80>
     buf
 }
 
+#[inline]
+fn vcf_line_has_symbolic_sv_alt(line: &str) -> bool {
+    line.split('\t')
+        .nth(4)
+        .is_some_and(|alt| symbolic_sv_type_token(alt).is_some())
+}
+
 /// Streaming delayed-print state machine for single-sample / amplicon VCF records
 /// (`var2vcf_valid.pl:132, 181-205, 239, 242-244`).
 #[derive(Debug)]
 pub struct SingleRecordStreamer {
     pending: Option<SingleVcfRecord>,
+    deferred_svs: Vec<SingleVcfRecord>,
     pvs: i32,
     opt_c: i32,
     pass_only: bool,
+    guard_symbolic_sv: bool,
     cluster_tag: crate::types::StackBuf<80>,
+}
+
+impl SingleVcfRecord {
+    #[inline]
+    fn is_symbolic_sv(&self) -> bool {
+        vcf_line_has_symbolic_sv_alt(&self.line)
+    }
+
+    #[inline]
+    fn is_concrete_snv(&self) -> bool {
+        self.type_snv && !self.is_symbolic_sv()
+    }
 }
 
 impl SingleRecordStreamer {
@@ -2306,9 +2327,11 @@ impl SingleRecordStreamer {
     pub fn with_pass_only(opt_c: i32, pass_only: bool) -> Self {
         Self {
             pending: None,
+            deferred_svs: Vec::new(),
             pvs: 0,
             opt_c,
             pass_only,
+            guard_symbolic_sv: false,
             cluster_tag: format_cluster_tag_from_int(opt_c),
         }
     }
@@ -2316,11 +2339,31 @@ impl SingleRecordStreamer {
     pub fn from_config(config: &Config) -> Self {
         Self {
             pending: None,
+            deferred_svs: Vec::new(),
             pvs: 0,
             opt_c: effective_vcf_cluster_dist(config),
             pass_only: config.vcf_pass_only,
+            guard_symbolic_sv: config.compat.canonical_sv_vcf_anchoring
+                || config.compat.standard_dup_symbolic_alt,
             cluster_tag: format_cluster_tag_from_config(config),
         }
+    }
+
+    fn flush_pending_and_deferred<F>(&mut self, emit: &mut F) -> io::Result<()>
+    where
+        F: FnMut(&str) -> io::Result<()>,
+    {
+        if let Some(prev) = self.pending.take() {
+            if !self.pass_only || prev.is_pass() {
+                emit(prev.as_str())?;
+            }
+        }
+        for sv in self.deferred_svs.drain(..) {
+            if !self.pass_only || sv.is_pass() {
+                emit(sv.as_str())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn push_event<F>(&mut self, event: SingleVcfEvent, mut emit: F) -> io::Result<()>
@@ -2332,7 +2375,15 @@ impl SingleRecordStreamer {
             SingleVcfEvent::AmpBiasSnvClusterProbe { start } => {
                 if i64::from(start) - i64::from(self.pvs) < i64::from(self.opt_c) {
                     if let Some(prev) = self.pending.as_mut() {
-                        prev.set_cluster_filter(self.cluster_tag.as_str());
+                        if !self.guard_symbolic_sv || prev.is_concrete_snv() {
+                            prev.set_cluster_filter(self.cluster_tag.as_str());
+                        }
+                    }
+                    if self.guard_symbolic_sv
+                        && self.pass_only
+                        && self.pending.as_ref().is_some_and(|p| !p.is_pass())
+                    {
+                        self.flush_pending_and_deferred(&mut emit)?;
                     }
                 }
                 Ok(())
@@ -2343,27 +2394,63 @@ impl SingleRecordStreamer {
                 if let Some(start) = cluster_probe_start {
                     if i64::from(start) - i64::from(self.pvs) < i64::from(self.opt_c) {
                         if let Some(prev) = self.pending.as_mut() {
-                            prev.set_cluster_filter(self.cluster_tag.as_str());
+                            if !self.guard_symbolic_sv || prev.is_concrete_snv() {
+                                prev.set_cluster_filter(self.cluster_tag.as_str());
+                            }
                         }
                         if self.pass_only {
+                            if self.guard_symbolic_sv
+                                && self.pending.as_ref().is_some_and(|p| !p.is_pass())
+                            {
+                                self.flush_pending_and_deferred(&mut emit)?;
+                            }
                             return Ok(());
                         }
                     }
                 }
-                if let Some(prev) = self.pending.take() {
-                    if !self.pass_only || prev.is_pass() {
-                        emit(prev.as_str())?;
-                    }
+                let hold_snv = self.guard_symbolic_sv
+                    && self.opt_c > 0
+                    && self
+                        .pending
+                        .as_ref()
+                        .is_some_and(SingleVcfRecord::is_concrete_snv);
+                if !hold_snv {
+                    self.flush_pending_and_deferred(&mut emit)?;
                 }
                 Ok(())
             }
             SingleVcfEvent::Record(mut cur) => {
-                if cur.is_snv()
+                if self.guard_symbolic_sv && cur.is_symbolic_sv() {
+                    if self.pass_only && !cur.is_pass() {
+                        return Ok(());
+                    }
+                    let hold_pending_snv = self.opt_c > 0
+                        && self
+                            .pending
+                            .as_ref()
+                            .is_some_and(SingleVcfRecord::is_concrete_snv)
+                        && i64::from(cur.start) - i64::from(self.pvs) < i64::from(self.opt_c);
+                    if hold_pending_snv {
+                        self.deferred_svs.push(cur);
+                    } else {
+                        self.flush_pending_and_deferred(&mut emit)?;
+                        emit(cur.as_str())?;
+                    }
+                    return Ok(());
+                }
+                let cur_is_snv = if self.guard_symbolic_sv {
+                    cur.is_concrete_snv()
+                } else {
+                    cur.is_snv()
+                };
+                if cur_is_snv
                     && cur.pre_cluster_empty()
                     && i64::from(cur.start) - i64::from(self.pvs) < i64::from(self.opt_c)
                 {
                     if let Some(prev) = self.pending.as_mut() {
-                        prev.set_cluster_filter(self.cluster_tag.as_str());
+                        if !self.guard_symbolic_sv || prev.is_concrete_snv() {
+                            prev.set_cluster_filter(self.cluster_tag.as_str());
+                        }
                     }
                     if cur.has_ampbias {
                         let mut cur_tag = crate::types::StackBuf::<96>::new();
@@ -2375,14 +2462,14 @@ impl SingleRecordStreamer {
                     }
                 }
                 if self.pass_only && !cur.is_pass() {
+                    if self.guard_symbolic_sv && self.pending.as_ref().is_some_and(|p| !p.is_pass())
+                    {
+                        self.flush_pending_and_deferred(&mut emit)?;
+                    }
                     return Ok(());
                 }
-                if let Some(prev) = self.pending.take() {
-                    if !self.pass_only || prev.is_pass() {
-                        emit(prev.as_str())?;
-                    }
-                }
-                if cur.is_snv() && cur.is_pass() {
+                self.flush_pending_and_deferred(&mut emit)?;
+                if cur_is_snv && cur.is_pass() {
                     self.pvs = cur.start;
                 }
                 self.pending = Some(cur);
@@ -2395,12 +2482,7 @@ impl SingleRecordStreamer {
     where
         F: FnMut(&str) -> io::Result<()>,
     {
-        if let Some(prev) = self.pending.take() {
-            if !self.pass_only || prev.is_pass() {
-                emit(prev.as_str())?;
-            }
-        }
-        Ok(())
+        self.flush_pending_and_deferred(&mut emit)
     }
 }
 
@@ -3027,6 +3109,22 @@ pub fn format_paired_vcf_record(
                 exact_tie,
             ) >= eff_nm);
 
+    let dot_alt_compat = config.compat.strict_vcf_ad_number_r
+        || config.compat.omit_nonsv_vcf_end
+        || config.compat.canonical_vcf_gt;
+    let v1_var_allele: &str = if config.pileup
+        && config.compat.pileup_preserve_shifted_ref
+        && dot_alt_compat
+        && !v1.ref_allele.is_empty()
+        && v1.ref_allele == v1.var_allele
+        && v1.pos_coverage == 0
+    {
+        "."
+    } else {
+        &v1.var_allele
+    };
+    let alt_is_dot = dot_alt_compat && v1_var_allele == ".";
+
     let mut p_likely = false;
     let mut indel_likely = false;
     let mut tag_scratch = VcfFloatTagScratch::new();
@@ -3150,7 +3248,7 @@ pub fn format_paired_vcf_record(
                 has_msi = true;
             }
         }
-        let len_diff = v1.ref_allele.len().abs_diff(v1.var_allele.len());
+        let len_diff = v1.ref_allele.len().abs_diff(v1_var_allele.len());
         if usize::try_from(end_var.msint).ok() == Some(len_diff) && !has_msi {
             if (msi > eff_msi && msilen > 1.0 && af1 < 0.35 && af2 < 0.35)
                 || (msi > 12.0 && msilen == 1.0 && af1 < 0.35 && af2 < 0.35)
@@ -3185,7 +3283,7 @@ pub fn format_paired_vcf_record(
                 p_likely = true;
             } else if status.contains("Likely")
                 && var_type != "SNV"
-                && !(v1.ref_allele.len() <= 2 && v1.var_allele.len() <= 2)
+                && !(v1.ref_allele.len() <= 2 && v1_var_allele.len() <= 2)
             {
                 indel_likely = true;
             }
@@ -3197,11 +3295,6 @@ pub fn format_paired_vcf_record(
     if compute_ampbias(amp_tuple) {
         filters.push(FilterTag::Text("AMPBIAS"));
     }
-
-    let dot_alt_compat = config.compat.strict_vcf_ad_number_r
-        || config.compat.omit_nonsv_vcf_end
-        || config.compat.canonical_vcf_gt;
-    let alt_is_dot = dot_alt_compat && v1.var_allele == ".";
 
     let (mut gt, mut gtm) = if alt_is_dot {
         ("0/0", "0/0")
@@ -3219,7 +3312,18 @@ pub fn format_paired_vcf_record(
             gtm = "0/1";
         }
         if gt == "0/0" && gtm == "0/0" && (vd1 > 0 || vd2 > 0) {
-            if vd1 >= vd2 && vd1 > 0 {
+            if status.ends_with("Somatic") && vd1 > 0 {
+                gt = "0/1";
+            } else if (status.ends_with("LOH") || status == "Deletion") && vd2 > 0 {
+                gtm = "0/1";
+            } else if (status == "Germline" || status == "AFDiff") && vd1 > 0 && vd2 > 0 {
+                gt = "0/1";
+                gtm = "0/1";
+            } else if vd1 > 0 && vd2 <= 0 {
+                gt = "0/1";
+            } else if vd2 > 0 && vd1 <= 0 {
+                gtm = "0/1";
+            } else if af1 >= af2 && vd1 > 0 {
                 gt = "0/1";
             } else {
                 gtm = "0/1";
@@ -3246,7 +3350,7 @@ pub fn format_paired_vcf_record(
     line.push_str("\t.\t");
     line.push_str(&v1.ref_allele);
     line.push('\t');
-    line.push_str(&v1.var_allele);
+    line.push_str(v1_var_allele);
     line.push('\t');
     crate::util::push_i32(&mut line, qual_col);
     line.push('\t');
@@ -3305,7 +3409,7 @@ pub fn format_paired_vcf_record(
         });
     }
     if config.compat.canonical_sv_vcf_anchoring && !alt_is_dot {
-        if let Some(svtype) = symbolic_sv_type_token(&v1.var_allele) {
+        if let Some(svtype) = symbolic_sv_type_token(v1_var_allele) {
             let inv_hint = v1
                 .genotype
                 .as_deref()
@@ -3316,7 +3420,7 @@ pub fn format_paired_vcf_record(
                         .as_deref()
                         .and_then(parse_genotype_inv_len_str)
                 });
-            let svlen = compute_canonical_svlen(v1.start_pos, v1.end_pos, &v1.var_allele, inv_hint);
+            let svlen = compute_canonical_svlen(v1.start_pos, v1.end_pos, v1_var_allele, inv_hint);
             if !config.vcf_no_end_explicit {
                 line.push_str(";END=");
                 crate::util::push_i32(&mut line, v1.end_pos);
@@ -3356,15 +3460,29 @@ pub fn format_paired_vcf_record(
     }
 }
 
+impl PairedVcfRecord {
+    #[inline]
+    fn is_symbolic_sv(&self) -> bool {
+        vcf_line_has_symbolic_sv_alt(&self.line)
+    }
+
+    #[inline]
+    fn is_concrete_snv(&self) -> bool {
+        self.type_snv && !self.is_symbolic_sv()
+    }
+}
+
 /// Streaming delayed-print state machine for paired VCF records (`var2vcf_paired.pl:126,229-250`).
 /// Retains at most 1 lookbehind record (`pending`) per chromosome so whole-chromosome
 /// emission uses `O(1)` memory.
 #[derive(Debug)]
 pub struct PairedRecordStreamer {
     pending: Option<PairedVcfRecord>,
+    deferred_svs: Vec<PairedVcfRecord>,
     pvs: i32,
     opt_c: i32,
     pass_only: bool,
+    guard_symbolic_sv: bool,
     cluster_tag: crate::types::StackBuf<80>,
 }
 
@@ -3376,9 +3494,11 @@ impl PairedRecordStreamer {
     pub fn with_pass_only(opt_c: i32, pass_only: bool) -> Self {
         Self {
             pending: None,
+            deferred_svs: Vec::new(),
             pvs: 0,
             opt_c,
             pass_only,
+            guard_symbolic_sv: false,
             cluster_tag: format_cluster_tag_from_int(opt_c),
         }
     }
@@ -3386,11 +3506,31 @@ impl PairedRecordStreamer {
     pub fn from_config(config: &Config) -> Self {
         Self {
             pending: None,
+            deferred_svs: Vec::new(),
             pvs: 0,
             opt_c: effective_vcf_cluster_dist(config),
             pass_only: config.vcf_pass_only,
+            guard_symbolic_sv: config.compat.canonical_sv_vcf_anchoring
+                || config.compat.standard_dup_symbolic_alt,
             cluster_tag: format_cluster_tag_from_config(config),
         }
+    }
+
+    fn flush_pending_and_deferred<E>(
+        &mut self,
+        emit: &mut impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(prev) = self.pending.take() {
+            if !self.pass_only || prev.is_pass() {
+                emit(prev.as_str())?;
+            }
+        }
+        for sv in self.deferred_svs.drain(..) {
+            if !self.pass_only || sv.is_pass() {
+                emit(sv.as_str())?;
+            }
+        }
+        Ok(())
     }
 
     pub fn push<E>(
@@ -3398,23 +3538,48 @@ impl PairedRecordStreamer {
         mut cur: PairedVcfRecord,
         mut emit: impl FnMut(&str) -> Result<(), E>,
     ) -> Result<(), E> {
-        if let Some(mut prev) = self.pending.take() {
+        if self.guard_symbolic_sv && cur.is_symbolic_sv() {
+            if self.pass_only && !cur.is_pass() {
+                return Ok(());
+            }
+            let hold_pending = self.opt_c > 0
+                && self.pending.as_ref().is_some_and(|prev| {
+                    prev.is_pass() && prev.status_somatic && prev.is_concrete_snv()
+                })
+                && i64::from(cur.start) - i64::from(self.pvs) < i64::from(self.opt_c);
+            if hold_pending {
+                self.deferred_svs.push(cur);
+            } else {
+                self.flush_pending_and_deferred(&mut emit)?;
+                emit(cur.as_str())?;
+            }
+            return Ok(());
+        }
+        let cur_is_snv = if self.guard_symbolic_sv {
+            cur.is_concrete_snv()
+        } else {
+            cur.type_snv
+        };
+        if let Some(prev) = self.pending.as_mut() {
+            let prev_is_snv = if self.guard_symbolic_sv {
+                prev.is_concrete_snv()
+            } else {
+                prev.type_snv
+            };
             if prev.is_pass()
                 && prev.status_somatic
-                && prev.type_snv
+                && prev_is_snv
                 && cur.is_pass()
                 && cur.status_somatic
-                && cur.type_snv
+                && cur_is_snv
                 && i64::from(cur.start) - i64::from(self.pvs) < i64::from(self.opt_c)
             {
                 prev.set_cluster_filter(self.cluster_tag.as_str());
                 cur.set_cluster_filter(self.cluster_tag.as_str());
             }
-            if !self.pass_only || prev.is_pass() {
-                emit(prev.as_str())?;
-            }
         }
-        if cur.type_snv && cur.is_pass() {
+        self.flush_pending_and_deferred(&mut emit)?;
+        if cur_is_snv && cur.is_pass() {
             self.pvs = cur.start; // :245
         }
         self.pending = Some(cur);
@@ -3422,12 +3587,7 @@ impl PairedRecordStreamer {
     }
 
     pub fn finish<E>(mut self, mut emit: impl FnMut(&str) -> Result<(), E>) -> Result<(), E> {
-        if let Some(prev) = self.pending.take() {
-            if !self.pass_only || prev.is_pass() {
-                emit(prev.as_str())?;
-            }
-        }
-        Ok(())
+        self.flush_pending_and_deferred(&mut emit)
     }
 }
 
@@ -8235,6 +8395,358 @@ mod tests {
         assert_eq!(
             paired_gts(&format_paired_vcf_record(&sub_n_sv, "chr1", &s32_cfg)),
             ("0/0".to_string(), "0/1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_lane3_f13_somatic_canonical_gt_rescue_by_status_and_af() {
+        let mut vj_cfg = Config::default();
+        vj_cfg.vcf_af = Some(crate::config::VcfThreshold::new(0.05));
+        let mut s32_cfg = vj_cfg.clone();
+        s32_cfg.compat.canonical_vcf_gt = true;
+
+        let paired_gts = |rec: &PairedVcfRecord| -> (String, String) {
+            let cols: Vec<&str> = rec.as_str().split('\t').collect();
+            (
+                cols[9].split(':').next().unwrap().to_string(),
+                cols[10].split(':').next().unwrap().to_string(),
+            )
+        };
+
+        // 1. LikelySomatic with tumor vd1=2, dp1=50 (af1=0.04) and ultra-deep normal vd2=3, dp2=1000 (af2=0.003):
+        //    under --vcf-af 0.05 both raw GTs are 0/0; tumor MUST receive 0/1 (never normal!).
+        let mut t_som = clean_normal();
+        t_som.total_pos_cov = 50;
+        t_som.pos_coverage = 2;
+        t_som.fwd = 1;
+        t_som.rev = 1;
+        t_som.frequency = 0.04;
+        let mut n_deep = clean_normal();
+        n_deep.total_pos_cov = 1000;
+        n_deep.pos_coverage = 3;
+        n_deep.fwd = 2;
+        n_deep.rev = 1;
+        n_deep.frequency = 0.003;
+        let som_sv = somatic_sv(t_som.clone(), Some(n_deep.clone()), "LikelySomatic");
+        assert_eq!(
+            paired_gts(&format_paired_vcf_record(&som_sv, "chr1", &vj_cfg)),
+            ("0/0".to_string(), "0/0".to_string())
+        );
+        assert_eq!(
+            paired_gts(&format_paired_vcf_record(&som_sv, "chr1", &s32_cfg)),
+            ("0/1".to_string(), "0/0".to_string())
+        );
+
+        // 2. StrongLOH / LikelyLOH / Deletion with vd1=2, dp1=200 (af1=0.01) and vd2=2, dp2=80 (af2=0.025):
+        //    normal MUST receive 0/1 (even though vd1 >= vd2).
+        for loh_status in ["StrongLOH", "LikelyLOH", "Deletion"] {
+            let mut t_loh = clean_normal();
+            t_loh.total_pos_cov = 200;
+            t_loh.pos_coverage = 2;
+            t_loh.fwd = 1;
+            t_loh.rev = 1;
+            t_loh.frequency = 0.01;
+            let mut n_loh = clean_normal();
+            n_loh.total_pos_cov = 80;
+            n_loh.pos_coverage = 2;
+            n_loh.fwd = 1;
+            n_loh.rev = 1;
+            n_loh.frequency = 0.025;
+            let loh_sv = somatic_sv(t_loh, Some(n_loh), loh_status);
+            assert_eq!(
+                paired_gts(&format_paired_vcf_record(&loh_sv, "chr1", &s32_cfg)),
+                ("0/0".to_string(), "0/1".to_string()),
+                "status={loh_status}"
+            );
+        }
+
+        // 3. Germline and AFDiff with both vd1 > 0 && vd2 > 0 below eff_freq: BOTH samples get 0/1.
+        for shared_status in ["Germline", "AFDiff"] {
+            let mut t_g = clean_normal();
+            t_g.total_pos_cov = 100;
+            t_g.pos_coverage = 2;
+            t_g.fwd = 1;
+            t_g.rev = 1;
+            t_g.frequency = 0.02;
+            let mut n_g = clean_normal();
+            n_g.total_pos_cov = 150;
+            n_g.pos_coverage = 3;
+            n_g.fwd = 2;
+            n_g.rev = 1;
+            n_g.frequency = 0.02;
+            let g_sv = somatic_sv(t_g, Some(n_g), shared_status);
+            assert_eq!(
+                paired_gts(&format_paired_vcf_record(&g_sv, "chr1", &s32_cfg)),
+                ("0/1".to_string(), "0/1".to_string()),
+                "status={shared_status}"
+            );
+        }
+
+        // 4. Fallback status (e.g. SampleSpecific) with both vd1 > 0 && vd2 > 0 compares af1 >= af2 rather than vd1 >= vd2.
+        let fb_tumor = somatic_sv(t_som, Some(n_deep), "SampleSpecific");
+        assert_eq!(
+            paired_gts(&format_paired_vcf_record(&fb_tumor, "chr1", &s32_cfg)),
+            ("0/1".to_string(), "0/0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_lane3_f05_streamer_symbolic_sv_cluster_guard_single_and_paired() {
+        let region = Region {
+            chr: "chr1".to_string(),
+            start: crate::types::Pos1(1),
+            end: crate::types::Pos1(2000),
+            gene: "TEST".to_string(),
+            amplicon: None,
+        };
+        let mut off_cfg = Config::default();
+        off_cfg.compat = crate::config::COMPAT_OFF;
+        off_cfg.vcf_cluster_dist = Some(crate::config::VcfThreshold::new(10));
+
+        let mk_snv = |pos: i32, ref_b: &str, alt_b: &str| -> Variant {
+            let mut v = amplicon_passing_variant();
+            v.start_pos = pos;
+            v.end_pos = pos;
+            v.ref_allele = ref_b.to_string();
+            v.var_allele = alt_b.to_string();
+            v.var_type = "SNV".to_string();
+            v
+        };
+        let mk_sym_sv = |pos: i32, end: i32, sym: &str, vtype: &str| -> Variant {
+            let mut v = amplicon_passing_variant();
+            v.start_pos = pos;
+            v.end_pos = end;
+            v.ref_allele = "A".to_string();
+            v.var_allele = sym.to_string();
+            v.var_type = vtype.to_string();
+            v.sv = "5-3-1".to_string();
+            v
+        };
+
+        // 1. SingleRecordStreamer (--compat=off, opt_c = 10):
+        //    [PASS SNV @ 100, PASS <DUP> @ 100, PASS SNV @ 105] ->
+        //    SNV @ 100 = Cluster10bp, <DUP> @ 100 = PASS (never Cluster10bp!), SNV @ 105 = Cluster10bp.
+        let mut scratch = String::new();
+        let ev_snv100 = build_single_vcf_event(
+            &mut scratch,
+            &mk_snv(100, "A", "G"),
+            &region,
+            &off_cfg,
+            None,
+        );
+        let ev_dup100 = build_single_vcf_event(
+            &mut scratch,
+            &mk_sym_sv(100, 400, "<DUP>", "Duplication"),
+            &region,
+            &off_cfg,
+            None,
+        );
+        let ev_snv105 = build_single_vcf_event(
+            &mut scratch,
+            &mk_snv(105, "C", "T"),
+            &region,
+            &off_cfg,
+            None,
+        );
+
+        let mut s_out = Vec::new();
+        let mut s_streamer = SingleRecordStreamer::from_config(&off_cfg);
+        for ev in [ev_snv100.clone(), ev_dup100.clone(), ev_snv105.clone()] {
+            s_streamer
+                .push_event(ev, |l| {
+                    s_out.push(l.to_string());
+                    Ok(())
+                })
+                .unwrap();
+        }
+        s_streamer
+            .finish(|l| {
+                s_out.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(s_out.len(), 3);
+        assert_eq!(s_out[0].split('\t').nth(4), Some("G"));
+        assert_eq!(s_out[0].split('\t').nth(6), Some("Cluster10bp"));
+        assert_eq!(s_out[1].split('\t').nth(4), Some("<DUP>"));
+        assert_eq!(s_out[1].split('\t').nth(6), Some("PASS"));
+        assert_eq!(s_out[2].split('\t').nth(4), Some("T"));
+        assert_eq!(s_out[2].split('\t').nth(6), Some("Cluster10bp"));
+
+        // Under --pass-only, both clustered SNVs (100 & 105) are suppressed while <DUP> @ 100 emits as PASS!
+        let mut off_pass_cfg = off_cfg.clone();
+        off_pass_cfg.vcf_pass_only = true;
+        let mut sp_out = Vec::new();
+        let mut sp_streamer = SingleRecordStreamer::from_config(&off_pass_cfg);
+        for ev in [
+            build_single_vcf_event(
+                &mut scratch,
+                &mk_snv(95, "A", "G"),
+                &region,
+                &off_pass_cfg,
+                None,
+            ),
+            build_single_vcf_event(
+                &mut scratch,
+                &mk_sym_sv(99, 500, "<DEL>", "Deletion"),
+                &region,
+                &off_pass_cfg,
+                None,
+            ),
+            build_single_vcf_event(
+                &mut scratch,
+                &mk_snv(100, "C", "T"),
+                &region,
+                &off_pass_cfg,
+                None,
+            ),
+        ] {
+            sp_streamer
+                .push_event(ev, |l| {
+                    sp_out.push(l.to_string());
+                    Ok(())
+                })
+                .unwrap();
+        }
+        sp_streamer
+            .finish(|l| {
+                sp_out.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            sp_out.len(),
+            1,
+            "only <DEL> must survive --pass-only: {sp_out:?}"
+        );
+        assert_eq!(sp_out[0].split('\t').nth(4), Some("<DEL>"));
+        assert_eq!(sp_out[0].split('\t').nth(6), Some("PASS"));
+
+        // Also ensure AmpBiasSnvClusterProbe and SvSplitreadFlush never stamp Cluster10bp onto <INV>
+        let mut inv_out = Vec::new();
+        let mut inv_streamer = SingleRecordStreamer::from_config(&off_cfg);
+        inv_streamer
+            .push_event(
+                build_single_vcf_event(
+                    &mut scratch,
+                    &mk_snv(95, "A", "G"),
+                    &region,
+                    &off_cfg,
+                    None,
+                ),
+                |l| {
+                    inv_out.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        inv_streamer
+            .push_event(
+                build_single_vcf_event(
+                    &mut scratch,
+                    &mk_sym_sv(98, 350, "<INV>", "Inversion"),
+                    &region,
+                    &off_cfg,
+                    None,
+                ),
+                |l| {
+                    inv_out.push(l.to_string());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        inv_streamer
+            .push_event(SingleVcfEvent::AmpBiasSnvClusterProbe { start: 100 }, |l| {
+                inv_out.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        inv_streamer
+            .finish(|l| {
+                inv_out.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(inv_out.len(), 2);
+        assert_eq!(inv_out[0].split('\t').nth(6), Some("Cluster10bp"));
+        assert_eq!(inv_out[1].split('\t').nth(4), Some("<INV>"));
+        assert_eq!(inv_out[1].split('\t').nth(6), Some("PASS"));
+
+        // 2. PairedRecordStreamer (--compat=off, opt_c = 10):
+        //    Co-anchored <DUP> between two StrongSomatic PASS SNVs (100 and 105) must NOT shield them!
+        let mut zero_n = clean_normal();
+        zero_n.pos_coverage = 0;
+        zero_n.fwd = 0;
+        zero_n.rev = 0;
+        zero_n.frequency = 0.0;
+        let p_snv100 = format_paired_vcf_record(
+            &somatic_sv(mk_snv(100, "A", "G"), Some(zero_n.clone()), "StrongSomatic"),
+            "chr1",
+            &off_cfg,
+        );
+        let p_dup100 = format_paired_vcf_record(
+            &somatic_sv(
+                mk_sym_sv(100, 400, "<DUP>", "Duplication"),
+                Some(zero_n.clone()),
+                "StrongSomatic",
+            ),
+            "chr1",
+            &off_cfg,
+        );
+        let p_snv105 = format_paired_vcf_record(
+            &somatic_sv(mk_snv(105, "C", "T"), Some(zero_n), "StrongSomatic"),
+            "chr1",
+            &off_cfg,
+        );
+        let mut p_out = Vec::new();
+        let mut p_streamer = PairedRecordStreamer::from_config(&off_cfg);
+        for rec in [p_snv100, p_dup100, p_snv105] {
+            p_streamer
+                .push(rec, |l| -> Result<(), std::convert::Infallible> {
+                    p_out.push(l.to_string());
+                    Ok(())
+                })
+                .unwrap();
+        }
+        p_streamer
+            .finish(|l| -> Result<(), std::convert::Infallible> {
+                p_out.push(l.to_string());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(p_out.len(), 3);
+        assert_eq!(p_out[0].split('\t').nth(4), Some("G"));
+        assert_eq!(p_out[0].split('\t').nth(6), Some("Cluster10bp"));
+        assert_eq!(p_out[1].split('\t').nth(4), Some("<DUP>"));
+        assert_eq!(p_out[1].split('\t').nth(6), Some("PASS"));
+        assert_eq!(p_out[2].split('\t').nth(4), Some("T"));
+        assert_eq!(p_out[2].split('\t').nth(6), Some("Cluster10bp"));
+    }
+
+    #[test]
+    fn test_lane3_s08_vcf_header_stamps_compat_off_on_any_mutated_switch() {
+        let contigs = vec![("chr1".to_string(), Some(1000u64))];
+        let mut mutated_cfg = Config::default();
+        assert_eq!(
+            mutated_cfg.compat.target,
+            crate::config::CompatTarget::VardictJava183
+        );
+        mutated_cfg.compat.canonical_vcf_gt = true;
+
+        let mut single_hdr = Vec::new();
+        print_vcf_header_with_contigs(&mut single_hdr, &mutated_cfg, &contigs).unwrap();
+        let single_str = String::from_utf8(single_hdr).unwrap();
+        assert!(
+            single_str.contains("##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n"),
+            "single VCF header must stamp ##VarDictRustCompat=off when any compat switch differs from COMPAT_VARDICTJAVA_1_8_3:\n{single_str}"
+        );
+
+        let mut paired_hdr = Vec::new();
+        print_paired_vcf_header_with_contigs(&mut paired_hdr, &mutated_cfg, &contigs).unwrap();
+        let paired_str = String::from_utf8(paired_hdr).unwrap();
+        assert!(
+            paired_str.contains("##source=VarDict_v1.8.2\n##VarDictRustCompat=off\n"),
+            "paired VCF header must stamp ##VarDictRustCompat=off when any compat switch differs from COMPAT_VARDICTJAVA_1_8_3:\n{paired_str}"
         );
     }
 }
