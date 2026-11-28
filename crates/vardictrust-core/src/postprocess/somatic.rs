@@ -665,22 +665,6 @@ fn clamp_nonneg_pos_zero(v: f64) -> f64 {
 }
 
 #[inline]
-fn reconcile_variant_dp(
-    vp: &mut Variant,
-    reconcile_vd_dp: bool,
-    reconcile_rd_vd_dp: bool,
-    reconcile_strand_hq: bool,
-) {
-    reconcile_variant_dp_with_tie(
-        vp,
-        reconcile_vd_dp,
-        reconcile_rd_vd_dp,
-        reconcile_strand_hq,
-        false,
-    );
-}
-
-#[inline]
 fn reconcile_variant_dp_with_tie(
     vp: &mut Variant,
     reconcile_vd_dp: bool,
@@ -1486,7 +1470,9 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                     } else {
                         GERMLINE
                     };
-                    v1_matched.var_type = v1_matched.var_type();
+                    if v1_matched.var_type.is_empty() {
+                        v1_matched.var_type = v1_matched.var_type();
+                    }
                     results.push(SomaticVariant {
                         variant1: v1_matched,
                         variant2: Some(v2var_out),
@@ -1507,6 +1493,7 @@ fn emit_v2_loh_fallback_with_ref<'a>(
                 config.compat.reconcile_vd_dp,
                 config.compat.reconcile_rd_vd_dp,
                 config.compat.reconcile_strand_and_hq_sums,
+                config.compat.exact_binary_half_even,
             );
             // Shared columns (ref/var alleles, type) come from normal variant
             var_for_print.ref_allele = v2var_out.ref_allele.clone();
@@ -1945,6 +1932,7 @@ fn print_variations_from_first_sample_inner_with_ref(
                             config.compat.reconcile_vd_dp,
                             config.compat.reconcile_rd_vd_dp,
                             config.compat.reconcile_strand_and_hq_sums,
+                            config.compat.exact_binary_half_even,
                         ),
                     };
                     // SomaticOutputVariant(vref, vref, vref, varForPrint, …) (:212)
@@ -2506,7 +2494,7 @@ fn determinate_type(
 /// the variant is not found in sample2.
 #[cfg(test)]
 fn build_var_for_print_from_v2(v2: &Vars, reconcile_vd_dp: bool) -> Option<Variant> {
-    build_var_for_print_from_v2_compat(v2, reconcile_vd_dp, false, false)
+    build_var_for_print_from_v2_compat(v2, reconcile_vd_dp, false, false, false)
 }
 
 fn build_var_for_print_from_v2_compat(
@@ -2514,6 +2502,7 @@ fn build_var_for_print_from_v2_compat(
     reconcile_vd_dp: bool,
     reconcile_rd_vd_dp: bool,
     reconcile_strand_hq: bool,
+    exact_tie: bool,
 ) -> Option<Variant> {
     let mut out = if let Some(v2r) = v2.variants.first() {
         let mut var_for_print = Variant::new();
@@ -2537,7 +2526,13 @@ fn build_var_for_print_from_v2_compat(
         v2.ref_variant.clone()
     };
     if let Some(ref mut vp) = out {
-        reconcile_variant_dp(vp, reconcile_vd_dp, reconcile_rd_vd_dp, reconcile_strand_hq);
+        reconcile_variant_dp_with_tie(
+            vp,
+            reconcile_vd_dp,
+            reconcile_rd_vd_dp,
+            reconcile_strand_hq,
+            exact_tie,
+        );
     }
     out
 }
@@ -2548,7 +2543,7 @@ fn build_var_for_print_from_v2_compat(
 /// numberOfProcessedVariation == 0 and variant is not found in sample1.
 #[cfg(test)]
 fn build_var_for_print_from_v1(v1: &Vars, reconcile_vd_dp: bool) -> Variant {
-    build_var_for_print_from_v1_compat(v1, reconcile_vd_dp, false, false)
+    build_var_for_print_from_v1_compat(v1, reconcile_vd_dp, false, false, false)
 }
 
 fn build_var_for_print_from_v1_compat(
@@ -2556,6 +2551,7 @@ fn build_var_for_print_from_v1_compat(
     reconcile_vd_dp: bool,
     reconcile_rd_vd_dp: bool,
     reconcile_strand_hq: bool,
+    exact_tie: bool,
 ) -> Variant {
     let v1_first = v1.variants.first();
     let tcov = match v1_first {
@@ -2589,11 +2585,12 @@ fn build_var_for_print_from_v1_compat(
     var_for_print.total_pos_cov = tcov;
     var_for_print.ref_fwd_cov = fwd;
     var_for_print.ref_rev_cov = rev;
-    reconcile_variant_dp(
+    reconcile_variant_dp_with_tie(
         &mut var_for_print,
         reconcile_vd_dp,
         reconcile_rd_vd_dp,
         reconcile_strand_hq,
+        exact_tie,
     );
     var_for_print.genotype = genotype;
     var_for_print

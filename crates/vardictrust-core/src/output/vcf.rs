@@ -2289,22 +2289,9 @@ fn format_cluster_tag_from_config(config: &Config) -> crate::types::StackBuf<80>
 
 #[inline]
 fn vcf_line_has_symbolic_sv_alt(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    let mut tabs = 0usize;
-    let mut alt_start = 0usize;
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\t' {
-            tabs += 1;
-            if tabs == 4 {
-                alt_start = i + 1;
-            } else if tabs == 5 {
-                return line
-                    .get(alt_start..i)
-                    .is_some_and(|alt| symbolic_sv_type_token(alt).is_some());
-            }
-        }
-    }
-    false
+    line.split('\t')
+        .nth(4)
+        .is_some_and(|alt| symbolic_sv_type_token(alt).is_some())
 }
 
 /// Streaming delayed-print state machine for single-sample / amplicon VCF records
@@ -3122,6 +3109,22 @@ pub fn format_paired_vcf_record(
                 exact_tie,
             ) >= eff_nm);
 
+    let dot_alt_compat = config.compat.strict_vcf_ad_number_r
+        || config.compat.omit_nonsv_vcf_end
+        || config.compat.canonical_vcf_gt;
+    let v1_var_allele: &str = if config.pileup
+        && config.compat.pileup_preserve_shifted_ref
+        && dot_alt_compat
+        && !v1.ref_allele.is_empty()
+        && v1.ref_allele == v1.var_allele
+        && v1.pos_coverage == 0
+    {
+        "."
+    } else {
+        &v1.var_allele
+    };
+    let alt_is_dot = dot_alt_compat && v1_var_allele == ".";
+
     let mut p_likely = false;
     let mut indel_likely = false;
     let mut tag_scratch = VcfFloatTagScratch::new();
@@ -3245,7 +3248,7 @@ pub fn format_paired_vcf_record(
                 has_msi = true;
             }
         }
-        let len_diff = v1.ref_allele.len().abs_diff(v1.var_allele.len());
+        let len_diff = v1.ref_allele.len().abs_diff(v1_var_allele.len());
         if usize::try_from(end_var.msint).ok() == Some(len_diff) && !has_msi {
             if (msi > eff_msi && msilen > 1.0 && af1 < 0.35 && af2 < 0.35)
                 || (msi > 12.0 && msilen == 1.0 && af1 < 0.35 && af2 < 0.35)
@@ -3280,7 +3283,7 @@ pub fn format_paired_vcf_record(
                 p_likely = true;
             } else if status.contains("Likely")
                 && var_type != "SNV"
-                && !(v1.ref_allele.len() <= 2 && v1.var_allele.len() <= 2)
+                && !(v1.ref_allele.len() <= 2 && v1_var_allele.len() <= 2)
             {
                 indel_likely = true;
             }
@@ -3292,11 +3295,6 @@ pub fn format_paired_vcf_record(
     if compute_ampbias(amp_tuple) {
         filters.push(FilterTag::Text("AMPBIAS"));
     }
-
-    let dot_alt_compat = config.compat.strict_vcf_ad_number_r
-        || config.compat.omit_nonsv_vcf_end
-        || config.compat.canonical_vcf_gt;
-    let alt_is_dot = dot_alt_compat && v1.var_allele == ".";
 
     let (mut gt, mut gtm) = if alt_is_dot {
         ("0/0", "0/0")
@@ -3352,7 +3350,7 @@ pub fn format_paired_vcf_record(
     line.push_str("\t.\t");
     line.push_str(&v1.ref_allele);
     line.push('\t');
-    line.push_str(&v1.var_allele);
+    line.push_str(v1_var_allele);
     line.push('\t');
     crate::util::push_i32(&mut line, qual_col);
     line.push('\t');
@@ -3411,7 +3409,7 @@ pub fn format_paired_vcf_record(
         });
     }
     if config.compat.canonical_sv_vcf_anchoring && !alt_is_dot {
-        if let Some(svtype) = symbolic_sv_type_token(&v1.var_allele) {
+        if let Some(svtype) = symbolic_sv_type_token(v1_var_allele) {
             let inv_hint = v1
                 .genotype
                 .as_deref()
@@ -3422,7 +3420,7 @@ pub fn format_paired_vcf_record(
                         .as_deref()
                         .and_then(parse_genotype_inv_len_str)
                 });
-            let svlen = compute_canonical_svlen(v1.start_pos, v1.end_pos, &v1.var_allele, inv_hint);
+            let svlen = compute_canonical_svlen(v1.start_pos, v1.end_pos, v1_var_allele, inv_hint);
             if !config.vcf_no_end_explicit {
                 line.push_str(";END=");
                 crate::util::push_i32(&mut line, v1.end_pos);

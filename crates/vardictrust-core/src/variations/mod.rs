@@ -58,6 +58,10 @@ pub struct Variation {
     /// True when a symbolic `<dupN>` variation key is already anchored at `bp - 1`
     /// (`realignlgins` or shifted `sv.rs` under `CompatProfile::canonical_sv_vcf_anchoring`).
     pub pre_anchored_dup: bool,
+    /// True when an SV or realigned overhang indel allele was explicitly planted by
+    /// `sv` or `realign` on the current tile (preserving it across unowned `merge_planted`
+    /// mate-window pileups while filtering incidental mate-window SNVs/indels).
+    pub tile_planted: bool,
     /// Count of overlapping FR reverse-mate observations under -u agreeing with this allele.
     pub overlap_agreed_pairs: u32,
 }
@@ -81,6 +85,7 @@ impl Variation {
             pq: 0.0,
             extracnt: 0,
             pre_anchored_dup: false,
+            tile_planted: false,
             overlap_agreed_pairs: 0,
         }
     }
@@ -2022,6 +2027,9 @@ pub struct VariationData {
     /// pre-stamp data) fails open — the gate never fires. Metadata only:
     /// never serialized or emitted.
     pub owning_range: Option<(crate::types::Pos1, crate::types::Pos1)>,
+    /// Parent BED region start when running inside a split tile (`None` on untiled runs),
+    /// allowing `realignlgdel` to distinguish internal split-tile boundaries from BED starts.
+    pub split_parent_start: Option<crate::types::Pos1>,
     /// Positions added by mate-window `partial_pipeline` merges (G3).
     /// Keys already present before the merge are native, never planted.
     /// Metadata only.
@@ -2390,6 +2398,7 @@ mod tests {
             pq: 36.0,
             extracnt: 3,
             pre_anchored_dup: true,
+            tile_planted: true,
             overlap_agreed_pairs: 6,
         };
 

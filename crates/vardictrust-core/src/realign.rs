@@ -2025,7 +2025,9 @@ pub fn realigndel(
         let mut inv5 = "";
         let mut inv3 = "";
 
-        if let Some((i5, i3)) = parse_minus_number_atgnc_sv_atgnc_end(vn) {
+        if let Some((i5, i3)) =
+            parse_minus_number_atgnc_sv_atgnc_end_compat(vn, config.compat.sv_respect_min_len)
+        {
             inv5 = i5;
             inv3 = i3;
         } else if let Some((_digits, rest)) = parse_begin_minus_number_any(vn) {
@@ -2538,6 +2540,7 @@ pub fn realigndel(
                     };
 
                     let tref = get_variation(non_insertion_variants, p, tn);
+                    tref.tile_planted |= tv.tile_planted;
                     crate::variations::util::adj_cnt(tref, &tv, None);
 
                     if let Some(entry) = non_insertion_variants.get(&p) {
@@ -2604,14 +2607,22 @@ pub fn realignins(
 
         let mut ins3 = "";
         let mut inslen = insert_len_i32;
+        let mut sv_flanking = 50i32;
         if let Some((dup_num_str, ins3_match)) =
             parse_dup_num_atgc_compat(vn, config.compat.sv_respect_min_len)
         {
             ins3 = ins3_match;
             let dup_len = dup_num_str.parse::<i32>().unwrap_or(0);
-            inslen = inslen
-                .saturating_add(dup_len)
-                .saturating_add(i32::try_from(ins3.len()).unwrap_or(i32::MAX));
+            let ins3_len_i32 = i32::try_from(ins3.len()).unwrap_or(i32::MAX);
+            if config.compat.sv_respect_min_len && dup_len < -50 {
+                let dup_span = 100i32.saturating_add(dup_len);
+                let flank = dup_span.max(1);
+                let extra_ins3 = ins3_len_i32.saturating_sub(flank).max(0);
+                inslen = flank.saturating_add(extra_ins3);
+                sv_flanking = flank;
+            } else {
+                inslen = inslen.saturating_add(dup_len).saturating_add(ins3_len_i32);
+            }
         }
 
         let extra = parse_amp_atgc(vn).unwrap_or("");
@@ -2632,14 +2643,14 @@ pub fn realignins(
 
         sanpseq.clear();
         let find_mm3_res = if !ins3.is_empty() {
-            let sv_flanking = 50i32;
             let p3_64 =
                 i64::from(p) + i64::from(inslen) - (ins3.len() as i64) + i64::from(sv_flanking);
             if ins3.len() > sv_flanking as usize {
                 // Ports VariationRealigner.java:744-746:
                 // `sanpseq = substr(ins3, Configuration.SVFLANK - ins3.length());`
                 // Because `SVFLANK - ins3.length() < 0`, `Utils.substr(ins3, neg)`
-                // starts at `ins3.length() + (SVFLANK - ins3.length()) == SVFLANK`.
+                // starts at `ins3.length() + (SVFLANK - ins3.length()) == SVFLANK`
+                // (clamped to `flank = dup_span.max(1)` when `sv_respect_min_len && dup_len < -50`).
                 let start_idx = sv_flanking as usize;
                 sanpseq.push_str(ins3.get(start_idx..).unwrap_or(""));
             }
@@ -3115,6 +3126,7 @@ pub fn realignins(
                 }
 
                 let tref = get_variation(insertion_variants, p, tn);
+                tref.tile_planted |= tv.tile_planted;
                 crate::variations::util::adj_cnt(tref, &tv, ref_base_var);
 
                 if let Some(entry) = insertion_variants.get_mut(&p) {
@@ -3147,6 +3159,45 @@ pub fn realignlgdel(
     svrdel: &mut Vec<Sclip>,
     splice: &mut rustc_hash::FxHashSet<String>,
 ) {
+    realignlgdel_with_split_origin(
+        bams,
+        reference,
+        chr,
+        chr_len,
+        region,
+        config,
+        non_insertion_variants,
+        insertion_variants,
+        ref_coverage,
+        soft_clips_5_end,
+        soft_clips_3_end,
+        max_read_length,
+        svfdel,
+        svrdel,
+        splice,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn realignlgdel_with_split_origin(
+    bams: Option<&[String]>,
+    reference: &mut Reference,
+    chr: &str,
+    chr_len: u32,
+    region: &crate::regions::Region,
+    config: &crate::config::Config,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
+    soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
+    soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
+    max_read_length: i32,
+    svfdel: &mut Vec<Sclip>,
+    svrdel: &mut Vec<Sclip>,
+    splice: &mut rustc_hash::FxHashSet<String>,
+    split_parent_start: Option<crate::types::Pos1>,
+) {
     let (adaptor_forward, adaptor_reverse) = fill_adaptor_sets(&config.adaptor);
     let min_reads = i32::try_from(config.min_reads).unwrap_or(i32::MAX);
     let indel_size = i32::try_from(config.indel_size).unwrap_or(i32::MAX);
@@ -3156,6 +3207,8 @@ pub fn realignlgdel(
     let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
     let min_clip_pos = region_start_i32.saturating_sub(extension);
     let max_clip_pos = region_end_i32.saturating_add(extension);
+    let internal_split_orig_start = split_parent_start.filter(|orig| region.start.0 > orig.0);
+    let mut piled_split_overhang_spans: Vec<(i32, i32)> = Vec::new();
 
     // Work on 5' clipped reads
 
@@ -3284,6 +3337,64 @@ pub fn realignlgdel(
                     max_read_length,
                 ) {
                     log::warn!("partial_pipeline failed: {:?}", e);
+                }
+            }
+        } else if let Some(orig_start) = internal_split_orig_start {
+            // Split-tile backward-overhang medium deletion (`find_bp != 0`, `bp < region_start_i32`):
+            // when `region.start > orig_start` (internal split-tile boundary), `bp` lies in a prior
+            // tile and was not piled up in this tile's main BAM pass. Run `partial_pipeline_split_overhang`
+            // over `[bp - win, min(bp + win, region_start_i32 - 1)]` (skipping straddling reads already
+            // overlapping `region`) so `bp` receives exact wild-type `ref_coverage` and `RD`.
+            if bp > 0
+                && bp < region_start_i32
+                && !non_insertion_variants
+                    .get(&bp)
+                    .is_some_and(|vm| vm.merge_planted)
+            {
+                let win = max_read_length.max(50);
+                let orig_start_i32 = i32::try_from(orig_start.0).unwrap_or(1).max(1);
+                let q_lo = bp.saturating_sub(win).max(orig_start_i32);
+                let q_hi = bp
+                    .saturating_add(win)
+                    .min(region_start_i32.saturating_sub(1));
+                if q_lo <= q_hi
+                    && !piled_split_overhang_spans
+                        .iter()
+                        .any(|&(s, e)| s <= q_lo && q_hi <= e)
+                {
+                    let tts = q_lo.saturating_sub(1);
+                    let tte = q_hi;
+                    if let Err(e) = ensure_reference_loaded(
+                        reference,
+                        chr,
+                        tts,
+                        tte,
+                        max_read_length,
+                        chr_len,
+                        config,
+                    ) {
+                        log::warn!("ensure_reference_loaded failed: {:?}", e);
+                    }
+                    if let Err(e) = partial_pipeline_split_overhang(
+                        bams,
+                        chr,
+                        q_lo,
+                        q_hi,
+                        &piled_split_overhang_spans,
+                        reference,
+                        config,
+                        region,
+                        non_insertion_variants,
+                        insertion_variants,
+                        ref_coverage,
+                        soft_clips_5_end,
+                        soft_clips_3_end,
+                        splice,
+                        max_read_length,
+                    ) {
+                        log::warn!("partial_pipeline_split_overhang failed: {:?}", e);
+                    }
+                    piled_split_overhang_spans.push((q_lo, q_hi));
                 }
             }
         }
@@ -3437,6 +3548,7 @@ pub fn realignlgdel(
         let gt_str = String::from_utf8_lossy(&gt).into_owned();
         {
             let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
+            tv.tile_planted = true;
             tv.qstd = true;
             tv.pstd = true;
             crate::variations::util::adj_cnt(tv, &sc5_variation, None);
@@ -3826,6 +3938,12 @@ pub fn realignlgdel(
 
         {
             let tv = crate::variations::get_variation(non_insertion_variants, bp, &gt_str);
+            if p >= region_start_i32
+                || bp >= region_start_i32
+                || internal_split_orig_start.is_none()
+            {
+                tv.tile_planted = true;
+            }
             tv.qstd = true;
             tv.pstd = true;
         }
@@ -4264,6 +4382,11 @@ pub fn realignlgins30(
             } else {
                 get_variation(non_insertion_variants, bi, &ins_str)
             };
+            if (p3 >= region_start_i32 && p3 <= region_end_i32.saturating_add(max_read_length))
+                || (p5 >= region_start_i32.saturating_sub(max_read_length) && p5 <= region_end_i32)
+            {
+                vref.tile_planted = true;
+            }
             vref.pstd = true;
             vref.qstd = true;
             inc_cnt(ref_coverage, bi, cnt5);
@@ -4613,7 +4736,12 @@ pub fn realignlgins(
                 String::from_utf8_lossy(&seq)
             );
         }
+        let native_5_clip =
+            p >= region_start_i32.saturating_sub(max_read_length) && p <= region_end_i32;
         let iref = get_variation(insertion_variants, bi, &plus_ins);
+        if native_5_clip {
+            iref.tile_planted = true;
+        }
         iref.pstd = true;
         iref.qstd = true;
         if is_symbolic_dup && config.compat.canonical_sv_vcf_anchoring {
@@ -4982,7 +5110,12 @@ pub fn realignlgins(
                 String::from_utf8_lossy(&seq)
             );
         }
+        let native_3_clip =
+            orig_p >= region_start_i32 && orig_p <= region_end_i32.saturating_add(max_read_length);
         let iref = get_variation(insertion_variants, bi, &plus_ins);
+        if native_3_clip {
+            iref.tile_planted = true;
+        }
         iref.pstd = true;
         iref.qstd = true;
         if is_symbolic_dup && config.compat.canonical_sv_vcf_anchoring {
@@ -5184,7 +5317,7 @@ pub fn realign_indels(
     );
 
     // 3. realignlgdel
-    realignlgdel(
+    realignlgdel_with_split_origin(
         bams,
         reference,
         chr,
@@ -5200,6 +5333,7 @@ pub fn realign_indels(
         &mut var_data.sv_structures.svfdel,
         &mut var_data.sv_structures.svrdel,
         &mut var_data.splice,
+        var_data.split_parent_start,
     );
 
     // 4. realignlgins30
@@ -5838,11 +5972,86 @@ fn merge_sclip(dest: &mut Sclip, src: Sclip) {
     dest.sequence = None;
 }
 
+#[allow(clippy::too_many_arguments)]
+fn partial_pipeline_split_overhang(
+    bams: Option<&[String]>,
+    chr: &str,
+    q_lo_1based: i32,
+    q_hi_1based: i32,
+    prior_spans: &[(i32, i32)],
+    reference: &Reference,
+    config: &crate::config::Config,
+    region: &crate::regions::Region,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
+    soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
+    soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
+    splice: &mut rustc_hash::FxHashSet<String>,
+    max_read_length: i32,
+) -> Result<(), crate::types::VardictError> {
+    partial_pipeline_inner(
+        bams,
+        chr,
+        q_lo_1based.max(1).saturating_sub(1),
+        q_hi_1based,
+        Some(prior_spans),
+        reference,
+        config,
+        region,
+        non_insertion_variants,
+        insertion_variants,
+        ref_coverage,
+        soft_clips_5_end,
+        soft_clips_3_end,
+        splice,
+        max_read_length,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn partial_pipeline(
     bams: Option<&[String]>,
     chr: &str,
     tts: i32,
     tte: i32,
+    reference: &Reference,
+    config: &crate::config::Config,
+    region: &crate::regions::Region,
+    non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
+    ref_coverage: &mut rustc_hash::FxHashMap<i32, i32>,
+    soft_clips_5_end: &mut BTreeMap<i32, Sclip>,
+    soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
+    splice: &mut rustc_hash::FxHashSet<String>,
+    max_read_length: i32,
+) -> Result<(), crate::types::VardictError> {
+    partial_pipeline_inner(
+        bams,
+        chr,
+        tts,
+        tte,
+        None,
+        reference,
+        config,
+        region,
+        non_insertion_variants,
+        insertion_variants,
+        ref_coverage,
+        soft_clips_5_end,
+        soft_clips_3_end,
+        splice,
+        max_read_length,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn partial_pipeline_inner(
+    bams: Option<&[String]>,
+    chr: &str,
+    tts: i32,
+    tte: i32,
+    skip_overlaps_and_prior: Option<&[(i32, i32)]>,
     reference: &Reference,
     config: &crate::config::Config,
     region: &crate::regions::Region,
@@ -5862,10 +6071,15 @@ fn partial_pipeline(
         return Ok(());
     }
 
+    let start_1based = if skip_overlaps_and_prior.is_some() {
+        tts.saturating_add(1).max(1) as u32
+    } else {
+        tts.max(1) as u32
+    };
     let mut preprocessor = crate::bam::RecordPreprocessor::new();
     let pileup_region = crate::regions::Region {
         chr: chr.to_string(),
-        start: Pos1(tts.max(1) as u32),
+        start: Pos1(start_1based),
         end: Pos1(tte.max(1) as u32),
         gene: String::new(),
         amplicon: None,
@@ -5898,6 +6112,15 @@ fn partial_pipeline(
         while feed.next_into(&mut r)? {
             if preprocessor.preprocess_record(&r, config) {
                 any_passed = true;
+                if let Some(prior_spans) = skip_overlaps_and_prior {
+                    if crate::record_overlaps_region(&r, region.start.0, region.end.0)
+                        || prior_spans.iter().any(|&(s, e)| {
+                            crate::record_overlaps_region(&r, s.max(1) as u32, e.max(1) as u32)
+                        })
+                    {
+                        continue;
+                    }
+                }
                 parser.parse_cigar(&r)?;
             }
         }
@@ -6493,7 +6716,12 @@ fn parse_up_number_end(vn: &str) -> Option<&str> {
     vn.get(i..)
 }
 
+#[cfg(test)]
 fn parse_minus_number_atgnc_sv_atgnc_end(vn: &str) -> Option<(&str, &str)> {
+    parse_minus_number_atgnc_sv_atgnc_end_compat(vn, false)
+}
+
+fn parse_minus_number_atgnc_sv_atgnc_end_compat(vn: &str, allow_neg: bool) -> Option<(&str, &str)> {
     let bytes = vn.as_bytes();
     let mut pos = if bytes.first().copied() == Some(b'-') {
         1
@@ -6528,6 +6756,9 @@ fn parse_minus_number_atgnc_sv_atgnc_end(vn: &str) -> Option<(&str, &str)> {
         pos += ch.len_utf8();
     }
 
+    if allow_neg && bytes.get(pos).copied() == Some(b'-') {
+        pos += 1;
+    }
     let sv_digits_start = pos;
     while bytes.get(pos).is_some_and(u8::is_ascii_digit) {
         pos += 1;
@@ -11154,6 +11385,217 @@ mod tests {
             assert_eq!(
                 sv_meta.splits, 14,
                 "DUP sv.splits must include recruited opposite-end 3' soft-clips (8 + 6 = 14)"
+            );
+        }
+
+        #[test]
+        fn realigndel_recruits_softclips_on_sub100_negative_inv_token() {
+            let chr = "chr1";
+            let (reference, ref_seq) = build_patterned_ref(chr, 800);
+            // 80-bp inversion spanning 1-based 200..=279 under -L 50 (`-80^{50bp}<inv-20>{50bp}`):
+            // `sv::find_inv_sub_paths` builds `ins5 = revcomp(ref[230..=279])` and `ins3 = revcomp(ref[200..=249])`.
+            let revcomp = |slice: &[u8]| -> String {
+                slice
+                    .iter()
+                    .rev()
+                    .map(|&b| crate::util::complement(b) as char)
+                    .collect()
+            };
+            // Ensure boundary bases mismatch `ins5[0]` and `ins3[49]` so `find_mm3` / `find_mm5` anchor at 200 and 280:
+            let mut ref_seq = ref_seq;
+            let mut reference = reference;
+            ref_seq[199] = b'A'; // 1-based 200
+            ref_seq[278] = b'A'; // 1-based 279 -> complement('A') == 'T' != ref[200] ('A') AND ins3[49] == complement(ref[200]) == 'T' != ref[279] ('A')
+            reference.region_sequences[0].clone_from(&ref_seq);
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq.clone());
+            let ins5 = revcomp(&ref_seq[229..279]); // 50 bp (1-based 230..=279), starts with 'T'
+            let ins3 = revcomp(&ref_seq[199..249]); // 50 bp (1-based 200..=249), ends with 'T'
+            let vn = format!("-80^{ins5}<inv-20>{ins3}");
+
+            assert_eq!(parse_minus_number_atgnc_sv_atgnc_end(&vn), None);
+            assert_eq!(
+                parse_minus_number_atgnc_sv_atgnc_end_compat(&vn, true),
+                Some((ins5.as_str(), ins3.as_str()))
+            );
+            assert_eq!(
+                parse_minus_number_atgnc_sv_atgnc_end_compat("-80^ACGT<inv->ACGT", true),
+                None
+            );
+
+            let cfg_l50 = crate::config::Config {
+                sv_min_len: 50,
+                compat: crate::config::COMPAT_OFF,
+                ..crate::config::Config::default()
+            };
+            let mut non_ins = crate::javamap::JavaHashMap::new();
+            {
+                let v = get_variation(&mut non_ins, 200, &vn);
+                v.cnt = 6;
+                v.hicnt = 6;
+                v.fwd = 3;
+                v.rev = 3;
+                v.qmean = 210.0;
+                v.mqmean = 360.0;
+                v.pmean = 150.0;
+            }
+            let mut dels5 = BTreeMap::new();
+            dels5.insert(200, rustc_hash::FxHashMap::from_iter([(vn.clone(), 6)]));
+            let mut ref_cov = rustc_hash::FxHashMap::from_iter([(200, 20), (279, 20)]);
+
+            let mk_sclip = |seq_bytes: &[u8], cnt: i32| -> Sclip {
+                let mut sc = Sclip::new();
+                sc.variation.cnt = cnt;
+                sc.variation.hicnt = cnt;
+                sc.variation.fwd = cnt / 2;
+                sc.variation.rev = cnt - cnt / 2;
+                sc.variation.qmean = 35.0 * (cnt as f64);
+                sc.variation.mqmean = 60.0 * (cnt as f64);
+                sc.variation.pmean = 25.0 * (cnt as f64);
+                for (idx, &b) in seq_bytes.iter().enumerate() {
+                    sc.nt.insert(idx as i32, BTreeMap::from([(b, cnt)]));
+                    let mut bv = Variation::new();
+                    bv.cnt = cnt;
+                    bv.hicnt = cnt;
+                    bv.qmean = 35.0 * (cnt as f64);
+                    sc.seq.insert(idx as i32, BTreeMap::from([(b, bv)]));
+                }
+                sc
+            };
+
+            // 3' soft-clip at p = 200 matching `ins5` (first 15 bp of `sanpseq`):
+            let sc3_clip = mk_sclip(&ins5.as_bytes()[..15], 4);
+            let mut sc3 = BTreeMap::from([(200, sc3_clip)]);
+
+            // 5' soft-clip at p + 80 = 280 (`r5_pos + 1 = 279 + 1`) matching end of `ins3` (`wupseq` reversed for 5' clip):
+            let mut sc5_seq = ins3.as_bytes()[35..50].to_vec();
+            sc5_seq.reverse();
+            let sc5_clip = mk_sclip(&sc5_seq, 3);
+            let mut sc5 = BTreeMap::from([(280, sc5_clip)]);
+
+            realigndel(
+                None,
+                &dels5,
+                &reference,
+                chr,
+                800,
+                &cfg_l50,
+                &mut non_ins,
+                &mut ref_cov,
+                &mut sc5,
+                &mut sc3,
+                100,
+            );
+
+            assert!(
+                sc3[&200].used && sc5[&280].used,
+                "realigndel must parse <inv-20> under -L 50 and recruit both 3' (pos 200) and 5' (pos 280) soft-clips"
+            );
+            assert_eq!(
+                non_ins.get(&200).unwrap().map.get(&vn).unwrap().cnt,
+                13,
+                "realigndel must add 4 (3' sclip) + 3 (5' sclip) to 6 initial <inv-20> reads (total 13)"
+            );
+        }
+
+        #[test]
+        fn realignins_recruits_softclips_on_sub50_negative_dup_token() {
+            let chr = "chr1";
+            let ref_len = 800usize;
+            let (mut reference, mut ref_seq) = build_patterned_ref(chr, ref_len);
+            // Place unique 20-bp motif at 1-based 315..=334 so `dup_span = 35` (`300..=334`) under `-L 30`
+            // emits `+{35bp}<dup-65>{35bp}` at `bi = 299` and `p3_64 = 299 + 35 = 334` (`p3_plus_1 = 335`):
+            let uniq_315_334 = b"TTAACCGGTTAACCGGTTCC";
+            ref_seq[314..334].copy_from_slice(uniq_315_334);
+            reference.region_sequences[0].clone_from(&ref_seq);
+            reference
+                .reference_sequences
+                .insert(chr.to_string(), ref_seq.clone());
+            reference
+                .seed
+                .insert(uniq_315_334[3..20].to_vec(), vec![318]); // 1-based 318..=334 (17-bp SEED_1)
+
+            let region = crate::regions::Region {
+                chr: chr.to_string(),
+                start: crate::types::Pos1(1),
+                end: crate::types::Pos1(ref_len as u32),
+                gene: String::new(),
+                amplicon: None,
+            };
+            let cfg_l30 = crate::config::Config {
+                sv_min_len: 30,
+                compat: crate::config::COMPAT_OFF,
+                ..crate::config::Config::default()
+            };
+
+            let mut non_ins = crate::javamap::JavaHashMap::new();
+            let mut ins = crate::javamap::JavaHashMap::new();
+            let mut ref_cov =
+                rustc_hash::FxHashMap::from_iter([(299, 30), (300, 30), (334, 30), (335, 30)]);
+
+            // 5' soft-clip at p = 300 with 20-bp tail of duplicated 300..=334 (`315..=334` reversed):
+            let mut sc5_seq = ref_seq[314..334].to_vec();
+            sc5_seq.reverse();
+            let mut sc5_clip = Sclip::new();
+            sc5_clip.variation.cnt = 7;
+            sc5_clip.variation.hicnt = 7;
+            sc5_clip.variation.fwd = 4;
+            sc5_clip.variation.rev = 3;
+            sc5_clip.variation.qmean = 245.0;
+            sc5_clip.variation.mqmean = 420.0;
+            sc5_clip.variation.pmean = 140.0;
+            sc5_clip.sequence = Some(sc5_seq);
+            let mut sc5 = BTreeMap::from([(300, sc5_clip)]);
+
+            // Opposite-end 3' soft-clip at p3_plus_1 = 335 (14 bp `< 17-bp` SEED_1 matching 1-based 300..=313):
+            let mut sc3_opp = Sclip::new();
+            sc3_opp.variation.cnt = 5;
+            sc3_opp.variation.hicnt = 5;
+            sc3_opp.variation.fwd = 2;
+            sc3_opp.variation.rev = 3;
+            sc3_opp.variation.qmean = 175.0;
+            sc3_opp.variation.mqmean = 300.0;
+            sc3_opp.variation.pmean = 100.0;
+            sc3_opp.sequence = Some(ref_seq[299..313].to_vec());
+            let mut sc3 = BTreeMap::from([(335, sc3_opp)]);
+
+            let mut svfdup = Vec::new();
+            let mut svrdup = Vec::new();
+            let mut splice = rustc_hash::FxHashSet::default();
+            realignlgins(
+                None,
+                &mut reference,
+                chr,
+                ref_len as u32,
+                &region,
+                &cfg_l30,
+                &mut non_ins,
+                &mut ins,
+                &mut ref_cov,
+                &mut sc5,
+                &mut sc3,
+                45,
+                &mut svfdup,
+                &mut svrdup,
+                &mut splice,
+            );
+
+            assert!(
+                sc3[&335].used,
+                "realignins must compute inslen=35 and p3_64=334 on <dup-65> (-L 30) and recruit 3' soft-clip at 335"
+            );
+            let dup_vm = ins.get(&299).expect("expected <dup-65> insertion at 299");
+            let (dup_k, dup_v) = dup_vm.map.iter().next().unwrap();
+            assert!(dup_k.contains("<dup-65>"), "got {dup_k}");
+            assert_eq!(
+                dup_v.cnt, 12,
+                "realignins must recruit 5 opposite-end 3' split reads into 7 5' split reads (7 + 5 = 12)"
+            );
+            assert_eq!(
+                non_ins.get(&299).unwrap().sv.as_ref().unwrap().splits,
+                12,
+                "DUP sv.splits must equal 7 + 5 = 12"
             );
         }
     }

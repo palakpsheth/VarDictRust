@@ -2568,17 +2568,16 @@ fn return_pooled_reader(
 }
 
 #[inline]
-fn sweep_stale_bam_meta_tls(slots: &mut BamMetaTlsSlots, cur_epoch: u64) {
-    for slot in slots.iter_mut() {
-        if slot
-            .as_ref()
-            .is_some_and(|(ep, m)| !tls_epoch_valid(*ep, cur_epoch, m.id))
-        {
-            *slot = None;
-        }
+fn sweep_stale_tls_slots<T>(slots: &mut [Option<T>; 2], mut is_valid: impl FnMut(&T) -> bool) {
+    let [s0, s1] = slots;
+    if s0.as_ref().is_some_and(|v| !is_valid(v)) {
+        *s0 = None;
     }
-    if slots[0].is_none() && slots[1].is_some() {
-        slots[0] = slots[1].take();
+    if s1.as_ref().is_some_and(|v| !is_valid(v)) {
+        *s1 = None;
+    }
+    if s0.is_none() && s1.is_some() {
+        *s0 = s1.take();
     }
 }
 
@@ -2587,7 +2586,7 @@ fn lookup_bam_meta_tls(path: &Path, cur_epoch: u64) -> Option<std::sync::Arc<Sha
     BAM_META_TLS
         .try_with(|tls| {
             let mut slots = tls.try_borrow_mut().ok()?;
-            sweep_stale_bam_meta_tls(&mut slots, cur_epoch);
+            sweep_stale_tls_slots(&mut slots, |(ep, m)| tls_epoch_valid(*ep, cur_epoch, m.id));
             let [s0, s1] = &mut *slots;
             if let Some((ep, meta)) = s0.as_ref() {
                 if tls_epoch_valid(*ep, cur_epoch, meta.id) && meta.path.as_path() == path {
@@ -2611,7 +2610,7 @@ fn lookup_bam_meta_tls(path: &Path, cur_epoch: u64) -> Option<std::sync::Arc<Sha
 fn insert_bam_meta_tls(cur_epoch: u64, meta: &std::sync::Arc<SharedBamMeta>) {
     let _ = BAM_META_TLS.try_with(|tls| {
         if let Ok(mut slots) = tls.try_borrow_mut() {
-            sweep_stale_bam_meta_tls(&mut slots, cur_epoch);
+            sweep_stale_tls_slots(&mut slots, |(ep, m)| tls_epoch_valid(*ep, cur_epoch, m.id));
             let [s0, s1] = &mut *slots;
             if s0.as_ref().is_some_and(|(_, m)| m.path == meta.path) {
                 *s0 = Some((cur_epoch, std::sync::Arc::clone(meta)));
@@ -3942,21 +3941,6 @@ thread_local! {
 }
 
 #[inline]
-fn sweep_stale_cram_meta_tls(slots: &mut [Option<CramMetaTlsEntry>; 2], cur_epoch: u64) {
-    for slot in slots.iter_mut() {
-        if slot
-            .as_ref()
-            .is_some_and(|(ep, _, _, m)| !tls_epoch_valid(*ep, cur_epoch, m.id))
-        {
-            *slot = None;
-        }
-    }
-    if slots[0].is_none() && slots[1].is_some() {
-        slots[0] = slots[1].take();
-    }
-}
-
-#[inline]
 fn lookup_cram_meta_tls(
     path: &Path,
     fasta_path: &Path,
@@ -3965,7 +3949,9 @@ fn lookup_cram_meta_tls(
     CRAM_META_TLS
         .try_with(|tls| {
             let mut slots = tls.try_borrow_mut().ok()?;
-            sweep_stale_cram_meta_tls(&mut slots, cur_epoch);
+            sweep_stale_tls_slots(&mut slots, |(ep, _, _, m)| {
+                tls_epoch_valid(*ep, cur_epoch, m.id)
+            });
             let [s0, s1] = &mut *slots;
             if let Some((ep, cached_cram, cached_fasta, meta)) = s0.as_ref() {
                 if tls_epoch_valid(*ep, cur_epoch, meta.id)
@@ -4000,7 +3986,9 @@ fn insert_cram_meta_tls(
 ) {
     let _ = CRAM_META_TLS.try_with(|tls| {
         if let Ok(mut slots) = tls.try_borrow_mut() {
-            sweep_stale_cram_meta_tls(&mut slots, cur_epoch);
+            sweep_stale_tls_slots(&mut slots, |(ep, _, _, m)| {
+                tls_epoch_valid(*ep, cur_epoch, m.id)
+            });
             let [s0, s1] = &mut *slots;
             if s0
                 .as_ref()
@@ -4425,15 +4413,15 @@ fn has_bam_or_cram_extension_ci(seg: &str) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("bam") || e.eq_ignore_ascii_case("cram"))
 }
 
-/// Splits a colon-delimited BAM/CRAM specification into non-empty file path slices,
-/// preserving single-file paths whose directory or filename contains `:` (matching
-/// `parse_colon_bams` in `lib.rs`).
-pub fn split_colon_bam_paths(spec: &str) -> Vec<&str> {
-    let trimmed = spec.trim();
-    if trimmed.is_empty() {
+/// Splits a colon-delimited BAM/CRAM specification into non-empty file path slices.
+///
+/// Preserves untrimmed segments and single-file paths whose directory or filename contains `:`
+/// (`AR-17`, shared with `lib.rs::parse_colon_bams` and `runner.rs`).
+pub(crate) fn split_colon_bam_paths(spec: &str) -> Vec<&str> {
+    if spec.is_empty() {
         return Vec::new();
     }
-    let raw_parts: Vec<&str> = trimmed.split(':').collect();
+    let raw_parts: Vec<&str> = spec.split(':').collect();
     let non_empty: Vec<&str> = raw_parts
         .iter()
         .copied()
@@ -4442,8 +4430,8 @@ pub fn split_colon_bam_paths(spec: &str) -> Vec<&str> {
     if non_empty.is_empty() {
         return Vec::new();
     }
-    if trimmed.contains(':') {
-        let keep_unsplit = Path::new(trimmed).exists()
+    if spec.contains(':') {
+        let keep_unsplit = Path::new(spec).exists()
             || (!raw_parts.iter().any(|s| s.is_empty())
                 && raw_parts
                     .get(..raw_parts.len().saturating_sub(1))
@@ -4454,14 +4442,10 @@ pub fn split_colon_bam_paths(spec: &str) -> Vec<&str> {
                             })
                     }));
         if keep_unsplit {
-            return vec![trimmed];
+            return vec![spec];
         }
     }
     non_empty
-        .into_iter()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 /// Warms and pins `chr` in [`SharedFastaRepo`] when `bam_spec` contains at least one
@@ -4778,26 +4762,13 @@ thread_local! {
 }
 
 #[inline]
-fn sweep_stale_cram_container_tls(slots: &mut [Option<CramContainerTlsEntry>; 2], cur_epoch: u64) {
-    for slot in slots.iter_mut() {
-        if slot
-            .as_ref()
-            .is_some_and(|(ep, (meta_id, _), _)| !tls_epoch_valid(*ep, cur_epoch, *meta_id))
-        {
-            *slot = None;
-        }
-    }
-    if slots[0].is_none() && slots[1].is_some() {
-        slots[0] = slots[1].take();
-    }
-}
-
-#[inline]
 fn lookup_cram_container_tls(cur_epoch: u64, key: (u64, u64)) -> Option<CachedCramBlock> {
     CRAM_LAST_CONTAINER_TLS
         .try_with(|tls| {
             let mut slots = tls.try_borrow_mut().ok()?;
-            sweep_stale_cram_container_tls(&mut slots, cur_epoch);
+            sweep_stale_tls_slots(&mut slots, |(ep, (meta_id, _), _)| {
+                tls_epoch_valid(*ep, cur_epoch, *meta_id)
+            });
             let [s0, s1] = &mut *slots;
             if let Some((ep, k, block)) = s0.as_ref() {
                 if tls_epoch_valid(*ep, cur_epoch, k.0) && *k == key {
@@ -4822,7 +4793,9 @@ fn store_cram_container_tls(cur_epoch: u64, key: (u64, u64), block: CachedCramBl
     let live_epoch = BAM_CACHE_EPOCH.load(std::sync::atomic::Ordering::Acquire);
     let _ = CRAM_LAST_CONTAINER_TLS.try_with(|tls| {
         if let Ok(mut slots) = tls.try_borrow_mut() {
-            sweep_stale_cram_container_tls(&mut slots, live_epoch);
+            sweep_stale_tls_slots(&mut slots, |(ep, (meta_id, _), _)| {
+                tls_epoch_valid(*ep, live_epoch, *meta_id)
+            });
             if !tls_epoch_valid(cur_epoch, live_epoch, key.0) {
                 return;
             }
@@ -7209,16 +7182,22 @@ fn normalize_dup_cigar_strip_hp(mut cigar: &[(u32, CigarKind)]) -> Vec<(u32, Cig
 }
 
 impl DupKey {
-    /// Construct the deduplication key for a `SamRecord` (`RecordPreprocessor.java:108-127`),
-    /// stripping outer positive `H`/`P` and interior positive `P` on `UnmappedMateCigar` when
-    /// `cigar_strip_outer_hard_clips` (`Switch 22`) is active.
+    /// Constructs a deduplication key for `record` (`RecordPreprocessor.java:108-127`).
+    ///
+    /// Strips outer positive `H`/`P` and interior positive `P` on `UnmappedMateCigar` when
+    /// `cigar_strip_outer_hard_clips` (`Switch 22`) is active, returning `None` on unkeyed
+    /// single-end reads or out-of-`i32` coordinates.
     pub fn from_record(
         record: &SamRecord,
         eqx_cigar_read_length: bool,
         cigar_strip_outer_hard_clips: bool,
     ) -> Option<Self> {
-        let alignment_start_val = record.alignment_start.map(|p| p.0 as i32).unwrap_or(0);
-        let mate_alignment_start_val = record.mate_alignment_start.map(|p| p.0 as i32).unwrap_or(0);
+        let alignment_start_val = record
+            .alignment_start
+            .map_or(Some(0), |p| i32::try_from(p.0).ok())?;
+        let mate_alignment_start_val = record
+            .mate_alignment_start
+            .map_or(Some(0), |p| i32::try_from(p.0).ok())?;
         if mate_alignment_start_val < 10 {
             Some(DupKey::MatePos(
                 alignment_start_val,

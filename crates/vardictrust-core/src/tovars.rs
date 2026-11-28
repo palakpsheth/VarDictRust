@@ -331,6 +331,7 @@ struct NonInsBuildCtx {
     total_pos_coverage: i32,
     hicov: i32,
     duprate: f64,
+    only_tile_planted: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -656,7 +657,7 @@ impl<'a> ToVarsBuilder<'a> {
             };
             if prev_pos >= 1 && var_data.insertion_variants.contains_key(&prev_pos) && prev_precedes
             {
-                if let Some((_, prev_total_cov)) =
+                if let Some((_, prev_total_cov, prev_only_planted)) =
                     self.check_position_guards(var_data, &overlay, prev_pos, &mut ref_mode)
                 {
                     self.apply_prev_insertion_overlay(
@@ -666,12 +667,13 @@ impl<'a> ToVarsBuilder<'a> {
                         &var_data.ref_coverage,
                         prev_pos,
                         prev_total_cov,
+                        prev_only_planted,
                     );
                 }
             }
         }
 
-        let (raw_var_map, total_cov) =
+        let (raw_var_map, total_cov, only_tile_planted) =
             self.check_position_guards(var_data, &overlay, target_pos, &mut ref_mode)?;
         let norm_var_map = self.normalize_var_map_iupac_ref(target_pos, raw_var_map);
         let var_map: &crate::variations::VariationMap = &norm_var_map;
@@ -700,6 +702,7 @@ impl<'a> ToVarsBuilder<'a> {
                     total_pos_coverage: total_cov,
                     hicov,
                     duprate,
+                    only_tile_planted,
                 },
                 var_map,
                 &mut var,
@@ -723,6 +726,7 @@ impl<'a> ToVarsBuilder<'a> {
             &mut var,
             &mut debug_lines,
             hicov,
+            only_tile_planted,
         );
 
         self.sort_variants(&mut var);
@@ -839,7 +843,7 @@ impl<'a> ToVarsBuilder<'a> {
         for position in positions {
             // `raw_var_map`'s shared NLL borrow of `overlay` and `var_data.non_insertion_variants`
             // ends at `drop(norm_var_map)` below, before `&mut overlay` is passed to `create_insertion`.
-            let Some((raw_var_map, total_cov)) =
+            let Some((raw_var_map, total_cov, only_tile_planted)) =
                 self.check_position_guards(var_data, &overlay, position, &mut ref_mode)
             else {
                 continue;
@@ -875,6 +879,7 @@ impl<'a> ToVarsBuilder<'a> {
                     &mut debug_lines,
                     sorted_keys.as_slice(),
                     hicov,
+                    only_tile_planted,
                 );
             }
             drop(norm_var_map);
@@ -890,6 +895,7 @@ impl<'a> ToVarsBuilder<'a> {
                 &mut var,
                 &mut debug_lines,
                 hicov,
+                only_tile_planted,
             );
 
             let ref_base = self.effective_ref_base_i32(position).unwrap_or(b'N');
@@ -974,33 +980,62 @@ impl<'a> ToVarsBuilder<'a> {
             && !self.config.bam.contains('|')
     }
 
+    #[inline]
+    fn has_tile_planted_allele(
+        &self,
+        position: i32,
+        var_map: &crate::variations::VariationMap,
+        ins_at_pos: Option<&crate::variations::VariationMap>,
+    ) -> bool {
+        let eff_ref = self.effective_ref_base_i32(position);
+        let sanitize_iupac = self.config.compat.sanitize_iupac_alt_alleles;
+        let is_ref_key = |k: &str| -> bool {
+            let Some(rb) = eff_ref else {
+                return false;
+            };
+            if sanitize_iupac {
+                is_sw26_iupac_ref_key(k, rb)
+            } else {
+                k.as_bytes() == [rb]
+            }
+        };
+        var_map
+            .map
+            .iter()
+            .any(|(k, v)| k != "SV" && k != "I" && !is_ref_key(k) && v.tile_planted && v.cnt > 0)
+            || ins_at_pos.is_some_and(|im| im.map.iter().any(|(_, v)| v.tile_planted && v.cnt > 0))
+    }
+
     /// Evaluates per-position skip guards (`ToVarsBuilder.java:103-128`, G3 `merge_planted`,
-    /// and [`RefSiteMode`] elision/compaction), returning `(var_map, total_cov)` when kept.
+    /// and [`RefSiteMode`] elision/compaction), returning `(var_map, total_cov, only_tile_planted)` when kept.
     fn check_position_guards<'m>(
         &self,
         var_data: &'m VariationData,
         overlay: &'m rustc_hash::FxHashMap<i32, crate::variations::VariationMap>,
         position: i32,
         ref_mode: &mut RefSiteMode<'_>,
-    ) -> Option<(&'m crate::variations::VariationMap, i32)> {
+    ) -> Option<(&'m crate::variations::VariationMap, i32, bool)> {
         let var_map = overlay
             .get(&position)
             .or_else(|| var_data.non_insertion_variants.get(&position))?;
+        let ins_at_pos = var_data.insertion_variants.get(&position);
 
         // Skip position if there are no variants on position
-        if var_map.map.is_empty() && !var_data.insertion_variants.contains_key(&position) {
+        if var_map.map.is_empty() && ins_at_pos.is_none() {
             return None;
         }
 
         // G3 (mate-window ownership): a key planted by a mate-window
-        // merge emits only from its owning tile. Provenance comes from
-        // the sv-path `merge_planted` set or the realign-path per-map
-        // flag (set when the merge plants outside the merging tile's
-        // range); the clamp rule owns every key in single-region runs,
-        // so out-of-BED SV rows keep full mate ref-support there.
-        if (var_data.merge_planted.contains(&position) || var_map.merge_planted)
-            && !merge_key_owned(var_data.owning_range, self.region, position)
-        {
+        // merge emits unowned pileup alleles only from its owning tile,
+        // EXCEPT SV / realigned-overhang alleles explicitly planted by the
+        // current tile (`v.tile_planted`), which retain exact mate-window
+        // wild-type `ref_coverage` / `RD` while filtering incidental unowned
+        // mate-window SNVs/indels via `only_tile_planted`.
+        let unowned_merge_planted = (var_data.merge_planted.contains(&position)
+            || var_map.merge_planted
+            || ins_at_pos.is_some_and(|m| m.merge_planted))
+            && !merge_key_owned(var_data.owning_range, self.region, position);
+        if unowned_merge_planted && !self.has_tile_planted_allele(position, var_map, ins_at_pos) {
             return None;
         }
 
@@ -1075,7 +1110,7 @@ impl<'a> ToVarsBuilder<'a> {
             return None;
         }
 
-        Some((var_map, total_cov))
+        Some((var_map, total_cov, unowned_merge_planted))
     }
 
     /// Materialize a `Vars` container with its finalized `ref_variant` from a [`CompactRefSite`].
@@ -1461,6 +1496,7 @@ impl<'a> ToVarsBuilder<'a> {
         tvref
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_variant(
         &self,
         duprate: f64,
@@ -1472,6 +1508,7 @@ impl<'a> ToVarsBuilder<'a> {
         debug_lines: &mut Vec<String>,
         keys: &[&str],
         hicov: i32,
+        only_tile_planted: bool,
     ) {
         self.push_non_insertion_variants(
             NonInsBuildCtx {
@@ -1479,6 +1516,7 @@ impl<'a> ToVarsBuilder<'a> {
                 total_pos_coverage,
                 hicov,
                 duprate,
+                only_tile_planted,
             },
             non_insertion_variations,
             var,
@@ -1517,13 +1555,17 @@ impl<'a> ToVarsBuilder<'a> {
                 if cnt.cnt == 0 {
                     continue;
                 }
+                let is_ref_allele = description_string == ref_base_str;
+                if ctx.only_tile_planted && !is_ref_allele && !cnt.tile_planted {
+                    continue;
+                }
                 let tvref = self.build_variant_from_cnt(
                     description_string,
                     cnt,
                     ctx.total_pos_coverage,
                     ctx.hicov,
                     ctx.duprate,
-                    description_string == ref_base_str,
+                    is_ref_allele,
                 );
 
                 if self.config.debug {
@@ -1627,6 +1669,7 @@ impl<'a> ToVarsBuilder<'a> {
         ttcov
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_prev_insertion_overlay(
         &self,
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
@@ -1635,6 +1678,7 @@ impl<'a> ToVarsBuilder<'a> {
         ref_coverage: &rustc_hash::FxHashMap<i32, i32>,
         position: i32,
         mut total_pos_coverage: i32,
+        only_tile_planted: bool,
     ) {
         let Some(insertion_variations) = insertion_variants.get(&position) else {
             return;
@@ -1650,19 +1694,19 @@ impl<'a> ToVarsBuilder<'a> {
             {
                 continue;
             }
-            let mut ttcov = total_pos_coverage;
-            if description_string.contains('&') {
-                if let Some(&cov_next) = position
-                    .checked_add(1)
-                    .and_then(|next_pos| ref_coverage.get(&next_pos))
-                {
-                    total_pos_coverage = cov_next;
-                    ttcov = cov_next;
-                }
-            }
             if let Some(cnt) = insertion_variations.map.get(description_string) {
-                if cnt.cnt == 0 {
+                if cnt.cnt == 0 || (only_tile_planted && !cnt.tile_planted) {
                     continue;
+                }
+                let mut ttcov = total_pos_coverage;
+                if description_string.contains('&') {
+                    if let Some(&cov_next) = position
+                        .checked_add(1)
+                        .and_then(|next_pos| ref_coverage.get(&next_pos))
+                    {
+                        total_pos_coverage = cov_next;
+                        ttcov = cov_next;
+                    }
                 }
                 let _ = self.adjust_insertion_coverage_and_next_ref(
                     orig_non_ins,
@@ -1677,6 +1721,7 @@ impl<'a> ToVarsBuilder<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_insertion(
         &self,
         insertion_variants: &crate::javamap::JavaHashMap<i32, crate::variations::VariationMap>,
@@ -1689,6 +1734,7 @@ impl<'a> ToVarsBuilder<'a> {
         var: &mut Vec<Variant>,
         debug_lines: &mut Vec<String>,
         mut hicov: i32,
+        only_tile_planted: bool,
     ) -> i32 {
         if let Some(insertion_variations) = insertion_variants.get(&position) {
             let insertion_description_strings =
@@ -1702,19 +1748,19 @@ impl<'a> ToVarsBuilder<'a> {
                 {
                     continue;
                 }
-                let mut ttcov = total_pos_coverage;
-                if description_string.contains('&') {
-                    if let Some(&cov_next) = position
-                        .checked_add(1)
-                        .and_then(|next_pos| ref_coverage.get(&next_pos))
-                    {
-                        total_pos_coverage = cov_next;
-                        ttcov = cov_next;
-                    }
-                }
                 if let Some(cnt) = insertion_variations.map.get(description_string) {
-                    if cnt.cnt == 0 {
+                    if cnt.cnt == 0 || (only_tile_planted && !cnt.tile_planted) {
                         continue;
+                    }
+                    let mut ttcov = total_pos_coverage;
+                    if description_string.contains('&') {
+                        if let Some(&cov_next) = position
+                            .checked_add(1)
+                            .and_then(|next_pos| ref_coverage.get(&next_pos))
+                        {
+                            total_pos_coverage = cov_next;
+                            ttcov = cov_next;
+                        }
                     }
                     let exact_binary_half_even = self.config.compat.exact_binary_half_even;
                     let reconcile_strand_hq = self.config.compat.reconcile_strand_and_hq_sums;
@@ -3288,28 +3334,32 @@ fn count_repetitions_at_start(seq: &[u8], pattern: &[u8]) -> usize {
     count
 }
 
-fn get_dup_num_compat(s: &str, allow_negative: bool) -> Option<i32> {
-    if let Some(idx) = s.find("<dup") {
-        let rest = s.get(idx + 4..)?;
-        if allow_negative {
-            if let Some(after_minus) = rest.strip_prefix('-') {
-                let digits_len = after_minus
-                    .bytes()
-                    .take_while(|b| b.is_ascii_digit())
-                    .count();
-                if digits_len > 0 {
-                    let full_len = digits_len.saturating_add(1);
-                    return rest.get(..full_len)?.parse().ok();
-                }
-                return None;
+fn get_tagged_sv_num_compat(s: &str, tag: &str, allow_negative: bool) -> Option<i32> {
+    let idx = s.find(tag)?;
+    let rest = s.get(idx + tag.len()..)?;
+    if allow_negative {
+        if let Some(after_minus) = rest.strip_prefix('-') {
+            let digits_len = after_minus
+                .bytes()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+            if digits_len > 0 {
+                let full_len = digits_len.saturating_add(1);
+                return rest.get(..full_len)?.parse().ok();
             }
-        }
-        let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
-        if len > 0 {
-            return rest.get(..len)?.parse().ok();
+            return None;
         }
     }
+    let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if len > 0 {
+        return rest.get(..len)?.parse().ok();
+    }
     None
+}
+
+#[inline]
+fn get_dup_num_compat(s: &str, allow_negative: bool) -> Option<i32> {
+    get_tagged_sv_num_compat(s, "<dup", allow_negative)
 }
 
 fn get_dup_num(s: &str) -> Option<i32> {
@@ -3326,28 +3376,9 @@ fn get_begin_minus_number(s: &str) -> Option<i32> {
     None
 }
 
+#[inline]
 fn get_inv_num_compat(s: &str, allow_negative: bool) -> Option<i32> {
-    if let Some(idx) = s.find("<inv") {
-        let rest = s.get(idx + 4..)?;
-        if allow_negative {
-            if let Some(after_minus) = rest.strip_prefix('-') {
-                let digits_len = after_minus
-                    .bytes()
-                    .take_while(|b| b.is_ascii_digit())
-                    .count();
-                if digits_len > 0 {
-                    let full_len = digits_len.saturating_add(1);
-                    return rest.get(..full_len)?.parse().ok();
-                }
-                return None;
-            }
-        }
-        let len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
-        if len > 0 {
-            return rest.get(..len)?.parse().ok();
-        }
-    }
-    None
+    get_tagged_sv_num_compat(s, "<inv", allow_negative)
 }
 
 fn matches_begin_minus_number_caret(s: &str) -> bool {
@@ -3360,63 +3391,35 @@ fn matches_begin_minus_number_caret(s: &str) -> bool {
 }
 
 fn matches_some_sv_numbers_compat(s: &str, allow_neg: bool) -> bool {
-    if s.is_ascii() {
-        let bytes = s.as_bytes();
-        if bytes.len() < 6 {
-            return false;
-        }
-        for i in 0..=bytes.len() - 6 {
-            if bytes.get(i) == Some(&b'<') {
-                if let Some(sv_type) = bytes.get(i + 1..i + 4) {
-                    if sv_type.iter().all(|&c| c != b'<' && c != b'>') {
-                        let mut j = i + 4;
-                        if allow_neg && bytes.get(j) == Some(&b'-') {
-                            j += 1;
-                        }
-                        let mut has_digits = false;
-                        while let Some(&b) = bytes.get(j) {
-                            if b.is_ascii_digit() {
-                                has_digits = true;
-                                j += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        if has_digits && bytes.get(j) == Some(&b'>') {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
+    if s.len() < 6 {
         return false;
     }
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() < 6 {
-        return false;
-    }
-    for i in 0..=chars.len() - 6 {
-        if chars.get(i) == Some(&'<') {
-            if let Some(sv_type) = chars.get(i + 1..i + 4) {
-                if sv_type.iter().all(|&c| c != '<' && c != '>') {
-                    let mut j = i + 4;
-                    if allow_neg && chars.get(j) == Some(&'-') {
-                        j += 1;
-                    }
-                    let mut has_digits = false;
-                    while let Some(&c) = chars.get(j) {
-                        if c.is_ascii_digit() {
-                            has_digits = true;
-                            j += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    if has_digits && chars.get(j) == Some(&'>') {
-                        return true;
-                    }
-                }
+    for (idx, _) in s.match_indices('<') {
+        let Some(tail) = s.get(idx + 1..) else {
+            continue;
+        };
+        let mut chars = tail.chars();
+        let (Some(c1), Some(c2), Some(c3)) = (chars.next(), chars.next(), chars.next()) else {
+            continue;
+        };
+        if [c1, c2, c3].iter().any(|&c| c == '<' || c == '>') {
+            continue;
+        }
+        let mut next_opt = chars.next();
+        if allow_neg && next_opt == Some('-') {
+            next_opt = chars.next();
+        }
+        let mut has_digits = false;
+        while let Some(c) = next_opt {
+            if c.is_ascii_digit() {
+                has_digits = true;
+                next_opt = chars.next();
+            } else {
+                break;
             }
+        }
+        if has_digits && next_opt == Some('>') {
+            return true;
         }
     }
     false

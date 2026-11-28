@@ -3658,6 +3658,7 @@ impl<'a> CigarParser<'a> {
             // temps built over mate windows are discarded, never emitted
             // through, so stamping unconditionally is safe.
             owning_range: Some((self.region.start, self.region.end)),
+            split_parent_start: None,
             merge_planted: BTreeSet::new(),
         }
     }

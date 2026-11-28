@@ -537,33 +537,56 @@ fn dedup_simple_seam_owned_vec(
         return items.into_iter().map(|(_, orig, v)| (orig, v)).collect();
     }
     let mut keep_flags = vec![true; items.len()];
-    for (idx, (owned, _, cand)) in items.iter().enumerate() {
-        if *owned || cand.null_record {
-            continue;
-        }
-        let cand_sv_end = if cand.var_allele.starts_with('<') {
-            cand.end_pos
-        } else {
-            0
-        };
-        let beaten_or_tied_by_owned = items.iter().any(|(o_owned, _, o_var)| {
+    if items.iter().any(|(owned, _, _)| !*owned) {
+        let mut owned_index: rustc_hash::FxHashMap<(i32, i32, &str, &str), Vec<usize>> =
+            rustc_hash::FxHashMap::default();
+        for (o_idx, (o_owned, _, o_var)) in items.iter().enumerate() {
             if !*o_owned || o_var.null_record {
-                return false;
+                continue;
             }
             let o_sv_end = if o_var.var_allele.starts_with('<') {
                 o_var.end_pos
             } else {
                 0
             };
-            o_var.start_pos == cand.start_pos
-                && o_sv_end == cand_sv_end
-                && o_var.ref_allele == cand.ref_allele
-                && o_var.var_allele == cand.var_allele
-                && !crate::variations::post_norm_candidate_beats(cand, o_var)
-        });
-        if beaten_or_tied_by_owned {
-            if let Some(slot) = keep_flags.get_mut(idx) {
-                *slot = false;
+            owned_index
+                .entry((
+                    o_var.start_pos,
+                    o_sv_end,
+                    o_var.ref_allele.as_str(),
+                    o_var.var_allele.as_str(),
+                ))
+                .or_default()
+                .push(o_idx);
+        }
+        if !owned_index.is_empty() {
+            for (idx, (owned, _, cand)) in items.iter().enumerate() {
+                if *owned || cand.null_record {
+                    continue;
+                }
+                let cand_sv_end = if cand.var_allele.starts_with('<') {
+                    cand.end_pos
+                } else {
+                    0
+                };
+                let key = (
+                    cand.start_pos,
+                    cand_sv_end,
+                    cand.ref_allele.as_str(),
+                    cand.var_allele.as_str(),
+                );
+                let beaten_or_tied_by_owned = owned_index.get(&key).is_some_and(|indices| {
+                    indices.iter().any(|&o_idx| {
+                        items.get(o_idx).is_some_and(|(_, _, o_var)| {
+                            !crate::variations::post_norm_candidate_beats(cand, o_var)
+                        })
+                    })
+                });
+                if beaten_or_tied_by_owned {
+                    if let Some(slot) = keep_flags.get_mut(idx) {
+                        *slot = false;
+                    }
+                }
             }
         }
     }
@@ -599,57 +622,77 @@ fn finalize_somatic_seam_owned_vec(
         return Vec::new();
     }
     let mut keep_flags = vec![true; items.len()];
-    if items.len() > 1 {
-        for (idx, (owned, _, u_sv)) in items.iter().enumerate() {
-            if *owned || u_sv.variant1.null_record {
+    if items.len() > 1 && items.iter().any(|(owned, _, _)| !*owned) {
+        let mut owned_index: rustc_hash::FxHashMap<(i32, i32, &str, &str), Vec<usize>> =
+            rustc_hash::FxHashMap::default();
+        for (o_idx, (o_owned, _, o_sv)) in items.iter().enumerate() {
+            if !*o_owned || o_sv.variant1.null_record {
                 continue;
             }
-            let u_sv_end = if u_sv.variant1.var_allele.starts_with('<') {
-                u_sv.variant1.end_pos
+            let o_sv_end = if o_sv.variant1.var_allele.starts_with('<') {
+                o_sv.variant1.end_pos
             } else {
                 0
             };
-            let u_v2 = u_sv.variant2.as_ref().filter(|v| v.pos_coverage > 0);
-            let beaten_or_tied_by_owned = items.iter().any(|(o_owned, _, o_sv)| {
-                if !*o_owned || o_sv.variant1.null_record {
-                    return false;
+            owned_index
+                .entry((
+                    o_sv.variant1.start_pos,
+                    o_sv_end,
+                    o_sv.variant1.ref_allele.as_str(),
+                    o_sv.variant1.var_allele.as_str(),
+                ))
+                .or_default()
+                .push(o_idx);
+        }
+        if !owned_index.is_empty() {
+            for (idx, (owned, _, u_sv)) in items.iter().enumerate() {
+                if *owned || u_sv.variant1.null_record {
+                    continue;
                 }
-                let o_sv_end = if o_sv.variant1.var_allele.starts_with('<') {
-                    o_sv.variant1.end_pos
+                let u_sv_end = if u_sv.variant1.var_allele.starts_with('<') {
+                    u_sv.variant1.end_pos
                 } else {
                     0
                 };
-                if o_sv.variant1.start_pos != u_sv.variant1.start_pos
-                    || o_sv_end != u_sv_end
-                    || o_sv.variant1.ref_allele != u_sv.variant1.ref_allele
-                    || o_sv.variant1.var_allele != u_sv.variant1.var_allele
-                {
-                    return false;
-                }
-                let t_covered = u_sv.variant1.pos_coverage <= 0
-                    || (o_sv.variant1.pos_coverage > 0
-                        && !crate::variations::post_norm_candidate_beats(
-                            &u_sv.variant1,
-                            &o_sv.variant1,
-                        ));
-                let o_v2 = o_sv.variant2.as_ref().filter(|v| v.pos_coverage > 0);
-                let n_covered = match (u_v2, o_v2) {
-                    (None, _) => true,
-                    (Some(uv), Some(ov)) => !crate::variations::post_norm_candidate_beats(uv, ov),
-                    (Some(uv), None) => {
-                        let o_dp = o_sv
-                            .variant2
-                            .as_ref()
-                            .map_or(0, |v| v.total_pos_cov)
-                            .max(o_sv.v2_ref_variant.as_ref().map_or(0, |v| v.total_pos_cov));
-                        unowned_halo_v2_is_noise(uv, o_dp, config)
+                let key = (
+                    u_sv.variant1.start_pos,
+                    u_sv_end,
+                    u_sv.variant1.ref_allele.as_str(),
+                    u_sv.variant1.var_allele.as_str(),
+                );
+                let u_v2 = u_sv.variant2.as_ref().filter(|v| v.pos_coverage > 0);
+                let beaten_or_tied_by_owned = owned_index.get(&key).is_some_and(|indices| {
+                    indices.iter().any(|&o_idx| {
+                        let Some((_, _, o_sv)) = items.get(o_idx) else {
+                            return false;
+                        };
+                        let t_covered = u_sv.variant1.pos_coverage <= 0
+                            || (o_sv.variant1.pos_coverage > 0
+                                && !crate::variations::post_norm_candidate_beats(
+                                    &u_sv.variant1,
+                                    &o_sv.variant1,
+                                ));
+                        let o_v2 = o_sv.variant2.as_ref().filter(|v| v.pos_coverage > 0);
+                        let n_covered = match (u_v2, o_v2) {
+                            (None, _) => true,
+                            (Some(uv), Some(ov)) => {
+                                !crate::variations::post_norm_candidate_beats(uv, ov)
+                            }
+                            (Some(uv), None) => {
+                                let o_dp =
+                                    o_sv.variant2.as_ref().map_or(0, |v| v.total_pos_cov).max(
+                                        o_sv.v2_ref_variant.as_ref().map_or(0, |v| v.total_pos_cov),
+                                    );
+                                unowned_halo_v2_is_noise(uv, o_dp, config)
+                            }
+                        };
+                        t_covered && n_covered
+                    })
+                });
+                if beaten_or_tied_by_owned {
+                    if let Some(slot) = keep_flags.get_mut(idx) {
+                        *slot = false;
                     }
-                };
-                t_covered && n_covered
-            });
-            if beaten_or_tied_by_owned {
-                if let Some(slot) = keep_flags.get_mut(idx) {
-                    *slot = false;
                 }
             }
         }
@@ -673,33 +716,6 @@ fn finalize_somatic_seam_owned_vec(
         out.sort_by_key(|(_, sv)| sv.variant1.start_pos);
     }
     out
-}
-
-fn format_paired_vcf_record_for_lib(
-    sv: &crate::postprocess::somatic::SomaticVariant,
-    chr: &str,
-    config: &config::Config,
-) -> crate::output::vcf::PairedVcfRecord {
-    let dot_alt_compat = config.pileup
-        && config.compat.pileup_preserve_shifted_ref
-        && (config.compat.strict_vcf_ad_number_r
-            || config.compat.omit_nonsv_vcf_end
-            || config.compat.canonical_vcf_gt);
-    if dot_alt_compat
-        && !sv.variant1.ref_allele.is_empty()
-        && sv.variant1.ref_allele == sv.variant1.var_allele
-        && sv.variant1.pos_coverage == 0
-    {
-        let mut sv_dot = sv.clone();
-        sv_dot.variant1.var_allele = ".".to_string();
-        if let Some(ref mut v2) = sv_dot.variant2 {
-            if v2.ref_allele == v2.var_allele && v2.pos_coverage == 0 {
-                v2.var_allele = ".".to_string();
-            }
-        }
-        return crate::output::vcf::format_paired_vcf_record(&sv_dot, chr, config);
-    }
-    crate::output::vcf::format_paired_vcf_record(sv, chr, config)
 }
 
 /// Builds `SplitVarIdentity` entries for a `simple_post_process` variant list,
@@ -980,42 +996,15 @@ enum PipelineTail {
     Full,
 }
 
-fn has_alignment_extension_ci(seg: &str) -> bool {
-    Path::new(seg)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("bam") || e.eq_ignore_ascii_case("cram"))
-}
-
 /// Splits a colon-delimited BAM specification into non-empty file paths,
 /// returning `Err(VardictError::Parse(empty_err))` when no path is present.
 /// Preserves single-BAM paths whose directory or filename contains `:` (`AR-17`).
 fn parse_colon_bams(spec: &str, empty_err: &str) -> Result<Vec<String>, VardictError> {
-    let raw_parts: Vec<&str> = spec.split(':').collect();
-    let non_empty: Vec<&str> = raw_parts
-        .iter()
-        .copied()
-        .filter(|s| !s.is_empty())
-        .collect();
-    if non_empty.is_empty() {
+    let parts = crate::bam::split_colon_bam_paths(spec);
+    if parts.is_empty() {
         return Err(VardictError::Parse(empty_err.to_string()));
     }
-    if spec.contains(':') {
-        let keep_unsplit = Path::new(spec).exists()
-            || (!raw_parts.iter().any(|s| s.is_empty())
-                && raw_parts
-                    .get(..raw_parts.len().saturating_sub(1))
-                    .is_some_and(|left_parts| {
-                        !left_parts.is_empty()
-                            && left_parts.iter().all(|seg| {
-                                !has_alignment_extension_ci(seg) && !Path::new(seg).exists()
-                            })
-                    }));
-        if keep_unsplit {
-            return Ok(vec![spec.to_string()]);
-        }
-    }
-    Ok(non_empty.into_iter().map(str::to_string).collect())
+    Ok(parts.into_iter().map(str::to_string).collect())
 }
 
 /// Per-region pipeline shared by simple, amplicon and somatic modes: query the
@@ -1088,7 +1077,11 @@ fn record_read_end(r: &crate::bam::SamRecord, read_start: i32) -> i32 {
 }
 
 #[inline]
-fn record_overlaps_region(r: &crate::bam::SamRecord, reg_start: u32, reg_end: u32) -> bool {
+pub(crate) fn record_overlaps_region(
+    r: &crate::bam::SamRecord,
+    reg_start: u32,
+    reg_end: u32,
+) -> bool {
     let read_start = r.alignment_start.map(|p| p.0 as i32).unwrap_or(0);
     let read_end = record_read_end(r, read_start);
     read_start <= reg_end as i32 && read_end > reg_start as i32
@@ -1270,6 +1263,7 @@ fn run_pipeline_on_records_ext(
         }
     }
     let mut var_data = parser.into_variation_data_unrebalanced();
+    var_data.split_parent_start = parent_original_start;
     if let Some(post_max) = post_pileup_max_read_length {
         var_data.max_read_length = var_data.max_read_length.max(post_max);
     }
@@ -3531,9 +3525,12 @@ impl SpillableCandidate for SomaticVcfCandidate {
 
     #[inline]
     fn is_dot_alt_ref(&self) -> bool {
-        self.record
-            .as_ref()
-            .is_some_and(|rec| rec.as_str().split('\t').nth(4) == Some("."))
+        self.record.as_ref().is_some_and(|rec| {
+            let mut cols = rec.as_str().split('\t');
+            let ref_col = cols.nth(3);
+            let alt_col = cols.next();
+            alt_col == Some(".") || (ref_col.is_some() && ref_col == alt_col)
+        })
     }
 
     #[inline]
@@ -7036,7 +7033,13 @@ fn run_with_writer_inner<W: EngineWriter>(
                     )
                 }
             } else {
-                (&[] as &[MaxRlStep], None, None, None, None)
+                (
+                    &[] as &[MaxRlStep],
+                    None,
+                    is_split_tile.then_some(tile.original_start),
+                    None,
+                    None,
+                )
             };
             let var_data = run_pipeline_on_records_ext(
                 &bam_list,
@@ -8497,7 +8500,11 @@ fn run_somatic<W: EngineWriter>(
                     let record = if skipped {
                         None
                     } else {
-                        Some(format_paired_vcf_record_for_lib(&sv, &region.chr, config))
+                        Some(crate::output::vcf::format_paired_vcf_record(
+                            &sv,
+                            &region.chr,
+                            config,
+                        ))
                     };
                     let all_alleles = if config.vcf_all_alleles {
                         Some(AllAllelesMeta::from_owned_boxed(
@@ -8623,7 +8630,7 @@ fn run_somatic<W: EngineWriter>(
                     None,
                     None,
                     None,
-                    None,
+                    is_split_tile.then_some(tile.original_start),
                 )
             };
 
@@ -8722,7 +8729,7 @@ fn run_somatic<W: EngineWriter>(
                 &chromosomes_lengths_clone,
                 &config_clone,
             );
-            let aligned2 = if use_compact_somatic_ref_mode {
+            let mut aligned2 = if use_compact_somatic_ref_mode {
                 let aligned2 = builder2.build_aligned_variants_pruned(
                     &var_data2,
                     crate::tovars::RefSiteMode::KeepWhere(&|p| {
@@ -8746,6 +8753,112 @@ fn run_somatic<W: EngineWriter>(
             // Inter-pass trim (cont.): var_data2 is fully consumed here;
             // drop its maps before postprocess.
             drop(var_data2);
+
+            // On split tiles, when one sample plants an SV or backward-overhang indel at a
+            // coordinate outside `region_for_pileup` where the counterpart sample had only
+            // wild-type (or local non-SV) reads, hydrate the counterpart `Vars` at that locus
+            // so `somatic_post_process` sees real counterpart coverage instead of `None` (`DP=0`).
+            if is_split_tile {
+                let t_start = i32::try_from(region_for_pileup.start.0).unwrap_or(i32::MAX);
+                let t_end = i32::try_from(region_for_pileup.end.0).unwrap_or(i32::MAX);
+                let orig_s = i32::try_from(builder_region.start.0).unwrap_or(1).max(1);
+                let orig_e = i32::try_from(builder_region.end.0).unwrap_or(i32::MAX);
+                let missing_in_2: Vec<i32> = aligned1
+                    .iter()
+                    .filter_map(|(&p, v1)| {
+                        ((p < t_start || p > t_end)
+                            && !v1.variants.is_empty()
+                            && !aligned2.contains_key(&p))
+                        .then_some(p)
+                    })
+                    .collect();
+                let missing_in_1: Vec<i32> = aligned2
+                    .iter()
+                    .filter_map(|(&p, v2)| {
+                        ((p < t_start || p > t_end)
+                            && !v2.variants.is_empty()
+                            && !aligned1.contains_key(&p))
+                        .then_some(p)
+                    })
+                    .collect();
+                let win = combined_max_rl.max(50);
+                for pos in missing_in_2 {
+                    let q_lo = pos.saturating_sub(win).max(orig_s).max(1);
+                    let q_hi = pos.saturating_add(win).min(orig_e).max(q_lo);
+                    let sub_reg = crate::regions::Region {
+                        chr: builder_region.chr.clone(),
+                        start: crate::types::Pos1(q_lo as u32),
+                        end: crate::types::Pos1(q_hi as u32),
+                        gene: builder_region.gene.clone(),
+                        amplicon: builder_region.amplicon.clone(),
+                    };
+                    let vd_sub = run_pipeline_on_records(
+                        &bam2_bams,
+                        &builder_region.chr,
+                        sub_reg.start.to_zero_based(),
+                        crate::types::Pos0(sub_reg.end.0),
+                        Some(&sub_reg),
+                        &mut reference,
+                        &sub_reg,
+                        PipelineTail::Full,
+                        &config_clone,
+                        &chromosomes_lengths_clone,
+                        seed_bam2,
+                        Some(splice.clone()),
+                    )?;
+                    let sub_builder = crate::tovars::ToVarsBuilder::new(
+                        &reference,
+                        &builder_region,
+                        &chromosomes_lengths_clone,
+                        &config_clone,
+                    );
+                    if let Some(vars_p) = sub_builder.build_vars_at_position_with_ref_mode(
+                        &vd_sub,
+                        pos,
+                        crate::tovars::RefSiteMode::KeepAll,
+                    ) {
+                        aligned2.insert(pos, vars_p);
+                    }
+                }
+                for pos in missing_in_1 {
+                    let q_lo = pos.saturating_sub(win).max(orig_s).max(1);
+                    let q_hi = pos.saturating_add(win).min(orig_e).max(q_lo);
+                    let sub_reg = crate::regions::Region {
+                        chr: builder_region.chr.clone(),
+                        start: crate::types::Pos1(q_lo as u32),
+                        end: crate::types::Pos1(q_hi as u32),
+                        gene: builder_region.gene.clone(),
+                        amplicon: builder_region.amplicon.clone(),
+                    };
+                    let vd_sub = run_pipeline_on_records(
+                        &bam1_bams,
+                        &builder_region.chr,
+                        sub_reg.start.to_zero_based(),
+                        crate::types::Pos0(sub_reg.end.0),
+                        Some(&sub_reg),
+                        &mut reference,
+                        &sub_reg,
+                        PipelineTail::Full,
+                        &config_clone,
+                        &chromosomes_lengths_clone,
+                        0,
+                        None,
+                    )?;
+                    let sub_builder = crate::tovars::ToVarsBuilder::new(
+                        &reference,
+                        &builder_region,
+                        &chromosomes_lengths_clone,
+                        &config_clone,
+                    );
+                    if let Some(vars_p) = sub_builder.build_vars_at_position_with_ref_mode(
+                        &vd_sub,
+                        pos,
+                        crate::tovars::RefSiteMode::KeepAll,
+                    ) {
+                        aligned1.insert(pos, vars_p);
+                    }
+                }
+            }
 
             // Run somatic postprocess with combineAnalysis pipeline callback
             let mut bams_for_combine =
@@ -8948,7 +9061,7 @@ fn run_somatic<W: EngineWriter>(
                         let record = if skipped {
                             None
                         } else {
-                            Some(format_paired_vcf_record_for_lib(
+                            Some(crate::output::vcf::format_paired_vcf_record(
                                 &sv,
                                 &builder_region.chr,
                                 &config_clone,
@@ -9287,7 +9400,9 @@ fn build_unsplit_somatic_vcf_candidates(
             }
             let start_pos = sv.variant1.start_pos;
             let af_4dp = canonical_af_4dp(sv.variant1.frequency, exact_tie);
-            let record = Some(format_paired_vcf_record_for_lib(&sv, chr, config));
+            let record = Some(crate::output::vcf::format_paired_vcf_record(
+                &sv, chr, config,
+            ));
             let all_alleles = Some(AllAllelesMeta::from_owned_boxed(
                 sv.variant1.end_pos,
                 sv.variant1.ref_allele,
@@ -9359,7 +9474,9 @@ fn build_unsplit_somatic_vcf_candidates(
                 let record = if crate::output::vcf::perl_row_skipped(&sv.variant1.ref_allele) {
                     None
                 } else {
-                    Some(format_paired_vcf_record_for_lib(&sv, chr, config))
+                    Some(crate::output::vcf::format_paired_vcf_record(
+                        &sv, chr, config,
+                    ))
                 };
                 SomaticVcfCandidate {
                     start_pos,
@@ -17445,6 +17562,89 @@ mod tests {
             f04_som_untiled,
             "F-04 somatic: Tile 2 unowned AF=1.0 spanning deletion must not clobber Tile 1 owned SNV at pos 180"
         );
+
+        // Subtest 1d (Ponytail #2): right-split-only medium deletion (`150 bp <= indel_size = 200`):
+        // - `0` `lsplit` reads in Tile 1 `[1, 200]`,
+        // - `8` SNV (`A -> G` at `180`) + `9` WT reads in Tile 1 `[1, 200]` (`RD = 17` at `181`),
+        // - `6` `rsplit` reads (`35S 50M` at `331..=380`) in Tile 2 `[201, 400]`.
+        // Without split-tile backward-overhang `partial_pipeline` when `find_bp != 0`, Tile 2 fabricates
+        // `RD = 0, AF = 0.5000, HIAF = 1.0000` (clobbering Tile 1's `AF = 8/17 = 0.4706` SNV in single-allele
+        // VCF and emitting wrong `RD = 0` in `--vcf-all-alleles` and `.var`).
+        let f04_ro_bam = dir.path().join("f04_right_only.bam");
+        let mut f04_ro_reads: Vec<RecordBuf> = f04_reads
+            .iter()
+            .filter(|r| {
+                !r.name().is_some_and(|n| {
+                    std::str::from_utf8(n.as_ref())
+                        .unwrap_or("")
+                        .starts_with("f04_lsplit_")
+                })
+            })
+            .cloned()
+            .collect();
+        f04_ro_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_test_bam(&f04_ro_bam, "chr1", 2000, &f04_ro_reads);
+
+        let run_f04_ro =
+            |bam_spec: String, tile_sz: u32, all_alleles: bool, out_vcf: bool| -> String {
+                let cfg = crate::config::Config {
+                    bam: bam_spec,
+                    reference: f04_fa.to_string_lossy().into_owned(),
+                    region: Some("chr1:1-600".to_string()),
+                    compat: crate::config::COMPAT_VARDICTJAVA_1_8_3,
+                    vcf_all_alleles: all_alleles,
+                    emit_intermediate: !out_vcf,
+                    realign: 1,
+                    indel_size: 200,
+                    sv_min_len: 500,
+                    freq: 0.01,
+                    min_reads: 2,
+                    tile_size: Some(tile_sz),
+                    threads: 1,
+                    ..Default::default()
+                };
+                let mut out = Vec::new();
+                run_with_writer(&cfg, &mut out).unwrap();
+                String::from_utf8(out)
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.starts_with('#'))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+        let ro_simple_bam = f04_ro_bam.to_string_lossy().into_owned();
+        let ro_somatic_bam = format!("{}|{}", f04_ro_bam.display(), f012_n_bam.display());
+        for (mode_label, bam_spec) in [("simple", ro_simple_bam), ("somatic", ro_somatic_bam)] {
+            // 1) Single-allele VCF (`!vcf_all_alleles`): SNV `A -> G` (`AF = 0.4706`) beats DEL (`AF = 0.2609`)
+            let u_single = run_f04_ro(bam_spec.clone(), 500_000, false, true);
+            let t_single = run_f04_ro(bam_spec.clone(), 200, false, true);
+            assert!(
+                u_single.starts_with("chr1\t180\t.\tA\tG\t"),
+                "Subtest 1d ({mode_label} single-allele untiled): expected SNV A->G at 180, got:\n{u_single}"
+            );
+            assert_eq!(
+                t_single, u_single,
+                "Subtest 1d ({mode_label} single-allele VCF): Tiled must match Untiled without fabricated AF=0.50 DEL clobber"
+            );
+            // 2) `--vcf-all-alleles` VCF: both SNV and 150-bp DEL emitted with exact RD=17, DP=23, AF=0.2609
+            let u_all = run_f04_ro(bam_spec.clone(), 500_000, true, true);
+            let t_all = run_f04_ro(bam_spec.clone(), 200, true, true);
+            assert!(
+                u_all.contains(";AF=0.2609;"),
+                "Subtest 1d ({mode_label} -A untiled): expected DEL AF=0.2609 (6/23 with RD=17), got:\n{u_all}"
+            );
+            assert_eq!(
+                t_all, u_all,
+                "Subtest 1d ({mode_label} --vcf-all-alleles VCF): Tiled must match Untiled"
+            );
+            // 3) Intermediate `.var`: exact parity
+            let u_var = run_f04_ro(bam_spec.clone(), 500_000, false, false);
+            let t_var = run_f04_ro(bam_spec, 200, false, false);
+            assert_eq!(
+                t_var, u_var,
+                "Subtest 1d ({mode_label} .var): Tiled must match Untiled"
+            );
+        }
 
         // Subtest 2 (F-10(1) & F-03): `-p --compat=off` left-aligns deletion across unloaded 5' FASTA chunk
         // using a 2-exon BED (`chr1:495-505` and `chr1:540-550`), AND paired `-p --compat=off` VCF emits `ALT=.`!
