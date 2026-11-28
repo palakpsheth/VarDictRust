@@ -10,8 +10,7 @@
 #      depth/ALD accounting + bcftools norm --check-ref e + tabix/bcftools view -r
 #   2. Tiled (--tile-size 200/300) == Untiled (--tile-size 50000000) across
 #      Simple, Paired Somatic, Amplicon (-a & -sp), Pileup (-p), Splice (-i),
-#      and SV (<DEL>, <INV>) under both --compat=vardictjava and --compat=off
-#      (plus loud XFAIL -> XPASS guard for spanning-D tile-seam ref_coverage)
+#      Spanning-D seams, and SV (<DEL>, <INV>) under --compat=vardictjava|off
 #   3. Live portable BAM == CRAM (samtools view -C -T) across single & paired
 #      modes under both --compat=vardictjava and --compat=off
 #   4. --vcf-all-alleles vs Perl var2vcf_valid.pl -A / var2vcf_paired.pl -A
@@ -91,10 +90,6 @@ has_samtools = shutil.which("samtools") is not None
 has_perl = shutil.which("perl") is not None
 
 valid_alt_re = re.compile(r"^(?:[ACGTN]+|<[A-Za-z0-9_-]+>)(?:,(?:[ACGTN]+|<[A-Za-z0-9_-]+>))*$")
-
-# Toggle to False once crates/vardictrust-core/src/cigar/parse.rs spanning-deletion
-# split-tile ref_coverage fix lands at PR-2 integration merge.
-EXPECT_SPANNING_DEL_SEAM_XFAIL = True
 
 
 def verify_bgzf_header(gz_path: str) -> int:
@@ -335,30 +330,21 @@ def gate2_tiled_vs_untiled() -> str:
                 raise AssertionError(f"Gate 2 {name} ({compat}): Tiled (--tile-size {ts}) != Untiled")
             checked += 1
 
-    # Spanning-D split-tile seam guard (Finding 1: Colo829 chr1:756320 35D & NA12878.INVSimpleSV 20:1961170)
+    # Spanning-D & far-breakpoint SV split-tile seam parity (Colo829 chr1:756320 35D & NA12878.INVSimpleSV 20:1961170)
     seam_cases = [
         ("colo829_35d_seam", fa_hg19, f"{vj_bams}/Colo829-18_S3-sort.bam|{vj_bams}/Colo829-19_S4-sort.bam",
-         ["-R", "chr1:755917-756517", "-f", "0.01", "--compat=off"]),
+         ["-R", "chr1:755917-756517", "-f", "0.01"]),
         ("na12878_inv_seam", fa_hs38dh, f"{vj_bams}/NA12878.chrom20.INVSimpleSV.bam",
-         ["-R", "20:1961050-1961650", "-f", "0.01", "--compat=off"]),
+         ["-R", "20:1961050-1961650", "-f", "0.01"]),
     ]
-    xfail_seen = 0
     for sname, sfa, sbam, sargs in seam_cases:
-        su = subprocess.check_output([vdr, "-G", sfa, "-b", sbam, "--tile-size", "50000000", "-th", "1", *sargs], text=True)
-        st = subprocess.check_output([vdr, "-G", sfa, "-b", sbam, "--tile-size", "200", "-th", "2", *sargs], text=True)
-        if EXPECT_SPANNING_DEL_SEAM_XFAIL:
-            if su == st:
-                raise AssertionError(
-                    f"XPASS on {sname}: spanning-deletion tile-seam ref_coverage fix is now active; "
-                    f"flip EXPECT_SPANNING_DEL_SEAM_XFAIL = False in harness/run_portable_invariants.sh!"
-                )
-            xfail_seen += 1
-        else:
+        for compat in ("--compat=vardictjava", "--compat=off"):
+            su = subprocess.check_output([vdr, "-G", sfa, "-b", sbam, compat, "--tile-size", "50000000", "-th", "1", *sargs], text=True)
+            st = subprocess.check_output([vdr, "-G", sfa, "-b", sbam, compat, "--tile-size", "200", "-th", "2", *sargs], text=True)
             if su != st:
-                raise AssertionError(f"Gate 2 {sname}: spanning-deletion tile-seam Tiled != Untiled")
+                raise AssertionError(f"Gate 2 {sname} ({compat}): spanning-deletion / SV tile-seam Tiled != Untiled")
             checked += 1
-    xfail_note = f", {xfail_seen} pinned XFAIL seam checks" if xfail_seen else ""
-    return f"Gate 2 PASS ({checked}/20 modal Tiled==Untiled checks byte-identical{xfail_note})"
+    return f"Gate 2 PASS ({checked}/24 modal Tiled==Untiled checks byte-identical)"
 
 
 def make_scoped_bam_and_cram(src_bam: str, ref_fa: str, chrom: str, prefix: str) -> tuple[str, str]:
