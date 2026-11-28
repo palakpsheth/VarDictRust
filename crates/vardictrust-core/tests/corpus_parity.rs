@@ -6,12 +6,16 @@
 //! gate (`manifest::all_92_golden_cases_registered`), entirely in-process via
 //! `vardictrust_core::run_with_writer` with `threads = 1` and zero subprocesses.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use vardictrust_core::config::{extract_sample_name, resolve_sample_names, Config};
+use vardictrust_core::config::{
+    extract_sample_name, resolve_sample_names, CompatProfile, Config, COMPAT_OFF,
+    COMPAT_VARDICTJAVA_1_8_3,
+};
+use vardictrust_core::types::VardictError;
 
 mod common;
 use common::{
@@ -19,11 +23,393 @@ use common::{
     sha256_hex, workspace_root, write_indexed_cram,
 };
 
+const MAX_FAST_VCF_BAM_BYTES: u64 = 256 * 1024;
+
 const SMOKE_VCF_COMPANIONS: &[&str] = &[
     "Simple;GRCh37.fa;HCC2218_C_position_bug.bam;chr2;179260451-179260596;-f 0.001.txt",
     "Somatic;hg19.fa;ArgumentNA_Tumor.bam-ArgumentNA_Normal.bam;chr7;140453010-140453158;-q25-F0x100-f0.001-k1-M20-p-fisher;.txt",
     "Amplicon;hg19.fa;Colo829-18_S3-sort.bam;chr1;933866-934466;933866-934466;-a 100.95 -D;.txt",
 ];
+
+type SurvivalKey = (String, i32, Option<i32>, String, String);
+
+fn is_symbolic_sv_alt_token(alt: &str) -> bool {
+    let Some(inner) = alt.strip_prefix('<').and_then(|s| s.strip_suffix('>')) else {
+        return false;
+    };
+    !inner.is_empty()
+        && inner != "R,R"
+        && inner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn is_sanitized_vcf_alt(alt: &str) -> bool {
+    if alt == "." || is_symbolic_sv_alt_token(alt) {
+        return true;
+    }
+    let bytes = alt.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'<' {
+            if let Some(rel_close) = bytes[i + 1..].iter().position(|&c| c == b'>') {
+                if is_symbolic_sv_alt_token(&alt[i..=i + 1 + rel_close]) {
+                    i += rel_close + 2;
+                    continue;
+                }
+            }
+            return false;
+        }
+        if !matches!(b, b'A' | b'C' | b'G' | b'T' | b'N') {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+fn parse_sv_counts_from_var(sv_cell: &str) -> (i32, i32) {
+    if sv_cell.is_empty() || sv_cell == "0" {
+        return (0, 0);
+    }
+    let mut parts = sv_cell.split('-');
+    let split = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let span = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (split, span)
+}
+
+fn collect_expected_var_survival_keys(
+    var_text: &str,
+    mode: &str,
+    cfg: &Config,
+    compat: &CompatProfile,
+) -> HashSet<SurvivalKey> {
+    let mut keys = HashSet::new();
+    let paired = mode == "Somatic";
+    let is_amp = mode == "Amplicon" || cfg.amplicon.is_some();
+    for line in var_text.lines() {
+        let trimmed = line.trim_end_matches('\r');
+        if trimmed.is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = trimmed.split('\t').collect();
+        if cols.len() < 9 {
+            continue;
+        }
+        if cols.get(2) == Some(&"Chr") && cols.get(3) == Some(&"Start") {
+            continue;
+        }
+        let ref_a = cols[5];
+        if ref_a.is_empty() || ref_a == "0" {
+            // `var2vcf_*.pl`: `next unless ($ref)` skips empty/`"0"` sentinel rows.
+            continue;
+        }
+        let chr = cols[2].to_string();
+        let pos: i32 = cols[3]
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid .var Start {:?}: {e}", cols[3]));
+        let end: i32 = cols[4]
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid .var End {:?}: {e}", cols[4]));
+        let raw_alt = cols[6];
+        let vd: i32 = cols[8]
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid .var VD {:?}: {e}", cols[8]));
+
+        // Single-sample (`Simple`) symbolic SV splitread gate (`sv_dropped_by_splitreads`).
+        if !paired && !is_amp && raw_alt.contains('<') {
+            let sv_col_idx = if cfg.fisher { 37 } else { 35 };
+            let sv_cell = cols.get(sv_col_idx).copied().unwrap_or("0");
+            let (splitreads, spanpairs) = parse_sv_counts_from_var(sv_cell);
+            let dropped = if compat.preserve_discordant_svs {
+                splitreads < 1 && spanpairs < 1
+            } else {
+                splitreads < 1
+            };
+            if dropped {
+                continue;
+            }
+        }
+
+        let dot_alt_compat =
+            compat.strict_vcf_ad_number_r || compat.omit_nonsv_vcf_end || compat.canonical_vcf_gt;
+        let vcf_alt = if !paired {
+            if ref_a == raw_alt || (dot_alt_compat && raw_alt == ".") {
+                ".".to_string()
+            } else {
+                raw_alt.to_string()
+            }
+        } else if cfg.pileup
+            && compat.pileup_preserve_shifted_ref
+            && dot_alt_compat
+            && ref_a == raw_alt
+            && vd == 0
+        {
+            ".".to_string()
+        } else {
+            raw_alt.to_string()
+        };
+
+        let emit_sym_end = if is_symbolic_sv_alt_token(&vcf_alt) {
+            if !paired {
+                if compat.omit_nonsv_vcf_end || compat.canonical_sv_vcf_anchoring {
+                    !cfg.vcf_no_end_explicit
+                } else {
+                    !cfg.omit_end_tag
+                }
+            } else {
+                compat.canonical_sv_vcf_anchoring && !cfg.vcf_no_end_explicit
+            }
+        } else {
+            false
+        };
+        let sym_end = emit_sym_end.then_some(end);
+        keys.insert((chr, pos, sym_end, ref_a.to_string(), vcf_alt));
+    }
+    keys
+}
+
+fn verify_vcf_output_and_collect_keys(
+    fname: &str,
+    vcf_text: &str,
+    paired: bool,
+    cfg: &Config,
+) -> HashSet<SurvivalKey> {
+    let expected_cols = if paired { 11usize } else { 10usize };
+    let compat_non_default = cfg.compat != COMPAT_VARDICTJAVA_1_8_3;
+    let mut has_chrom_hdr = false;
+    let mut compat_hdr_count = 0usize;
+    let mut seen_full_rows: HashSet<(String, i32, Option<i32>, String, String)> = HashSet::new();
+    let mut survival_keys: HashSet<SurvivalKey> = HashSet::new();
+
+    for line in vcf_text.lines() {
+        if line == "##VarDictRustCompat=off" {
+            compat_hdr_count += 1;
+        }
+        if line.starts_with("#CHROM\t") {
+            has_chrom_hdr = true;
+            assert_eq!(
+                line.split('\t').count(),
+                expected_cols,
+                "#CHROM column count mismatch on {fname} (paired={paired})"
+            );
+            continue;
+        }
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(
+            cols.len(),
+            expected_cols,
+            "VCF record column count mismatch on {fname}: {line}"
+        );
+        let chrom = cols[0];
+        let pos: i32 = cols[1]
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid VCF POS on {fname}: {e} in {line}"));
+        let ref_col = cols[3];
+        let alt_col = cols[4];
+        let qual_col: i32 = cols[5]
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid VCF QUAL on {fname}: {e} in {line}"));
+        let info_col = cols[7];
+        let fmt_keys: Vec<&str> = cols[8].split(':').collect();
+
+        let mut info_dp: Option<i64> = None;
+        let mut info_vd: Option<i64> = None;
+        let mut info_end: Option<i32> = None;
+        let mut info_shift3: Option<i32> = None;
+        for kv in info_col.split(';') {
+            if let Some(v) = kv.strip_prefix("DP=") {
+                info_dp = v.parse().ok();
+            } else if let Some(v) = kv.strip_prefix("VD=") {
+                info_vd = v.parse().ok();
+            } else if let Some(v) = kv.strip_prefix("END=") {
+                info_end = v.parse().ok();
+            } else if let Some(v) = kv.strip_prefix("SHIFT3=") {
+                info_shift3 = v.parse().ok();
+            } else if cfg.compat.nonnegative_subtracted_means {
+                if let Some(v) = kv
+                    .strip_prefix("QUAL=")
+                    .or_else(|| kv.strip_prefix("MQ="))
+                    .or_else(|| kv.strip_prefix("NM="))
+                {
+                    let fv: f64 = v.parse().unwrap_or(-1.0);
+                    assert!(
+                        fv.is_finite() && fv >= 0.0,
+                        "negative INFO metric {kv} on {fname}: {line}"
+                    );
+                }
+            }
+        }
+
+        if cfg.compat == COMPAT_OFF {
+            assert!(
+                pos >= 1,
+                "COMPAT_OFF VCF POS must be >= 1 on {fname}: {line}"
+            );
+            assert!(
+                qual_col >= 0,
+                "COMPAT_OFF VCF QUAL must be >= 0 on {fname}: {line}"
+            );
+            let dp_i = info_dp.expect("INFO/DP present");
+            let vd_i = info_vd.expect("INFO/VD present");
+            assert!(
+                0 <= vd_i && vd_i <= dp_i,
+                "COMPAT_OFF INFO VD ({vd_i}) > DP ({dp_i}) on {fname}: {line}"
+            );
+            assert!(
+                is_sanitized_vcf_alt(alt_col),
+                "COMPAT_OFF unsanitized ALT={alt_col} on {fname}: {line}"
+            );
+            let is_sym = is_symbolic_sv_alt_token(alt_col);
+            let want_end = is_sym && !cfg.vcf_no_end_explicit;
+            assert_eq!(
+                info_end.is_some(),
+                want_end,
+                "COMPAT_OFF INFO/END mismatch (alt={alt_col}) on {fname}: {line}"
+            );
+            if alt_col != "." && !alt_col.contains('<') && ref_col.len() == alt_col.len() {
+                assert_eq!(
+                    info_shift3,
+                    Some(0),
+                    "COMPAT_OFF SHIFT3 != 0 on equal-length allele on {fname}: {line}"
+                );
+            }
+
+            let dp_idx = fmt_keys.iter().position(|&k| k == "DP").expect("FORMAT/DP");
+            let vd_idx = fmt_keys.iter().position(|&k| k == "VD").expect("FORMAT/VD");
+            let ad_idx = fmt_keys.iter().position(|&k| k == "AD").expect("FORMAT/AD");
+            let rd_idx = fmt_keys.iter().position(|&k| k == "RD").expect("FORMAT/RD");
+            let ald_idx = fmt_keys
+                .iter()
+                .position(|&k| k == "ALD")
+                .expect("FORMAT/ALD");
+            let mq_idx = fmt_keys.iter().position(|&k| k == "MQ");
+            let nm_idx = fmt_keys.iter().position(|&k| k == "NM");
+            let qual_idx = fmt_keys.iter().position(|&k| k == "QUAL");
+
+            let n_alt = if alt_col == "." {
+                0usize
+            } else {
+                alt_col.split(',').count()
+            };
+            let mut any_vd_pos = false;
+            let mut any_gt_carrier = false;
+            for sample_col in &cols[9..] {
+                let s_vals: Vec<&str> = sample_col.split(':').collect();
+                let gt = s_vals[0];
+                let s_dp: i64 = s_vals[dp_idx].parse().expect("integer sample DP");
+                let s_vd: i64 = s_vals[vd_idx].parse().expect("integer sample VD");
+                let ad_vals: Vec<i64> = s_vals[ad_idx]
+                    .split(',')
+                    .map(|t| t.parse::<i64>().expect("integer AD"))
+                    .collect();
+                let rd_vals: Vec<i64> = s_vals[rd_idx]
+                    .split(',')
+                    .map(|t| t.parse::<i64>().expect("integer RD"))
+                    .collect();
+                let ald_vals: Vec<i64> = s_vals[ald_idx]
+                    .split(',')
+                    .map(|t| t.parse::<i64>().expect("integer ALD"))
+                    .collect();
+
+                assert_eq!(
+                    ad_vals.len(),
+                    1 + n_alt,
+                    "COMPAT_OFF Number=R AD length mismatch on {fname}: {line}"
+                );
+                assert!(
+                    0 <= s_vd && s_vd <= s_dp,
+                    "COMPAT_OFF sample VD ({s_vd}) > DP ({s_dp}) on {fname}: {line}"
+                );
+                let rd_sum: i64 = rd_vals.iter().copied().sum();
+                let alt_ad_sum: i64 = ad_vals[1..].iter().copied().sum();
+                assert_eq!(ad_vals[0], rd_sum, "AD[0] != RD sum on {fname}: {line}");
+                assert!(
+                    rd_sum + alt_ad_sum <= s_dp,
+                    "COMPAT_OFF RD ({rd_sum}) + sum(ALT_AD) ({alt_ad_sum}) > DP ({s_dp}) on {fname}: {line}"
+                );
+                assert_eq!(
+                    ald_vals.len(),
+                    2,
+                    "FORMAT/ALD must have 2 strand counts on {fname}: {line}"
+                );
+                assert!(
+                    ald_vals[0] >= 0 && ald_vals[1] >= 0 && ald_vals[0] + ald_vals[1] == s_vd,
+                    "COMPAT_OFF ALD[0]+ALD[1] != VD on {fname}: {line}"
+                );
+                assert!(
+                    matches!(gt, "0/0" | "0/1" | "1/1"),
+                    "COMPAT_OFF non-canonical GT={gt} on {fname}: {line}"
+                );
+                if alt_col == "." {
+                    assert_eq!(gt, "0/0", "dot-ALT GT != 0/0 on {fname}: {line}");
+                }
+                if s_vd > 0 {
+                    any_vd_pos = true;
+                }
+                if gt != "0/0" {
+                    any_gt_carrier = true;
+                }
+                for opt_idx in [qual_idx, mq_idx, nm_idx].into_iter().flatten() {
+                    let fv: f64 = s_vals[opt_idx].parse().unwrap_or(-1.0);
+                    assert!(
+                        fv.is_finite() && fv >= 0.0,
+                        "COMPAT_OFF negative sample metric at idx {opt_idx} on {fname}: {line}"
+                    );
+                }
+            }
+            if alt_col != "." && any_vd_pos {
+                assert!(
+                    any_gt_carrier,
+                    "COMPAT_OFF concrete ALT with VD>0 lacked carrier GT on {fname}: {line}"
+                );
+            }
+            assert!(
+                seen_full_rows.insert((
+                    chrom.to_string(),
+                    pos,
+                    info_end,
+                    ref_col.to_string(),
+                    alt_col.to_string(),
+                )),
+                "COMPAT_OFF duplicate (CHROM, POS, END, REF, ALT) row on {fname}: {line}"
+            );
+        }
+
+        let sym_end = is_symbolic_sv_alt_token(alt_col)
+            .then_some(info_end)
+            .flatten();
+        survival_keys.insert((
+            chrom.to_string(),
+            pos,
+            sym_end,
+            ref_col.to_string(),
+            alt_col.to_string(),
+        ));
+    }
+
+    assert!(has_chrom_hdr, "VCF output missing #CHROM header on {fname}");
+    if compat_non_default {
+        assert_eq!(
+            compat_hdr_count, 1,
+            "expected exactly one ##VarDictRustCompat=off header line on {fname}"
+        );
+    } else {
+        assert_eq!(
+            compat_hdr_count, 0,
+            "unexpected ##VarDictRustCompat=off under COMPAT_VARDICTJAVA_1_8_3 on {fname}"
+        );
+    }
+
+    survival_keys
+}
 
 fn xfail_registry() -> &'static HashMap<String, String> {
     static XFAILS: OnceLock<HashMap<String, String>> = OnceLock::new();
@@ -361,13 +747,80 @@ fn run_corpus_case(fname: &str) {
         );
     }
 
-    if SMOKE_VCF_COMPANIONS.contains(&fname) && !cfg.splice {
-        let vcf_out =
-            run_core_vcf(&cfg).unwrap_or_else(|e| panic!("VCF companion failed on {fname}: {e}"));
-        assert!(
-            vcf_out.contains("#CHROM"),
-            "VCF companion on {fname} must emit #CHROM header"
-        );
+    let paired = bam_arg.contains('|');
+    let total_bam_bytes: u64 = bam_arg
+        .split(['|', ':'])
+        .map(|p| fs::metadata(p).map_or(u64::MAX / 2, |m| m.len()))
+        .fold(0u64, u64::saturating_add);
+    let region_span = end_val
+        .parse::<u64>()
+        .unwrap_or(u64::MAX)
+        .saturating_sub(start_val.parse::<u64>().unwrap_or(0));
+    if !cfg.splice
+        && ((total_bam_bytes <= MAX_FAST_VCF_BAM_BYTES && region_span <= 10_000)
+            || SMOKE_VCF_COMPANIONS.contains(&fname))
+    {
+        for compat in [COMPAT_VARDICTJAVA_1_8_3, COMPAT_OFF] {
+            if compat == COMPAT_VARDICTJAVA_1_8_3 && paired && cfg.amplicon.is_some() {
+                let mut unsup_cfg = cfg.clone();
+                unsup_cfg.compat = compat;
+                assert!(
+                    matches!(run_core_vcf(&unsup_cfg), Err(VardictError::Unsupported(_))),
+                    "expected VardictError::Unsupported on paired -a VCF under COMPAT_VARDICTJAVA_1_8_3 for {fname}"
+                );
+                continue;
+            }
+
+            let mut single_vcf_cfg = cfg.clone();
+            single_vcf_cfg.compat = compat;
+            single_vcf_cfg.vcf_all_alleles = false;
+            let single_vcf_out = run_core_vcf(&single_vcf_cfg).unwrap_or_else(|e| {
+                panic!("VCF single-allele companion ({compat:?}) failed on {fname}: {e}")
+            });
+            let single_keys =
+                verify_vcf_output_and_collect_keys(fname, &single_vcf_out, paired, &single_vcf_cfg);
+
+            let mut all_vcf_cfg = single_vcf_cfg.clone();
+            all_vcf_cfg.vcf_all_alleles = true;
+            let all_vcf_out = run_core_vcf(&all_vcf_cfg).unwrap_or_else(|e| {
+                panic!("VCF --vcf-all-alleles companion ({compat:?}) failed on {fname}: {e}")
+            });
+            let all_keys =
+                verify_vcf_output_and_collect_keys(fname, &all_vcf_out, paired, &all_vcf_cfg);
+
+            assert!(
+                single_keys.is_subset(&all_keys),
+                "single-allele VCF keys not a subset of --vcf-all-alleles VCF keys ({compat:?}) on {fname}: single={single_keys:?}, all={all_keys:?}"
+            );
+
+            if compat == COMPAT_OFF {
+                let mut off_var_cfg = cfg.clone();
+                off_var_cfg.compat = COMPAT_OFF;
+                let off_var_str = run_core_var(&off_var_cfg)
+                    .unwrap_or_else(|e| panic!("COMPAT_OFF .var failed on {fname}: {e}"));
+                let expected_survival = collect_expected_var_survival_keys(
+                    &off_var_str,
+                    mode,
+                    &off_var_cfg,
+                    &COMPAT_OFF,
+                );
+                assert_eq!(
+                    all_keys, expected_survival,
+                    "COMPAT_OFF .var <-> --vcf-all-alleles survival mismatch on {fname}"
+                );
+            } else {
+                let expected_vj_survival = collect_expected_var_survival_keys(
+                    &actual_str,
+                    mode,
+                    &cfg,
+                    &COMPAT_VARDICTJAVA_1_8_3,
+                );
+                assert_eq!(
+                    all_keys, expected_vj_survival,
+                    "COMPAT_VARDICTJAVA_1_8_3 .var <-> --vcf-all-alleles survival mismatch on {fname}"
+                );
+            }
+        }
     }
 }
 

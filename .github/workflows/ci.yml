@@ -50,13 +50,15 @@ jobs:
         id: fmt-lint
         run: |
           t0=$SECONDS
-          echo "[$(date '+%H:%M:%S')] [Step 1/9] Running cargo fmt --check, lint_ratchet, 3-mode cargo clippy -D warnings, and bench compile..."
+          echo "[$(date '+%H:%M:%S')] [Step 1/9] Running cargo fmt --check, lint_ratchet, 3-mode cargo clippy -D warnings, bench compile, and fuzz target check..."
           cargo fmt --all -- --check
           bash harness/lint_ratchet.sh --scan-only
           cargo clippy --workspace --all-targets --no-default-features -- -D warnings
           cargo clippy --workspace --all-targets -- -D warnings
           cargo clippy --all-targets --all-features -- -D warnings
           cargo test --benches -p vardictrust-core
+          cargo check --manifest-path crates/vardictrust-core/fuzz/Cargo.toml --bins --target-dir target/fuzz-check
+          rm -rf target/fuzz-check
           echo "STEP1_S=$((SECONDS - t0))" >> "$GITHUB_ENV"
           echo "STEP1_STATUS=PASS" >> "$GITHUB_ENV"
       - name: 2. Build Instrumented Workspace & Test Targets

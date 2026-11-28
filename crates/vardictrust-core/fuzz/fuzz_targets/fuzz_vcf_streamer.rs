@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 
 use libfuzzer_sys::fuzz_target;
-use vardictrust_core::config::{AmpliconConcordance, Config, VcfThreshold};
+use vardictrust_core::config::{
+    AmpliconConcordance, CompatProfile, Config, VcfThreshold, COMPAT_OFF, COMPAT_SWITCH_COUNT,
+    COMPAT_VARDICTJAVA_1_8_3,
+};
 use vardictrust_core::output::table::{
     amplicon_row_into_compat, simple_row_into_compat, somatic_row_into_compat,
 };
@@ -121,10 +124,12 @@ impl<'a> ByteCursor<'a> {
     }
 
     /// Synthesizes an allele `<= 256` bytes covering empty/0 Perl-skip tokens, SNVs, indels,
-    /// symbolic SV alleles (`<DUP>`, `<INV>`, `<DEL>`, `<INS>`, `<dup-N>`), and UTF-8 tokens.
+    /// IUPAC ambiguity codes, symbolic SV alleles (`<DUP>`, `<INV>`, `<DEL>`, `<INS>`, `<dup-N>`),
+    /// and UTF-8 tokens.
     fn allele_256(&mut self) -> String {
         const BASES: &[u8; 5] = b"ACGTN";
-        match self.u8() % 12 {
+        const IUPAC: &[u8; 10] = b"RYMKSWBDHV";
+        match self.u8() % 13 {
             0 => String::new(),
             1 => "0".to_string(),
             2 => String::from(BASES[usize::from(self.u8()) % BASES.len()] as char),
@@ -133,7 +138,8 @@ impl<'a> ByteCursor<'a> {
             5 => "<DEL>".to_string(),
             6 => "<INS>".to_string(),
             7 => format!("AC<dup-{}>GT", (self.u8() % 20) + 1),
-            8..=10 => {
+            8 => String::from(IUPAC[usize::from(self.u8()) % IUPAC.len()] as char),
+            9..=11 => {
                 let len = ((usize::from(self.u8()) % MAX_ALLELE_BYTES) + 1).min(MAX_ALLELE_BYTES);
                 let mut s = String::with_capacity(len);
                 for _ in 0..len {
@@ -184,6 +190,78 @@ impl<'a> ByteCursor<'a> {
             }
         }
     }
+}
+
+fn sanitize_allele_sw26(raw: &str) -> String {
+    if raw.is_empty() || raw == "0" || raw == "." || is_symbolic_sv_alt(raw) {
+        return raw.to_string();
+    }
+    let bytes = raw.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'<' {
+            if let Some(rel_close) = bytes[i + 1..].iter().position(|&c| c == b'>') {
+                let inner = &raw[i + 1..i + 1 + rel_close];
+                if !inner.is_empty()
+                    && inner != "R,R"
+                    && inner
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+                {
+                    out.push_str(&raw[i..=i + 1 + rel_close]);
+                    i += rel_close + 2;
+                    continue;
+                }
+            }
+        }
+        let mapped = match b {
+            b'A' | b'a' | b'W' | b'w' | b'M' | b'm' | b'R' | b'r' | b'D' | b'd' | b'H' | b'h'
+            | b'V' | b'v' => 'A',
+            b'C' | b'c' | b'S' | b's' | b'Y' | b'y' | b'B' | b'b' => 'C',
+            b'G' | b'g' | b'K' | b'k' => 'G',
+            b'T' | b't' | b'U' | b'u' => 'T',
+            _ => 'N',
+        };
+        out.push(mapped);
+        i += 1;
+    }
+    out
+}
+
+fn is_valid_sanitized_alt(alt: &str) -> bool {
+    if alt == "." || is_symbolic_sv_alt(alt) {
+        return true;
+    }
+    let bytes = alt.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'<' {
+            if let Some(rel_close) = bytes[i + 1..].iter().position(|&c| c == b'>') {
+                let inner = &alt[i + 1..i + 1 + rel_close];
+                if !inner.is_empty()
+                    && inner != "R,R"
+                    && inner
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+                {
+                    i += rel_close + 2;
+                    continue;
+                }
+            }
+            return false;
+        }
+        if !matches!(b, b'A' | b'C' | b'G' | b'T' | b'N') {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 #[inline]
@@ -279,12 +357,23 @@ fn render_expected_info_sample(raw_sample: &str, sanitize: bool) -> String {
     buf
 }
 
+fn parse_nonneg_metric(kind: &str, label: &str, raw: &str, line: &str) {
+    let val: f64 = raw
+        .parse()
+        .unwrap_or_else(|e| panic!("{kind} invalid float {label}={raw:?}: {e} in {line:?}"));
+    assert!(
+        val.is_finite() && val >= 0.0,
+        "{kind} negative or non-finite {label}={raw:?} under nonnegative_subtracted_means: {line:?}"
+    );
+}
+
 fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: &Config) {
     assert_tsv_cols(kind, line, expected_cols);
     if line.starts_with('#') {
         return;
     }
     let cols: Vec<&str> = line.split('\t').collect();
+    let ref_col = cols.get(3).copied().unwrap_or("");
     let alt = cols.get(4).copied().unwrap_or("");
     let qual_str = cols.get(5).copied().unwrap_or("");
     let info = cols.get(7).copied().unwrap_or("");
@@ -309,6 +398,15 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
             .unwrap_or_else(|| panic!("{kind} missing {sample_prefix:?} after STATUS in {info:?}"))
     };
 
+    // Switch 26 (`sanitize_iupac_alt_alleles`): no IUPAC ambiguity codes outside `ACGTN`/`.`/`<...>`.
+    if config.compat.sanitize_iupac_alt_alleles {
+        assert!(
+            is_valid_sanitized_alt(alt),
+            "{kind} leaked unsanitized ALT={alt:?} under sanitize_iupac_alt_alleles: {line:?}"
+        );
+    }
+
+    // Switch 23 (`nonnegative_subtracted_means`): non-negative VCF QUAL, MQ, NM.
     if config.compat.nonnegative_subtracted_means {
         let qual: i32 = qual_str
             .parse()
@@ -317,14 +415,52 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
             qual >= 0,
             "{kind} negative QUAL={qual} under nonnegative_subtracted_means: {line:?}"
         );
+        if expected_cols == 10 {
+            for kv in info_after_sample.split(';') {
+                if let Some(v) = kv.strip_prefix("QUAL=") {
+                    parse_nonneg_metric(kind, "INFO/QUAL", v, line);
+                } else if let Some(v) = kv.strip_prefix("MQ=") {
+                    parse_nonneg_metric(kind, "INFO/MQ", v, line);
+                } else if let Some(v) = kv.strip_prefix("NM=") {
+                    parse_nonneg_metric(kind, "INFO/NM", v, line);
+                }
+            }
+        } else {
+            let fmt_fields: Vec<&str> = cols.get(8).copied().unwrap_or("").split(':').collect();
+            let qual_idx = fmt_fields.iter().position(|&k| k == "QUAL");
+            let mq_idx = fmt_fields.iter().position(|&k| k == "MQ");
+            let nm_idx = fmt_fields.iter().position(|&k| k == "NM");
+            for &s_col in &[9usize, 10usize] {
+                let sample_str = cols.get(s_col).copied().unwrap_or("");
+                let s_fields: Vec<&str> = sample_str.split(':').collect();
+                assert!(
+                    s_fields.len() >= fmt_fields.len(),
+                    "{kind} sample col {s_col} has fewer fields ({}) than FORMAT ({}): {line:?}",
+                    s_fields.len(),
+                    fmt_fields.len()
+                );
+                let shift = s_fields.len() - fmt_fields.len();
+                if let Some(q_v) = qual_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                    parse_nonneg_metric(kind, "FORMAT/QUAL", q_v, line);
+                }
+                if let Some(mq_v) = mq_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                    parse_nonneg_metric(kind, "FORMAT/MQ", mq_v, line);
+                }
+                if let Some(nm_v) = nm_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                    parse_nonneg_metric(kind, "FORMAT/NM", nm_v, line);
+                }
+            }
+        }
     }
 
+    // Switch 30 (`strict_vcf_ad_number_r`): `len(AD) == 1 + n_alt` (`1` on `.`, `2` on single concrete/SV ALT).
     if config.compat.strict_vcf_ad_number_r {
-        let expected_ad_len = if expected_cols == 10 && alt == "." {
-            1usize
+        let n_alt = if alt == "." {
+            0usize
         } else {
-            2usize
+            alt.split(',').count()
         };
+        let expected_ad_len = 1 + n_alt;
         let ad_idx = if expected_cols == 10 { 3usize } else { 5usize };
         let sample_indices: &[usize] = if expected_cols == 10 { &[9] } else { &[9, 10] };
         for &s_col in sample_indices {
@@ -345,14 +481,45 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
         }
     }
 
-    if config.compat.omit_nonsv_vcf_end && (!is_symbolic_sv_alt(alt) || config.vcf_no_end_explicit)
+    // Switch 31 (`omit_nonsv_vcf_end`): `END` iff symbolic SV unless `--no-end` (`vcf_no_end_explicit`).
+    if config.compat.omit_nonsv_vcf_end {
+        let has_end = info_after_sample
+            .split(';')
+            .any(|kv| kv.starts_with("END="));
+        if expected_cols == 10 || config.compat.canonical_sv_vcf_anchoring {
+            let want_end = is_symbolic_sv_alt(alt) && !config.vcf_no_end_explicit;
+            assert_eq!(
+                has_end, want_end,
+                "{kind} INFO/END mismatch under omit_nonsv_vcf_end (alt={alt:?}, no_end={}): {info:?}",
+                config.vcf_no_end_explicit
+            );
+        } else if !is_symbolic_sv_alt(alt) || config.vcf_no_end_explicit {
+            assert!(
+                !has_end,
+                "{kind} emitted non-SV or --no-end INFO/END under omit_nonsv_vcf_end (alt={alt:?}): {info:?}"
+            );
+        }
+    }
+
+    // Switch 38 (`indel_only_shift3`): `SHIFT3 == 0` whenever `|REF| == |ALT|` (non-dot, non-symbolic).
+    if config.compat.indel_only_shift3
+        && !ref_col.is_empty()
+        && alt != "."
+        && !alt.contains('<')
+        && ref_col.len() == alt.len()
     {
-        assert!(
-            !info_after_sample.split(';').any(|kv| kv.starts_with("END=")),
-            "{kind} emitted non-SV or --no-end INFO/END under omit_nonsv_vcf_end (alt={alt:?}): {info:?}"
+        let shift3_val: i32 = info_after_sample
+            .split(';')
+            .find_map(|kv| kv.strip_prefix("SHIFT3="))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{kind} missing integer SHIFT3= in {info:?}"));
+        assert_eq!(
+            shift3_val, 0,
+            "{kind} non-zero SHIFT3={shift3_val} on equal-length allele ref={ref_col:?} alt={alt:?}: {line:?}"
         );
     }
 
+    // Switch 32 (`canonical_vcf_gt`): sorted unphased `GT` (`0/0`, `0/1`, `1/1`, never `1/0`).
     if config.compat.canonical_vcf_gt {
         let sample_indices: &[usize] = if expected_cols == 10 { &[9] } else { &[9, 10] };
         let mut any_vd_pos = false;
@@ -487,7 +654,7 @@ fn assert_vcf_header(
     kind: &str,
     hdr_bytes: &[u8],
     expected_chrom_cols: usize,
-    compat_off: bool,
+    compat_non_default: bool,
     preset: Option<vardictrust_core::config::WorkflowPreset>,
 ) {
     let hdr_str = std::str::from_utf8(hdr_bytes).expect("VCF header must be valid UTF-8");
@@ -526,14 +693,15 @@ fn assert_vcf_header(
         chrom_count, 1,
         "{kind} must contain exactly one #CHROM line, got {chrom_count}"
     );
-    if compat_off {
+    // S-08 (PR #168): `##VarDictRustCompat=off` is emitted iff `compat != COMPAT_VARDICTJAVA_1_8_3`.
+    if compat_non_default {
         assert_eq!(
             lines
                 .iter()
                 .filter(|&&l| l == "##VarDictRustCompat=off")
                 .count(),
             1,
-            "{kind} must emit ##VarDictRustCompat=off once when compat=off"
+            "{kind} must emit ##VarDictRustCompat=off once when compat != COMPAT_VARDICTJAVA_1_8_3"
         );
         assert_eq!(lines.get(2), Some(&"##VarDictRustCompat=off"));
         if let Some(p) = preset {
@@ -556,11 +724,11 @@ fn assert_vcf_header(
     } else {
         assert!(
             !lines.iter().any(|l| l.starts_with("##VarDictRustCompat")),
-            "{kind} must not emit ##VarDictRustCompat under default compat"
+            "{kind} must not emit ##VarDictRustCompat under COMPAT_VARDICTJAVA_1_8_3"
         );
         assert!(
             !lines.iter().any(|l| l.starts_with("##VarDictRustPreset=")),
-            "{kind} must not emit ##VarDictRustPreset= under default compat"
+            "{kind} must not emit ##VarDictRustPreset= under COMPAT_VARDICTJAVA_1_8_3"
         );
     }
 }
@@ -570,6 +738,7 @@ fn synth_variant(
     pos_override: Option<i32>,
     allow_unimodal: bool,
     unimodal_used: &mut bool,
+    compat: &CompatProfile,
 ) -> Variant {
     let mut v = Variant::new();
     let count_mod = MAX_NORMAL_FISHER_COUNT + 1;
@@ -611,8 +780,6 @@ fn synth_variant(
             v.fwd = i32::from(cur.u16() % count_mod);
             v.rev = i32::from(cur.u16() % count_mod);
             v.pos_coverage = i32::from(cur.u16() % count_mod);
-            // Keep tref = clamp(total_pos_cov - pos_coverage, 0, ..) in 0..=2048
-            // while also exercising VD > DP (total_pos_cov < pos_coverage).
             let delta = i32::from(cur.u16() % (MAX_NORMAL_FISHER_COUNT + 257)) - 256;
             v.total_pos_cov = v.pos_coverage.saturating_add(delta).max(0);
         }
@@ -635,6 +802,13 @@ fn synth_variant(
     } else {
         cur.allele_256()
     };
+    if compat.sanitize_iupac_alt_alleles {
+        v.ref_allele = sanitize_allele_sw26(&v.ref_allele);
+        v.var_allele = sanitize_allele_sw26(&v.var_allele);
+        if v.var_allele.is_empty() || v.var_allele == "0" {
+            v.var_allele = "N".to_string();
+        }
+    }
     debug_assert!(v.ref_allele.len() <= 256 && v.var_allele.len() <= 256);
 
     v.bias = match cur.u8() % 7 {
@@ -644,7 +818,7 @@ fn synth_variant(
         3 => "2;2".to_string(),
         4 => "1;2".to_string(),
         5 => "0;2".to_string(),
-        _ => cur.utf8_capped(12, false),
+        _ => cur.utf8_capped(12, false).replace(':', "_"),
     };
     v.var_type = match cur.u8() % 9 {
         0 => String::new(),
@@ -704,6 +878,24 @@ fn synth_variant(
     v.crispr = cur.i32();
     v.null_record = (cur.u8() & 7) == 0;
     v.debug = cur.utf8_capped(24, false);
+
+    // Mirror upstream `ToVarsBuilder` / `Variant::normalize_postprocess` invariants on direct
+    // VCF formatter inputs when the corresponding switches are active (while Part 6 below
+    // exercises `ToVarsBuilder` -> `simple_post_process` -> `SingleRecordStreamer` on raw inputs).
+    if compat.nonnegative_subtracted_means {
+        let clamp_nonneg = |x: f64| if x.is_finite() && x > 0.0 { x } else { 0.0 };
+        v.mean_position = clamp_nonneg(v.mean_position);
+        v.mean_quality = clamp_nonneg(v.mean_quality);
+        v.mean_mapping_quality = clamp_nonneg(v.mean_mapping_quality);
+        v.nm = clamp_nonneg(v.nm);
+    }
+    if compat.indel_only_shift3
+        && !v.ref_allele.is_empty()
+        && !v.var_allele.contains('<')
+        && v.ref_allele.len() == v.var_allele.len()
+    {
+        v.shift3 = 0;
+    }
     v
 }
 
@@ -719,36 +911,22 @@ fuzz_target!(|data: &[u8]| {
     let enable_unimodal_once = (mode_bits & 0x3f) == 0x3f;
     let unimodal_target_row = usize::from(cur.u8()) % num_rows;
 
+    // Exercise pure `COMPAT_VARDICTJAVA_1_8_3`, pure `COMPAT_OFF`, single-switch, leave-one-out,
+    // and full 38-bit `CompatProfile::from_mask(mask64)` across all 38 switches (`0..38`).
     let fuzz_compat = {
-        let mut compat = if cur.bool() {
-            vardictrust_core::config::COMPAT_OFF
-        } else {
-            vardictrust_core::config::COMPAT_VARDICTJAVA_1_8_3
-        };
-        let w3_bits = cur.u8();
-        if (w3_bits & 1) != 0 {
-            compat.reconcile_vd_dp = (w3_bits & 2) != 0;
-            compat.coordinate_sorted_vars = (w3_bits & 4) != 0;
-            compat.exact_35_overlap = (w3_bits & 8) != 0;
-            compat.exact_cigar_dlen_match = (w3_bits & 16) != 0;
+        let sel = cur.u8();
+        let mask64 = cur.u64();
+        match sel % 6 {
+            0 => COMPAT_VARDICTJAVA_1_8_3,
+            1 => COMPAT_OFF,
+            2 => CompatProfile::only_switch((mask64 as usize) % COMPAT_SWITCH_COUNT)
+                .unwrap_or(COMPAT_OFF),
+            3 => CompatProfile::without_switch((mask64 as usize) % COMPAT_SWITCH_COUNT)
+                .unwrap_or(COMPAT_OFF),
+            _ => CompatProfile::from_mask(mask64),
         }
-        let w4_bits = cur.u8();
-        if (w4_bits & 1) != 0 {
-            compat.somatic_continue_after_bad_var = (w4_bits & 2) != 0;
-            compat.adaptor_all_consensus_dirs = (w4_bits & 4) != 0;
-            compat.canonical_sv_vcf_anchoring = (w4_bits & 8) != 0;
-            compat.paired_somatic_amplicon = (w4_bits & 16) != 0;
-        }
-        let w5_bits = cur.u8();
-        if (w5_bits & 1) != 0 {
-            compat.nonnegative_subtracted_means = (w5_bits & 2) != 0;
-            compat.strict_vcf_ad_number_r = (w5_bits & 4) != 0;
-            compat.omit_nonsv_vcf_end = (w5_bits & 8) != 0;
-            compat.canonical_vcf_gt = (w5_bits & 16) != 0;
-        }
-        compat
     };
-    let fuzz_preset = if fuzz_compat.target == vardictrust_core::config::CompatTarget::Off {
+    let fuzz_preset = if fuzz_compat != COMPAT_VARDICTJAVA_1_8_3 {
         use vardictrust_core::config::WorkflowPreset;
         match cur.u8() % 5 {
             0 => None,
@@ -768,6 +946,7 @@ fuzz_target!(|data: &[u8]| {
         omit_end_tag: (mode_bits & 16) != 0,
         vcf_no_end_explicit: cur.bool(),
         vcf_pstd_filter: (mode_bits & 32) != 0,
+        pileup: (mode_bits & 64) != 0,
         af_threshold_truthy_zero: cur.bool(),
         af_threshold: cur.metric_f64(0.5),
         af_threshold_raw: match cur.u8() % 6 {
@@ -887,6 +1066,7 @@ fuzz_target!(|data: &[u8]| {
             pos_override,
             allow_unimodal_here,
             &mut unimodal_used,
+            &config.compat,
         );
         let sv_str = v1.sv.clone();
 
@@ -1051,12 +1231,23 @@ fuzz_target!(|data: &[u8]| {
         });
 
         // 4. Somatic .var formatters (exact 55 and 61 columns) & Paired VCF streamer.
-        //    Normal variant `v2` never enables unimodal (`false`) so `fisher2` and `fisher_total`
-        //    always have support length <= 4097.
         let v2_opt = if cur.bool() {
-            let mut v2 = synth_variant(&mut cur, Some(v1.start_pos), false, &mut unimodal_used);
+            let mut v2 = synth_variant(
+                &mut cur,
+                Some(v1.start_pos),
+                false,
+                &mut unimodal_used,
+                &config.compat,
+            );
             v2.ref_allele = v1.ref_allele.clone();
             v2.var_allele = v1.var_allele.clone();
+            if config.compat.indel_only_shift3
+                && !v2.ref_allele.is_empty()
+                && !v2.var_allele.contains('<')
+                && v2.ref_allele.len() == v2.var_allele.len()
+            {
+                v2.shift3 = 0;
+            }
             Some(v2)
         } else {
             None
@@ -1198,7 +1389,8 @@ fuzz_target!(|data: &[u8]| {
         };
     }
 
-    let compat_off = hdr_cfg.compat.target == vardictrust_core::config::CompatTarget::Off;
+    // S-08: `##VarDictRustCompat=off` is emitted iff `compat != COMPAT_VARDICTJAVA_1_8_3`.
+    let compat_non_default = hdr_cfg.compat != COMPAT_VARDICTJAVA_1_8_3;
     let mut hdr_buf: Vec<u8> = Vec::with_capacity(4096);
     if vardictrust_core::output::vcf::print_vcf_header(&mut hdr_buf, &hdr_cfg, &fuzz_chrom_lengths)
         .is_ok()
@@ -1207,7 +1399,7 @@ fuzz_target!(|data: &[u8]| {
             "single_vcf_header",
             &hdr_buf,
             10,
-            compat_off,
+            compat_non_default,
             hdr_cfg.preset,
         );
     }
@@ -1223,26 +1415,33 @@ fuzz_target!(|data: &[u8]| {
             "paired_vcf_header",
             &hdr_buf,
             11,
-            compat_off,
+            compat_non_default,
             hdr_cfg.preset,
         );
     }
 
-    // 6. Wave-3 `CompatProfile` (`reconcile_vd_dp` & `coordinate_sorted_vars`) end-to-end
-    //    `ToVarsBuilder` -> `simple_post_process` -> `simple_row_into_compat` invariants.
+    // 6. End-to-end `ToVarsBuilder` -> `simple_post_process` -> `SingleRecordStreamer` +
+    //    `simple_row_into_compat` invariants across all 38 `CompatProfile` switches (injecting
+    //    real IUPAC ambiguity alleles, homopolymer runs for `SHIFT3`, and negative means).
     {
         let span_u32 = reg_end.saturating_sub(reg_start).clamp(16, 512);
         let eff_end = reg_start.saturating_add(span_u32);
-        let w3_region = Region {
+        let w_region = Region {
             chr: "chr1".to_string(),
             start: Pos1(reg_start),
             end: Pos1(eff_end),
-            gene: "W3_FUZZ".to_string(),
+            gene: "W_FUZZ".to_string(),
             amplicon: None,
         };
         let ref_len = (span_u32 as usize).saturating_add(1);
         let ref_seq: Vec<u8> = (0..ref_len)
-            .map(|i| b"ACGT"[(usize::from(cur.u8()) + i) % 4])
+            .map(|i| {
+                if i % 16 < 6 {
+                    b'A' // homopolymer run to trigger non-zero MSI / raw shift3
+                } else {
+                    b"ACGT"[(usize::from(cur.u8()) + i) % 4]
+                }
+            })
             .collect();
         let mut reference = vardictrust_core::reference::Reference::new();
         reference
@@ -1253,11 +1452,12 @@ fuzz_target!(|data: &[u8]| {
                 sequence_end: eff_end,
             });
         reference.region_sequences.push(ref_seq.clone());
-        let mut w3_chr_lengths = HashMap::with_capacity(1);
-        w3_chr_lengths.insert("chr1".to_string(), eff_end as usize);
+        let mut w_chr_lengths = HashMap::with_capacity(1);
+        w_chr_lengths.insert("chr1".to_string(), eff_end as usize);
 
         let mut vd = vardictrust_core::variations::VariationData::new();
         let n_sites = ((usize::from(cur.u8()) % 8) + 2).min(8);
+        const ALT_POOL: &[char; 8] = &['A', 'C', 'G', 'T', 'R', 'Y', 'W', 'S'];
         for _ in 0..n_sites {
             let off = u32::from(cur.u16()) % (span_u32.max(1));
             let pos_i32 = i32::try_from(reg_start.saturating_add(off)).unwrap_or(1);
@@ -1265,11 +1465,17 @@ fuzz_target!(|data: &[u8]| {
             vd.ref_coverage.insert(pos_i32, raw_dp);
 
             let ref_ch = ref_seq.get(off as usize).copied().unwrap_or(b'A') as char;
-            let alt_ch = match ref_ch {
-                'A' => 'G',
-                'G' => 'C',
-                'C' => 'T',
-                _ => 'A',
+            let alt_ch = {
+                let cand = ALT_POOL[usize::from(cur.u8()) % ALT_POOL.len()];
+                if cand == ref_ch {
+                    if ref_ch == 'A' {
+                        'G'
+                    } else {
+                        'A'
+                    }
+                } else {
+                    cand
+                }
             };
             let mut vmap = vardictrust_core::variations::VariationMap::new();
             let mut ref_var = vardictrust_core::variations::Variation::new();
@@ -1278,7 +1484,7 @@ fuzz_target!(|data: &[u8]| {
             ref_var.cnt = rfwd + rrev;
             ref_var.fwd = rfwd;
             ref_var.rev = rrev;
-            ref_var.hicnt = i32::from(cur.u8() % 20) - 2; // includes -1/-2 underflow edge cases
+            ref_var.hicnt = i32::from(cur.u8() % 20) - 2;
             ref_var.locnt = i32::from(cur.u8() % 4);
             ref_var.extracnt = i32::from(cur.u8() % 20);
             ref_var.pmean = f64::from(ref_var.cnt.max(1) * 15);
@@ -1294,26 +1500,33 @@ fuzz_target!(|data: &[u8]| {
             alt_var.rev = arev;
             alt_var.hicnt = alt_var.cnt;
             alt_var.extracnt = i32::from(cur.u8() % (alt_var.cnt as u8).max(1));
-            alt_var.pmean = f64::from(alt_var.cnt * 20);
-            alt_var.qmean = f64::from(alt_var.cnt * 36);
-            alt_var.mqmean = f64::from(alt_var.cnt * 60);
+            if (cur.u8() & 7) == 0 {
+                alt_var.pmean = -5.0;
+                alt_var.qmean = -10.0;
+                alt_var.mqmean = -3.0;
+                alt_var.nm = -2.0;
+            } else {
+                alt_var.pmean = f64::from(alt_var.cnt * 20);
+                alt_var.qmean = f64::from(alt_var.cnt * 36);
+                alt_var.mqmean = f64::from(alt_var.cnt * 60);
+            }
             alt_var.pstd = true;
             alt_var.qstd = true;
             vmap.map.insert(alt_ch.to_string(), alt_var);
             vd.non_insertion_variants.insert(pos_i32, vmap);
         }
 
-        let mut w3_cfg = config.clone();
-        w3_cfg.emit_intermediate = true;
-        w3_cfg.pileup = cur.bool();
-        if w3_cfg.compat.coordinate_sorted_vars {
-            w3_cfg.compat.suppress_pileup_sentinels = true;
+        let mut w_cfg = config.clone();
+        w_cfg.emit_intermediate = true;
+        w_cfg.pileup = cur.bool();
+        if w_cfg.compat.coordinate_sorted_vars {
+            w_cfg.compat.suppress_pileup_sentinels = true;
         }
         let builder = vardictrust_core::tovars::ToVarsBuilder::new(
             &reference,
-            &w3_region,
-            &w3_chr_lengths,
-            &w3_cfg,
+            &w_region,
+            &w_chr_lengths,
+            &w_cfg,
         );
         let aligned: vardictrust_core::javamap::JavaHashMap<i32, Vars> =
             builder.build_aligned_variants(&vd);
@@ -1342,7 +1555,7 @@ fuzz_target!(|data: &[u8]| {
             assert!(0.0 <= v.hi_freq && v.hi_freq <= 1.0);
         };
 
-        if w3_cfg.compat.reconcile_vd_dp {
+        if w_cfg.compat.reconcile_vd_dp || w_cfg.compat.reconcile_rd_vd_dp {
             for (_, vars) in aligned.iter() {
                 for v in &vars.variants {
                     check_reconciled(v, false);
@@ -1353,23 +1566,24 @@ fuzz_target!(|data: &[u8]| {
             }
         }
 
-        let emitted = simple_post_process(&w3_cfg, &w3_region, &aligned, &vd.splice);
+        let emitted = simple_post_process(&w_cfg, &w_region, &aligned, &vd.splice);
         let mut prev_pos = i32::MIN;
+        let mut e2e_streamer = SingleRecordStreamer::from_config(&w_cfg);
         for v in &emitted {
-            if w3_cfg.compat.reconcile_vd_dp {
+            if w_cfg.compat.reconcile_vd_dp || w_cfg.compat.reconcile_rd_vd_dp {
                 check_reconciled(v, v.var_type.is_empty());
             }
             simple_row_into_compat(
                 &mut table_buf,
                 v,
-                &w3_region,
-                "W3_SMPL",
+                &w_region,
+                "W_SMPL",
                 &v.sv,
                 false,
-                w3_cfg.compat.exact_binary_half_even,
+                w_cfg.compat.exact_binary_half_even,
             );
-            assert_tsv_cols("w3_simple_36", &table_buf, 36);
-            if w3_cfg.compat.coordinate_sorted_vars {
+            assert_tsv_cols("w_simple_36", &table_buf, 36);
+            if w_cfg.compat.coordinate_sorted_vars {
                 let col_pos: i32 = table_buf
                     .split('\t')
                     .nth(3)
@@ -1381,6 +1595,15 @@ fuzz_target!(|data: &[u8]| {
                 );
                 prev_pos = col_pos;
             }
+            let e2e_ev = build_single_vcf_event(&mut vcf_scratch, v, &w_region, &w_cfg, None);
+            let _ = e2e_streamer.push_event(e2e_ev, |line| {
+                assert_vcf_data_record("e2e_single_vcf", line, 10, &w_cfg);
+                Ok(())
+            });
         }
+        let _ = e2e_streamer.finish(|line| {
+            assert_vcf_data_record("e2e_single_vcf_finish", line, 10, &w_cfg);
+            Ok(())
+        });
     }
 });

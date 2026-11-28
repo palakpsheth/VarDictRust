@@ -2027,9 +2027,14 @@ pub struct VariationData {
     /// pre-stamp data) fails open — the gate never fires. Metadata only:
     /// never serialized or emitted.
     pub owning_range: Option<(crate::types::Pos1, crate::types::Pos1)>,
-    /// Parent BED region start when running inside a split tile (`None` on untiled runs),
-    /// allowing `realignlgdel` to distinguish internal split-tile boundaries from BED starts.
+    /// Parent BED region start on split sub-tiles (`None` on untiled runs).
+    ///
+    /// Allows `realignlgdel` and `find_sv` to distinguish internal split-tile boundaries from BED starts.
     pub split_parent_start: Option<crate::types::Pos1>,
+    /// Parent BED region end on split sub-tiles (`None` on untiled runs).
+    ///
+    /// Bounds split-tile SV endpoint hydration to `[split_parent_start, split_parent_end]`.
+    pub split_parent_end: Option<crate::types::Pos1>,
     /// Positions added by mate-window `partial_pipeline` merges (G3).
     /// Keys already present before the merge are native, never planted.
     /// Metadata only.
