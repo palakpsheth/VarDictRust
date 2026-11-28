@@ -1,11 +1,34 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
+use noodles::sam::alignment::record::cigar::op::Kind as CigarKind;
 use vardictrust_core::cigar::modify::CigarModifier;
 use vardictrust_core::cigar::parse::query_consumed_len;
 use vardictrust_core::cigar::parse_cigar;
-use vardictrust_core::config::{Config, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
+use vardictrust_core::config::{
+    CompatProfile, Config, COMPAT_OFF, COMPAT_SWITCH_COUNT, COMPAT_VARDICTJAVA_1_8_3,
+};
 use vardictrust_core::reference::SeedMap;
+
+fn decode_compat_profile(mode: u8, mask_bytes: &[u8]) -> CompatProfile {
+    let mut raw = [0u8; 8];
+    for (i, slot) in raw.iter_mut().enumerate() {
+        *slot = mask_bytes
+            .get(i % mask_bytes.len().max(1))
+            .copied()
+            .unwrap_or(0);
+    }
+    let mask64 = u64::from_le_bytes(raw);
+    match mode % 6 {
+        0 => COMPAT_VARDICTJAVA_1_8_3,
+        1 => COMPAT_OFF,
+        2 => CompatProfile::only_switch((mask64 as usize) % COMPAT_SWITCH_COUNT)
+            .unwrap_or(COMPAT_OFF),
+        3 => CompatProfile::without_switch((mask64 as usize) % COMPAT_SWITCH_COUNT)
+            .unwrap_or(COMPAT_OFF),
+        _ => CompatProfile::from_mask(mask64),
+    }
+}
 
 fuzz_target!(|data: &[u8]| {
     if data.len() < 12 {
@@ -18,8 +41,8 @@ fuzz_target!(|data: &[u8]| {
     } else {
         i32::from(data[2]).clamp(21, 300)
     };
-    let compat_off = (data[3] & 0x80) != 0;
-    let offset = i32::from(data[3] & 0x7f).clamp(1, 64);
+    let compat_mode = data[3] >> 5;
+    let offset = i32::from(data[3] & 0x1f).clamp(1, 64);
 
     let payload = &data[4..];
     let third = payload.len() / 3;
@@ -48,11 +71,7 @@ fuzz_target!(|data: &[u8]| {
         .collect();
 
     let mut config = Config::default();
-    config.compat = if compat_off {
-        COMPAT_OFF
-    } else {
-        COMPAT_VARDICTJAVA_1_8_3
-    };
+    config.compat = decode_compat_profile(compat_mode, &data[4..12]);
 
     let mut seed = SeedMap::new();
     let seq_start = offset as u32;
@@ -97,9 +116,22 @@ fuzz_target!(|data: &[u8]| {
     };
     let mut valid_cigar = String::new();
     let mut qlen: usize = 0;
-    for chunk in payload[2 * third..].chunks(2).take(12) {
+    // Only place `H` at outer ends (`SAMv1 §1.4.6`) while keeping `P` and `=X` interior-capable.
+    let inner_ops: &[u8] = if config.compat.eqx_cigar_read_length {
+        b"MIDNSP=X"
+    } else {
+        b"MIDNSP"
+    };
+    let chunks: Vec<&[u8]> = payload[2 * third..].chunks(2).take(12).collect();
+    let n_chunks = chunks.len();
+    for (c_idx, chunk) in chunks.into_iter().enumerate() {
         let len = usize::from(chunk[0] % 80).max(1);
-        let op_byte = sam_ops[(chunk.get(1).copied().unwrap_or(0) as usize) % sam_ops.len()];
+        let pool = if c_idx == 0 || c_idx + 1 == n_chunks {
+            sam_ops
+        } else {
+            inner_ops
+        };
+        let op_byte = pool[(chunk.get(1).copied().unwrap_or(0) as usize) % pool.len()];
         let consumes_query = matches!(op_byte, b'M' | b'I' | b'S' | b'=' | b'X');
         if consumes_query {
             if qlen.saturating_add(len) > 4096 {
@@ -139,11 +171,19 @@ fuzz_target!(|data: &[u8]| {
                 "modify_cigar emitted non-positive op length in {}",
                 modified.cigar
             );
+            if config.compat.cigar_strip_outer_hard_clips {
+                assert!(
+                    !matches!(parsed.first(), Some(&(_, CigarKind::HardClip)))
+                        && !matches!(parsed.last(), Some(&(_, CigarKind::HardClip))),
+                    "cigar_strip_outer_hard_clips left outer H in {}",
+                    modified.cigar
+                );
+            }
             if config.compat.cigar_homopolymer_merge {
                 assert_eq!(
                     query_consumed_len(&parsed),
                     modified.query_seq.len() as u64,
-                    "COMPAT_OFF modify_cigar must conserve query consumption: {}",
+                    "cigar_homopolymer_merge modify_cigar must conserve query consumption: {}",
                     modified.cigar
                 );
             }

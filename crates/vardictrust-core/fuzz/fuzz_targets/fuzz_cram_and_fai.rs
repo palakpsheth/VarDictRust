@@ -7,7 +7,9 @@ use std::sync::OnceLock;
 
 use libfuzzer_sys::fuzz_target;
 use vardictrust_core::bam::{clear_bam_caches, query_region_iter, RecordPreprocessor, SamRecord};
-use vardictrust_core::config::Config;
+use vardictrust_core::config::{
+    CompatProfile, Config, COMPAT_OFF, COMPAT_SWITCH_COUNT, COMPAT_VARDICTJAVA_1_8_3,
+};
 use vardictrust_core::reference::fetch_subsequence;
 use vardictrust_core::run_with_writer;
 use vardictrust_core::types::{Pos0, Pos1};
@@ -110,7 +112,8 @@ fn init_templates() -> Option<FuzzTemplates> {
     let bgzf_gzi = fs::read(&gzi_path).ok()?;
     let _ = fs::remove_file(&gzi_path);
 
-    // Build a minimal valid BAM + BAI and CRAM + CRAI on `chr1`.
+    // Build a minimal valid BAM + BAI and CRAM + CRAI on `chr1`, including `=`/`X` (`Switch 9`)
+    // and outer `H` hard-clip (`Switch 22`) CIGAR operators.
     let nz_len = std::num::NonZeroUsize::new(ref_len)?;
     let rs = HeaderMap::<RefSeqMap>::builder()
         .set_length(nz_len)
@@ -119,7 +122,12 @@ fn init_templates() -> Option<FuzzTemplates> {
     let header = Header::builder().add_reference_sequence("chr1", rs).build();
 
     let mut records = Vec::new();
-    for (idx, start_1) in [(0usize, 40usize), (1usize, 140usize), (2usize, 240usize)] {
+    for (idx, start_1) in [
+        (0usize, 40usize),
+        (1usize, 140usize),
+        (2usize, 240usize),
+        (3usize, 320usize),
+    ] {
         let read_len = 40usize;
         let mut seq = ref_seq[start_1 - 1..start_1 - 1 + read_len].to_vec();
         seq[10] = if seq[10] == b'A' { b'G' } else { b'A' };
@@ -134,10 +142,19 @@ fn init_templates() -> Option<FuzzTemplates> {
             ]
             .into_iter()
             .collect(),
-            _ => [
+            2 => [
                 Op::new(Kind::Match, 20),
                 Op::new(Kind::Skip, 20),
                 Op::new(Kind::Match, 20),
+            ]
+            .into_iter()
+            .collect(),
+            _ => [
+                Op::new(Kind::HardClip, 5),
+                Op::new(Kind::SequenceMatch, 10),
+                Op::new(Kind::SequenceMismatch, 1),
+                Op::new(Kind::SequenceMatch, 29),
+                Op::new(Kind::HardClip, 3),
             ]
             .into_iter()
             .collect(),
@@ -320,6 +337,21 @@ fn bounded_pos1_pair(b0: u8, b1: u8, b2: u8, b3: u8, mode: u8) -> (u32, u32) {
     }
 }
 
+fn decode_compat_from_slice(selector: u8, bytes: &[u8]) -> CompatProfile {
+    let mut raw = [0u8; 8];
+    for (i, slot) in raw.iter_mut().enumerate() {
+        *slot = bytes.get(i % bytes.len().max(1)).copied().unwrap_or(0);
+    }
+    let mask64 = u64::from_le_bytes(raw);
+    match (selector >> 4) % 5 {
+        0 => COMPAT_VARDICTJAVA_1_8_3,
+        1 => COMPAT_OFF,
+        2 => CompatProfile::only_switch((mask64 as usize) % COMPAT_SWITCH_COUNT)
+            .unwrap_or(COMPAT_OFF),
+        _ => CompatProfile::from_mask(mask64),
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "fuzz harness helper threads independent region and mode byte controls"
@@ -333,6 +365,7 @@ fn exercise_alignment_and_runner(
     end_1: u32,
     ctrl: u8,
     sub_mode: u8,
+    compat: CompatProfile,
 ) {
     debug_assert!(end_1.saturating_sub(start_1) <= MAX_REGION_SPAN_BP);
 
@@ -347,9 +380,11 @@ fn exercise_alignment_and_runner(
         splice: (ctrl & 16) != 0,
         emit_intermediate: (ctrl & 32) != 0,
         fisher: (ctrl & 64) != 0,
+        compat,
         ..Default::default()
     };
     config.debug = (sub_mode & 0x40) != 0;
+    config.vcf_all_alleles = (sub_mode & 0x80) != 0;
 
     let q_start = Pos1(start_1.max(1)).to_zero_based();
     let q_end_val = q_start.0.saturating_add(end_1.saturating_sub(start_1));
@@ -383,7 +418,10 @@ fn exercise_alignment_and_runner(
     let reg_e = reg_s.saturating_add(end_1.saturating_sub(start_1).min(MAX_REGION_SPAN_BP));
     debug_assert!(reg_e.saturating_sub(reg_s) <= MAX_REGION_SPAN_BP);
 
-    if (ctrl & 3) == 3 && !config.bam.contains('|') {
+    let allow_amplicon = !config.bam.contains('|')
+        || config.compat.paired_somatic_amplicon
+        || config.emit_intermediate;
+    if (ctrl & 3) == 3 && allow_amplicon {
         let ins_s = reg_s.saturating_add(2).min(reg_e);
         let ins_e = reg_e.saturating_sub(2).max(ins_s);
         let bed_line = format!("{chr}\t{reg_s}\t{reg_e}\tGENE1\t0\t+\t{ins_s}\t{ins_e}\n");
@@ -430,6 +468,8 @@ fuzz_target!(|data: &[u8]| {
     debug_assert!(end_1.saturating_sub(start_1) <= MAX_REGION_SPAN_BP);
 
     let payload = &data[8..];
+    let compat =
+        decode_compat_from_slice(selector, if payload.is_empty() { data } else { payload });
     let mid = payload.len() / 2;
     let (part_a, part_b) = payload.split_at(mid);
 
@@ -556,7 +596,7 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             exercise_alignment_and_runner(
-                &fuzz_bam, &clean_fa, &fuzz_bed, chr, start_1, end_1, ctrl, sub_mode,
+                &fuzz_bam, &clean_fa, &fuzz_bed, chr, start_1, end_1, ctrl, sub_mode, compat,
             );
         }
         _ => {
@@ -618,7 +658,7 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             exercise_alignment_and_runner(
-                &fuzz_cram, active_ref, &fuzz_bed, chr, start_1, end_1, ctrl, sub_mode,
+                &fuzz_cram, active_ref, &fuzz_bed, chr, start_1, end_1, ctrl, sub_mode, compat,
             );
         }
     }
