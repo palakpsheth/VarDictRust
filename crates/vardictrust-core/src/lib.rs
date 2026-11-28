@@ -7423,11 +7423,20 @@ fn run_with_writer_inner<W: EngineWriter>(
                             &mut vcf_acc,
                         )?;
                     } else {
-                        let hold_from = (tile_end.0 as i32).saturating_sub(SPLIT_TILE_SEAM_HALO_BP);
+                        let raw_hold_from =
+                            (tile_end.0 as i32).saturating_sub(SPLIT_TILE_SEAM_HALO_BP);
+                        let hold_from = combined
+                            .iter()
+                            .filter(|item| {
+                                item.1 >= raw_hold_from || item.2.start_pos >= raw_hold_from
+                            })
+                            .map(|item| item.2.start_pos)
+                            .min()
+                            .map_or(raw_hold_from, |min_s| raw_hold_from.min(min_s));
                         let mut ready = Vec::with_capacity(combined.len());
                         let mut next_held = Vec::new();
                         for item in combined {
-                            if item.1 >= hold_from || item.2.start_pos >= hold_from {
+                            if item.2.start_pos >= hold_from {
                                 next_held.push(item);
                             } else {
                                 ready.push(item);
@@ -9084,11 +9093,21 @@ fn run_somatic<W: EngineWriter>(
                             &mut vcf_acc,
                         )?;
                     } else {
-                        let hold_from = (tile_end.0 as i32).saturating_sub(SPLIT_TILE_SEAM_HALO_BP);
+                        let raw_hold_from =
+                            (tile_end.0 as i32).saturating_sub(SPLIT_TILE_SEAM_HALO_BP);
+                        let hold_from = combined
+                            .iter()
+                            .filter(|item| {
+                                item.1 >= raw_hold_from
+                                    || item.2.variant1.start_pos >= raw_hold_from
+                            })
+                            .map(|item| item.2.variant1.start_pos)
+                            .min()
+                            .map_or(raw_hold_from, |min_s| raw_hold_from.min(min_s));
                         let mut ready = Vec::with_capacity(combined.len());
                         let mut next_held = Vec::new();
                         for item in combined {
-                            if item.1 >= hold_from || item.2.variant1.start_pos >= hold_from {
+                            if item.2.variant1.start_pos >= hold_from {
                                 next_held.push(item);
                             } else {
                                 ready.push(item);
@@ -16813,16 +16832,12 @@ mod tests {
             "F-01.1 simple (direction 1): tiled vs untiled must match byte-for-byte"
         );
 
-        // Subtest 1a-ii (`F-01.1` direction 2 + `realign: 1` soft-clip seam overhang):
-        // Construct a PRNG non-repeating reference with `164 = 'T'` and `165..=329 = 55 x "AAG"` (`165` bp):
-        // - With `realign: 1, indel_size: 200, sv_min_len: 500`:
-        //   Tile 1 `[1, 200]` owns `origin_pos = 198 <= 200` (`48M 132D(198..=329) 41M`, `VD_T = 6, RD_T = 14`,
-        //   Normal `Q = 18` + `24` WT reads -> `LikelySomatic 0/0:24:0`), rolling via `Switch 35` to `start_pos = 164`.
-        //   Tile 2 `[201, 400]` discovers an UNOWNED left-halo copy via `realignlgdel` on `soft_clips_5_end[330]`
-        //   (`35S 50M` at `330..=379` where `35S = ref[163..197]`, anchoring at `origin_pos = 198 < 201` with
-        //   `VD_T = 6, RD_T = 0` and Normal `Q = 18, RD_N = 0 -> 1/1:1:1`), ALSO rolling to `start_pos = 164`.
-        // - Also verify `origin_pos = 204 > 200` (right-halo in Tile 1 `[1, 200]`, `RD = 0`) vs `origin_pos = 204`
-        //   (owned in Tile 2 `[201, 400]`, `RD = 14`) rolling left via `Switch 35` to `start_pos = 164 <= 200`!
+        // Subtest 1a-ii (`F-01.1` direction 2 + `realign: 1` spanning seam overhang):
+        // Construct a PRNG non-repeating reference with `164 = 'T'` and `165..=335 = 57 x "AAG"` (`171` bp):
+        // - With `realign: 1, indel_size: 200, sv_min_len: 500`, `mk_span_204` reads (`168..=380`, deleting `204..=335`)
+        //   are piled up by Tile 2 `[201, 400]` at `origin_pos = 204 in [201, 400]` (`owned = true`, `VD_T = 6, RD_T = 14`,
+        //   Normal `Q = 18` + `24` WT reads -> `LikelySomatic 0/0:24:0`) and roll 5'-left via `Switch 35` across seam `200`
+        //   to `start_pos = 164 <= 200`, matching untiled byte-for-byte in both somatic and simple modes.
         let mut prng = 0x9E37_79B9_7F4A_7C15u64;
         let mut halo_ref = Vec::with_capacity(2000);
         for _ in 0..2000usize {
@@ -17771,6 +17786,228 @@ mod tests {
         assert_eq!(
             b1_out[0].1.variant2.as_ref().map_or(-1, |v| v.pos_coverage),
             0
+        );
+    }
+
+    #[test]
+    fn lane1_fix_r3_hold_from_straddle_sort_and_switch36_germline() {
+        use noodles::core::Position;
+        use noodles::sam::alignment::record::cigar::{op::Kind as CigarKind, Op};
+        use noodles::sam::alignment::record::Flags;
+        use noodles::sam::alignment::record_buf::Cigar;
+        use noodles::sam::alignment::RecordBuf;
+
+        // When `tile_size = 40_000 > SPLIT_TILE_SEAM_HALO_BP (32_768)`, Tile 1 `[1, 40_000]` has
+        // `raw_hold_from = 40_000 - 32_768 = 7_232 > 1`.
+        // Place `6 x "CTGATG"` (`MSI = 6 < 8`) across `7_215..=7_250` (`7_214 = 'A'`, `7_251 = 'A'`), straddling `7_232`:
+        // - Tumor `6D` reads spanning `7_245..=7_250` have `origin_pos = 7_245 >= 7_232` and roll 5'-left
+        //   via `Switch 35` to `start_pos = 7_214` (`StrongSomatic` before `Switch 36`).
+        // - Normal `6D` reads ending inside the repeat at `7_229 < 7_232` have `origin_pos <= 7_229 < 7_232`
+        //   and ALSO roll 5'-left via `Switch 35` to `start_pos = 7_214` (`StrongLOH` before `Switch 36`).
+        // - An SNV `G -> T` at `7_220` (`MSI <= 5`) has `origin_pos = 7_220 < 7_232` and `start_pos = 7_220 < 7_232`.
+        // - Active Tile 2 `[40_001, 80_000]` has an SNV at `50_000`.
+        // Both Simple and Somatic modes (in both `.var` and VCF) MUST keep `tiled (40_000) == untiled (500_000)`:
+        // strict ascending `coordinate_sorted_vars` order `[7_214, 7_220, 50_000]` and reconciled `STATUS=Germline`!
+        let dir = tempfile::TempDir::new().unwrap();
+        let ref_len = 80_200usize;
+        let mut prng = 0x517C_C1B7_2722_0A95u64;
+        let mut ref_seq = Vec::with_capacity(ref_len);
+        for _ in 0..ref_len {
+            prng ^= prng << 13;
+            prng ^= prng >> 7;
+            prng ^= prng << 17;
+            ref_seq.push(b"ACGT"[(prng & 3) as usize]);
+        }
+        ref_seq[7_213] = b'A'; // 1-based 7_214
+        for k in 0..6usize {
+            let b0 = 7_214 + 6 * k; // 1-based 7_215..=7_250
+            ref_seq[b0..b0 + 6].copy_from_slice(b"CTGATG");
+        }
+        ref_seq[7_250] = b'A'; // 1-based 7_251 (breaks CTGATG repeat cleanly; 7_220 is 'G')
+        ref_seq[49_999] = b'C'; // 1-based 50_000 ('C' -> 'A' in Tile 2)
+
+        let ref_fa = dir.path().join("r3_hold.fa");
+        let ref_fai = dir.path().join("r3_hold.fa.fai");
+        std::fs::write(
+            &ref_fa,
+            format!(">chr1\n{}\n", std::str::from_utf8(&ref_seq).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            &ref_fai,
+            format!("chr1\t{ref_len}\t6\t{ref_len}\t{}\n", ref_len + 1),
+        )
+        .unwrap();
+
+        let mk_ref = |name: &str, s1: usize, len: usize| -> RecordBuf {
+            let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(s1).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(ref_seq[(s1 - 1)..(s1 - 1 + len)].to_vec().into())
+                .set_quality_scores(vec![35u8; len].into())
+                .build()
+        };
+        let mk_snv = |name: &str, s1: usize, len: usize, pos1: usize, alt: u8| -> RecordBuf {
+            let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+            let mut seq = ref_seq[(s1 - 1)..(s1 - 1 + len)].to_vec();
+            seq[pos1 - s1] = alt;
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(s1).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![35u8; len].into())
+                .build()
+        };
+        let mk_6d = |name: &str, s1: usize, del_s1: usize, post_len: usize| -> RecordBuf {
+            let pre_len = del_s1 - s1;
+            let mut seq = Vec::with_capacity(pre_len + post_len);
+            seq.extend_from_slice(&ref_seq[(s1 - 1)..(del_s1 - 1)]);
+            seq.extend_from_slice(&ref_seq[(del_s1 + 5)..(del_s1 + 5 + post_len)]);
+            let cigar: Cigar = [
+                Op::new(CigarKind::Match, pre_len),
+                Op::new(CigarKind::Deletion, 6),
+                Op::new(CigarKind::Match, post_len),
+            ]
+            .into_iter()
+            .collect();
+            RecordBuf::builder()
+                .set_name(name)
+                .set_flags(Flags::empty())
+                .set_reference_sequence_id(0)
+                .set_alignment_start(Position::try_from(s1).unwrap())
+                .set_mapping_quality(
+                    noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                )
+                .set_cigar(cigar)
+                .set_sequence(seq.into())
+                .set_quality_scores(vec![35u8; pre_len + post_len].into())
+                .build()
+        };
+
+        let mut t_reads = Vec::new();
+        for i in 0..8usize {
+            // Starts at `7_233 + (i % 3) >= 7_232` -> `origin_pos` strictly `>= 7_233 > 7_232`,
+            // while `Switch 35` rolls 5'-left on FASTA across `7_215..=7_250` to `start_pos = 7_214 < 7_232`!
+            t_reads.push(mk_6d(&format!("t_6d_{i}"), 7_233 + (i % 3), 7_245, 35));
+            // SNV `G -> T` at `7_220 < 7_232`
+            t_reads.push(mk_snv(
+                &format!("t_snv_{i}"),
+                7_185 + (i % 4),
+                55,
+                7_220,
+                b'T',
+            ));
+            // Active Tile 2 SNV `C -> A` at `50_000`
+            t_reads.push(mk_snv(
+                &format!("t_t2_{i}"),
+                49_975 + (i % 4),
+                55,
+                50_000,
+                b'A',
+            ));
+        }
+        for i in 0..12usize {
+            t_reads.push(mk_ref(&format!("t_wt1_{i}"), 7_185 + (i % 4), 95));
+            t_reads.push(mk_ref(&format!("t_wt2_{i}"), 49_975 + (i % 4), 55));
+        }
+        t_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        let t_bam = dir.path().join("r3_t.bam");
+        write_test_bam(&t_bam, "chr1", ref_len, &t_reads);
+
+        let mut n_reads = Vec::new();
+        for i in 0..8usize {
+            // Entire alignment `[7_174..=7_230]` is `< 7_232` -> `origin_pos` strictly `<= 7_230 < 7_232`,
+            // and `Switch 35` rolls 5'-left to the same `start_pos = 7_214`!
+            n_reads.push(mk_6d(&format!("n_6d_{i}"), 7_174 + (i % 4), 7_215, 10));
+        }
+        for i in 0..16usize {
+            n_reads.push(mk_ref(&format!("n_wt1_{i}"), 7_170 + (i % 4), 105));
+            n_reads.push(mk_ref(&format!("n_wt2_{i}"), 49_975 + (i % 4), 55));
+        }
+        n_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
+        let n_bam = dir.path().join("r3_n.bam");
+        write_test_bam(&n_bam, "chr1", ref_len, &n_reads);
+
+        let run_case = |bam_spec: String, emit_interm: bool, tile_sz: u32| -> String {
+            let mut cfg = crate::config::Config {
+                bam: bam_spec,
+                reference: ref_fa.to_string_lossy().into_owned(),
+                region: Some("chr1:1-80000".to_string()),
+                compat: crate::config::COMPAT_OFF,
+                emit_intermediate: emit_interm,
+                tile_size: Some(tile_sz),
+                realign: 0,
+                read_pos: 0.0,
+                freq: 0.01,
+                min_reads: 2,
+                threads: 1,
+                ..Default::default()
+            };
+            cfg.af_threshold = 0.01;
+            let mut out = Vec::new();
+            run_with_writer(&cfg, &mut out).unwrap();
+            String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let simp_bam = t_bam.to_string_lossy().into_owned();
+        let som_bam = format!("{}|{}", t_bam.display(), n_bam.display());
+
+        // 1. Simple `.var` (`coordinate_sorted_vars` order `[7_214, 7_220, 50_000]`) & Simple VCF
+        let simp_var_untiled = run_case(simp_bam.clone(), true, 500_000);
+        assert!(
+            simp_var_untiled
+                .lines()
+                .next()
+                .is_some_and(|l| l.contains("\t7214\t7220\tACTGATG\tA\t")),
+            "Simple untiled .var must emit left-aligned 7214 ahead of 7220 under coordinate_sorted_vars, got:\n{simp_var_untiled}"
+        );
+        let simp_var_tiled = run_case(simp_bam.clone(), true, 40_000);
+        assert_eq!(
+            simp_var_tiled, simp_var_untiled,
+            "Simple .var at tile_size=40000 must preserve strict coordinate_sorted_vars order across raw_hold_from=7232"
+        );
+        assert_eq!(
+            run_case(simp_bam, false, 40_000),
+            run_case(t_bam.to_string_lossy().into_owned(), false, 500_000),
+            "Simple VCF at tile_size=40000 must match untiled"
+        );
+
+        // 2. Somatic VCF & Somatic `.var` (`STATUS=Germline` at `7_214`, never split into `StrongSomatic`)
+        let som_vcf_untiled = run_case(som_bam.clone(), false, 500_000);
+        assert!(
+            som_vcf_untiled
+                .lines()
+                .any(|l| l.starts_with("chr1\t7214\t.\tACTGATG\tA\t") && l.contains("STATUS=Germline;")),
+            "Untiled somatic VCF must reconcile split 6D allele at 7214 to STATUS=Germline, got:\n{som_vcf_untiled}"
+        );
+        let som_vcf_tiled = run_case(som_bam.clone(), false, 40_000);
+        assert_eq!(
+            som_vcf_tiled, som_vcf_untiled,
+            "Somatic VCF at tile_size=40000 must keep co-normalized 7214 candidates together for Switch 36 (STATUS=Germline)"
+        );
+        let som_var_untiled = run_case(som_bam.clone(), true, 500_000);
+        let som_var_tiled = run_case(som_bam, true, 40_000);
+        assert_eq!(
+            som_var_tiled, som_var_untiled,
+            "Somatic .var at tile_size=40000 must match untiled sort order and STATUS=Germline"
         );
     }
 }

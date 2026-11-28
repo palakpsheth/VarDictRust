@@ -873,172 +873,175 @@ pub(crate) fn finalize_somatic_post_passes_tagged(
             }
             groups.into_values().filter(|idxs| idxs.len() > 1).collect()
         };
-        if multi_groups.is_empty() {
-            return;
-        }
-
-        let mut drop_flags = vec![false; len];
-        let indel_only_shift3 = config.compat.indel_only_shift3;
-        for idxs in multi_groups {
-            let mut best_t_idx: Option<usize> = None;
-            let mut best_n_idx: Option<usize> = None;
-            for &i in &idxs {
-                let Some((_, sv)) = results.get(i) else {
-                    continue;
-                };
-                if sv.variant1.pos_coverage > 0 {
-                    let replace = match best_t_idx.and_then(|bi| results.get(bi)) {
-                        None => true,
-                        Some((_, cur_best)) => crate::variations::post_norm_candidate_beats(
-                            &sv.variant1,
-                            &cur_best.variant1,
-                        ),
+        if !multi_groups.is_empty() {
+            let mut drop_flags = vec![false; len];
+            let indel_only_shift3 = config.compat.indel_only_shift3;
+            for idxs in multi_groups {
+                let mut best_t_idx: Option<usize> = None;
+                let mut best_n_idx: Option<usize> = None;
+                for &i in &idxs {
+                    let Some((_, sv)) = results.get(i) else {
+                        continue;
                     };
-                    if replace {
-                        best_t_idx = Some(i);
-                    }
-                }
-                if let Some(ref cand_v2) = sv.variant2 {
-                    if cand_v2.pos_coverage > 0 {
-                        let replace = match best_n_idx
-                            .and_then(|bi| results.get(bi))
-                            .and_then(|(_, r)| r.variant2.as_ref())
-                        {
+                    if sv.variant1.pos_coverage > 0 {
+                        let replace = match best_t_idx.and_then(|bi| results.get(bi)) {
                             None => true,
-                            Some(cur_best_v2) => {
-                                crate::variations::post_norm_candidate_beats(cand_v2, cur_best_v2)
-                            }
+                            Some((_, cur_best)) => crate::variations::post_norm_candidate_beats(
+                                &sv.variant1,
+                                &cur_best.variant1,
+                            ),
                         };
                         if replace {
-                            best_n_idx = Some(i);
+                            best_t_idx = Some(i);
+                        }
+                    }
+                    if let Some(ref cand_v2) = sv.variant2 {
+                        if cand_v2.pos_coverage > 0 {
+                            let replace = match best_n_idx
+                                .and_then(|bi| results.get(bi))
+                                .and_then(|(_, r)| r.variant2.as_ref())
+                            {
+                                None => true,
+                                Some(cur_best_v2) => crate::variations::post_norm_candidate_beats(
+                                    cand_v2,
+                                    cur_best_v2,
+                                ),
+                            };
+                            if replace {
+                                best_n_idx = Some(i);
+                            }
                         }
                     }
                 }
-            }
 
-            let (Some(t_idx), Some(n_idx)) = (best_t_idx, best_n_idx) else {
-                continue;
-            };
-            let Some(&keep_idx) = idxs.first() else {
-                continue;
-            };
-            let (Some((t_orig, t_sv)), Some((n_orig, n_sv))) =
-                (results.get(t_idx), results.get(n_idx))
-            else {
-                continue;
-            };
-            let merged_orig = if t_sv.variant1.pos_coverage > 0 {
-                *t_orig
-            } else {
-                *n_orig
-            };
-            let Some(mut v2_matched) = n_sv.variant2.clone() else {
-                continue;
-            };
-            let n_v2_ref = n_sv.v2_ref_variant.clone();
-            let n_end_is_variant2 = n_sv.end_is_variant2;
-            let mut v1_matched = t_sv.variant1.clone();
-            if v1_matched.var_type.is_empty() {
-                v1_matched.var_type = v1_matched.var_type();
-            }
-            if n_end_is_variant2 {
-                v2_matched.start_pos = v1_matched.start_pos;
-                v2_matched.end_pos = v1_matched.end_pos;
-            }
-            if indel_only_shift3
-                && !v1_matched.var_allele.contains('<')
-                && v1_matched.ref_allele.len() == v1_matched.var_allele.len()
-            {
-                v1_matched.shift3 = 0;
-                if n_end_is_variant2 {
-                    v2_matched.shift3 = 0;
-                }
-            }
-            let sv1 = if !t_sv.sv1.is_empty() {
-                t_sv.sv1.clone()
-            } else {
-                idxs.iter()
-                    .find_map(|&i| {
-                        results
-                            .get(i)
-                            .filter(|(_, r)| !r.sv1.is_empty())
-                            .map(|(_, r)| r.sv1.clone())
-                    })
-                    .unwrap_or_default()
-            };
-            let sv2 = if !n_sv.sv2.is_empty() {
-                n_sv.sv2.clone()
-            } else {
-                idxs.iter()
-                    .find_map(|&i| {
-                        results
-                            .get(i)
-                            .filter(|(_, r)| !r.sv2.is_empty())
-                            .map(|(_, r)| r.sv2.clone())
-                    })
-                    .unwrap_or_default()
-            };
-            let tumor_amplicon = t_sv.tumor_amplicon.or_else(|| {
-                idxs.iter()
-                    .find_map(|&i| results.get(i).and_then(|(_, r)| r.tumor_amplicon))
-            });
-            let normal_amplicon = n_sv.normal_amplicon.or_else(|| {
-                idxs.iter()
-                    .find_map(|&i| results.get(i).and_then(|(_, r)| r.normal_amplicon))
-            });
-            let type_str = if t_idx == n_idx {
-                t_sv.status.clone()
-            } else if !n_end_is_variant2 || v2_matched.ref_allele.is_empty() {
-                if v1_matched.frequency > 1.0 - config.lofreq
-                    && v2_matched.frequency < 0.8
-                    && v2_matched.frequency > 0.2
-                {
-                    LIKELY_LOH.to_string()
+                let (Some(t_idx), Some(n_idx)) = (best_t_idx, best_n_idx) else {
+                    continue;
+                };
+                let Some(&keep_idx) = idxs.first() else {
+                    continue;
+                };
+                let (Some((t_orig, t_sv)), Some((n_orig, n_sv))) =
+                    (results.get(t_idx), results.get(n_idx))
+                else {
+                    continue;
+                };
+                let merged_orig = if t_sv.variant1.pos_coverage > 0 {
+                    *t_orig
                 } else {
-                    n_sv.status.clone()
+                    *n_orig
+                };
+                let Some(mut v2_matched) = n_sv.variant2.clone() else {
+                    continue;
+                };
+                let n_v2_ref = n_sv.v2_ref_variant.clone();
+                let n_end_is_variant2 = n_sv.end_is_variant2;
+                let mut v1_matched = t_sv.variant1.clone();
+                if v1_matched.var_type.is_empty() {
+                    v1_matched.var_type = v1_matched.var_type();
                 }
-            } else {
-                determinate_type(
-                    config,
-                    n_v2_ref.as_deref(),
-                    &v1_matched,
-                    &mut v2_matched,
-                    splice,
-                )
-            };
-            if let Some(slot) = results.get_mut(keep_idx) {
-                *slot = (
-                    merged_orig,
-                    SomaticVariant {
-                        variant1: v1_matched,
-                        variant2: Some(v2_matched),
-                        status: type_str,
-                        sv1,
-                        sv2,
-                        end_is_variant2: n_end_is_variant2,
-                        tumor_amplicon,
-                        normal_amplicon,
-                        v2_ref_variant: n_v2_ref,
-                    },
-                );
-            }
-            for &rm_idx in idxs.iter().skip(1) {
-                if let Some(flag) = drop_flags.get_mut(rm_idx) {
-                    *flag = true;
+                if n_end_is_variant2 {
+                    v2_matched.start_pos = v1_matched.start_pos;
+                    v2_matched.end_pos = v1_matched.end_pos;
+                }
+                if indel_only_shift3
+                    && !v1_matched.var_allele.contains('<')
+                    && v1_matched.ref_allele.len() == v1_matched.var_allele.len()
+                {
+                    v1_matched.shift3 = 0;
+                    if n_end_is_variant2 {
+                        v2_matched.shift3 = 0;
+                    }
+                }
+                let sv1 = if !t_sv.sv1.is_empty() {
+                    t_sv.sv1.clone()
+                } else {
+                    idxs.iter()
+                        .find_map(|&i| {
+                            results
+                                .get(i)
+                                .filter(|(_, r)| !r.sv1.is_empty())
+                                .map(|(_, r)| r.sv1.clone())
+                        })
+                        .unwrap_or_default()
+                };
+                let sv2 = if !n_sv.sv2.is_empty() {
+                    n_sv.sv2.clone()
+                } else {
+                    idxs.iter()
+                        .find_map(|&i| {
+                            results
+                                .get(i)
+                                .filter(|(_, r)| !r.sv2.is_empty())
+                                .map(|(_, r)| r.sv2.clone())
+                        })
+                        .unwrap_or_default()
+                };
+                let tumor_amplicon = t_sv.tumor_amplicon.or_else(|| {
+                    idxs.iter()
+                        .find_map(|&i| results.get(i).and_then(|(_, r)| r.tumor_amplicon))
+                });
+                let normal_amplicon = n_sv.normal_amplicon.or_else(|| {
+                    idxs.iter()
+                        .find_map(|&i| results.get(i).and_then(|(_, r)| r.normal_amplicon))
+                });
+                let type_str = if t_idx == n_idx {
+                    t_sv.status.clone()
+                } else if !n_end_is_variant2 || v2_matched.ref_allele.is_empty() {
+                    if v1_matched.frequency > 1.0 - config.lofreq
+                        && v2_matched.frequency < 0.8
+                        && v2_matched.frequency > 0.2
+                    {
+                        LIKELY_LOH.to_string()
+                    } else {
+                        n_sv.status.clone()
+                    }
+                } else {
+                    determinate_type(
+                        config,
+                        n_v2_ref.as_deref(),
+                        &v1_matched,
+                        &mut v2_matched,
+                        splice,
+                    )
+                };
+                if let Some(slot) = results.get_mut(keep_idx) {
+                    *slot = (
+                        merged_orig,
+                        SomaticVariant {
+                            variant1: v1_matched,
+                            variant2: Some(v2_matched),
+                            status: type_str,
+                            sv1,
+                            sv2,
+                            end_is_variant2: n_end_is_variant2,
+                            tumor_amplicon,
+                            normal_amplicon,
+                            v2_ref_variant: n_v2_ref,
+                        },
+                    );
+                }
+                for &rm_idx in idxs.iter().skip(1) {
+                    if let Some(flag) = drop_flags.get_mut(rm_idx) {
+                        *flag = true;
+                    }
                 }
             }
-        }
 
-        if drop_flags.iter().any(|&d| d) {
-            let old = std::mem::take(results);
-            *results = old
-                .into_iter()
-                .enumerate()
-                .filter_map(|(i, item)| {
-                    (!drop_flags.get(i).copied().unwrap_or(false)).then_some(item)
-                })
-                .collect();
+            if drop_flags.iter().any(|&d| d) {
+                let old = std::mem::take(results);
+                *results = old
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(i, item)| {
+                        (!drop_flags.get(i).copied().unwrap_or(false)).then_some(item)
+                    })
+                    .collect();
+            }
         }
+    }
+
+    if do_left_align && config.compat.coordinate_sorted_vars {
+        results.sort_by_key(|(_, sv)| sv.variant1.start_pos);
     }
 }
 

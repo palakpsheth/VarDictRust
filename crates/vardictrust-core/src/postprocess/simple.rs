@@ -448,6 +448,9 @@ fn simple_post_process_core<'a>(
 
     if !seam_unfinalized && do_left_align && !config.pileup {
         dedup_normalized_simple_variants(&mut vrefs);
+        if config.compat.coordinate_sorted_vars {
+            vrefs.sort_by_key(|(_, v)| v.start_pos);
+        }
     }
 
     // VCF mode: ports var2vcf_valid.pl:41,129-137 — bucket rows by the RAW .var
