@@ -8798,12 +8798,7 @@ fn run_somatic<W: EngineWriter>(
                     .and_then(|n| i32::try_from(n).ok())
                     .filter(|&n| n > 0)
                     .unwrap_or(i32::MAX);
-                let orig_start_i32 = i32::try_from(builder_region.start.0).unwrap_or(1).max(1);
-                let ref_min_bound = if config_clone.compat.strict_region_bounds {
-                    orig_start_i32
-                } else {
-                    1
-                };
+                let reconcile_split = config_clone.compat.somatic_reconcile_split_alleles;
                 let do_left_align = crate::variations::canonical_left_align_enabled(&config_clone);
                 let refresh_vt = config_clone.compat.recompute_vartype_after_adj_complex;
                 let indel_only_shift3 = config_clone.compat.indel_only_shift3;
@@ -8815,52 +8810,65 @@ fn run_somatic<W: EngineWriter>(
                         return vars_p;
                     }
                     let first_orig = vars_p.variants.first().cloned();
-                    let ref_ctx = Some((ref_ref, builder_region.chr.as_str(), ref_min_bound));
-                    let trig_norms: Vec<crate::variations::Variant> = trig_vars
-                        .variants
-                        .iter()
-                        .map(|tv| {
-                            let mut tn = tv.clone();
-                            tn.var_type = tn.var_type();
-                            tn.normalize_postprocess(
-                                ref_ctx,
-                                do_left_align,
-                                refresh_vt,
-                                indel_only_shift3,
-                            );
-                            tn
-                        })
-                        .collect();
-                    vars_p.variants.retain(|cand| {
-                        let mut cand_norm: Option<crate::variations::Variant> = None;
+                    let ref_ctx = Some((ref_ref, builder_region.chr.as_str(), chr_len_i32));
+                    let trig_norms: Vec<Option<crate::variations::Variant>> = if reconcile_split {
                         trig_vars
                             .variants
                             .iter()
-                            .zip(trig_norms.iter())
-                            .any(|(tv, tn)| {
-                                if cand.description == tv.description
-                                    || (cand.start_pos == tv.start_pos
-                                        && cand.end_pos == tv.end_pos
-                                        && cand.ref_allele == tv.ref_allele
-                                        && cand.var_allele == tv.var_allele)
-                                {
-                                    return true;
-                                }
-                                let cn = cand_norm.get_or_insert_with(|| {
-                                    let mut c = cand.clone();
-                                    c.var_type = c.var_type();
-                                    c.normalize_postprocess(
+                            .map(|tv| {
+                                (!tv.var_allele.contains('<')).then(|| {
+                                    let mut tn = tv.clone();
+                                    tn.var_type = tn.var_type();
+                                    tn.normalize_postprocess(
                                         ref_ctx,
                                         do_left_align,
                                         refresh_vt,
                                         indel_only_shift3,
                                     );
-                                    c
-                                });
-                                cn.start_pos == tn.start_pos
-                                    && cn.ref_allele == tn.ref_allele
-                                    && cn.var_allele == tn.var_allele
+                                    tn
+                                })
                             })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    vars_p.variants.retain(|cand| {
+                        let mut cand_norm: Option<crate::variations::Variant> = None;
+                        trig_vars.variants.iter().enumerate().any(|(idx, tv)| {
+                            if cand.description == tv.description
+                                || (!cand.var_allele.contains('<')
+                                    && !tv.var_allele.contains('<')
+                                    && cand.start_pos == tv.start_pos
+                                    && cand.end_pos == tv.end_pos
+                                    && cand.ref_allele == tv.ref_allele
+                                    && cand.var_allele == tv.var_allele)
+                            {
+                                return true;
+                            }
+                            if !reconcile_split
+                                || cand.var_allele.contains('<')
+                                || tv.var_allele.contains('<')
+                            {
+                                return false;
+                            }
+                            let Some(Some(tn)) = trig_norms.get(idx) else {
+                                return false;
+                            };
+                            let cn = cand_norm.get_or_insert_with(|| {
+                                let mut c = cand.clone();
+                                c.var_type = c.var_type();
+                                c.normalize_postprocess(
+                                    ref_ctx,
+                                    do_left_align,
+                                    refresh_vt,
+                                    indel_only_shift3,
+                                );
+                                c
+                            });
+                            cn.start_pos == tn.start_pos
+                                && cn.ref_allele == tn.ref_allele
+                                && cn.var_allele == tn.var_allele
+                        })
                     });
                     if !vars_p.var_desc_to_variant.is_empty() {
                         let kept = &vars_p.variants;
@@ -8878,6 +8886,7 @@ fn run_somatic<W: EngineWriter>(
                             ph.ref_fwd_cov = first.ref_fwd_cov;
                             ph.ref_rev_cov = first.ref_rev_cov;
                             ph.genotype = first.genotype;
+                            ph.hicnt = -1;
                             vars_p.variants.push(ph);
                         }
                     }
@@ -17742,65 +17751,71 @@ mod tests {
         f04_ro_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
         write_test_bam(&f04_ro_bam, "chr1", 2000, &f04_ro_reads);
 
-        let run_f04_ro =
-            |bam_spec: String, tile_sz: u32, all_alleles: bool, out_vcf: bool| -> String {
-                let cfg = crate::config::Config {
-                    bam: bam_spec,
-                    reference: f04_fa.to_string_lossy().into_owned(),
-                    region: Some("chr1:1-600".to_string()),
-                    compat: crate::config::COMPAT_VARDICTJAVA_1_8_3,
-                    vcf_all_alleles: all_alleles,
-                    emit_intermediate: !out_vcf,
-                    realign: 1,
-                    indel_size: 200,
-                    sv_min_len: 500,
-                    freq: 0.01,
-                    min_reads: 2,
-                    tile_size: Some(tile_sz),
-                    threads: 1,
-                    ..Default::default()
-                };
-                let mut out = Vec::new();
-                run_with_writer(&cfg, &mut out).unwrap();
-                String::from_utf8(out)
-                    .unwrap()
-                    .lines()
-                    .filter(|l| !l.starts_with('#'))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+        let run_f04_ro = |bam_spec: String,
+                          tile_sz: u32,
+                          indel_sz: u32,
+                          all_alleles: bool,
+                          out_vcf: bool|
+         -> String {
+            let cfg = crate::config::Config {
+                bam: bam_spec,
+                reference: f04_fa.to_string_lossy().into_owned(),
+                region: Some("chr1:1-600".to_string()),
+                compat: crate::config::COMPAT_VARDICTJAVA_1_8_3,
+                vcf_all_alleles: all_alleles,
+                emit_intermediate: !out_vcf,
+                realign: 1,
+                indel_size: indel_sz,
+                sv_min_len: 500,
+                freq: 0.01,
+                min_reads: 2,
+                tile_size: Some(tile_sz),
+                threads: 1,
+                ..Default::default()
             };
+            let mut out = Vec::new();
+            run_with_writer(&cfg, &mut out).unwrap();
+            String::from_utf8(out)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         let ro_simple_bam = f04_ro_bam.to_string_lossy().into_owned();
         let ro_somatic_bam = format!("{}|{}", f04_ro_bam.display(), f012_n_bam.display());
         for (mode_label, bam_spec) in [("simple", ro_simple_bam), ("somatic", ro_somatic_bam)] {
-            // 1) Single-allele VCF (`!vcf_all_alleles`): SNV `A -> G` (`AF = 0.4706`) beats DEL (`AF = 0.2609`)
-            let u_single = run_f04_ro(bam_spec.clone(), 500_000, false, true);
-            let t_single = run_f04_ro(bam_spec.clone(), 200, false, true);
-            assert!(
-                u_single.starts_with("chr1\t180\t.\tA\tG\t"),
-                "Subtest 1d ({mode_label} single-allele untiled): expected SNV A->G at 180, got:\n{u_single}"
-            );
-            assert_eq!(
-                t_single, u_single,
-                "Subtest 1d ({mode_label} single-allele VCF): Tiled must match Untiled without fabricated AF=0.50 DEL clobber"
-            );
-            // 2) `--vcf-all-alleles` VCF: both SNV and 150-bp DEL emitted with exact RD=17, DP=23, AF=0.2609
-            let u_all = run_f04_ro(bam_spec.clone(), 500_000, true, true);
-            let t_all = run_f04_ro(bam_spec.clone(), 200, true, true);
-            assert!(
-                u_all.contains(";AF=0.2609;"),
-                "Subtest 1d ({mode_label} -A untiled): expected DEL AF=0.2609 (6/23 with RD=17), got:\n{u_all}"
-            );
-            assert_eq!(
-                t_all, u_all,
-                "Subtest 1d ({mode_label} --vcf-all-alleles VCF): Tiled must match Untiled"
-            );
-            // 3) Intermediate `.var`: exact parity
-            let u_var = run_f04_ro(bam_spec.clone(), 500_000, false, false);
-            let t_var = run_f04_ro(bam_spec, 200, false, false);
-            assert_eq!(
-                t_var, u_var,
-                "Subtest 1d ({mode_label} .var): Tiled must match Untiled"
-            );
+            for indel_sz in [200u32, 50u32] {
+                // 1) Single-allele VCF (`!vcf_all_alleles`): SNV `A -> G` (`AF = 0.4706`) beats DEL (`AF = 0.2609`)
+                let u_single = run_f04_ro(bam_spec.clone(), 500_000, indel_sz, false, true);
+                let t_single = run_f04_ro(bam_spec.clone(), 200, indel_sz, false, true);
+                assert!(
+                    u_single.starts_with("chr1\t180\t.\tA\tG\t"),
+                    "Subtest 1d ({mode_label} indel_size={indel_sz} single-allele untiled): expected SNV A->G at 180, got:\n{u_single}"
+                );
+                assert_eq!(
+                    t_single, u_single,
+                    "Subtest 1d ({mode_label} indel_size={indel_sz} single-allele VCF): Tiled must match Untiled"
+                );
+                // 2) `--vcf-all-alleles` VCF: both SNV and 150-bp DEL emitted with exact RD=17, DP=23, AF=0.2609
+                let u_all = run_f04_ro(bam_spec.clone(), 500_000, indel_sz, true, true);
+                let t_all = run_f04_ro(bam_spec.clone(), 200, indel_sz, true, true);
+                assert!(
+                    u_all.contains(";HIAF=0.2609;") || u_all.contains(":0.2609:"),
+                    "Subtest 1d ({mode_label} indel_size={indel_sz} -A untiled): expected DEL HIAF=0.2609 (6/23 with RD=17), got:\n{u_all}"
+                );
+                assert_eq!(
+                    t_all, u_all,
+                    "Subtest 1d ({mode_label} indel_size={indel_sz} --vcf-all-alleles VCF): Tiled must match Untiled"
+                );
+                // 3) Intermediate `.var`: exact parity
+                let u_var = run_f04_ro(bam_spec.clone(), 500_000, indel_sz, false, false);
+                let t_var = run_f04_ro(bam_spec.clone(), 200, indel_sz, false, false);
+                assert_eq!(
+                    t_var, u_var,
+                    "Subtest 1d ({mode_label} indel_size={indel_sz} .var): Tiled must match Untiled"
+                );
+            }
         }
 
         // Subtest 1e (Re-Review #3): 3'-clip loop in `realignlgdel` (`p = 203 >= 201` in Tile 2)

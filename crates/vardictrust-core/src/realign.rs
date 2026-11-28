@@ -3272,6 +3272,7 @@ fn realignlgdel_with_split_origin(
         );
         let mut extra = Vec::new();
         let mut extra_str = Vec::new();
+        let from_find_match = bp == 0;
 
         if bp == 0 {
             if crate::variations::util::is_low_complex_seq(&seq) {
@@ -3320,23 +3321,25 @@ fn realignlgdel_with_split_origin(
                 ) {
                     log::warn!("ensure_reference_loaded failed: {:?}", e);
                 }
-                if let Err(e) = partial_pipeline(
-                    bams,
-                    chr,
-                    tts,
-                    tte,
-                    reference,
-                    config,
-                    region,
-                    non_insertion_variants,
-                    insertion_variants,
-                    ref_coverage,
-                    soft_clips_5_end,
-                    soft_clips_3_end,
-                    splice,
-                    max_read_length,
-                ) {
-                    log::warn!("partial_pipeline failed: {:?}", e);
+                if internal_split_orig_start.is_none() {
+                    if let Err(e) = partial_pipeline(
+                        bams,
+                        chr,
+                        tts,
+                        tte,
+                        reference,
+                        config,
+                        region,
+                        non_insertion_variants,
+                        insertion_variants,
+                        ref_coverage,
+                        soft_clips_5_end,
+                        soft_clips_3_end,
+                        splice,
+                        max_read_length,
+                    ) {
+                        log::warn!("partial_pipeline failed: {:?}", e);
+                    }
                 }
             }
         }
@@ -3386,6 +3389,7 @@ fn realignlgdel_with_split_origin(
             ensure_split_overhang_bp_piled(
                 bp,
                 orig_start,
+                from_find_match,
                 &mut piled_split_overhang_spans,
                 bams,
                 chr,
@@ -3727,6 +3731,7 @@ fn realignlgdel_with_split_origin(
         );
         let mut extra = Vec::new();
         let mut extra_str = Vec::new();
+        let from_find_match = bp == 0;
 
         if bp == 0 {
             if crate::variations::util::is_low_complex_seq(&seq) {
@@ -3876,6 +3881,7 @@ fn realignlgdel_with_split_origin(
                 ensure_split_overhang_bp_piled(
                     bp,
                     orig_start,
+                    from_find_match,
                     &mut piled_split_overhang_spans,
                     bams,
                     chr,
@@ -5962,6 +5968,7 @@ pub(crate) fn merge_sclip(dest: &mut Sclip, src: Sclip) {
 fn ensure_split_overhang_bp_piled(
     bp: i32,
     orig_start: Pos1,
+    from_find_match: bool,
     piled_split_overhang_spans: &mut Vec<(i32, i32)>,
     bams: Option<&[String]>,
     chr: &str,
@@ -5982,9 +5989,22 @@ fn ensure_split_overhang_bp_piled(
     if bp <= 0 || bp >= region_start_i32 {
         return;
     }
-    let win = max_read_length.max(50);
-    let orig_start_i32 = i32::try_from(orig_start.0).unwrap_or(1).max(1);
-    let q_lo = bp.saturating_sub(win).max(orig_start_i32);
+    let (min_lo, win) = if from_find_match {
+        (
+            1,
+            if max_read_length > 0 {
+                max_read_length
+            } else {
+                50
+            },
+        )
+    } else {
+        (
+            i32::try_from(orig_start.0).unwrap_or(1).max(1),
+            max_read_length.max(50),
+        )
+    };
+    let q_lo = bp.saturating_sub(win).max(min_lo);
     let q_hi = bp
         .saturating_add(win)
         .min(region_start_i32.saturating_sub(1));
