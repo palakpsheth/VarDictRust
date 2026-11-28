@@ -100,6 +100,9 @@ fn collect_expected_var_survival_keys(
         if cols.len() < 9 {
             continue;
         }
+        if cols.get(2) == Some(&"Chr") && cols.get(3) == Some(&"Start") {
+            continue;
+        }
         let ref_a = cols[5];
         if ref_a.is_empty() || ref_a == "0" {
             // `var2vcf_*.pl`: `next unless ($ref)` skips empty/`"0"` sentinel rows.

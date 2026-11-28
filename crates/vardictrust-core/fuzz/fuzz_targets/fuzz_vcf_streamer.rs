@@ -426,17 +426,24 @@ fn assert_vcf_data_record(kind: &str, line: &str, expected_cols: usize, config: 
                 }
             }
         } else {
+            let fmt_fields: Vec<&str> = cols.get(8).copied().unwrap_or("").split(':').collect();
+            let qual_idx = fmt_fields.iter().position(|&k| k == "QUAL");
+            let mq_idx = fmt_fields.iter().position(|&k| k == "MQ");
+            let nm_idx = fmt_fields.iter().position(|&k| k == "NM");
             for &s_col in &[9usize, 10usize] {
                 let sample_str = cols.get(s_col).copied().unwrap_or("");
                 let s_fields: Vec<&str> = sample_str.split(':').collect();
-                if let Some(&q_v) = s_fields.get(10) {
-                    parse_nonneg_metric(kind, "FORMAT/QUAL", q_v, line);
-                }
-                if let Some(&mq_v) = s_fields.get(14) {
-                    parse_nonneg_metric(kind, "FORMAT/MQ", mq_v, line);
-                }
-                if let Some(&nm_v) = s_fields.get(18) {
-                    parse_nonneg_metric(kind, "FORMAT/NM", nm_v, line);
+                if s_fields.len() >= fmt_fields.len() {
+                    let shift = s_fields.len() - fmt_fields.len();
+                    if let Some(q_v) = qual_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                        parse_nonneg_metric(kind, "FORMAT/QUAL", q_v, line);
+                    }
+                    if let Some(mq_v) = mq_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                        parse_nonneg_metric(kind, "FORMAT/MQ", mq_v, line);
+                    }
+                    if let Some(nm_v) = nm_idx.and_then(|i| s_fields.get(i + shift).copied()) {
+                        parse_nonneg_metric(kind, "FORMAT/NM", nm_v, line);
+                    }
                 }
             }
         }
@@ -807,7 +814,7 @@ fn synth_variant(
         3 => "2;2".to_string(),
         4 => "1;2".to_string(),
         5 => "0;2".to_string(),
-        _ => cur.utf8_capped(12, false),
+        _ => cur.utf8_capped(12, false).replace(':', "_"),
     };
     v.var_type = match cur.u8() % 9 {
         0 => String::new(),

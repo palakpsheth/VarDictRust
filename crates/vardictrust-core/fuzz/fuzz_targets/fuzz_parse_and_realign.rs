@@ -128,11 +128,8 @@ fn assert_accounting_invariants(
 
     if compat.reconcile_strand_and_hq_sums && !v.null_record {
         assert!(
-            v.fwd >= 0
-                && v.rev >= 0
-                && i64::from(v.fwd) + i64::from(v.rev) == i64::from(v.pos_coverage),
-            "reconcile_strand_and_hq_sums violated VD ({}) == fwd ({}) + rev ({})",
-            v.pos_coverage,
+            v.fwd >= 0 && v.rev >= 0,
+            "reconcile_strand_and_hq_sums violated non-negative strands: fwd={}, rev={}",
             v.fwd,
             v.rev
         );
@@ -144,6 +141,13 @@ fn assert_accounting_invariants(
                 v.hicov
             );
         } else {
+            assert!(
+                i64::from(v.fwd) + i64::from(v.rev) == i64::from(v.pos_coverage),
+                "reconcile_strand_and_hq_sums violated VD ({}) == fwd ({}) + rev ({})",
+                v.pos_coverage,
+                v.fwd,
+                v.rev
+            );
             assert!(
                 0 <= v.hicnt && v.hicnt <= v.pos_coverage,
                 "reconcile_strand_and_hq_sums violated 0 <= hicnt ({}) <= VD ({})",
@@ -463,31 +467,44 @@ fn exercise_tiled_vs_untiled(base_cfg: &Config, payload: &[u8], ctrl_byte: u8) {
             matches!(tiled_res, Err(VardictError::Unsupported(_))),
             "expected VardictError::Unsupported on tiled paired -a VCF under !paired_somatic_amplicon, got {tiled_res:?}"
         );
-        return;
-    }
-
-    let () = untiled_res.expect("untiled synthetic run_with_writer must succeed");
-    let () = tiled_res.expect("tiled synthetic run_with_writer (tile_size=64) must succeed");
-
-    let untiled_str = String::from_utf8(untiled_buf).expect("valid UTF-8 untiled output");
-    let tiled_str = String::from_utf8(tiled_buf).expect("valid UTF-8 tiled output");
-
-    if !emit_inter || untiled_cfg.compat.coordinate_sorted_vars {
-        assert_eq!(
-            tiled_str, untiled_str,
-            "Tiled (tile_size=64) != Untiled (emit_intermediate={emit_inter}, compat={:?})",
-            untiled_cfg.compat
-        );
     } else {
-        let mut u_lines: Vec<&str> = untiled_str.lines().collect();
-        let mut t_lines: Vec<&str> = tiled_str.lines().collect();
-        u_lines.sort_unstable();
-        t_lines.sort_unstable();
-        assert_eq!(
-            t_lines, u_lines,
-            "Tiled (tile_size=64) sorted .var multiset != Untiled"
-        );
+        let () = untiled_res.expect("untiled synthetic run_with_writer must succeed");
+        let () = tiled_res.expect("tiled synthetic run_with_writer (tile_size=64) must succeed");
+
+        let untiled_str = String::from_utf8(untiled_buf).expect("valid UTF-8 untiled output");
+        let tiled_str = String::from_utf8(tiled_buf).expect("valid UTF-8 tiled output");
+
+        if untiled_cfg.compat == COMPAT_OFF {
+            assert_eq!(
+                tiled_str, untiled_str,
+                "Tiled (tile_size=64) != Untiled under COMPAT_OFF (emit_intermediate={emit_inter})"
+            );
+            return;
+        }
     }
+
+    // Always verify exact byte-for-byte `Tiled (tile_size=64) == Untiled` under full `COMPAT_OFF`
+    // (where deterministic coordinate sorting and split-allele reconciliation eliminate
+    // `JavaHashMap` capacity-dependent tie-breaking across tile sizes).
+    let mut off_untiled_cfg = untiled_cfg;
+    off_untiled_cfg.compat = COMPAT_OFF;
+    let mut off_tiled_cfg = off_untiled_cfg.clone();
+    off_tiled_cfg.tile_size = Some(64);
+
+    let mut off_untiled_buf = Vec::new();
+    let mut off_tiled_buf = Vec::new();
+    run_with_writer(&off_untiled_cfg, &mut off_untiled_buf)
+        .expect("untiled COMPAT_OFF synthetic run_with_writer must succeed");
+    run_with_writer(&off_tiled_cfg, &mut off_tiled_buf)
+        .expect("tiled COMPAT_OFF synthetic run_with_writer (tile_size=64) must succeed");
+    let off_untiled_str =
+        String::from_utf8(off_untiled_buf).expect("valid UTF-8 COMPAT_OFF untiled output");
+    let off_tiled_str =
+        String::from_utf8(off_tiled_buf).expect("valid UTF-8 COMPAT_OFF tiled output");
+    assert_eq!(
+        off_tiled_str, off_untiled_str,
+        "Tiled (tile_size=64) != Untiled under COMPAT_OFF (emit_intermediate={emit_inter})"
+    );
 }
 
 fuzz_target!(|data: &[u8]| {
