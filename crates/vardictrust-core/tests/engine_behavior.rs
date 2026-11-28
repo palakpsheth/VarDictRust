@@ -1,4 +1,4 @@
-//! First-class functional engine behavior integration suite (`44` tests).
+//! First-class functional engine behavior integration suite (`48` tests).
 //!
 //! Exercises CRAM decoding, Fisher exact test tables/VCFs, VCF filter edge cases,
 //! structural variant calling, read/pileup filtering flags, hostile inputs,
@@ -9595,9 +9595,31 @@ mod vcf_all_alleles_and_compat_off {
             dup2_all_rows.join("\n")
         );
         let dup2_one_rows = extract_variants(&dup2_vcf_one);
+        assert_eq!(
+            dup2_one_rows.len(),
+            2,
+            "F-05: COMPAT_OFF single-allele VCF (vcf_all_alleles=false) must retain BOTH distinct-END co-anchored <DUP> SVs, got:\n{dup2_vcf_one}"
+        );
         assert!(
-            dup2_one_rows.len() == 1 && dup2_one_rows[0].contains(";END=205;"),
-            "default single-winner VCF without --vcf-all-alleles must select highest-VD END=205 winner, got:\n{dup2_vcf_one}"
+            dup2_one_rows[0].contains(";END=205;")
+                && dup2_one_rows[0].contains(";SVTYPE=DUP;SVLEN=55")
+                && dup2_one_rows[1].contains(";END=214;")
+                && dup2_one_rows[1].contains(";SVTYPE=DUP;SVLEN=64"),
+            "F-05: COMPAT_OFF single-allele VCF must preserve END=205 and END=214 rows:\n{}",
+            dup2_one_rows.join("\n")
+        );
+        let mut cfg_dup2_vj = cfg_dup2.clone();
+        cfg_dup2_vj.compat = COMPAT_VARDICTJAVA_1_8_3;
+        cfg_dup2_vj.vcf_all_alleles = false;
+        let dup2_vj_one = run_via_core_run(&cfg_dup2_vj, "dup2_vj_one", false);
+        let dup2_vj_one_rows = extract_variants(&dup2_vj_one);
+        assert!(
+            dup2_vj_one_rows.len() == 1
+                && !dup2_vj_one.contains("##VarDictRustCompat=off")
+                && dup2_vj_one_rows[0].contains("\t<DUP>\t")
+                && dup2_vj_one_rows[0].contains(";VD=6;")
+                && dup2_vj_one_rows[0].contains(";SVTYPE=DUP;SVLEN=56;"),
+            "COMPAT_VARDICTJAVA_1_8_3 without --vcf-all-alleles must still collapse co-anchored <DUP> SVs to 1 highest-VD row (55I winner: VD=6, legacy SVLEN=56), got:\n{dup2_vj_one}"
         );
 
         // 5b. Real-Data Bug #2 Regression (`GIAB HG002` / `SEQC2` `-u` insertion next-position
@@ -10352,6 +10374,4011 @@ mod vcf_all_alleles_and_compat_off {
                 rows_amp[0].starts_with("chr2\t79999\t.\tCA\tC\t"),
                 "amplicon (paired={is_paired}) 20kbp repeat must left-align to chr2:79999 CA->C, got: {}",
                 rows_amp[0]
+            );
+        }
+    }
+
+    #[test]
+    fn compat_all_38_switches_four_law_isolation_matrix() {
+        use std::time::{Duration, Instant};
+        use vardictrust_core::config::{CompatProfile, COMPAT_SWITCH_COUNT};
+        use vardictrust_core::types::round_half_even_compat;
+
+        let t0 = Instant::now();
+        let specs = CompatProfile::all_switches();
+        assert_eq!(COMPAT_SWITCH_COUNT, 38);
+        assert_eq!(specs.len(), 38);
+        for (i, spec) in specs.iter().enumerate() {
+            assert_eq!(spec.index, i, "switch index must match position {i}");
+        }
+
+        let dir = TempDir::new().expect("tempdir");
+        let non_rep = |seed: u64, len: usize| -> Vec<u8> {
+            let mut out = lcg_ref_bytes(seed, len);
+            for idx in 1..len {
+                if out[idx] == out[idx - 1] {
+                    out[idx] = match out[idx] {
+                        b'A' => b'C',
+                        b'C' => b'G',
+                        b'G' => b'T',
+                        _ => b'A',
+                    };
+                }
+                if idx >= 2
+                    && out[idx] == out[idx - 2]
+                    && out[idx - 1] == out.get(idx.wrapping_sub(3)).copied().unwrap_or(0)
+                {
+                    out[idx] = match (out[idx - 1], out[idx]) {
+                        (b'A', b'C') => b'G',
+                        (b'C', b'G') => b'T',
+                        (b'G', b'T') => b'A',
+                        _ => b'C',
+                    };
+                }
+            }
+            out
+        };
+        let flip_nt = |b: u8| -> u8 {
+            match b {
+                b'A' => b'C',
+                b'C' => b'G',
+                b'G' => b'T',
+                _ => b'A',
+            }
+        };
+
+        // Universal VCFv4.2 & .var accounting law verifier for full `COMPAT_OFF`.
+        let assert_compat_off_universal_laws =
+            |sw_label: &str, cfg: &Config, var_text: &str, vcf_text: &str| {
+                assert!(
+                    vcf_text.contains("##VarDictRustCompat=off\n"),
+                    "{sw_label}: COMPAT_OFF VCF must emit ##VarDictRustCompat=off"
+                );
+                assert!(
+                    !vcf_text.contains("NaN") && !var_text.contains("NaN"),
+                    "{sw_label}: COMPAT_OFF must never emit NaN"
+                );
+                let is_paired = cfg.bam.contains('|');
+                let is_amp = cfg.amplicon.is_some();
+
+                // .var accounting invariants
+                let mut prev_chr = String::new();
+                let mut prev_start = 0i32;
+                for line in var_text.lines().filter(|l| !l.trim().is_empty()) {
+                    let cols: Vec<&str> = line.split('\t').collect();
+                    let start: i32 = cols[3].parse().expect("var Start");
+                    assert!(
+                        start >= 1,
+                        "{sw_label}: COMPAT_OFF .var Start must be >= 1: {line}"
+                    );
+                    if !is_amp {
+                        if cols[2] == prev_chr {
+                            assert!(
+                                start >= prev_start,
+                                "{sw_label}: COMPAT_OFF .var coordinates must be non-decreasing ({prev_start} -> {start}): {line}"
+                            );
+                        } else {
+                            prev_chr.clear();
+                            prev_chr.push_str(cols[2]);
+                        }
+                        prev_start = start;
+                    }
+                    let dp: i32 = cols[7].parse().expect("var DP");
+                    let vd: i32 = cols[8].parse().expect("var VD");
+                    let rfwd: i32 = cols[9].parse().expect("var RefFwd");
+                    let rrev: i32 = cols[10].parse().expect("var RefRev");
+                    let fwd: i32 = cols[11].parse().expect("var Fwd");
+                    let rev: i32 = cols[12].parse().expect("var Rev");
+                    let pmean: f64 = cols[16].parse().expect("var PMean");
+                    let qmean: f64 = cols[18].parse().expect("var QMean");
+                    let mq: f64 = cols[20].parse().expect("var MQ");
+                    assert!(
+                        0 <= vd && vd <= dp,
+                        "{sw_label}: .var 0 <= VD <= DP: {line}"
+                    );
+                    if cols[5] != cols[6] {
+                        assert!(
+                            rfwd + rrev + vd <= dp,
+                            "{sw_label}: .var RD + VD <= DP: {line}"
+                        );
+                    }
+                    assert_eq!(fwd + rev, vd, "{sw_label}: .var Fwd + Rev == VD: {line}");
+                    assert!(
+                        pmean >= 0.0 && qmean >= 0.0 && mq >= 0.0,
+                        "{sw_label}: .var means >= 0: {line}"
+                    );
+                }
+
+                // VCFv4.2 accounting invariants
+                for line in extract_variants(vcf_text) {
+                    let cols: Vec<&str> = line.split('\t').collect();
+                    let pos: i32 = cols[1].parse().expect("VCF POS");
+                    assert!(pos >= 1, "{sw_label}: VCF POS >= 1: {line}");
+                    let ref_a = cols[3];
+                    let alt_a = cols[4];
+                    let qual: f64 = cols[5].parse().expect("VCF QUAL");
+                    assert!(
+                        qual.is_finite() && qual >= 0.0,
+                        "{sw_label}: VCF QUAL must be finite and >= 0: {line}"
+                    );
+                    let is_sym = alt_a.starts_with('<') && alt_a.ends_with('>');
+                    let is_dot = alt_a == ".";
+                    if !is_sym && !is_dot {
+                        assert!(
+                            alt_a
+                                .bytes()
+                                .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T' | b'N' | b',')),
+                            "{sw_label}: non-symbolic ALT must contain no IUPAC ambiguity bases: {line}"
+                        );
+                        if !cfg.pileup {
+                            assert_ne!(
+                                ref_a, alt_a,
+                                "{sw_label}: non-pileup COMPAT_OFF VCF must not emit REF == ALT: {line}"
+                            );
+                        }
+                        if ref_a.len() != alt_a.len()
+                            && !cfg.three_prime
+                            && cfg.crispr_cutting_site.is_none()
+                            && !alt_a.contains(',')
+                        {
+                            assert!(
+                                !ref_a.is_empty() && !alt_a.is_empty(),
+                                "{sw_label}: allele must be non-empty: {line}"
+                            );
+                            if pos > 1 {
+                                assert_ne!(
+                                    ref_a.as_bytes().last(),
+                                    alt_a.as_bytes().last(),
+                                    "{sw_label}: unequal-length allele at POS>1 must have no unstripped 3' suffix (Tan et al. 2015 parsimony): {line}"
+                                );
+                            }
+                            if ref_a.len() > 1 && alt_a.len() > 1 {
+                                assert_ne!(
+                                    ref_a.as_bytes()[0],
+                                    alt_a.as_bytes()[0],
+                                    "{sw_label}: multi-base delins must have no unstripped 5' prefix (Tan et al. 2015 parsimony): {line}"
+                                );
+                            }
+                        }
+                    }
+
+                    let info = cols[7];
+                    let mut info_dp = None;
+                    let mut info_vd = None;
+                    for kv in info.split(';') {
+                        if let Some((k, v)) = kv.split_once('=') {
+                            match k {
+                                "DP" => info_dp = Some(v.parse::<i32>().expect("INFO DP")),
+                                "VD" => info_vd = Some(v.parse::<i32>().expect("INFO VD")),
+                                "AF" | "HIAF" | "ADJAF" => {
+                                    let f: f64 = v.parse().expect("INFO AF");
+                                    assert!(
+                                        (0.0..=1.0).contains(&f),
+                                        "{sw_label}: INFO {k} in [0,1]: {line}"
+                                    );
+                                }
+                                "PMEAN" | "QUAL" | "MQ" | "NM" => {
+                                    let m: f64 = v.parse().expect("INFO mean");
+                                    assert!(m >= 0.0, "{sw_label}: INFO {k} >= 0: {line}");
+                                }
+                                "SHIFT3" if !is_sym && !is_dot && ref_a.len() == alt_a.len() => {
+                                    assert_eq!(
+                                        v, "0",
+                                        "{sw_label}: equal-length substitution must have SHIFT3=0: {line}"
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if let (Some(dp), Some(vd)) = (info_dp, info_vd) {
+                        assert!(
+                            0 <= vd && vd <= dp,
+                            "{sw_label}: INFO 0 <= VD <= DP: {line}"
+                        );
+                    }
+                    if !is_sym && !cfg.vcf_no_end_explicit {
+                        assert!(
+                            !info.contains(";END="),
+                            "{sw_label}: non-SV COMPAT_OFF VCF must omit INFO/END: {line}"
+                        );
+                    }
+
+                    let fmt_keys: Vec<&str> = cols[8].split(':').collect();
+                    let sample_cols = if is_paired {
+                        &cols[9..=10]
+                    } else {
+                        &cols[9..=9]
+                    };
+                    for smp in sample_cols {
+                        let vals: Vec<&str> = smp.split(':').collect();
+                        assert_eq!(vals.len(), fmt_keys.len(), "{sw_label}: FORMAT len: {line}");
+                        let fmap: std::collections::HashMap<&str, &str> =
+                            fmt_keys.iter().copied().zip(vals.iter().copied()).collect();
+                        let gt = fmap["GT"];
+                        assert!(
+                            matches!(gt, "0/0" | "0/1" | "1/1"),
+                            "{sw_label}: canonical sorted GT required, got {gt}: {line}"
+                        );
+                        let s_dp: i32 = fmap["DP"].parse().expect("sample DP");
+                        let s_vd: i32 = fmap["VD"].parse().expect("sample VD");
+                        assert!(
+                            0 <= s_vd && s_vd <= s_dp,
+                            "{sw_label}: sample 0 <= VD <= DP: {line}"
+                        );
+                        if !is_paired && !is_dot && s_vd > 0 {
+                            assert_ne!(
+                                gt, "0/0",
+                                "{sw_label}: single-sample carrier VD>0 must not have GT=0/0: {line}"
+                            );
+                        }
+                        let ald_parts: Vec<i32> = fmap["ALD"]
+                            .split(',')
+                            .map(|x| x.parse::<i32>().expect("ALD int"))
+                            .collect();
+                        assert_eq!(ald_parts.len(), 2);
+                        assert!(
+                            ald_parts[0] >= 0
+                                && ald_parts[1] >= 0
+                                && ald_parts[0] + ald_parts[1] == s_vd,
+                            "{sw_label}: ALD[0]+ALD[1] == VD: {line}"
+                        );
+                        let ad_parts: Vec<i32> = fmap["AD"]
+                            .split(',')
+                            .map(|x| x.parse::<i32>().expect("AD int"))
+                            .collect();
+                        if is_dot {
+                            assert_eq!(
+                                ad_parts.len(),
+                                1,
+                                "{sw_label}: ALT=. must emit single-element AD: {line}"
+                            );
+                            assert!(ad_parts[0] <= s_dp, "{sw_label}: AD[0] <= DP: {line}");
+                        } else {
+                            assert_eq!(
+                                ad_parts.len(),
+                                2,
+                                "{sw_label}: ALT!=. must emit 2-element AD: {line}"
+                            );
+                            assert_eq!(ad_parts[1], s_vd, "{sw_label}: AD[1] == VD: {line}");
+                            assert!(
+                                ad_parts[0] >= 0 && ad_parts[0] + s_vd <= s_dp,
+                                "{sw_label}: RD + VD <= DP: {line}"
+                            );
+                        }
+                        let s_af: f64 = fmap["AF"].parse().expect("sample AF");
+                        let exp_af = if s_dp > 0 {
+                            round_half_even_compat(s_vd as f64 / s_dp as f64, 4, true)
+                        } else {
+                            0.0
+                        };
+                        assert!(
+                            (s_af - exp_af).abs() <= 1e-6,
+                            "{sw_label}: sample AF {s_af} != round(VD/DP, 4) {exp_af}: {line}"
+                        );
+                    }
+                }
+            };
+
+        // -----------------------------------------------------------------
+        // Build compact shared micro-BAM fixtures once (< 50 ms total setup)
+        // -----------------------------------------------------------------
+
+        // Fixture A: `<dup-20>` (mlen = 80 < 100) for switches 1, 19, 26
+        let dup_ref = lcg_ref_bytes(0x4242_1337_A5A5_5A5A, 400);
+        let dup_fa = write_multi_contig_fasta(dir.path(), "m_dup80", &[("chr1", &dup_ref)]);
+        let dup_bam = dir.path().join("m_dup80.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..4usize {
+                let s = 185 + i * 2;
+                recs.push(mk_contig_rec(
+                    &format!("dr_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(105, Kind::Match)],
+                    dup_ref[s - 1..s - 1 + 105].to_vec(),
+                    vec![40; 105],
+                    None,
+                ));
+            }
+            for i in 0..8usize {
+                let mut seq = dup_ref[229..279].to_vec();
+                seq.extend_from_slice(&dup_ref[199..219]);
+                recs.push(mk_contig_rec(
+                    &format!("dd_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                    230,
+                    &[(50, Kind::Match), (20, Kind::SoftClip)],
+                    seq,
+                    vec![40; 70],
+                    Some((0, 200, -80)),
+                ));
+            }
+            write_multi_contig_bam(&dup_bam, &[("chr1", dup_ref.len())], recs).expect("m_dup80");
+        }
+
+        // Fixture B: `-3` 3'-shift + out-of-bounds + empty amplicon `-p` for switches 2, 3, 4
+        let mut s3_seq = lcg_ref_bytes(0x7777_8888_1234_4321, 300);
+        s3_seq[109..115].copy_from_slice(b"GATACG"); // 110..=115: 2D of 111..=112 shifts 3' to 111
+        s3_seq[189] = b'A'; // in-bounds SNV at 190
+        s3_seq[198..204].copy_from_slice(b"GATACG"); // 199..=204: +AT at 199 shifts 3' to 202 > 200
+        let s3_fa = write_multi_contig_fasta(dir.path(), "m_s3", &[("chr1", &s3_seq)]);
+        let s3_bam = dir.path().join("m_s3.bam");
+        let s3_amp_bed = dir.path().join("m_s3_amp.bed");
+        {
+            let mut recs = Vec::new();
+            for i in 0..6usize {
+                let s = 92 + (i % 3);
+                recs.push(mk_contig_rec(
+                    &format!("s3_wt1_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(45, Kind::Match)],
+                    s3_seq[s - 1..s - 1 + 45].to_vec(),
+                    vec![39; 45],
+                    None,
+                ));
+            }
+            for i in 0..5usize {
+                let s = 92 + i;
+                let left = 110 - s + 1;
+                let right = 25usize;
+                let mut seq = s3_seq[s - 1..110].to_vec();
+                seq.extend_from_slice(&s3_seq[112..112 + right]);
+                recs.push(mk_contig_rec(
+                    &format!("s3_d111_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[
+                        (left, Kind::Match),
+                        (2, Kind::Deletion),
+                        (right, Kind::Match),
+                    ],
+                    seq,
+                    vec![39; left + right],
+                    None,
+                ));
+            }
+            for i in 0..6usize {
+                let s = 175 + (i % 3);
+                let mut seq = s3_seq[s - 1..s - 1 + 45].to_vec();
+                if i < 4 {
+                    seq[190 - s] = b'G';
+                }
+                recs.push(mk_contig_rec(
+                    &format!("s3_snv190_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(45, Kind::Match)],
+                    seq,
+                    vec![39; 45],
+                    None,
+                ));
+            }
+            for i in 0..5usize {
+                let s = 180 + i;
+                let left = 199 - s + 1;
+                let right = 22usize;
+                let mut seq = s3_seq[s - 1..199].to_vec();
+                seq.extend_from_slice(b"AT");
+                seq.extend_from_slice(&s3_seq[199..199 + right]);
+                recs.push(mk_contig_rec(
+                    &format!("s3_i199_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[
+                        (left, Kind::Match),
+                        (2, Kind::Insertion),
+                        (right, Kind::Match),
+                    ],
+                    seq,
+                    vec![39; left + 2 + right],
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&s3_bam, &[("chr1", s3_seq.len())], recs).expect("m_s3");
+            fs::write(
+                &s3_amp_bed,
+                "chr1\t174\t220\tAMP_COV\t0\t+\t180\t200\nchr1\t259\t270\tAMP_EMPTY\t0\t+\t259\t270\n",
+            )
+            .expect("m_s3_amp.bed");
+        }
+
+        // Fixture C: `live_duprate` (`-t`, 3/8 = 0.38) for switch 5
+        let dr_seq = lcg_ref_bytes(0x3141_5926_5358_9793, 280);
+        let dr_fa = write_multi_contig_fasta(dir.path(), "m_dr", &[("chr1", &dr_seq)]);
+        let dr_bam = dir.path().join("m_dr.bam");
+        {
+            let alt = flip_nt(dr_seq[94]);
+            let mk_dr = |name: &str, s: usize, v: bool| {
+                let mut seq = dr_seq[s - 1..s - 1 + 45].to_vec();
+                if v && (s..s + 45).contains(&95) {
+                    seq[95 - s] = alt;
+                }
+                mk_contig_rec(
+                    name,
+                    0,
+                    Flags::empty(),
+                    s,
+                    &[(45, Kind::Match)],
+                    seq,
+                    vec![40; 45],
+                    None,
+                )
+            };
+            write_multi_contig_bam(
+                &dr_bam,
+                &[("chr1", dr_seq.len())],
+                vec![
+                    mk_dr("d0", 70, true),
+                    mk_dr("d1", 70, true),
+                    mk_dr("d2", 70, true),
+                    mk_dr("d3", 72, true),
+                    mk_dr("d4", 74, true),
+                    mk_dr("d5", 76, false),
+                    mk_dr("d6", 210, false),
+                    mk_dr("d7", 210, false),
+                ],
+            )
+            .expect("m_dr");
+        }
+
+        // Fixture D: Mixed sex/mito contigs (`X`, `chrX`, `Y`, `chrY`, `MT`, `chrM`) for switch 6
+        let sex_names = ["chrM", "MT", "chrY", "Y", "chrX", "X"];
+        let sex_seq = lcg_ref_bytes(0x2468_ACE0_1357_9BDF, 180);
+        let sex_fa = write_multi_contig_fasta(
+            dir.path(),
+            "m_sex",
+            &sex_names
+                .iter()
+                .map(|&n| (n, sex_seq.as_slice()))
+                .collect::<Vec<_>>(),
+        );
+        let sex_bam = dir.path().join("m_sex.bam");
+        let sex_bed = dir.path().join("m_sex.bed");
+        {
+            let alt = flip_nt(sex_seq[99]);
+            let mut recs = Vec::new();
+            for (cid, &cname) in sex_names.iter().enumerate() {
+                for i in 0..4usize {
+                    let s = 80 + i * 2;
+                    let mut seq = sex_seq[s - 1..s - 1 + 45].to_vec();
+                    seq[100 - s] = alt;
+                    recs.push(mk_contig_rec(
+                        &format!("{cname}_{i}"),
+                        cid,
+                        if i % 2 == 1 {
+                            Flags::REVERSE_COMPLEMENTED
+                        } else {
+                            Flags::empty()
+                        },
+                        s,
+                        &[(45, Kind::Match)],
+                        seq,
+                        vec![40; 45],
+                        None,
+                    ));
+                }
+            }
+            write_multi_contig_bam(
+                &sex_bam,
+                &sex_names.iter().map(|&n| (n, 180)).collect::<Vec<_>>(),
+                recs,
+            )
+            .expect("m_sex");
+            let bed_txt: String = sex_names
+                .iter()
+                .map(|n| format!("{n}\t49\t150\tG_{n}\n"))
+                .collect();
+            fs::write(&sex_bed, bed_txt).expect("m_sex.bed");
+        }
+
+        // Fixture E: PR #402 homopolymer multi-indel read for switch 7
+        let pr402_seq = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAAAAAAAAAAGAAAAAAGAAAAAAAAAG";
+        let pr402_qual_ascii = b"BBFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF=74??44444444FFFFFFFFFFFFFFFFFFFFFFFFFFFFF";
+        let pr402_ref = b"AATCCTCTGTTTGGAAACCAGCCCGATTCAAGGAGGGTTCTGATGCACTGCGGTGAATTTTTGGCAATGAGCGGGCCAGCAGCTCAATAGAGGCGAGAATCTACAAAAAAAAAAAGAAAAAAAAAAGAAAAAAAAAGAAAAAAGAAAAAAAAAGAAAGAAAGAAAAAGAAAAAACAGAAAGAAGAATGAAAATCTGGGTG";
+        let pr402_fa = write_multi_contig_fasta(dir.path(), "m_pr402", &[("chr1", pr402_ref)]);
+        let pr402_bam = dir.path().join("m_pr402.bam");
+        {
+            let ops = [
+                (104, Kind::Match),
+                (1, Kind::Insertion),
+                (2, Kind::Match),
+                (2, Kind::Deletion),
+                (1, Kind::Match),
+                (1, Kind::Deletion),
+                (5, Kind::Match),
+                (1, Kind::Deletion),
+                (2, Kind::Match),
+                (9, Kind::Deletion),
+                (27, Kind::Match),
+            ];
+            let phred: Vec<u8> = pr402_qual_ascii.iter().map(|&q| q - 33).collect();
+            write_multi_contig_bam(
+                &pr402_bam,
+                &[("chr1", pr402_ref.len())],
+                vec![mk_contig_rec(
+                    "pr402_1",
+                    0,
+                    Flags::empty(),
+                    1,
+                    &ops,
+                    pr402_seq.to_vec(),
+                    phred,
+                    None,
+                )],
+            )
+            .expect("m_pr402");
+        }
+
+        // Fixture F: `--eqx` (`=`/`X`) CIGAR read length with `-M 100` for switch 8
+        let eqx_seq = non_rep(0xE0E0_8888_1111_2222, 260);
+        let eqx_fa = write_multi_contig_fasta(dir.path(), "m_eqx", &[("chr1", &eqx_seq)]);
+        let eqx_bam = dir.path().join("m_eqx.bam");
+        {
+            let alt = flip_nt(eqx_seq[129]);
+            let mut recs = Vec::new();
+            for i in 0..12usize {
+                let s = 60 + (i % 4);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = eqx_seq[s - 1..s - 1 + 150].to_vec();
+                let ops: Vec<(usize, Kind)> = if i < 6 {
+                    let off = 130 - s;
+                    seq[off] = alt;
+                    vec![
+                        (off, Kind::SequenceMatch),
+                        (1, Kind::SequenceMismatch),
+                        (149 - off, Kind::SequenceMatch),
+                    ]
+                } else {
+                    vec![(150, Kind::SequenceMatch)]
+                };
+                recs.push(mk_contig_rec(
+                    &format!("eqx_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &ops,
+                    seq,
+                    vec![39; 150],
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&eqx_bam, &[("chr1", eqx_seq.len())], recs).expect("m_eqx");
+        }
+
+        // Fixture G: Discordant-only `<DUP>` (`SPLITREAD=0;SPANPAIR=8`, mlen=250) for switch 9
+        let ub5_seq = lcg_ref_bytes(0x0B05_D15C_5678_9ABC, 650);
+        let ub5_fa = write_multi_contig_fasta(dir.path(), "m_ub5", &[("chr1", &ub5_seq)]);
+        let ub5_bam = dir.path().join("m_ub5.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..6usize {
+                let s = 185 + i * 2;
+                recs.push(mk_contig_rec(
+                    &format!("ub5_wt_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(70, Kind::Match)],
+                    ub5_seq[s - 1..s - 1 + 70].to_vec(),
+                    vec![40; 70],
+                    None,
+                ));
+            }
+            for i in 0..8usize {
+                recs.push(mk_contig_rec(
+                    &format!("ub5_d_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                    450,
+                    &[(50, Kind::Match)],
+                    ub5_seq[449..499].to_vec(),
+                    vec![40; 50],
+                    Some((0, 200, -250)),
+                ));
+            }
+            write_multi_contig_bam(&ub5_bam, &[("chr1", ub5_seq.len())], recs).expect("m_ub5");
+        }
+
+        // Fixture H: UB-6 `mark_dup_sv_inclusive_end` (`8-8-1` vs `8-8-2`) for switch 10
+        let mut ub6_seq = lcg_ref_bytes(0x0B06_BEEF_CAFE_1234, 700);
+        ub6_seq[198] = b'G';
+        ub6_seq[498] = b'A';
+        ub6_seq[199..219].copy_from_slice(b"TTCGAAGGTTCCAAGGTTCC");
+        let ub6_fa = write_multi_contig_fasta(dir.path(), "m_ub6", &[("chr1", &ub6_seq)]);
+        let ub6_bam = dir.path().join("m_ub6.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..4usize {
+                let s = 165 + i * 2;
+                recs.push(mk_contig_rec(
+                    &format!("u6_w_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(150, Kind::Match)],
+                    ub6_seq[s - 1..s - 1 + 150].to_vec(),
+                    vec![40; 150],
+                    None,
+                ));
+            }
+            for i in 0..8usize {
+                let mut seq = ub6_seq[449..499].to_vec();
+                seq.extend_from_slice(b"TTCGAAGGTTCCAAGGTTCC");
+                recs.push(mk_contig_rec(
+                    &format!("u6_f_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                    450,
+                    &[(50, Kind::Match), (20, Kind::SoftClip)],
+                    seq,
+                    vec![40; 70],
+                    Some((0, 200, -300)),
+                ));
+            }
+            for i in 0..4usize {
+                recs.push(mk_contig_rec(
+                    &format!("u6_r_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::REVERSE_COMPLEMENTED,
+                    560,
+                    &[(50, Kind::Match)],
+                    ub6_seq[559..609].to_vec(),
+                    vec![40; 50],
+                    Some((0, 499, 110)),
+                ));
+            }
+            write_multi_contig_bam(&ub6_bam, &[("chr1", ub6_seq.len())], recs).expect("m_ub6");
+        }
+
+        // Fixture I: `sv_lazy_mate_pileup` (unmatched `svfinv3` FF cluster with `mstart=10 < loaded 50` under `region="chr1:100-350"`, `max_region_len=50`:
+        // eager `find_inv_sub` mate pileup `[1..260]` double-piles `pos=180` from `DP=10;VD=4` to `DP=20;VD=8` when disabled!) for switch 11
+        let mut inv11_seq = non_rep(0xD15C_1470_0120_BEEF, 500);
+        inv11_seq[179] = b'A';
+        let inv11_fa = write_multi_contig_fasta(dir.path(), "m_inv11", &[("chr1", &inv11_seq)]);
+        let inv11_bam = dir.path().join("m_inv11.bam");
+        {
+            let mut recs = Vec::new();
+            for k in 0..10usize {
+                let s = 155 + (k % 4);
+                let mut seq = inv11_seq[s - 1..s - 1 + 50].to_vec();
+                if k < 4 {
+                    seq[180 - s] = b'G';
+                }
+                recs.push(mk_contig_rec(
+                    &format!("i11_snv_{k}"),
+                    0,
+                    if k % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(50, Kind::Match)],
+                    seq,
+                    vec![39; 50],
+                    None,
+                ));
+            }
+            for k in 0..6usize {
+                let s = 260 + (k % 3);
+                recs.push(mk_contig_rec(
+                    &format!("i11_ff3_{k}"),
+                    0,
+                    Flags::SEGMENTED,
+                    s,
+                    &[(50, Kind::Match)],
+                    inv11_seq[s - 1..s - 1 + 50].to_vec(),
+                    vec![40; 50],
+                    Some((0, 10, -250)),
+                ));
+            }
+            write_multi_contig_bam(&inv11_bam, &[("chr1", inv11_seq.len())], recs)
+                .expect("m_inv11");
+        }
+
+        // Fixture J: `exact_binary_half_even` (`1 / 20_000 == 5e-5` with compact 11M reads) for switch 12
+        let mut tie_seq = non_rep(0x5E05_0001_2000_0000, 120);
+        tie_seq[89] = b'A';
+        let tie_fa = write_multi_contig_fasta(dir.path(), "m_tie", &[("chr1", &tie_seq)]);
+        let tie_bam = dir.path().join("m_tie.bam");
+        {
+            let mut recs = Vec::with_capacity(20_000);
+            let mut vseq = tie_seq[84..95].to_vec(); // start=85, len=11 -> pos 90 is offset 5 (>=5 bp from both ends!)
+            vseq[5] = b'G';
+            recs.push(mk_contig_rec(
+                "tv",
+                0,
+                Flags::empty(),
+                85,
+                &[(11, Kind::Match)],
+                vseq,
+                vec![40; 11],
+                None,
+            ));
+            let wt1 = tie_seq[83..94].to_vec();
+            let wt2 = tie_seq[84..95].to_vec();
+            for i in 0..19_999usize {
+                let (s, seq) = if i % 2 == 0 {
+                    (84, wt1.clone())
+                } else {
+                    (85, wt2.clone())
+                };
+                recs.push(mk_contig_rec(
+                    "tw",
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(11, Kind::Match)],
+                    seq,
+                    vec![40; 11],
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&tie_bam, &[("chr1", tie_seq.len())], recs).expect("m_tie");
+        }
+
+        // Fixture K: `reconcile_vd_dp` (#92 `VD=10 > raw DP=6, RD=2`) for switch 13
+        let mut rec13_ref = lcg_ref_bytes(0x9238_6400_CAFE_BABE, 500);
+        rec13_ref[198..200].copy_from_slice(b"AC");
+        rec13_ref[398..400].copy_from_slice(b"GT");
+        let rec13_fa = write_multi_contig_fasta(dir.path(), "m_rec13", &[("chr1", &rec13_ref)]);
+        let rec13_bam = dir.path().join("m_rec13.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..2usize {
+                let s = 360 + i * 2;
+                recs.push(mk_contig_rec(
+                    &format!("r13_w_{i}"),
+                    0,
+                    if i == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(80, Kind::Match)],
+                    rec13_ref[s - 1..s - 1 + 80].to_vec(),
+                    vec![38; 80],
+                    None,
+                ));
+            }
+            for i in 0..2usize {
+                let mut fseq = rec13_ref[339..399].to_vec();
+                fseq.extend_from_slice(&rec13_ref[199..219]);
+                recs.push(mk_contig_rec(
+                    &format!("r13_fs_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                    340,
+                    &[(60, Kind::Match), (20, Kind::SoftClip)],
+                    fseq,
+                    vec![38; 80],
+                    Some((0, 200, -200)),
+                ));
+            }
+            for i in 0..8usize {
+                let mut rseq = rec13_ref[379..399].to_vec();
+                rseq.extend_from_slice(&rec13_ref[199..259]);
+                recs.push(mk_contig_rec(
+                    &format!("r13_rs_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::REVERSE_COMPLEMENTED,
+                    200,
+                    &[(20, Kind::SoftClip), (60, Kind::Match)],
+                    rseq,
+                    vec![38; 80],
+                    Some((0, 330, 200)),
+                ));
+                recs.push(mk_contig_rec(
+                    &format!("r13_fd_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                    330,
+                    &[(60, Kind::Match)],
+                    rec13_ref[329..389].to_vec(),
+                    vec![38; 60],
+                    Some((0, 200, -200)),
+                ));
+            }
+            write_multi_contig_bam(&rec13_bam, &[("chr1", rec13_ref.len())], recs)
+                .expect("m_rec13");
+        }
+
+        // Fixture L: `coordinate_sorted_vars` (`[512, 260, 152, 511]`) + `AF=0.50` (`1/0` GT) for switches 14 & 31
+        let mut sort_ref = non_rep(0x2820_0034_BEEF_CAFE, 620);
+        for &p in &[152usize, 260, 511, 512] {
+            sort_ref[p - 1] = b'A';
+        }
+        let sort_fa = write_multi_contig_fasta(dir.path(), "m_sort", &[("chr1", &sort_ref)]);
+        let sort_bam = dir.path().join("m_sort.bam");
+        {
+            let mut recs = Vec::new();
+            for &(locus, alt_b, alt_cnt) in &[(152usize, b'G', 6usize), (260usize, b'C', 8usize)] {
+                for i in 0..20usize {
+                    let s = locus - 25 + (i % 5);
+                    let mut seq = sort_ref[s - 1..s - 1 + 60].to_vec();
+                    if i < alt_cnt {
+                        seq[locus - s] = alt_b;
+                    }
+                    recs.push(mk_contig_rec(
+                        &format!("ms_{locus}_{i}"),
+                        0,
+                        if i % 2 == 1 {
+                            Flags::REVERSE_COMPLEMENTED
+                        } else {
+                            Flags::empty()
+                        },
+                        s,
+                        &[(60, Kind::Match)],
+                        seq,
+                        vec![38; 60],
+                        None,
+                    ));
+                }
+            }
+            for i in 0..20usize {
+                let s = 486 + (i % 5);
+                let mut seq = sort_ref[s - 1..s - 1 + 60].to_vec();
+                if i < 5 {
+                    seq[511 - s] = b'T';
+                } else if (6..16).contains(&i) {
+                    seq[512 - s] = b'G'; // AF = 10/20 = 0.50 -> GT=1/0 in legacy!
+                }
+                recs.push(mk_contig_rec(
+                    &format!("ms_511_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(60, Kind::Match)],
+                    seq,
+                    vec![38; 60],
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&sort_bam, &[("chr1", sort_ref.len())], recs).expect("m_sort");
+        }
+
+        // Fixture M: `exact_35_overlap` (`rem5=25 < rem3=35` 2-mismatch 35bp insertion) for switch 15
+        let ins35_ref: Vec<u8> = (0..700)
+            .map(|i| if i % 2 == 0 { b'T' } else { b'C' })
+            .collect();
+        let ins35_fa = write_multi_contig_fasta(dir.path(), "m_ins35", &[("chr1", &ins35_ref)]);
+        let ins35_bam = dir.path().join("m_ins35.bam");
+        {
+            let motif: Vec<u8> = (0..60)
+                .map(|k| b"ACGT"[(k * 7 + (k / 4) * 3 + (k / 16)) % 4])
+                .collect();
+            let mut s3_rev_35 = motif[..35].to_vec();
+            s3_rev_35[34] = b'G';
+            let s3_35: Vec<u8> = s3_rev_35.iter().copied().rev().collect();
+            let mut s5_25 = motif[..25].to_vec();
+            s5_25[6] = flip_nt(s5_25[6]);
+            s5_25[16] = flip_nt(s5_25[16]);
+            let s5_bytes: Vec<u8> = s5_25.iter().copied().rev().collect();
+            let mut recs = Vec::new();
+            for i in 0..8usize {
+                let mut seq3 = ins35_ref[449..499].to_vec();
+                seq3.extend_from_slice(&s3_35);
+                recs.push(mk_contig_rec(
+                    &format!("i35_3_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    450,
+                    &[(50, Kind::Match), (35, Kind::SoftClip)],
+                    seq3,
+                    vec![38; 85],
+                    None,
+                ));
+                let mut seq5 = s5_bytes.clone();
+                seq5.extend_from_slice(&ins35_ref[499..549]);
+                recs.push(mk_contig_rec(
+                    &format!("i35_5_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    500,
+                    &[(25, Kind::SoftClip), (50, Kind::Match)],
+                    seq5,
+                    vec![38; 75],
+                    None,
+                ));
+            }
+            for i in 0..4usize {
+                let s = 470 + i * 2;
+                recs.push(mk_contig_rec(
+                    &format!("i35_w_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(70, Kind::Match)],
+                    ins35_ref[s - 1..s - 1 + 70].to_vec(),
+                    vec![38; 70],
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&ins35_bam, &[("chr1", ins35_ref.len())], recs)
+                .expect("m_ins35");
+        }
+
+        // Fixture N: `exact_cigar_dlen_match` (`5D` vs downstream `15D`) for switch 16
+        let mut dlen_ref = non_rep(0xD15D_0005_1234_5678, 420);
+        dlen_ref[259] = b'A';
+        dlen_ref[260] = b'C';
+        dlen_ref[264] = b'G';
+        dlen_ref[265] = b'T';
+        dlen_ref[309] = b'A';
+        dlen_ref[310] = b'C';
+        dlen_ref[324] = b'G';
+        dlen_ref[325] = b'T';
+        let dlen_fa = write_multi_contig_fasta(dir.path(), "m_dlen", &[("chr1", &dlen_ref)]);
+        let dlen_bam = dir.path().join("m_dlen.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..7usize {
+                let s = 200 + (i % 4);
+                let left = 260 - s + 1;
+                let right = 150 - left;
+                let mut seq = dlen_ref[s - 1..260].to_vec();
+                seq.extend_from_slice(&dlen_ref[265..265 + right]);
+                recs.push(mk_contig_rec(
+                    &format!("dl5_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[
+                        (left, Kind::Match),
+                        (5, Kind::Deletion),
+                        (right, Kind::Match),
+                    ],
+                    seq,
+                    vec![38; 150],
+                    None,
+                ));
+            }
+            for i in 0..3usize {
+                let mut seq = dlen_ref[200..310].to_vec();
+                seq.extend_from_slice(&dlen_ref[325..365]);
+                recs.push(mk_contig_rec(
+                    &format!("dl15_{i}"),
+                    0,
+                    if i == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    201,
+                    &[(110, Kind::Match), (15, Kind::Deletion), (40, Kind::Match)],
+                    seq,
+                    vec![38; 150],
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&dlen_bam, &[("chr1", dlen_ref.len())], recs).expect("m_dlen");
+        }
+
+        // Fixture O: `somatic_continue_after_bad_var` (bad Q12 'G' ahead of good Q38 'T') for switch 17
+        let mut s17_ref = non_rep(0x5017_0018_ABCD_EF01, 240);
+        s17_ref[119] = b'A';
+        let s17_fa = write_multi_contig_fasta(dir.path(), "m_s17", &[("chr1", &s17_ref)]);
+        let s17_t = dir.path().join("m_s17_t.bam");
+        let s17_n = dir.path().join("m_s17_n.bam");
+        {
+            let mut trecs = Vec::new();
+            let mut nrecs = Vec::new();
+            for i in 0..20usize {
+                let s = 95 + (i % 5);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let wt = s17_ref[s - 1..s - 1 + 50].to_vec();
+                nrecs.push(mk_contig_rec(
+                    &format!("s17_n_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[(50, Kind::Match)],
+                    wt.clone(),
+                    vec![38; 50],
+                    None,
+                ));
+                if i < 6 {
+                    // start=117 -> 120 is 4th base (pmean=4.0 < read_pos=5.0, >=3bp from end so modify_cigar keeps it;
+                    // Phred=35 >= 22.5 so CigarParser piles VD=6 ahead of 'T' VD=5, then fails is_good_var!)
+                    let mut gseq = s17_ref[116..166].to_vec();
+                    gseq[3] = b'G';
+                    trecs.push(mk_contig_rec(
+                        &format!("s17_tg_{i}"),
+                        0,
+                        Flags::empty(),
+                        117,
+                        &[(50, Kind::Match)],
+                        gseq,
+                        vec![35; 50],
+                        None,
+                    ));
+                } else if i < 11 {
+                    let mut tseq = wt;
+                    tseq[120 - s] = b'T'; // passes is_good_var (VD=5, PMEAN>=20, Q=38)
+                    trecs.push(mk_contig_rec(
+                        &format!("s17_tt_{i}"),
+                        0,
+                        flags,
+                        s,
+                        &[(50, Kind::Match)],
+                        tseq,
+                        vec![38; 50],
+                        None,
+                    ));
+                } else {
+                    trecs.push(mk_contig_rec(
+                        &format!("s17_tw_{i}"),
+                        0,
+                        flags,
+                        s,
+                        &[(50, Kind::Match)],
+                        wt,
+                        vec![38; 50],
+                        None,
+                    ));
+                }
+            }
+            write_multi_contig_bam(&s17_t, &[("chr1", s17_ref.len())], trecs).expect("m_s17_t");
+            write_multi_contig_bam(&s17_n, &[("chr1", s17_ref.len())], nrecs).expect("m_s17_n");
+        }
+
+        // Fixture P: `adaptor_all_consensus_dirs` (TruSeq 3' chimera + true MNP) for switch 18
+        let truseq = "AGATCGGAAGAGCACACGTCTGAACTCCAGTCA";
+        let motif18 = b"ACGTACGTAGCTAGCTTGCAACGTTAGCATGC";
+        let mut ad_seq: Vec<u8> = (0..320).map(|i| motif18[i % motif18.len()]).collect();
+        ad_seq[174..177].copy_from_slice(b"CCC");
+        let ad_fa = write_multi_contig_fasta(dir.path(), "m_ad18", &[("chr1", &ad_seq)]);
+        let ad_bam = dir.path().join("m_ad18.bam");
+        {
+            let mut recs = Vec::new();
+            for idx in 0..24usize {
+                let s = 140 + (idx % 4);
+                let flags = if idx % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                if idx < 8 {
+                    let mut seq = ad_seq[s - 1..174].to_vec();
+                    seq.extend_from_slice(&truseq.as_bytes()[..20]);
+                    seq.extend_from_slice(&ad_seq[174..189]);
+                    let m_len = 175 - s;
+                    let s_len = seq.len() - m_len;
+                    recs.push(mk_contig_rec(
+                        &format!("ad_c_{idx}"),
+                        0,
+                        flags,
+                        s,
+                        &[(m_len, Kind::Match), (s_len, Kind::SoftClip)],
+                        seq,
+                        vec![38; m_len + s_len],
+                        None,
+                    ));
+                } else if idx < 16 {
+                    let mut seq = ad_seq[s - 1..s - 1 + 60].to_vec();
+                    seq[175 - s] = b'T';
+                    seq[176 - s] = b'T';
+                    recs.push(mk_contig_rec(
+                        &format!("ad_m_{idx}"),
+                        0,
+                        flags,
+                        s,
+                        &[(60, Kind::Match)],
+                        seq,
+                        vec![38; 60],
+                        None,
+                    ));
+                } else {
+                    recs.push(mk_contig_rec(
+                        &format!("ad_w_{idx}"),
+                        0,
+                        flags,
+                        s,
+                        &[(60, Kind::Match)],
+                        ad_seq[s - 1..s - 1 + 60].to_vec(),
+                        vec![38; 60],
+                        None,
+                    ));
+                }
+            }
+            write_multi_contig_bam(&ad_bam, &[("chr1", ad_seq.len())], recs).expect("m_ad18");
+        }
+
+        // Fixture Q: `paired_somatic_amplicon` for switch 20
+        let mut spe_seq = non_rep(0x5BE0_2121_0378_0303, 300);
+        spe_seq[129] = b'C';
+        let spe_fa = write_multi_contig_fasta(dir.path(), "m_spe", &[("chr1", &spe_seq)]);
+        let spe_t = dir.path().join("m_spe_t.bam");
+        let spe_n = dir.path().join("m_spe_n.bam");
+        let spe_bed = dir.path().join("m_spe.bed");
+        {
+            let mut trecs = Vec::new();
+            let mut nrecs = Vec::new();
+            for idx in 0..12usize {
+                let mut st = spe_seq[89..179].to_vec();
+                let sn = st.clone();
+                if idx < 6 {
+                    st[130 - 90] = b'T';
+                }
+                let flags = if idx % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                trecs.push(mk_contig_rec(
+                    &format!("sp_t_{idx}"),
+                    0,
+                    flags,
+                    90,
+                    &[(90, Kind::Match)],
+                    st,
+                    vec![38; 90],
+                    None,
+                ));
+                nrecs.push(mk_contig_rec(
+                    &format!("sp_n_{idx}"),
+                    0,
+                    flags,
+                    90,
+                    &[(90, Kind::Match)],
+                    sn,
+                    vec![38; 90],
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&spe_t, &[("chr1", spe_seq.len())], trecs).expect("m_spe_t");
+            write_multi_contig_bam(&spe_n, &[("chr1", spe_seq.len())], nrecs).expect("m_spe_n");
+            fs::write(&spe_bed, "chr1\t89\t180\tAMP1\t0\t+\t99\t170\n").expect("m_spe.bed");
+        }
+
+        // Fixture R: `cigar_strip_outer_hard_clips` (`12H90M3D15M3I20H`) for switch 21
+        let hc_ref = non_rep(0x3410_0103_ABCD_9999, 300);
+        let hc_fa = write_multi_contig_fasta(dir.path(), "m_hc21", &[("chr1", &hc_ref)]);
+        let hc_bam = dir.path().join("m_hc21.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..6usize {
+                let s = 80 + (i % 3);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                recs.push(mk_contig_rec(
+                    &format!("hc_w_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[
+                        (12, Kind::HardClip),
+                        (120, Kind::Match),
+                        (20, Kind::HardClip),
+                    ],
+                    hc_ref[s - 1..s - 1 + 120].to_vec(),
+                    vec![38; 120],
+                    None,
+                ));
+                let mut vseq = hc_ref[84..174].to_vec();
+                vseq.extend_from_slice(&hc_ref[177..192]);
+                vseq.extend_from_slice(b"ACG");
+                recs.push(mk_contig_rec(
+                    &format!("hc_v_{i}"),
+                    0,
+                    flags,
+                    85,
+                    &[
+                        (12, Kind::HardClip),
+                        (90, Kind::Match),
+                        (3, Kind::Deletion),
+                        (15, Kind::Match),
+                        (3, Kind::Insertion),
+                        (20, Kind::HardClip),
+                    ],
+                    vseq,
+                    vec![39; 108],
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&hc_bam, &[("chr1", hc_ref.len())], recs).expect("m_hc21");
+        }
+
+        // Fixture S: `nonnegative_subtracted_means` (`bcbio/bcbio-nextgen#1704` paired `combine_analysis`, switch 22)
+        //            & `strict_vcf_ad_number_r` (`-p` wild-type `ALT=.`, switch 29)
+        let mut sub_ref = non_rep(0x1704_2229_BEEF_CAFE, 240);
+        sub_ref[100] = b'G'; // 101 anchor
+        sub_ref[101] = b'C'; // 102 first deleted base
+        sub_ref[112] = b'A'; // 113 last deleted base != 'G'
+        sub_ref[113] = b'T'; // 114 != 'C' (keeps 12D pinned at 101)
+        let sub_fa = write_multi_contig_fasta(dir.path(), "m_sub22", &[("chr1", &sub_ref)]);
+        let sub22_t = dir.path().join("m_sub22_t.bam");
+        let sub22_n = dir.path().join("m_sub22_n.bam");
+        {
+            let mut trecs = Vec::new();
+            let mut nrecs = Vec::new();
+            for i in 0..30usize {
+                let s = 60 + (i % 4);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let wt = mk_contig_rec(
+                    &format!("sb_w_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[(85, Kind::Match)],
+                    sub_ref[s - 1..s - 1 + 85].to_vec(),
+                    vec![38; 85],
+                    None,
+                );
+                if i < 15 {
+                    trecs.push(wt.clone());
+                }
+                nrecs.push(wt);
+            }
+            // Tumor: 4 `12D` reads (`base_pc = 4 < min_reads(3) + 3 = 6` so somatic gate calls `combine_analysis`!):
+            //   3 reads @ MQ=61 + 1 read @ MQ=60 -> sum_mq=243, 243/4 = 60.75 -> HALF_EVEN 60.8 (60.8*4 = 243.2).
+            for i in 0..4usize {
+                let s = 66 + i;
+                let pre = 102 - s;
+                let post = 35usize;
+                let mut seq = sub_ref[s - 1..101].to_vec();
+                seq.extend_from_slice(&sub_ref[113..113 + post]);
+                let mq_v = if i < 3 { 61u8 } else { 60u8 };
+                let mut r = mk_contig_rec(
+                    &format!("sb_td_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[
+                        (pre, Kind::Match),
+                        (12, Kind::Deletion),
+                        (post, Kind::Match),
+                    ],
+                    seq,
+                    vec![38u8; pre + post],
+                    None,
+                );
+                *r.mapping_quality_mut() =
+                    noodles::sam::alignment::record::MappingQuality::new(mq_v);
+                trecs.push(r);
+            }
+            // Normal: 2 `12S 50M` @ p=114 + 1 `42M 12S` ending @ 101 (all MQ=0, min_reads=3):
+            // - Alone in Normal: cnt=2 < 3 and cnt=1 < 3 -> skipped -> v2 is None -> triggers `combine_analysis`!
+            // - Combined Tumor+Normal: existing 102:"-12" rescues all 3 clips -> comb_pc=7 (pcv=3 >= 3):
+            //   mq = 243/7 = 34.714 -> 34.7 (34.7*7 = 242.9 < 243.2 -> var2.mean_mapping_quality = -0.1!).
+            let mut sc5_seq = sub_ref[89..101].to_vec(); // 12S matching 90..=101 -> bp=102, dellen=12
+            sc5_seq.extend_from_slice(&sub_ref[113..163]); // 50M matching 114..=163
+            let mut sc3_seq = sub_ref[59..101].to_vec(); // 42M matching 60..=101 (sc3p=102)
+            sc3_seq.extend_from_slice(&sub_ref[113..125]); // 12S matching 114..=125 -> dellen=12
+            for (qname, fl, pos, ops, seq_v) in [
+                (
+                    "sb_nsc5_0",
+                    Flags::empty(),
+                    114usize,
+                    [(12usize, Kind::SoftClip), (50usize, Kind::Match)],
+                    sc5_seq.clone(),
+                ),
+                (
+                    "sb_nsc5_1",
+                    Flags::REVERSE_COMPLEMENTED,
+                    114usize,
+                    [(12usize, Kind::SoftClip), (50usize, Kind::Match)],
+                    sc5_seq,
+                ),
+                (
+                    "sb_nsc3_0",
+                    Flags::empty(),
+                    60usize,
+                    [(42usize, Kind::Match), (12usize, Kind::SoftClip)],
+                    sc3_seq,
+                ),
+            ] {
+                let qlen = seq_v.len();
+                let mut r = mk_contig_rec(qname, 0, fl, pos, &ops, seq_v, vec![38u8; qlen], None);
+                *r.mapping_quality_mut() = noodles::sam::alignment::record::MappingQuality::new(0);
+                nrecs.push(r);
+            }
+            trecs.sort_by_key(|r| r.alignment_start().unwrap().get());
+            nrecs.sort_by_key(|r| r.alignment_start().unwrap().get());
+            write_multi_contig_bam(&sub22_t, &[("chr1", sub_ref.len())], trecs).expect("m_sub22_t");
+            write_multi_contig_bam(&sub22_n, &[("chr1", sub_ref.len())], nrecs).expect("m_sub22_n");
+        }
+
+        // Fixture T: `reconcile_strand_and_hq_sums` (`find_del_disc` stale `fwd`/`hicnt` on `-602`) for switch 23
+        let sv23_ref = non_rep(0x0316_2323_DEAD_BEEF, 950);
+        let sv23_fa = write_multi_contig_fasta(dir.path(), "m_sv23", &[("chr1", &sv23_ref)]);
+        let sv23_bam = dir.path().join("m_sv23.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..8usize {
+                let s = 170 + (i % 4);
+                recs.push(mk_contig_rec(
+                    &format!("s23_w_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(60, Kind::Match)],
+                    sv23_ref[s - 1..s - 1 + 60].to_vec(),
+                    vec![39; 60],
+                    None,
+                ));
+            }
+            for i in 0..7usize {
+                recs.push(mk_contig_rec(
+                    &format!("s23_fd_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::MATE_REVERSE_COMPLEMENTED,
+                    137,
+                    &[(60, Kind::Match)],
+                    sv23_ref[136..196].to_vec(),
+                    vec![39; 60],
+                    Some((0, 805, 728)),
+                ));
+                recs.push(mk_contig_rec(
+                    &format!("s23_rd_{i}"),
+                    0,
+                    Flags::SEGMENTED | Flags::REVERSE_COMPLEMENTED,
+                    805,
+                    &[(60, Kind::Match)],
+                    sv23_ref[804..864].to_vec(),
+                    vec![39; 60],
+                    Some((0, 137, -728)),
+                ));
+            }
+            for i in 0..2usize {
+                let mut seq = sv23_ref[168..199].to_vec(); // 31M (169..=199), 601D (200..=800 -> "T/-601" at 200!), 29M
+                seq.extend_from_slice(&sv23_ref[800..829]);
+                recs.push(mk_contig_rec(
+                    &format!("s23_c_{i}"),
+                    0,
+                    Flags::empty(),
+                    169,
+                    &[(31, Kind::Match), (601, Kind::Deletion), (29, Kind::Match)],
+                    seq,
+                    vec![39; 60],
+                    None,
+                ));
+            }
+            recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+            write_multi_contig_bam(&sv23_bam, &[("chr1", sv23_ref.len())], recs).expect("m_sv23");
+        }
+
+        // Fixture U: `sanitize_iupac_alt_alleles` (`ALT=R`, switch 25),
+        //            `recompute_vartype_after_adj_complex` (`2D2I -> SNV`, switch 28),
+        //            `strict_vcf_ad_number_r` (FASTA `REF=R` reduced to `A` == `ALT=A` with `VD=6 > 0` under `-p`, switch 29)
+        let mut mix_ref = non_rep(0x2425_2800_1234_5678, 280);
+        mix_ref[159] = b'R'; // 160 FASTA IUPAC 'R' -> reduced REF="A" == ALT="A" (VD=6 > 0 on ALT=".")!
+        mix_ref[189] = b'T'; // 190 IUPAC 'R' -> 'A'
+        mix_ref[219..221].copy_from_slice(b"GA"); // 220..=221: 2D2I "GT" trims to 221 A->T
+        let mix_fa = write_multi_contig_fasta(dir.path(), "m_mix", &[("chr1", &mix_ref)]);
+        let mix_bam = dir.path().join("m_mix.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..10usize {
+                let s = 115 + (i % 4);
+                let mut seq = mix_ref[s - 1..s - 1 + 55].to_vec();
+                if i < 6 {
+                    seq[160 - s] = b'A'; // 'A' != raw FASTA 'R' -> VD=6 on var_allele="A" == reduced ref_allele="A"!
+                }
+                recs.push(mk_contig_rec(
+                    &format!("mx_w1_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(55, Kind::Match)],
+                    seq,
+                    vec![38; 55],
+                    None,
+                ));
+            }
+            for i in 0..4usize {
+                let mut seq = b"CTG".to_vec();
+                seq.extend_from_slice(&mix_ref[145..195]);
+                recs.push(mk_contig_rec(
+                    &format!("mx_l3i_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    146,
+                    &[(3, Kind::Insertion), (50, Kind::Match)],
+                    seq,
+                    vec![38; 53],
+                    None,
+                ));
+            }
+            for i in 0..16usize {
+                let s = 175 + (i % 4);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                if i < 6 {
+                    let mut seq = mix_ref[s - 1..s - 1 + 65].to_vec();
+                    seq[190 - s] = b'R'; // IUPAC ambiguity base
+                    recs.push(mk_contig_rec(
+                        &format!("mx_iup_{i}"),
+                        0,
+                        flags,
+                        s,
+                        &[(65, Kind::Match)],
+                        seq,
+                        vec![38; 65],
+                        None,
+                    ));
+                } else if i < 12 {
+                    let left = 220 - s;
+                    let right = 35usize;
+                    let mut seq = mix_ref[s - 1..219].to_vec();
+                    seq.extend_from_slice(b"GT");
+                    seq.extend_from_slice(&mix_ref[221..221 + right]);
+                    recs.push(mk_contig_rec(
+                        &format!("mx_cpx_{i}"),
+                        0,
+                        flags,
+                        s,
+                        &[
+                            (left, Kind::Match),
+                            (2, Kind::Deletion),
+                            (2, Kind::Insertion),
+                            (right, Kind::Match),
+                        ],
+                        seq,
+                        vec![38; left + 2 + right],
+                        None,
+                    ));
+                } else {
+                    recs.push(mk_contig_rec(
+                        &format!("mx_w2_{i}"),
+                        0,
+                        flags,
+                        s,
+                        &[(65, Kind::Match)],
+                        mix_ref[s - 1..s - 1 + 65].to_vec(),
+                        vec![38; 65],
+                        None,
+                    ));
+                }
+            }
+            write_multi_contig_bam(&mix_bam, &[("chr1", mix_ref.len())], recs).expect("m_mix");
+        }
+
+        // Fixture V: `pileup_preserve_shifted_ref` (`2D` + `3D` shifting off pos 61) for switch 27
+        let mut p27_ref = lcg_ref_bytes(0x0A15_0330_1234_5678, 160);
+        p27_ref[59] = b'C';
+        p27_ref[60..68].fill(b'A');
+        p27_ref[68] = b'G';
+        let p27_fa = write_multi_contig_fasta(dir.path(), "m_p27", &[("chr1", &p27_ref)]);
+        let p27_bam = dir.path().join("m_p27.bam");
+        {
+            let mut recs = Vec::new();
+            for (dlen, tag) in [(2usize, "d2"), (3usize, "d3")] {
+                for i in 0..4usize {
+                    let s = 42 + (i % 2);
+                    let left = 60 - s + 1;
+                    let right = 40usize;
+                    let mut seq = p27_ref[s - 1..60].to_vec();
+                    seq.extend_from_slice(&p27_ref[60 + dlen..60 + dlen + right]);
+                    recs.push(mk_contig_rec(
+                        &format!("p27_{tag}_{i}"),
+                        0,
+                        if i % 2 == 1 {
+                            Flags::REVERSE_COMPLEMENTED
+                        } else {
+                            Flags::empty()
+                        },
+                        s,
+                        &[
+                            (left, Kind::Match),
+                            (dlen, Kind::Deletion),
+                            (right, Kind::Match),
+                        ],
+                        seq,
+                        vec![38; left + right],
+                        None,
+                    ));
+                }
+            }
+            write_multi_contig_bam(&p27_bam, &[("chr1", p27_ref.len())], recs).expect("m_p27");
+        }
+
+        // Fixtures W32..W37: Wave-6 switches 32..=37 (`sclip_majority_count_first`,
+        // `mate_overlap_both_strands`, `canonical_vcf_complex_left_align`,
+        // `somatic_reconcile_split_alleles`, `adj_snv_full_sclip_match`, `indel_only_shift3`)
+        let mut ref32 = non_rep(0x3333_0001_2026_1111, 220);
+        ref32[99..103].copy_from_slice(b"GCGC");
+        ref32[114] = b'C';
+        ref32[115..130].copy_from_slice(b"AACGATCGCTAGCTA");
+        let fa32 = write_multi_contig_fasta(dir.path(), "m_w32", &[("chr1", &ref32)]);
+        let bam32 = dir.path().join("m_w32.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..8usize {
+                let s = 70 + (i % 4);
+                recs.push(mk_contig_rec(
+                    &format!("w32_w_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(75, Kind::Match)],
+                    ref32[s - 1..s - 1 + 75].to_vec(),
+                    vec![38; 75],
+                    None,
+                ));
+            }
+            for (idx, (s, flags, is_err)) in [
+                (54usize, Flags::empty(), false),
+                (55usize, Flags::REVERSE_COMPLEMENTED, false),
+                (56usize, Flags::empty(), true),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let m_len = 101 - s;
+                let mut seq = ref32[s - 1..100].to_vec();
+                let mut clip = ref32[115..130].to_vec();
+                let mut qual = vec![38u8; m_len + 15];
+                if is_err {
+                    clip[0] = b'T';
+                    clip[1] = b'T';
+                    qual[m_len] = 50;
+                    qual[m_len + 1] = 50;
+                } else {
+                    qual[m_len] = 23 + (idx as u8);
+                    qual[m_len + 1] = 23 + (idx as u8);
+                }
+                seq.extend_from_slice(&clip);
+                recs.push(mk_contig_rec(
+                    &format!("w32_s_{idx}"),
+                    0,
+                    flags,
+                    s,
+                    &[(m_len, Kind::Match), (15, Kind::SoftClip)],
+                    seq,
+                    qual,
+                    None,
+                ));
+            }
+            recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+            write_multi_contig_bam(&bam32, &[("chr1", ref32.len())], recs).expect("m_w32");
+        }
+
+        let mut ref33 = non_rep(0x3434_0002_2026_2222, 240);
+        ref33[135..147].copy_from_slice(b"GTAGCTGATCGA"); // 140 == 'C'
+        let fa33 = write_multi_contig_fasta(dir.path(), "m_w33", &[("chr1", &ref33)]);
+        let bam33 = dir.path().join("m_w33.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..8usize {
+                let s = 92 + (i % 4);
+                recs.push(mk_contig_rec(
+                    &format!("w33_w_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(90, Kind::Match)],
+                    ref33[s - 1..s - 1 + 90].to_vec(),
+                    vec![38; 90],
+                    None,
+                ));
+            }
+            let f_fl = Flags::SEGMENTED
+                | Flags::PROPERLY_SEGMENTED
+                | Flags::FIRST_SEGMENT
+                | Flags::MATE_REVERSE_COMPLEMENTED;
+            let r_fl = Flags::SEGMENTED
+                | Flags::PROPERLY_SEGMENTED
+                | Flags::LAST_SEGMENT
+                | Flags::REVERSE_COMPLEMENTED;
+            for idx in 0..10usize {
+                let r1 = 100 + (idx % 3);
+                let r2 = 110 + (idx % 3);
+                let tlen = (r2 + 80 - r1) as i32;
+                let qn = format!("p33_{idx}");
+                let mut s1 = ref33[r1 - 1..r1 - 1 + 80].to_vec();
+                let mut s2 = ref33[r2 - 1..r2 - 1 + 80].to_vec();
+                s1[140 - r1] = b'A';
+                s2[140 - r2] = b'A';
+                recs.push(mk_contig_rec(
+                    &qn,
+                    0,
+                    f_fl,
+                    r1,
+                    &[(80, Kind::Match)],
+                    s1,
+                    vec![38; 80],
+                    Some((0, r2, tlen)),
+                ));
+                recs.push(mk_contig_rec(
+                    &qn,
+                    0,
+                    r_fl,
+                    r2,
+                    &[(80, Kind::Match)],
+                    s2,
+                    vec![38; 80],
+                    Some((0, r1, -tlen)),
+                ));
+            }
+            recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+            write_multi_contig_bam(&bam33, &[("chr1", ref33.len())], recs).expect("m_w33");
+        }
+
+        let mut ref34 = non_rep(0x3535_0003_2026_3333, 220);
+        ref34[97..110].copy_from_slice(b"GCTAAGAAGCTGA");
+        let fa34 = write_multi_contig_fasta(dir.path(), "m_w34", &[("chr1", &ref34)]);
+        let bam34 = dir.path().join("m_w34.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..8usize {
+                let s = 75 + (i % 4);
+                recs.push(mk_contig_rec(
+                    &format!("w34_w_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(65, Kind::Match)],
+                    ref34[s - 1..s - 1 + 65].to_vec(),
+                    vec![38; 65],
+                    None,
+                ));
+                let sd = 75 + (i % 3);
+                let lm = 104 - sd;
+                let mut seq = ref34[sd - 1..103].to_vec();
+                seq.extend_from_slice(&ref34[106..136]);
+                let mut q = vec![38u8; lm + 30];
+                q[lm - 2] = 20;
+                q[lm - 1] = 20;
+                recs.push(mk_contig_rec(
+                    &format!("w34_d_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    sd,
+                    &[(lm, Kind::Match), (3, Kind::Deletion), (30, Kind::Match)],
+                    seq,
+                    q,
+                    None,
+                ));
+            }
+            recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+            write_multi_contig_bam(&bam34, &[("chr1", ref34.len())], recs).expect("m_w34");
+        }
+
+        let mut ref35 = non_rep(0x3636_0004_2026_4444, 220);
+        ref35[107..117].copy_from_slice(b"CGATCAGCTA");
+        let fa35 = write_multi_contig_fasta(dir.path(), "m_w35", &[("chr1", &ref35)]);
+        let bam35_t = dir.path().join("m_w35_t.bam");
+        let bam35_n = dir.path().join("m_w35_n.bam");
+        {
+            let mut rt = Vec::new();
+            let mut rn = Vec::new();
+            for i in 0..8usize {
+                let s = 82 + (i % 4);
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let wt = ref35[s - 1..s - 1 + 65].to_vec();
+                rt.push(mk_contig_rec(
+                    &format!("w35_tw_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[(65, Kind::Match)],
+                    wt.clone(),
+                    vec![38; 65],
+                    None,
+                ));
+                rn.push(mk_contig_rec(
+                    &format!("w35_nw_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[(65, Kind::Match)],
+                    wt,
+                    vec![38; 65],
+                    None,
+                ));
+                let lt = 111 - s;
+                let mut tseq = ref35[s - 1..110].to_vec();
+                tseq.push(b'T');
+                tseq.extend_from_slice(&ref35[114..142]);
+                let mut tq = vec![38u8; lt + 29];
+                tq[lt - 2] = 20;
+                tq[lt - 1] = 20;
+                rt.push(mk_contig_rec(
+                    &format!("w35_tv_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[
+                        (lt, Kind::Match),
+                        (4, Kind::Deletion),
+                        (1, Kind::Insertion),
+                        (28, Kind::Match),
+                    ],
+                    tseq,
+                    tq,
+                    None,
+                ));
+                let ln = 112 - s;
+                let mut nseq = ref35[s - 1..111].to_vec();
+                nseq.extend_from_slice(&ref35[114..142]);
+                let mut nq = vec![38u8; ln + 28];
+                nq[ln - 2] = 20;
+                nq[ln - 1] = 20;
+                rn.push(mk_contig_rec(
+                    &format!("w35_nv_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[(ln, Kind::Match), (3, Kind::Deletion), (28, Kind::Match)],
+                    nseq,
+                    nq,
+                    None,
+                ));
+            }
+            write_multi_contig_bam(&bam35_t, &[("chr1", ref35.len())], rt).expect("m_w35_t");
+            write_multi_contig_bam(&bam35_n, &[("chr1", ref35.len())], rn).expect("m_w35_n");
+        }
+
+        let mut ref36 = non_rep(0x3737_0005_2026_5555, 220);
+        ref36[146..158].copy_from_slice(b"CTGTCGATACGA"); // 150=='T', 151..=153=="CGA"
+        let fa36 = write_multi_contig_fasta(dir.path(), "m_w36", &[("chr1", &ref36)]);
+        let bam36 = dir.path().join("m_w36.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..8usize {
+                let s = 115 + (i % 4);
+                recs.push(mk_contig_rec(
+                    &format!("w36_w_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(65, Kind::Match)],
+                    ref36[s - 1..s - 1 + 65].to_vec(),
+                    vec![38; 65],
+                    None,
+                ));
+            }
+            for i in 0..4usize {
+                let s = 120 + i;
+                let flags = if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                };
+                let mut seq = ref36[s - 1..s - 1 + 60].to_vec();
+                seq[150 - s] = b'A';
+                recs.push(mk_contig_rec(
+                    &format!("w36_v_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[(60, Kind::Match)],
+                    seq,
+                    vec![38; 60],
+                    None,
+                ));
+                let sc = 118 + i;
+                let mc = 150 - sc;
+                let mut cseq = ref36[sc - 1..149].to_vec();
+                cseq.extend_from_slice(b"ACTT");
+                recs.push(mk_contig_rec(
+                    &format!("w36_c_{i}"),
+                    0,
+                    flags,
+                    sc,
+                    &[(mc, Kind::Match), (4, Kind::SoftClip)],
+                    cseq,
+                    vec![38; mc + 4],
+                    None,
+                ));
+            }
+            recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+            write_multi_contig_bam(&bam36, &[("chr1", ref36.len())], recs).expect("m_w36");
+        }
+
+        let mut ref37 = non_rep(0x3838_0006_2026_6666, 250);
+        ref37[117..128].copy_from_slice(b"GCAAAAAATCG");
+        ref37[207..218].copy_from_slice(b"CTGGGGGGATC");
+        let fa37 = write_multi_contig_fasta(dir.path(), "m_w37", &[("chr1", &ref37)]);
+        let bam37 = dir.path().join("m_w37.bam");
+        {
+            let mut recs = Vec::new();
+            for i in 0..8usize {
+                let s = 95 + (i % 4);
+                recs.push(mk_contig_rec(
+                    &format!("w37_w_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    s,
+                    &[(145, Kind::Match)],
+                    ref37[s - 1..s - 1 + 145].to_vec(),
+                    vec![38; 145],
+                    None,
+                ));
+                let sv = 96 + (i % 3);
+                let lm = 210 - sv;
+                let mut seq = ref37[sv - 1..209].to_vec();
+                seq[120 - sv] = b'G';
+                seq.extend_from_slice(&ref37[210..238]);
+                let mut q = vec![38u8; lm + 28];
+                q[lm - 2] = 20;
+                q[lm - 1] = 20;
+                recs.push(mk_contig_rec(
+                    &format!("w37_v_{i}"),
+                    0,
+                    if i % 2 == 1 {
+                        Flags::REVERSE_COMPLEMENTED
+                    } else {
+                        Flags::empty()
+                    },
+                    sv,
+                    &[(lm, Kind::Match), (1, Kind::Deletion), (28, Kind::Match)],
+                    seq,
+                    q,
+                    None,
+                ));
+            }
+            recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+            write_multi_contig_bam(&bam37, &[("chr1", ref37.len())], recs).expect("m_w37");
+        }
+
+        // -----------------------------------------------------------------
+        // Exhaustively execute all 38 switches across the 4 laws!
+        // -----------------------------------------------------------------
+        let mut exercised = [false; COMPAT_SWITCH_COUNT];
+        let full_mask = (1u64 << COMPAT_SWITCH_COUNT) - 1;
+
+        for spec in &specs {
+            let i = spec.index;
+            exercised[i] = true;
+            let sw_label = format!("switch #{i} ({})", spec.name);
+            let only_i = CompatProfile::only_switch(i).expect("only_switch");
+            let loo_i = CompatProfile::without_switch(i).expect("without_switch");
+            assert!((spec.get)(&only_i) && !(spec.get)(&COMPAT_VARDICTJAVA_1_8_3));
+            assert!(!(spec.get)(&loo_i) && (spec.get)(&COMPAT_OFF));
+
+            let base_cfg = match i {
+                0 => Config {
+                    sample: "a b;T=1".to_string(),
+                    sample_explicit: true,
+                    ..base_micro_config()
+                },
+                1 | 19 => Config {
+                    reference: dup_fa.to_string_lossy().into_owned(),
+                    bam: dup_bam.to_string_lossy().into_owned(),
+                    sample: "S_DUP".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:150-350".to_string()),
+                    sv_min_len: 50,
+                    omit_end_tag: false,
+                    realign: 0,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                2 => Config {
+                    reference: s3_fa.to_string_lossy().into_owned(),
+                    bam: s3_bam.to_string_lossy().into_owned(),
+                    sample: "S_292".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:95-140".to_string()),
+                    three_prime: true,
+                    realign: 0,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                3 => Config {
+                    reference: s3_fa.to_string_lossy().into_owned(),
+                    bam: s3_bam.to_string_lossy().into_owned(),
+                    sample: "S_369".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:185-200".to_string()),
+                    three_prime: true,
+                    realign: 0,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                4 => Config {
+                    reference: s3_fa.to_string_lossy().into_owned(),
+                    bam: s3_bam.to_string_lossy().into_owned(),
+                    sample: "S_UB2".to_string(),
+                    sample_explicit: true,
+                    bed: Some(s3_amp_bed.to_string_lossy().into_owned()),
+                    amplicon: Some("10:0.8".to_string()),
+                    zero_based: true,
+                    zero_based_defined: true,
+                    pileup: true,
+                    realign: 0,
+                    ..Config::default()
+                },
+                5 => Config {
+                    reference: dr_fa.to_string_lossy().into_owned(),
+                    bam: dr_bam.to_string_lossy().into_owned(),
+                    sample: "S_DR".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:50-260".to_string()),
+                    dedup: true,
+                    fisher: true,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                6 => Config {
+                    reference: sex_fa.to_string_lossy().into_owned(),
+                    bam: sex_bam.to_string_lossy().into_owned(),
+                    sample: "S_SEX".to_string(),
+                    sample_explicit: true,
+                    bed: Some(sex_bed.to_string_lossy().into_owned()),
+                    zero_based: true,
+                    zero_based_defined: true,
+                    col_chr: 0,
+                    col_start: 1,
+                    col_end: 2,
+                    col_seg_start: 1,
+                    col_seg_end: 2,
+                    col_gene: Some(3),
+                    column_for_chromosome: Some(0),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                7 => Config {
+                    reference: pr402_fa.to_string_lossy().into_owned(),
+                    bam: pr402_bam.to_string_lossy().into_owned(),
+                    sample: "S_402".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:1-180".to_string()),
+                    min_reads: 1,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                8 => Config {
+                    reference: eqx_fa.to_string_lossy().into_owned(),
+                    bam: eqx_bam.to_string_lossy().into_owned(),
+                    sample: "S_EQX".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:100-160".to_string()),
+                    minmatch: 100,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                9 => Config {
+                    reference: ub5_fa.to_string_lossy().into_owned(),
+                    bam: ub5_bam.to_string_lossy().into_owned(),
+                    sample: "S_UB5".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:150-550".to_string()),
+                    sv_min_len: 100,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                10 => Config {
+                    reference: ub6_fa.to_string_lossy().into_owned(),
+                    bam: ub6_bam.to_string_lossy().into_owned(),
+                    sample: "S_UB6".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:150-650".to_string()),
+                    sv_min_len: 100,
+                    realign: 0,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                11 => Config {
+                    reference: inv11_fa.to_string_lossy().into_owned(),
+                    bam: inv11_bam.to_string_lossy().into_owned(),
+                    sample: "S_INV11".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:100-350".to_string()),
+                    max_region_len: 50,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                12 => Config {
+                    reference: tie_fa.to_string_lossy().into_owned(),
+                    bam: tie_bam.to_string_lossy().into_owned(),
+                    sample: "S_TIE".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:90-90".to_string()),
+                    read_pos: 0.0,
+                    min_reads: 1,
+                    freq: 0.0,
+                    af_threshold: 0.0,
+                    af_threshold_truthy_zero: true,
+                    ..Config::default()
+                },
+                13 => Config {
+                    reference: rec13_fa.to_string_lossy().into_owned(),
+                    bam: rec13_bam.to_string_lossy().into_owned(),
+                    sample: "S_R13".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:181-440".to_string()),
+                    sv_min_len: 150,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                14 | 31 => Config {
+                    reference: sort_fa.to_string_lossy().into_owned(),
+                    bam: sort_bam.to_string_lossy().into_owned(),
+                    sample: "S_SORT".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:100-600".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                15 => Config {
+                    reference: ins35_fa.to_string_lossy().into_owned(),
+                    bam: ins35_bam.to_string_lossy().into_owned(),
+                    sample: "S_I35".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:400-600".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                16 => Config {
+                    reference: dlen_fa.to_string_lossy().into_owned(),
+                    bam: dlen_bam.to_string_lossy().into_owned(),
+                    sample: "S_DLEN".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:220-290".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                17 => Config {
+                    reference: s17_fa.to_string_lossy().into_owned(),
+                    bam: format!("{}|{}", s17_t.display(), s17_n.display()),
+                    sample: "S17_T|S17_N".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:90-160".to_string()),
+                    vcf_all_alleles: true,
+                    fisher: true,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                18 => Config {
+                    reference: ad_fa.to_string_lossy().into_owned(),
+                    bam: ad_bam.to_string_lossy().into_owned(),
+                    sample: "S_AD18".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:120-250".to_string()),
+                    adaptor: vec![truseq.to_string()],
+                    vcf_all_alleles: true,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                20 => Config {
+                    reference: spe_fa.to_string_lossy().into_owned(),
+                    bam: format!("{}|{}", spe_t.display(), spe_n.display()),
+                    sample: "SPE_T|SPE_N".to_string(),
+                    sample_explicit: true,
+                    bed: Some(spe_bed.to_string_lossy().into_owned()),
+                    zero_based: true,
+                    zero_based_defined: true,
+                    col_chr: 0,
+                    col_start: 1,
+                    col_end: 2,
+                    col_seg_start: 6,
+                    col_seg_end: 7,
+                    col_gene: Some(3),
+                    column_for_chromosome: Some(0),
+                    amplicon: Some("10:0.8".to_string()),
+                    fisher: true,
+                    freq: 0.05,
+                    af_threshold: 0.05,
+                    ..Config::default()
+                },
+                21 => Config {
+                    reference: hc_fa.to_string_lossy().into_owned(),
+                    bam: hc_bam.to_string_lossy().into_owned(),
+                    sample: "S_HC21".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:80-220".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                22 => Config {
+                    reference: sub_fa.to_string_lossy().into_owned(),
+                    bam: format!("{}|{}", sub22_t.display(), sub22_n.display()),
+                    sample: "S22_T|S22_N".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:90-165".to_string()),
+                    min_reads: 3,
+                    freq: 0.05,
+                    af_threshold: 0.05,
+                    fisher: true,
+                    ..Config::default()
+                },
+                23 | 24 => Config {
+                    reference: sv23_fa.to_string_lossy().into_owned(),
+                    bam: sv23_bam.to_string_lossy().into_owned(),
+                    sample: "S_SV23".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:150-240".to_string()),
+                    sv_min_len: 550,
+                    vcf_min_splitreads: 0,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                25 => Config {
+                    reference: mix_fa.to_string_lossy().into_owned(),
+                    bam: mix_bam.to_string_lossy().into_owned(),
+                    sample: "S_IUP25".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:180-200".to_string()),
+                    realign: 0,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                26 => Config {
+                    reference: dup_fa.to_string_lossy().into_owned(),
+                    bam: dup_bam.to_string_lossy().into_owned(),
+                    sample: "S_SV26".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:150-350".to_string()),
+                    sv_min_len: 1000,
+                    realign: 0,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                27 => Config {
+                    reference: p27_fa.to_string_lossy().into_owned(),
+                    bam: p27_bam.to_string_lossy().into_owned(),
+                    sample: "S_P27".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:58-66".to_string()),
+                    pileup: true,
+                    ..Config::default()
+                },
+                28 => Config {
+                    reference: mix_fa.to_string_lossy().into_owned(),
+                    bam: mix_bam.to_string_lossy().into_owned(),
+                    sample: "S_VT28".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:210-235".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                29 => Config {
+                    reference: mix_fa.to_string_lossy().into_owned(),
+                    bam: mix_bam.to_string_lossy().into_owned(),
+                    sample: "S_AD29".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:160-160".to_string()),
+                    pileup: true,
+                    vcf_all_alleles: true,
+                    ..Config::default()
+                },
+                30 => Config {
+                    omit_end_tag: false,
+                    vcf_no_end_explicit: false,
+                    ..base_micro_config()
+                },
+                32 => Config {
+                    reference: fa32.to_string_lossy().into_owned(),
+                    bam: bam32.to_string_lossy().into_owned(),
+                    sample: "S_W32".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:60-160".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                33 => Config {
+                    reference: fa33.to_string_lossy().into_owned(),
+                    bam: bam33.to_string_lossy().into_owned(),
+                    sample: "S_W33".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:95-190".to_string()),
+                    unique_mode_alignment_enabled: true,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                34 => Config {
+                    reference: fa34.to_string_lossy().into_owned(),
+                    bam: bam34.to_string_lossy().into_owned(),
+                    sample: "S_W34".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:70-160".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                35 => Config {
+                    reference: fa35.to_string_lossy().into_owned(),
+                    bam: format!("{}|{}", bam35_t.display(), bam35_n.display()),
+                    sample: "W35_T|W35_N".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:80-155".to_string()),
+                    vcf_all_alleles: true,
+                    fisher: true,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                36 => Config {
+                    reference: fa36.to_string_lossy().into_owned(),
+                    bam: bam36.to_string_lossy().into_owned(),
+                    sample: "S_W36".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:115-190".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                37 => Config {
+                    reference: fa37.to_string_lossy().into_owned(),
+                    bam: bam37.to_string_lossy().into_owned(),
+                    sample: "S_W37".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:95-240".to_string()),
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    ..Config::default()
+                },
+                _ => unreachable!(),
+            };
+
+            // Switch 20 (`paired_somatic_amplicon`) errors loudly in VCF mode when disabled (`AGENTS.md §12`).
+            if i == 20 {
+                let mut cfg_vj = base_cfg.clone();
+                cfg_vj.compat = COMPAT_VARDICTJAVA_1_8_3;
+                assert!(
+                    matches!(run_core_vcf(&cfg_vj), Err(VardictError::Unsupported(_))),
+                    "{sw_label}: Law 1 must reject paired amplicon VCF with VardictError::Unsupported"
+                );
+                let mut cfg_only = base_cfg.clone();
+                cfg_only.compat = only_i;
+                let vcf_only = run_core_vcf(&cfg_only).expect("only_20 VCF");
+                assert!(
+                    vcf_only.contains("##VarDictRustCompat=off\n")
+                        && extract_variants(&vcf_only)[0].contains(";GDAMP=1;TLAMP=1;"),
+                    "{sw_label}: Law 2 standalone must emit paired amplicon VCF with ##VarDictRustCompat=off"
+                );
+                let mut cfg_off = base_cfg.clone();
+                cfg_off.compat = COMPAT_OFF;
+                let var_off = run_core_var(&cfg_off).expect("off_20 .var");
+                let vcf_off = run_core_vcf(&cfg_off).expect("off_20 VCF");
+                assert_compat_off_universal_laws(&sw_label, &cfg_off, &var_off, &vcf_off);
+                assert!(extract_variants(&vcf_off)[0].contains(";GDAMP=1;TLAMP=1;"));
+                assert_eq!(
+                    var_off.lines().next().unwrap().split('\t').count(),
+                    61,
+                    "{sw_label}: COMPAT_OFF --fisher .var must emit 61-col paired amplicon table"
+                );
+                let mut cfg_loo = base_cfg.clone();
+                cfg_loo.compat = loo_i;
+                assert!(
+                    matches!(run_core_vcf(&cfg_loo), Err(VardictError::Unsupported(_))),
+                    "{sw_label}: Law 4 without_switch(20) must revert to VardictError::Unsupported"
+                );
+                let var_loo = run_core_var(&cfg_loo).expect("loo_20 .var");
+                assert_eq!(
+                    var_loo.lines().next().unwrap().split('\t').count(),
+                    40,
+                    "{sw_label}: Law 4 --fisher .var must revert to 40-col single-BAM AmpliconMode"
+                );
+                continue;
+            }
+
+            let run_pair = |prof: CompatProfile| -> (String, String) {
+                let mut c = base_cfg.clone();
+                c.compat = prof;
+                (
+                    run_core_var(&c).unwrap_or_else(|e| panic!("{sw_label} .var failed: {e}")),
+                    run_core_vcf(&c).unwrap_or_else(|e| panic!("{sw_label} .vcf failed: {e}")),
+                )
+            };
+
+            let (var_vj, vcf_vj) = run_pair(COMPAT_VARDICTJAVA_1_8_3);
+            let (var_only, vcf_only) = run_pair(only_i);
+            let (var_off, vcf_off) = run_pair(COMPAT_OFF);
+            let (var_loo, vcf_loo) = run_pair(loo_i);
+
+            // Universal header laws across all 4 configurations
+            assert!(
+                !vcf_vj.contains("##VarDictRustCompat=off"),
+                "{sw_label}: Law 1 COMPAT_VARDICTJAVA_1_8_3 must NOT emit ##VarDictRustCompat=off"
+            );
+            assert!(
+                vcf_only.contains("##VarDictRustCompat=off\n"),
+                "{sw_label}: Law 2 only_switch({i}) must emit ##VarDictRustCompat=off"
+            );
+            assert!(
+                vcf_loo.contains("##VarDictRustCompat=off\n"),
+                "{sw_label}: Law 4 without_switch({i}) must emit ##VarDictRustCompat=off"
+            );
+            // Universal accounting laws on full `COMPAT_OFF`
+            let mut cfg_off_chk = base_cfg.clone();
+            cfg_off_chk.compat = COMPAT_OFF;
+            assert_compat_off_universal_laws(&sw_label, &cfg_off_chk, &var_off, &vcf_off);
+
+            // Switch-specific target predicate `holds(var, vcf)`:
+            // `false` on Law 1 (`vj`), `true` on Law 2 (`only_i`) & Law 3 (`COMPAT_OFF`),
+            // and `false` on Law 4 (`loo_i`, plus superset-closure check on `{1, 13}`).
+            let target_holds = |var_s: &str, vcf_s: &str| -> bool {
+                let rows = extract_variants(vcf_s);
+                match i {
+                    0 => rows
+                        .first()
+                        .is_some_and(|r| r.contains("SAMPLE=a%20b%3BT%3D1;TYPE=")),
+                    1 => rows
+                        .iter()
+                        .any(|r| r.contains("\t<DUP>\t") && r.contains(";END=279;")),
+                    2 => rows.iter().any(|r| r.starts_with("chr1\t111\t.\tATA\tA\t")),
+                    3 => {
+                        !rows.iter().any(|r| r.starts_with("chr1\t202\t"))
+                            && rows.iter().any(|r| r.starts_with("chr1\t190\t"))
+                    }
+                    4 => {
+                        !var_s.lines().any(|l| {
+                            let c: Vec<&str> = l.split('\t').collect();
+                            c.get(3) == Some(&"0") || c.get(5) == Some(&"")
+                        }) && !var_s.trim().is_empty()
+                    }
+                    5 => rows.iter().any(|r| r.contains(";DUPRATE=0.38;")),
+                    6 => {
+                        let chrs: Vec<&str> =
+                            rows.iter().map(|r| r.split('\t').next().unwrap()).collect();
+                        chrs == ["X", "chrX", "Y", "chrY", "MT", "chrM"]
+                    }
+                    7 => rows.len() == 2,
+                    8 => rows.len() == 1 && rows[0].contains(";DP=12;"),
+                    9 => rows
+                        .iter()
+                        .any(|r| r.contains("\t<DUP>\t") && r.contains(";SPLITREAD=0;SPANPAIR=8")),
+                    10 => var_s.lines().any(|l| l.ends_with("\t8-8-2")),
+                    11 => rows.iter().any(|r| {
+                        r.starts_with("chr1\t180\t")
+                            && r.contains(";DP=10;")
+                            && r.contains(";VD=4;")
+                    }),
+                    12 => rows.iter().any(|r| r.contains(";AF=0.0001;")),
+                    13 => rows.iter().any(|r| {
+                        let info = r.split('\t').nth(7).unwrap();
+                        let mut dp = 0i32;
+                        let mut vd = 0i32;
+                        for kv in info.split(';') {
+                            if let Some(v) = kv.strip_prefix("DP=") {
+                                dp = v.parse().unwrap();
+                            } else if let Some(v) = kv.strip_prefix("VD=") {
+                                vd = v.parse().unwrap();
+                            }
+                        }
+                        vd == 10 && dp >= vd
+                    }),
+                    14 => {
+                        let starts: Vec<i32> = var_s
+                            .lines()
+                            .filter(|l| !l.trim().is_empty())
+                            .map(|l| l.split('\t').nth(3).unwrap().parse().unwrap())
+                            .collect();
+                        starts == [152, 260, 511, 512]
+                    }
+                    15 => rows
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t499\t") && r.contains(";TYPE=Insertion;")),
+                    16 => rows.iter().any(|r| r.contains(";VD=7;AF=0.7;")),
+                    17 => rows.iter().any(|r| {
+                        r.starts_with("chr1\t120\t.\tA\tT\t") && r.contains("STATUS=StrongSomatic;")
+                    }),
+                    18 => {
+                        !rows.iter().any(|r| r.contains("AGATCGGAAGAGCACACGTC"))
+                            && rows.iter().any(|r| r.starts_with("chr1\t175\t.\tCC\tTT\t"))
+                    }
+                    19 => {
+                        vcf_s.contains("##ALT=<ID=DUP,Description=\"Duplication\">")
+                            && rows.iter().any(|r| {
+                                r.starts_with("chr1\t199\t")
+                                    && r.contains("\t<DUP>\t")
+                                    && r.contains(";SVTYPE=DUP;SVLEN=80;")
+                            })
+                    }
+                    21 => rows
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t174\t") && r.contains(";PMEAN=15;")),
+                    22 => var_s.lines().any(|l| {
+                        let c: Vec<&str> = l.split('\t').collect();
+                        // Somatic 61-col .var: start=c[3], normal VD=c[28], normal MQ=c[40] (-0.1 in legacy vs 0 in Switch 22!)
+                        c.get(3) == Some(&"101")
+                            && c.get(28) == Some(&"3")
+                            && c.get(40)
+                                .and_then(|v| v.parse::<f64>().ok())
+                                .is_some_and(|mq| mq >= 0.0)
+                    }),
+                    23 => rows.iter().any(|r| {
+                        r.contains("\t<DEL>\t") && r.ends_with(":7,7") && r.contains(";VD=14;")
+                    }),
+                    24 => rows
+                        .iter()
+                        .any(|r| r.contains(";DP=22;") && r.contains(";VD=14;")),
+                    25 => rows.iter().any(|r| r.starts_with("chr1\t190\t.\tT\tA\t")),
+                    26 => rows.iter().any(|r| {
+                        !r.split('\t').nth(4).unwrap().contains('<')
+                            && r.contains(";TYPE=Insertion;")
+                    }),
+                    27 => rows.iter().any(|r| r.starts_with("chr1\t61\t.\tA\t.\t")),
+                    28 => rows
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t221\t.\tA\tT\t") && r.contains(";TYPE=SNV;")),
+                    29 => rows.iter().any(|r| {
+                        let cols: Vec<&str> = r.split('\t').collect();
+                        // Single-sample -p FASTA IUPAC R->A == ALT A (ALT=.):
+                        // FORMAT/AD (index 3) is "4,6" in legacy vs single-element ("4" / "14") under Switch 29 & COMPAT_OFF!
+                        cols[1] == "160"
+                            && cols[4] == "."
+                            && !cols[9].split(':').nth(3).unwrap().contains(',')
+                    }),
+                    30 => !rows.is_empty() && rows.iter().all(|r| !r.contains(";END=")),
+                    31 => !rows.is_empty() && rows.iter().all(|r| !r.contains("\t1/0:")),
+                    32 => rows
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t100\t") && r.contains(";VD=3;")),
+                    33 => rows
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t140\t") && r.ends_with(":5,5")),
+                    34 => rows
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t100\t.\tTAAG\tT\t")),
+                    35 => {
+                        rows.len() == 1
+                            && rows[0].starts_with("chr1\t111\t.\tTCAG\tT\t")
+                            && rows[0].contains("STATUS=Germline;")
+                    }
+                    36 => rows
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t150\t.\tT\tA\t") && r.contains(";VD=4;")),
+                    37 => rows
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t120\t.\tA\tG\t") && r.contains(";SHIFT3=0;")),
+                    _ => unreachable!(),
+                }
+            };
+
+            assert!(
+                !target_holds(&var_vj, &vcf_vj),
+                "{sw_label}: Law 1 COMPAT_VARDICTJAVA_1_8_3 must reproduce legacy upstream behavior, got:\nVAR:\n{var_vj}\nVCF:\n{vcf_vj}"
+            );
+            assert!(
+                target_holds(&var_only, &vcf_only),
+                "{sw_label}: Law 2 only_switch({i}) must flip target invariant standalone, got:\nVAR:\n{var_only}\nVCF:\n{vcf_only}"
+            );
+            assert!(
+                target_holds(&var_off, &vcf_off),
+                "{sw_label}: Law 3 COMPAT_OFF must preserve target invariant with all 38 switches active, got:\nVAR:\n{var_off}\nVCF:\n{vcf_off}"
+            );
+
+            // Law 4 (`without_switch(i)` / `loo_i`):
+            // - Switches `1` (`standard_dup_symbolic_alt` <= `{19, 26}`) and `13` (`reconcile_vd_dp` <= `{24}`)
+            //   are intentionally subsumed by later-wave superset switches when those supersets stay active:
+            //   verify `only_switch(13)` stopped at `DP=10 < RD+VD=12` (distinct from `24`!), `loo_i` runs
+            //   cleanly with universal invariants intact, AND disabling the exact superset pair while keeping
+            //   the other 35/36 switches active reverts the target behavior!
+            // - All other 36 switches must revert strictly under `without_switch(i)` alone!
+            if i == 1 {
+                assert!(
+                    target_holds(&var_loo, &vcf_loo),
+                    "{sw_label}: without_switch(1) keeps <DUP> via superset switches 19/26"
+                );
+                let mut cfg_loo_chk = base_cfg.clone();
+                cfg_loo_chk.compat = loo_i;
+                assert_compat_off_universal_laws(&sw_label, &cfg_loo_chk, &var_loo, &vcf_loo);
+                let closure_loo = CompatProfile::from_mask(
+                    full_mask & !((1u64 << 1) | (1u64 << 19) | (1u64 << 26)),
+                );
+                let (var_cl, vcf_cl) = run_pair(closure_loo);
+                assert!(
+                    vcf_cl.contains("##VarDictRustCompat=off\n") && !target_holds(&var_cl, &vcf_cl),
+                    "{sw_label}: disabling superset closure {{1, 19, 26}} must revert to <dup-20> with 35 switches active"
+                );
+            } else if i == 13 {
+                assert!(
+                    extract_variants(&vcf_only)[0].contains(";DP=10;VD=10;AF=1;"),
+                    "{sw_label}: only_switch(13) must clamp DP=10 (==VD) and AF=1, got: {}",
+                    extract_variants(&vcf_only)[0]
+                );
+                assert!(
+                    target_holds(&var_loo, &vcf_loo),
+                    "{sw_label}: without_switch(13) keeps DP=12>=VD via superset switch 24"
+                );
+                let mut cfg_loo_chk = base_cfg.clone();
+                cfg_loo_chk.compat = loo_i;
+                assert_compat_off_universal_laws(&sw_label, &cfg_loo_chk, &var_loo, &vcf_loo);
+                let closure_loo =
+                    CompatProfile::from_mask(full_mask & !((1u64 << 13) | (1u64 << 24)));
+                let (var_cl, vcf_cl) = run_pair(closure_loo);
+                assert!(
+                    vcf_cl.contains("##VarDictRustCompat=off\n") && !target_holds(&var_cl, &vcf_cl),
+                    "{sw_label}: disabling superset closure {{13, 24}} must revert to DP=6 < VD=10 with 36 switches active"
+                );
+            } else if i == 29 {
+                // Verify pure `without_switch(29)` (`37` switches active, ONLY Switch 29 disabled!) strictly
+                // reverts `Number=R` on paired `-p` `ALT=.` (`AD="0"` -> `AD="0,0"`), AND disabling `{25, 29}`
+                // reverts single-sample IUPAC `ALT=.` (`AD` back to `"4,6"`):
+                let mut paired_p_off = Config {
+                    reference: p27_fa.to_string_lossy().into_owned(),
+                    bam: format!("{}|{}", p27_bam.display(), p27_bam.display()),
+                    sample: "P29_T|P29_N".to_string(),
+                    sample_explicit: true,
+                    region: Some("chr1:58-66".to_string()),
+                    pileup: true,
+                    compat: COMPAT_OFF,
+                    ..Config::default()
+                };
+                let vcf_poff = run_core_vcf(&paired_p_off).expect("paired p27 COMPAT_OFF");
+                assert!(
+                    extract_variants(&vcf_poff).iter().any(|r| {
+                        let c: Vec<&str> = r.split('\t').collect();
+                        c[1] == "61"
+                            && c[4] == "."
+                            && !c[9].split(':').nth(5).unwrap().contains(',')
+                    }),
+                    "{sw_label}: COMPAT_OFF paired -p ALT=. at 61 must emit single-element AD"
+                );
+                paired_p_off.compat = loo_i;
+                let vcf_ploo = run_core_vcf(&paired_p_off).expect("paired p27 without_switch(29)");
+                assert!(
+                    vcf_ploo.contains("##VarDictRustCompat=off\n")
+                        && extract_variants(&vcf_ploo).iter().any(|r| {
+                            let c: Vec<&str> = r.split('\t').collect();
+                            c[1] == "61"
+                                && c[4] == "."
+                                && c[9].split(':').nth(5) == Some("0,0")
+                        }),
+                    "{sw_label}: Law 4 without_switch(29) alone (37 switches active) must revert paired -p ALT=. AD to 0,0, got:\n{vcf_ploo}"
+                );
+                let closure_loo =
+                    CompatProfile::from_mask(full_mask & !((1u64 << 25) | (1u64 << 29)));
+                let (var_cl, vcf_cl) = run_pair(closure_loo);
+                assert!(
+                    vcf_cl.contains("##VarDictRustCompat=off\n") && !target_holds(&var_cl, &vcf_cl),
+                    "{sw_label}: disabling {{25, 29}} must revert single-sample -p ALT=. AD to 4,6"
+                );
+            } else {
+                assert!(
+                    !target_holds(&var_loo, &vcf_loo),
+                    "{sw_label}: Law 4 without_switch({i}) must revert target behavior while 37 other switches stay active, got:\nVAR:\n{var_loo}\nVCF:\n{vcf_loo}"
+                );
+            }
+        }
+
+        assert!(
+            exercised.iter().all(|&b| b),
+            "every switch 0..38 must be exercised with zero skips: {exercised:?}"
+        );
+        let elapsed = t0.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "38-switch 4-law matrix exceeded runtime budget: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn compat_off_split_tile_seam_parity_somatic_simple_and_spilled_dup_svs() {
+        use vardictrust_core::config::WorkflowPreset;
+
+        let dir = TempDir::new().expect("tempdir");
+        // 1,200 bp contig split across 5 tiles under `tile_size = Some(250)`:
+        // Tile 1 [1..250], Tile 2 [251..500], Tile 3 [501..750], Tile 4 [751..1000], Tile 5 [1001..1200].
+        let mut ref_seq = lcg_ref_bytes(0xF010_F040_F050_2026, 1_200);
+        for idx in 1..ref_seq.len() {
+            if ref_seq[idx] == ref_seq[idx - 1] {
+                ref_seq[idx] = match ref_seq[idx] {
+                    b'A' => b'C',
+                    b'C' => b'G',
+                    b'G' => b'T',
+                    _ => b'A',
+                };
+            }
+        }
+
+        // Locus 1 (`POS = 150`, Tile 1, `F-05`): co-anchored distinct-`END` symbolic `<DUP>` SVs
+        // (`55I` -> `END=205, SVLEN=55` and `64I` -> `END=214, SVLEN=64`) + co-located SNV `A -> T`.
+        ref_seq[149] = b'A';
+        ref_seq[150] = b'G';
+        let mut ins55 = lcg_ref_bytes(0x5555_AAAA_1111_2222, 55);
+        ins55[0] = b'C';
+        ins55[54] = b'C';
+        let mut ins64 = lcg_ref_bytes(0x6464_BBBB_3333_4444, 64);
+        ins64[0] = b'T';
+        ins64[63] = b'T';
+
+        // Locus 2 (`Seam 250 | 251`, `F-01.1`): `230 = 'T'`, `231..=275 = 15 x "AAG"` (`45 bp`).
+        // Reads starting at `254..=255` (`origin_pos` in Tile 2 `[251, 500]` where 20 WT reads give `RD=20`,
+        // while Tile 1 `[1, 250]` sees them in its right halo with `RD=0` and tied `(VD=8, QUAL=38)`)
+        // delete `258..=260` (`3D`) and roll 5'-left via `Switch 35` across seam `250` to `chr1:230 TAAG -> T`.
+        ref_seq[229] = b'T';
+        for k in 0..15usize {
+            let b0 = 230 + 3 * k;
+            ref_seq[b0..b0 + 3].copy_from_slice(b"AAG");
+        }
+        ref_seq[275] = b'C';
+
+        // Locus 3 (`Seam 500 | 501` + Tile 4, `F-01.2` 3+ tiles `LikelySomatic` + `StrongSomatic`):
+        // `450 = 'C'`, `451..=535 = 85 x 'A'`, `536 = 'G'`.
+        ref_seq[449] = b'C';
+        ref_seq[450..535].fill(b'A');
+        ref_seq[535] = b'G';
+
+        // Locus 4 (`Seam 750 | 751`, `F-04` single-allele unowned `AF=1.0` spanning deletion vs owned SNV):
+        // At `730` (Tile 3 `[501, 750]`): owned SNV `A -> G` (`AF = 8/26 = 0.3077`) + 6 spanning `40D` reads
+        // (`705..=800`, deleting `731..=770` < `sv_min_len=50`: `AF = 6/26 = 0.2308` in Tile 3, vs unowned `AF = 1.0` in Tile 4).
+        ref_seq[729] = b'A'; // 730
+        ref_seq[730] = b'C'; // 731
+        ref_seq[769] = b'T'; // 770 != 'A'
+        ref_seq[770] = b'G'; // 771 != 'C'
+
+        // Locus 5 (`POS = 1050`, Tile 5 `[1001, 1200]`): active somatic SNV `C -> A`.
+        ref_seq[1049] = b'C';
+
+        let fa_path = write_multi_contig_fasta(dir.path(), "seam_e2e", &[("chr1", &ref_seq)]);
+        let tum_bam = dir.path().join("seam_tum.bam");
+        let nrm_bam = dir.path().join("seam_nrm.bam");
+
+        let mut t_recs = Vec::new();
+        let mut n_recs = Vec::new();
+
+        // 1. Pos 150 (`F-05`): 10 WT, 8 SNV `A->T`, 6 `55I` (`<DUP>` END=205), 4 `64I` (`<DUP>` END=214) in Tumor; 20 WT in Normal
+        for i in 0..20usize {
+            let s = 115 + (i % 4);
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt = ref_seq[s - 1..s - 1 + 80].to_vec();
+            n_recs.push(mk_contig_rec(
+                &format!("n150_{i}"),
+                0,
+                flags,
+                s,
+                &[(80, Kind::Match)],
+                wt.clone(),
+                vec![38; 80],
+                None,
+            ));
+            if i < 10 {
+                t_recs.push(mk_contig_rec(
+                    &format!("t150_wt_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[(80, Kind::Match)],
+                    wt,
+                    vec![38; 80],
+                    None,
+                ));
+            } else if i < 18 {
+                let mut s_snv = wt;
+                s_snv[150 - s] = b'T';
+                t_recs.push(mk_contig_rec(
+                    &format!("t150_snv_{i}"),
+                    0,
+                    flags,
+                    s,
+                    &[(80, Kind::Match)],
+                    s_snv,
+                    vec![39; 80],
+                    None,
+                ));
+            }
+        }
+        for i in 0..6usize {
+            let s = 118 + (i % 3);
+            let lm = 151 - s;
+            let mut seq = ref_seq[s - 1..150].to_vec();
+            seq.extend_from_slice(&ins55);
+            seq.extend_from_slice(&ref_seq[150..182]);
+            t_recs.push(mk_contig_rec(
+                &format!("t150_d55_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(lm, Kind::Match), (55, Kind::Insertion), (32, Kind::Match)],
+                seq,
+                vec![39; lm + 87],
+                None,
+            ));
+        }
+        for i in 0..4usize {
+            let s = 119 + (i % 2);
+            let lm = 151 - s;
+            let mut seq = ref_seq[s - 1..150].to_vec();
+            seq.extend_from_slice(&ins64);
+            seq.extend_from_slice(&ref_seq[150..182]);
+            t_recs.push(mk_contig_rec(
+                &format!("t150_d64_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(lm, Kind::Match), (64, Kind::Insertion), (32, Kind::Match)],
+                seq,
+                vec![38; lm + 96],
+                None,
+            ));
+        }
+
+        // 2. Seam 250|251 (`F-01.1`): 20 WT reads starting at 251 (in Tile 2 ONLY!) + 8 `3D` reads at `254..=255`
+        for i in 0..20usize {
+            let flags = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt = ref_seq[250..310].to_vec();
+            t_recs.push(mk_contig_rec(
+                &format!("t251_wt_{i}"),
+                0,
+                flags,
+                251,
+                &[(60, Kind::Match)],
+                wt.clone(),
+                vec![38; 60],
+                None,
+            ));
+            n_recs.push(mk_contig_rec(
+                &format!("n251_wt_{i}"),
+                0,
+                flags,
+                251,
+                &[(60, Kind::Match)],
+                wt,
+                vec![38; 60],
+                None,
+            ));
+        }
+        for i in 0..8usize {
+            let s = 240 + (i % 2);
+            let pre = 258 - s; // 18..17M >= 16bp so modify_cigar keeps 3D intact; origin_pos=257 is owned by Tile 2!
+            let post = 42usize;
+            let mut seq = ref_seq[s - 1..257].to_vec();
+            seq.extend_from_slice(&ref_seq[260..260 + post]);
+            let mut q = vec![38u8; pre + post];
+            q[pre - 2] = 20;
+            q[pre - 1] = 20;
+            t_recs.push(mk_contig_rec(
+                &format!("t254_3d_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(pre, Kind::Match), (3, Kind::Deletion), (post, Kind::Match)],
+                seq,
+                q,
+                None,
+            ));
+        }
+
+        // 3. Seam 500|501 (`F-01.2`): Tile 2 [251, 500] has 6 Tumor `1D` + 2 Normal Q=11 noise `1D` (`is_noise` -> LikelySomatic),
+        //    Tile 3 [501, 750] has 10 Tumor `1D` (`VD_T=10` winner rolling 505 -> 450!)
+        let mk_1d = |name: &str, flags: Flags, s: usize, d1: usize, qlen: usize, q: u8| {
+            let pre = d1 - s;
+            let post = qlen - pre;
+            let mut seq = ref_seq[s - 1..d1 - 1].to_vec();
+            seq.extend_from_slice(&ref_seq[d1..d1 + post]);
+            mk_contig_rec(
+                name,
+                0,
+                flags,
+                s,
+                &[(pre, Kind::Match), (1, Kind::Deletion), (post, Kind::Match)],
+                seq,
+                vec![q; qlen],
+                None,
+            )
+        };
+        for i in 0..6usize {
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            t_recs.push(mk_1d(
+                &format!("t465_1d_{i}"),
+                fl,
+                465 + (i % 2),
+                475,
+                34,
+                35,
+            ));
+        }
+        for i in 0..20usize {
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt = ref_seq[414..499].to_vec();
+            t_recs.push(mk_contig_rec(
+                &format!("t415_wt_{i}"),
+                0,
+                fl,
+                415,
+                &[(85, Kind::Match)],
+                wt.clone(),
+                vec![35; 85],
+                None,
+            ));
+            n_recs.push(mk_contig_rec(
+                &format!("n415_wt_{i}"),
+                0,
+                fl,
+                415,
+                &[(85, Kind::Match)],
+                wt,
+                vec![35; 85],
+                None,
+            ));
+        }
+        n_recs.push(mk_1d("n415_noise_0", Flags::empty(), 415, 455, 80, 11));
+        n_recs.push(mk_1d(
+            "n417_noise_1",
+            Flags::REVERSE_COMPLEMENTED,
+            417,
+            455,
+            80,
+            11,
+        ));
+        for i in 0..10usize {
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            t_recs.push(mk_1d(
+                &format!("t505_1d_{i}"),
+                fl,
+                505 + (i % 2),
+                515,
+                48,
+                35,
+            ));
+        }
+        for i in 0..25usize {
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt = ref_seq[500..555].to_vec();
+            if i < 20 {
+                t_recs.push(mk_contig_rec(
+                    &format!("t501_wt_{i}"),
+                    0,
+                    fl,
+                    501,
+                    &[(55, Kind::Match)],
+                    wt.clone(),
+                    vec![35; 55],
+                    None,
+                ));
+            }
+            n_recs.push(mk_contig_rec(
+                &format!("n501_wt_{i}"),
+                0,
+                fl,
+                501,
+                &[(55, Kind::Match)],
+                wt,
+                vec![35; 55],
+                None,
+            ));
+        }
+
+        // 4. Seam 750|751 (`F-04`): 20 short reads (`695..=748`, ending <= 750 so only in Tile 3: 12 WT + 8 SNV `A->G`)
+        //    plus 6 spanning `40D` reads (`705..=800`, deleting `731..=770`, overlapping BOTH Tile 3 and Tile 4 -> unowned AF=1.0 in Tile 4!)
+        for i in 0..20usize {
+            let s = 695 + (i % 4);
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let mut seq = ref_seq[s - 1..s - 1 + 50].to_vec(); // ends at 744..=747 <= 750!
+            let nseq = seq.clone();
+            if i < 8 {
+                seq[730 - s] = b'G';
+            }
+            t_recs.push(mk_contig_rec(
+                &format!("t730_{i}"),
+                0,
+                fl,
+                s,
+                &[(50, Kind::Match)],
+                seq,
+                vec![36; 50],
+                None,
+            ));
+            n_recs.push(mk_contig_rec(
+                &format!("n730_{i}"),
+                0,
+                fl,
+                s,
+                &[(50, Kind::Match)],
+                nseq,
+                vec![36; 50],
+                None,
+            ));
+        }
+        for i in 0..6usize {
+            let s = 705 + (i % 2);
+            let pre = 731 - s; // covers s..=730
+            let post = 30usize; // covers 771..=800 (overlaps Tile 4 [751, 1000]!)
+            let mut seq = ref_seq[s - 1..730].to_vec();
+            seq.extend_from_slice(&ref_seq[770..770 + post]);
+            let mut q = vec![36u8; pre + post];
+            q[pre - 2] = 18;
+            q[pre - 1] = 18;
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            t_recs.push(mk_contig_rec(
+                &format!("t730_40d_{i}"),
+                0,
+                fl,
+                s,
+                &[
+                    (pre, Kind::Match),
+                    (40, Kind::Deletion),
+                    (post, Kind::Match),
+                ],
+                seq,
+                q,
+                None,
+            ));
+            n_recs.push(mk_contig_rec(
+                &format!("n775_wt_{i}"),
+                0,
+                fl,
+                772,
+                &[(50, Kind::Match)],
+                ref_seq[771..821].to_vec(),
+                vec![36; 50],
+                None,
+            ));
+        }
+
+        // 5. Tile 5 [1001, 1200]: active StrongSomatic SNV at 1050 `C -> A`
+        for i in 0..20usize {
+            let s = 1020 + (i % 4);
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let nseq = ref_seq[s - 1..s - 1 + 60].to_vec();
+            let mut tseq = nseq.clone();
+            if i < 8 {
+                tseq[1050 - s] = b'A';
+            }
+            t_recs.push(mk_contig_rec(
+                &format!("t1050_{i}"),
+                0,
+                fl,
+                s,
+                &[(60, Kind::Match)],
+                tseq,
+                vec![38; 60],
+                None,
+            ));
+            n_recs.push(mk_contig_rec(
+                &format!("n1050_{i}"),
+                0,
+                fl,
+                s,
+                &[(60, Kind::Match)],
+                nseq,
+                vec![38; 60],
+                None,
+            ));
+        }
+
+        t_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+        n_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&tum_bam, &[("chr1", ref_seq.len())], t_recs).expect("seam_tum");
+        write_multi_contig_bam(&nrm_bam, &[("chr1", ref_seq.len())], n_recs).expect("seam_nrm");
+
+        let run_cfg = |cfg: &Config, emit_var: bool| -> String {
+            let mut c = cfg.clone();
+            c.emit_intermediate = emit_var;
+            let mut buf = Vec::new();
+            vardictrust_core::run_with_writer(&c, &mut buf).expect("seam run_with_writer");
+            String::from_utf8(buf).expect("utf8")
+        };
+
+        for is_paired in [false, true] {
+            for all_alleles in [false, true] {
+                let make_cfg = |tile_sz: u32, threads: usize| Config {
+                    reference: fa_path.to_string_lossy().into_owned(),
+                    bam: if is_paired {
+                        format!("{}|{}", tum_bam.display(), nrm_bam.display())
+                    } else {
+                        tum_bam.to_string_lossy().into_owned()
+                    },
+                    sample: if is_paired {
+                        "SEAM_T|SEAM_N".to_string()
+                    } else {
+                        "SEAM_T".to_string()
+                    },
+                    sample_explicit: true,
+                    region: Some("chr1:1-1120".to_string()),
+                    tile_size: Some(tile_sz),
+                    threads,
+                    realign: 1,
+                    indel_size: 200,
+                    sv_min_len: 50,
+                    vcf_min_splitreads: 0,
+                    read_pos: 0.0,
+                    base_qual: 5.0,
+                    lofreq: 0.15,
+                    mfreq: 0.01,
+                    nmfreq: 0.01,
+                    freq: 0.01,
+                    af_threshold: 0.01,
+                    min_reads: 2,
+                    fisher: true,
+                    vcf_all_alleles: all_alleles,
+                    compat: COMPAT_OFF,
+                    ..Config::default()
+                };
+
+                let untiled = make_cfg(50_000_000, 1);
+                let tiled = make_cfg(250, 4);
+
+                let vcf_u = run_cfg(&untiled, false);
+                let vcf_t = run_cfg(&tiled, false);
+                assert_eq!(
+                    vcf_t, vcf_u,
+                    "COMPAT_OFF 5-tile (tile_size=250) VCF must match untiled byte-for-byte (paired={is_paired}, all_alleles={all_alleles})"
+                );
+                let var_u = run_cfg(&untiled, true);
+                let var_t = run_cfg(&tiled, true);
+                assert_eq!(
+                    var_t, var_u,
+                    "COMPAT_OFF 5-tile (tile_size=250) .var must match untiled byte-for-byte (paired={is_paired}, all_alleles={all_alleles})"
+                );
+
+                let rows = extract_variants(&vcf_t);
+                // F-01.1: Seam 250|251 rolled left to chr1:230 TAAG->T with owned RD=20 (DP=28, VD=8)
+                assert!(
+                    rows.iter()
+                        .any(|r| r.starts_with("chr1\t230\t.\tTAAG\tT\t") && r.contains(";DP=28;")),
+                    "F-01.1: owned full-depth chr1:230 TAAG->T (DP=28) must win over unowned halo RD=0 copy (paired={is_paired}, all_alleles={all_alleles}):\n{}",
+                    rows.join("\n")
+                );
+                // F-04: In single-allele mode (!all_alleles), owned SNV `chr1:730 A->G` must beat Tile 4's unowned AF=1.0 deletion
+                if !all_alleles {
+                    assert!(
+                        rows.iter().any(|r| r.starts_with("chr1\t730\t.\tA\tG\t")),
+                        "F-04: owned SNV chr1:730 A->G must not be clobbered by unowned spanning deletion:\n{}",
+                        rows.join("\n")
+                    );
+                }
+                // F-05: Co-anchored distinct-END `<DUP>` SVs (`END=205` & `END=214`) survive BOTH with and without `-A`!
+                assert!(
+                    rows.iter()
+                        .any(|r| r.starts_with("chr1\t150\t") && r.contains(";END=205;"))
+                        && rows
+                            .iter()
+                            .any(|r| r.starts_with("chr1\t150\t") && r.contains(";END=214;")),
+                    "F-05: both distinct-END co-anchored <DUP> SVs (END=205 & END=214) must survive (paired={is_paired}, all_alleles={all_alleles}):\n{}",
+                    rows.join("\n")
+                );
+                // F-01.2: In paired somatic mode, chr1:450 CA->C must stay `LikelySomatic` (`VD=10`) alongside `StrongSomatic` at 1050!
+                if is_paired {
+                    assert!(
+                        rows.iter().any(|r| {
+                            r.starts_with("chr1\t450\t.\tCA\tC\t")
+                                && r.contains("STATUS=LikelySomatic;")
+                                && r.contains(";VD=5;")
+                        }) && rows.iter().any(|r| {
+                            r.starts_with("chr1\t1050\t.\tC\tA\t")
+                                && r.contains("STATUS=StrongSomatic;")
+                        }),
+                        "F-01.2: 5-tile somatic must preserve LikelySomatic at 450 alongside StrongSomatic at 1050:\n{}",
+                        rows.join("\n")
+                    );
+                }
+            }
+        }
+
+        // Also verify `--preset wgs` single-allele (`vcf_all_alleles = false`) AND forced >8 MiB
+        // `SpillableVcfAccumulator` disk spill (`DEFAULT_VCF_SPILL_BYTES = 8 MiB` exceeded via
+        // a 3 MiB sample token across >= 6 VCF candidates -> >= 2 on-disk `.bin` spill runs)!
+        let mut wgs_untiled = Config::from_preset(WorkflowPreset::Wgs);
+        wgs_untiled.reference = fa_path.to_string_lossy().into_owned();
+        wgs_untiled.bam = tum_bam.to_string_lossy().into_owned();
+        wgs_untiled.sample = "WGS_DUP".to_string();
+        wgs_untiled.sample_explicit = true;
+        wgs_untiled.region = Some("chr1:1-1120".to_string());
+        wgs_untiled.sv_min_len = 50;
+        wgs_untiled.indel_size = 200;
+        wgs_untiled.vcf_min_splitreads = 0;
+        wgs_untiled.read_pos = 0.0;
+        wgs_untiled.tile_size = Some(50_000_000);
+        wgs_untiled.threads = 1;
+        assert!(!wgs_untiled.vcf_all_alleles);
+
+        let mut wgs_tiled = wgs_untiled.clone();
+        wgs_tiled.tile_size = Some(250);
+        wgs_tiled.threads = 4;
+
+        let wgs_vcf_u = run_cfg(&wgs_untiled, false);
+        let wgs_vcf_t = run_cfg(&wgs_tiled, false);
+        assert_eq!(
+            wgs_vcf_t, wgs_vcf_u,
+            "--preset wgs 5-tile single-allele VCF must match untiled"
+        );
+        let wgs_rows = extract_variants(&wgs_vcf_t);
+        assert!(
+            wgs_rows
+                .iter()
+                .any(|r| r.starts_with("chr1\t150\t.\tA\tT\t"))
+                && wgs_rows
+                    .iter()
+                    .any(|r| r.starts_with("chr1\t150\t.\tA\t<DUP>\t") && r.contains(";END=205;"))
+                && wgs_rows
+                    .iter()
+                    .any(|r| r.starts_with("chr1\t150\t.\tA\t<DUP>\t") && r.contains(";END=214;")),
+            "--preset wgs without -A must retain SNV + END=205 <DUP> + END=214 <DUP> at POS=150:\n{}",
+            wgs_rows.join("\n")
+        );
+
+        let huge_sample = format!("WGS_SPILL_{}", "X".repeat(3_000_000));
+        let mut wgs_spilled = wgs_tiled.clone();
+        wgs_spilled.sample = huge_sample.clone();
+        let spilled_vcf = run_cfg(&wgs_spilled, false);
+        assert!(
+            spilled_vcf.len() > 18 * 1024 * 1024,
+            "expected > 18 MiB VCF payload forcing >= 2 8-MiB SpillableVcfAccumulator disk spill runs, got {} B",
+            spilled_vcf.len()
+        );
+        let normalized_spilled_rows: Vec<String> = extract_variants(&spilled_vcf)
+            .into_iter()
+            .map(|r| r.replacen(&huge_sample, "WGS_DUP", 1))
+            .collect();
+        assert_eq!(
+            normalized_spilled_rows, wgs_rows,
+            "F-05: multi-run disk-spilled SpillableVcfAccumulator single-allele VCF must match unspilled --preset wgs output"
+        );
+    }
+
+    #[test]
+    fn compat_off_portable_bam_equals_cram_twin_e2e() {
+        let dir = TempDir::new().expect("tempdir");
+        // Soft-masked mixed-case reference (`a/c/g/t` + `A/C/G/T`) exercising CRAM 3.0 external-ref
+        // base normalization, stripped `NM`/`MD` reconstruction, and full `COMPAT_OFF` across:
+        // - multi-allelic SNVs (`pos = 120`),
+        // - right-shifted repeat deletion rolling 5'-left (`Switch 35`, `155..=160 "AAGAAG"` -> `pos = 154`),
+        // - `-u` agreed overlapping FR mates (`Switch 34`, `pos = 210`),
+        // - split Tumor/Normal germline deletion reconciliation (`Switch 36`, `pos = 260`),
+        // - discordant + split-read `<DUP>` symbolic SV (`Switch 20` / `UB-5`, `310..=399`).
+        let mut raw_ref = lcg_ref_bytes(0xC2A4_2026_CAFE_1234, 650);
+        for idx in 1..raw_ref.len() {
+            if raw_ref[idx] == raw_ref[idx - 1] {
+                raw_ref[idx] = match raw_ref[idx] {
+                    b'A' => b'C',
+                    b'C' => b'G',
+                    b'G' => b'T',
+                    _ => b'A',
+                };
+            }
+        }
+        raw_ref[119] = b'A';
+        raw_ref[153..161].copy_from_slice(b"TAAGAAGC"); // 154='T', 155..=160="AAGAAG"
+        raw_ref[209] = b'C';
+        raw_ref[259..265].copy_from_slice(b"TCAGCT"); // 260='T', 261..=263="CAG"
+        raw_ref[308..311].copy_from_slice(b"ACG");
+        raw_ref[398..401].copy_from_slice(b"GTA");
+
+        // Soft-mask every 3rd base to lowercase in the FASTA so CRAM external-ref decoding is genuinely tested!
+        let masked_ref: Vec<u8> = raw_ref
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| {
+                if i % 3 == 0 {
+                    b.to_ascii_lowercase()
+                } else {
+                    b
+                }
+            })
+            .collect();
+        let fa_path = write_multi_contig_fasta(dir.path(), "cram_compat", &[("chr1", &masked_ref)]);
+
+        let tum_bam = dir.path().join("twin_tum.bam");
+        let nrm_bam = dir.path().join("twin_nrm.bam");
+        let tum_cram = dir.path().join("twin_tum.cram");
+        let nrm_cram = dir.path().join("twin_nrm.cram");
+
+        let mut t_recs = Vec::new();
+        let mut n_recs = Vec::new();
+
+        // 1. Multi-allelic SNVs (`120 A->G` & `120 A->T`) + 5'-left-align `3D` (`158..=160 -> 154 TAAG->T`)
+        for i in 0..16usize {
+            let s = 95 + (i % 4);
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt = raw_ref[s - 1..s - 1 + 85].to_vec();
+            n_recs.push(mk_contig_rec(
+                &format!("cn1_{i}"),
+                0,
+                fl,
+                s,
+                &[(85, Kind::Match)],
+                wt.clone(),
+                vec![38; 85],
+                None,
+            ));
+            if i < 5 {
+                let mut s1 = wt;
+                s1[120 - s] = b'G';
+                t_recs.push(mk_contig_rec(
+                    &format!("ct1_g_{i}"),
+                    0,
+                    fl,
+                    s,
+                    &[(85, Kind::Match)],
+                    s1,
+                    vec![39; 85],
+                    None,
+                ));
+            } else if i < 9 {
+                let mut s2 = wt;
+                s2[120 - s] = b'T';
+                t_recs.push(mk_contig_rec(
+                    &format!("ct1_t_{i}"),
+                    0,
+                    fl,
+                    s,
+                    &[(85, Kind::Match)],
+                    s2,
+                    vec![38; 85],
+                    None,
+                ));
+            } else if i < 14 {
+                let pre = 158 - s;
+                let post = 25usize;
+                let mut sd = raw_ref[s - 1..157].to_vec();
+                sd.extend_from_slice(&raw_ref[160..160 + post]);
+                let mut q = vec![38u8; pre + post];
+                q[pre - 2] = 20;
+                q[pre - 1] = 20;
+                t_recs.push(mk_contig_rec(
+                    &format!("ct1_del_{i}"),
+                    0,
+                    fl,
+                    s,
+                    &[(pre, Kind::Match), (3, Kind::Deletion), (post, Kind::Match)],
+                    sd,
+                    q,
+                    None,
+                ));
+            } else {
+                t_recs.push(mk_contig_rec(
+                    &format!("ct1_wt_{i}"),
+                    0,
+                    fl,
+                    s,
+                    &[(85, Kind::Match)],
+                    wt,
+                    vec![38; 85],
+                    None,
+                ));
+            }
+        }
+
+        // 2. `-u` overlapping FR pairs at `210 C->A` + split germline deletion at `260 TCAG->T`
+        let f_fl = Flags::SEGMENTED
+            | Flags::PROPERLY_SEGMENTED
+            | Flags::FIRST_SEGMENT
+            | Flags::MATE_REVERSE_COMPLEMENTED;
+        let r_fl = Flags::SEGMENTED
+            | Flags::PROPERLY_SEGMENTED
+            | Flags::LAST_SEGMENT
+            | Flags::REVERSE_COMPLEMENTED;
+        for idx in 0..8usize {
+            let r1 = 180 + (idx % 3);
+            let r2 = 190 + (idx % 3);
+            let tlen = (r2 + 65 - r1) as i32;
+            let qn = format!("cram_pair_{idx}");
+            let mut s1 = raw_ref[r1 - 1..r1 - 1 + 65].to_vec();
+            let mut s2 = raw_ref[r2 - 1..r2 - 1 + 65].to_vec();
+            if idx < 5 {
+                s1[210 - r1] = b'A';
+                s2[210 - r2] = b'A';
+            }
+            t_recs.push(mk_contig_rec(
+                &qn,
+                0,
+                f_fl,
+                r1,
+                &[(65, Kind::Match)],
+                s1,
+                vec![38; 65],
+                Some((0, r2, tlen)),
+            ));
+            t_recs.push(mk_contig_rec(
+                &qn,
+                0,
+                r_fl,
+                r2,
+                &[(65, Kind::Match)],
+                s2,
+                vec![38; 65],
+                Some((0, r1, -tlen)),
+            ));
+            n_recs.push(mk_contig_rec(
+                &format!("cn_210_{idx}"),
+                0,
+                if idx % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                r1,
+                &[(65, Kind::Match)],
+                raw_ref[r1 - 1..r1 - 1 + 65].to_vec(),
+                vec![38; 65],
+                None,
+            ));
+        }
+        for i in 0..8usize {
+            let s = 232 + (i % 3);
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt = raw_ref[s - 1..s - 1 + 65].to_vec();
+            t_recs.push(mk_contig_rec(
+                &format!("ct260_w_{i}"),
+                0,
+                fl,
+                s,
+                &[(65, Kind::Match)],
+                wt.clone(),
+                vec![38; 65],
+                None,
+            ));
+            n_recs.push(mk_contig_rec(
+                &format!("cn260_w_{i}"),
+                0,
+                fl,
+                s,
+                &[(65, Kind::Match)],
+                wt,
+                vec![38; 65],
+                None,
+            ));
+            let lt = 260 - s;
+            let mut ts = raw_ref[s - 1..259].to_vec();
+            ts.push(b'T');
+            ts.extend_from_slice(&raw_ref[263..291]);
+            let mut tq = vec![38u8; lt + 29];
+            tq[lt - 2] = 20;
+            tq[lt - 1] = 20;
+            t_recs.push(mk_contig_rec(
+                &format!("ct260_v_{i}"),
+                0,
+                fl,
+                s,
+                &[
+                    (lt, Kind::Match),
+                    (4, Kind::Deletion),
+                    (1, Kind::Insertion),
+                    (28, Kind::Match),
+                ],
+                ts,
+                tq,
+                None,
+            ));
+            let ln = 261 - s;
+            let mut ns = raw_ref[s - 1..260].to_vec();
+            ns.extend_from_slice(&raw_ref[263..291]);
+            let mut nq = vec![38u8; ln + 28];
+            nq[ln - 2] = 20;
+            nq[ln - 1] = 20;
+            n_recs.push(mk_contig_rec(
+                &format!("cn260_v_{i}"),
+                0,
+                fl,
+                s,
+                &[(ln, Kind::Match), (3, Kind::Deletion), (28, Kind::Match)],
+                ns,
+                nq,
+                None,
+            ));
+        }
+
+        // 3. Symbolic `<DUP>` SV (`310..=569`, tlen = -260 >= sv_min_len = 60) with paired mates
+        for i in 0..8usize {
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            let wt = raw_ref[299..389].to_vec();
+            t_recs.push(mk_contig_rec(
+                &format!("ct_svw_{i}"),
+                0,
+                fl,
+                300,
+                &[(90, Kind::Match)],
+                wt.clone(),
+                vec![40; 90],
+                None,
+            ));
+            n_recs.push(mk_contig_rec(
+                &format!("cn_svw_{i}"),
+                0,
+                fl,
+                300,
+                &[(90, Kind::Match)],
+                wt,
+                vec![40; 90],
+                None,
+            ));
+            let qname = format!("ct_dup_{i}");
+            let mut rseq = raw_ref[549..569].to_vec();
+            rseq.extend_from_slice(&raw_ref[309..359]);
+            t_recs.push(mk_contig_rec(
+                &qname,
+                0,
+                Flags::SEGMENTED | Flags::LAST_SEGMENT | Flags::REVERSE_COMPLEMENTED,
+                310,
+                &[(20, Kind::SoftClip), (50, Kind::Match)],
+                rseq,
+                vec![40; 70],
+                Some((0, 520, 260)),
+            ));
+            let mut fseq = raw_ref[519..569].to_vec();
+            fseq.extend_from_slice(&raw_ref[309..329]);
+            t_recs.push(mk_contig_rec(
+                &qname,
+                0,
+                Flags::SEGMENTED | Flags::FIRST_SEGMENT | Flags::MATE_REVERSE_COMPLEMENTED,
+                520,
+                &[(50, Kind::Match), (20, Kind::SoftClip)],
+                fseq,
+                vec![40; 70],
+                Some((0, 310, -260)),
+            ));
+        }
+
+        let stamp_nm = |recs: &mut [RecordBuf]| {
+            use noodles::sam::alignment::record::data::field::Tag;
+            use noodles::sam::alignment::record_buf::data::field::Value;
+            for rec in recs {
+                let mut ref_idx = rec.alignment_start().unwrap().get() - 1;
+                let mut seq_idx = 0usize;
+                let seq = rec.sequence().as_ref();
+                let mut nm = 0i32;
+                for op in rec.cigar().as_ref() {
+                    let len = op.len();
+                    match op.kind() {
+                        Kind::Match | Kind::SequenceMatch | Kind::SequenceMismatch => {
+                            for k in 0..len {
+                                if !seq[seq_idx + k].eq_ignore_ascii_case(&raw_ref[ref_idx + k]) {
+                                    nm += 1;
+                                }
+                            }
+                            seq_idx += len;
+                            ref_idx += len;
+                        }
+                        Kind::Insertion => {
+                            nm += len as i32;
+                            seq_idx += len;
+                        }
+                        Kind::Deletion => {
+                            nm += len as i32;
+                            ref_idx += len;
+                        }
+                        Kind::SoftClip => {
+                            seq_idx += len;
+                        }
+                        Kind::Skip => {
+                            ref_idx += len;
+                        }
+                        Kind::HardClip | Kind::Pad => {}
+                    }
+                }
+                rec.data_mut().insert(Tag::EDIT_DISTANCE, Value::from(nm));
+            }
+        };
+        stamp_nm(&mut t_recs);
+        stamp_nm(&mut n_recs);
+        t_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+        n_recs.sort_by_key(|r| r.alignment_start().unwrap().get());
+        write_multi_contig_bam(&tum_bam, &[("chr1", raw_ref.len())], t_recs).expect("twin_tum.bam");
+        write_multi_contig_bam(&nrm_bam, &[("chr1", raw_ref.len())], n_recs).expect("twin_nrm.bam");
+
+        // Encode both BAMs into indexed CRAM 3.0 + `.cram.crai` with `strip_nm = true` (zero external tools!)
+        write_indexed_cram(&tum_bam, &fa_path, &tum_cram, true, None).expect("twin_tum.cram");
+        write_indexed_cram(&nrm_bam, &fa_path, &nrm_cram, true, None).expect("twin_nrm.cram");
+
+        for (is_paired, tile_sz, threads) in [
+            (false, 50_000_000u32, 1usize),
+            (false, 250, 4),
+            (true, 50_000_000, 1),
+            (true, 250, 4),
+        ] {
+            let mk_cfg = |use_cram: bool| Config {
+                reference: fa_path.to_string_lossy().into_owned(),
+                bam: match (is_paired, use_cram) {
+                    (false, false) => tum_bam.to_string_lossy().into_owned(),
+                    (false, true) => tum_cram.to_string_lossy().into_owned(),
+                    (true, false) => format!("{}|{}", tum_bam.display(), nrm_bam.display()),
+                    (true, true) => format!("{}|{}", tum_cram.display(), nrm_cram.display()),
+                },
+                sample: if is_paired {
+                    "CRAM_T|CRAM_N".to_string()
+                } else {
+                    "CRAM_T".to_string()
+                },
+                sample_explicit: true,
+                region: Some("chr1:90-600".to_string()),
+                unique_mode_alignment_enabled: true,
+                sv_min_len: 60,
+                vcf_min_splitreads: 0,
+                fisher: true,
+                vcf_all_alleles: true,
+                freq: 0.01,
+                af_threshold: 0.01,
+                tile_size: Some(tile_sz),
+                threads,
+                compat: COMPAT_OFF,
+                ..Config::default()
+            };
+
+            let cfg_bam = mk_cfg(false);
+            let cfg_cram = mk_cfg(true);
+            let mut vcf_bam_buf = Vec::new();
+            let mut vcf_cram_buf = Vec::new();
+            vardictrust_core::run_with_writer(&cfg_bam, &mut vcf_bam_buf).expect("BAM VCF");
+            vardictrust_core::run_with_writer(&cfg_cram, &mut vcf_cram_buf).expect("CRAM VCF");
+            let vcf_bam = String::from_utf8(vcf_bam_buf).expect("utf8");
+            let vcf_cram = String::from_utf8(vcf_cram_buf).expect("utf8");
+
+            assert!(vcf_cram.contains("##VarDictRustCompat=off\n"));
+            let rows_bam = extract_variants(&vcf_bam);
+            assert!(
+                rows_bam.len() >= 5
+                    && rows_bam.iter().any(|r| r.contains("\t<DUP>\t"))
+                    && rows_bam
+                        .iter()
+                        .any(|r| r.starts_with("chr1\t154\t.\tTAAG\tT\t")),
+                "expected multi-allelic SNVs, left-aligned indel, -u SNV, split indel, and <DUP> SV (paired={is_paired}):\n{}",
+                rows_bam.join("\n")
+            );
+            assert_eq!(
+                vcf_cram, vcf_bam,
+                "portable COMPAT_OFF + --vcf-all-alleles CRAM VCF must match BAM byte-for-byte (paired={is_paired}, tile_sz={tile_sz})"
+            );
+
+            let mut var_bam_cfg = cfg_bam;
+            var_bam_cfg.emit_intermediate = true;
+            let mut var_cram_cfg = cfg_cram;
+            var_cram_cfg.emit_intermediate = true;
+            let mut var_bam_buf = Vec::new();
+            let mut var_cram_buf = Vec::new();
+            vardictrust_core::run_with_writer(&var_bam_cfg, &mut var_bam_buf).expect("BAM .var");
+            vardictrust_core::run_with_writer(&var_cram_cfg, &mut var_cram_buf).expect("CRAM .var");
+            assert_eq!(
+                String::from_utf8(var_cram_buf).expect("utf8"),
+                String::from_utf8(var_bam_buf).expect("utf8"),
+                "portable COMPAT_OFF CRAM .var must match BAM byte-for-byte (paired={is_paired}, tile_sz={tile_sz})"
+            );
+        }
+    }
+
+    #[test]
+    fn acrocentric_leading_gap_csi_root_bin_loffset_and_queries() {
+        use noodles::csi::binning_index::BinningIndex as _;
+        use std::io::BufRead as _;
+
+        let dir = TempDir::new().expect("tempdir");
+        // Acrocentric `chr13` (`160,000 bp`): `[1..50,000)` is completely empty (`> 3 * 16,384 bp`
+        // leading gap, so `windows[0..3]` are zero before `S-01` backfill!).
+        // - First variant on `chr13`: SNV at `POS = 50,000` (window `3`);
+        // - Spanning `<DEL>` SV: `POS = 50,100 .. END = 135,000` (crosses the `131,072 bp` CSI
+        //   boundary, populating window-0-rooted top-most ancestor `bin 585` `[1..1,048,576]`,
+        //   whose `csi_first_window(585, 6) == 0` — the exact same `w_idx == 0` backfill path as
+        //   root `bin 0` on `> 536 Mbp` contigs tested in `lane1_s01_csi_leading_zero_linear_window_backfill`);
+        // - Downstream SNV: `POS = 140,000`.
+        let chr13_len = 160_000usize;
+        let mut chr13_seq = lcg_ref_bytes(0xAC20_0013_5000_0135, chr13_len);
+        chr13_seq[49_999] = b'A'; // POS = 50,000 ('A' -> 'G')
+        chr13_seq[50_099] = b'C'; // POS = 50,100 anchor for 84,900-bp <DEL> (END = 135,000)
+        chr13_seq[139_999] = b'G'; // POS = 140,000 ('G' -> 'T')
+
+        let fa_path = write_multi_contig_fasta(dir.path(), "acro_chr13", &[("chr13", &chr13_seq)]);
+        let bam_path = dir.path().join("acro_chr13.bam");
+        let mut recs = Vec::new();
+
+        // 1. First variant at POS = 50,000 (`A -> G`, 6 alt + 6 WT)
+        for i in 0..12usize {
+            let s = 49_975 + (i % 4);
+            let mut seq = chr13_seq[s - 1..s - 1 + 60].to_vec();
+            if i < 6 {
+                seq[50_000 - s] = b'G';
+            }
+            recs.push(mk_contig_rec(
+                &format!("c13_50k_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(60, Kind::Match)],
+                seq,
+                vec![39; 60],
+                None,
+            ));
+        }
+
+        // 2. Spanning `<DEL>` from POS = 50,100 to END = 135,000 (`40M 84900D 40M` starting at 50,061)
+        for i in 0..8usize {
+            let fl = if i % 2 == 1 {
+                Flags::REVERSE_COMPLEMENTED
+            } else {
+                Flags::empty()
+            };
+            recs.push(mk_contig_rec(
+                &format!("c13_del_wt_{i}"),
+                0,
+                fl,
+                50_065,
+                &[(80, Kind::Match)],
+                chr13_seq[50_064..50_144].to_vec(),
+                vec![40; 80],
+                None,
+            ));
+            let mut dseq = chr13_seq[50_060..50_100].to_vec(); // 50,061..=50,100 (40M)
+            dseq.extend_from_slice(&chr13_seq[135_000..135_040]); // skips 50,101..=135,000 (84,900D), then 40M
+            recs.push(mk_contig_rec(
+                &format!("c13_del_{i}"),
+                0,
+                fl,
+                50_061,
+                &[
+                    (40, Kind::Match),
+                    (84_900, Kind::Deletion),
+                    (40, Kind::Match),
+                ],
+                dseq,
+                vec![40; 80],
+                None,
+            ));
+        }
+
+        // 3. Downstream SNV at POS = 140,000 (`G -> T`, 6 alt + 6 WT)
+        for i in 0..12usize {
+            let s = 139_975 + (i % 4);
+            let mut seq = chr13_seq[s - 1..s - 1 + 60].to_vec();
+            if i < 6 {
+                seq[140_000 - s] = b'T';
+            }
+            recs.push(mk_contig_rec(
+                &format!("c13_140k_{i}"),
+                0,
+                if i % 2 == 1 {
+                    Flags::REVERSE_COMPLEMENTED
+                } else {
+                    Flags::empty()
+                },
+                s,
+                &[(60, Kind::Match)],
+                seq,
+                vec![39; 60],
+                None,
+            ));
+        }
+        write_multi_contig_bam(&bam_path, &[("chr13", chr13_len)], recs).expect("acro_chr13.bam");
+
+        let out_vcf_gz = dir.path().join("acro_chr13.vcf.gz");
+        let out_csi = dir.path().join("acro_chr13.vcf.gz.csi");
+        let cfg = Config {
+            reference: fa_path.to_string_lossy().into_owned(),
+            bam: bam_path.to_string_lossy().into_owned(),
+            sample: "HG002_CHR13".to_string(),
+            sample_explicit: true,
+            region: Some("chr13:1-150000".to_string()),
+            sv_min_len: 1_000,
+            vcf_min_splitreads: 0,
+            freq: 0.01,
+            af_threshold: 0.01,
+            output_path: Some(out_vcf_gz.to_string_lossy().into_owned()),
+            index_csi: true,
+            threads: 2,
+            compat: COMPAT_OFF,
+            ..Config::default()
+        };
+        vardictrust_core::run(&cfg).expect("run --output acro_chr13.vcf.gz --csi");
+        assert!(out_vcf_gz.is_file() && out_csi.is_file());
+
+        // Linear scan of `.vcf.gz`: capture exact BGZF VirtualPosition of the first variant record (`POS = 50,000`)
+        // and all `(start, end, line)` tuples for linear-vs-CSI query comparison.
+        let mut bgzf_lin =
+            noodles::bgzf::io::Reader::new(fs::File::open(&out_vcf_gz).expect("open vcf.gz"));
+        let mut first_record_vpos = None;
+        let mut linear_records: Vec<(usize, usize, String)> = Vec::new();
+        loop {
+            let vpos_before = bgzf_lin.virtual_position();
+            let mut raw = String::new();
+            if bgzf_lin.read_line(&mut raw).expect("read_line") == 0 {
+                break;
+            }
+            let line = raw.trim_end_matches(['\r', '\n']);
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if first_record_vpos.is_none() {
+                first_record_vpos = Some(vpos_before);
+            }
+            let cols: Vec<&str> = line.split('\t').collect();
+            let rec_start: usize = cols[1].parse().expect("POS");
+            let info_end = cols[7]
+                .split(';')
+                .find_map(|kv| kv.strip_prefix("END=")?.parse::<usize>().ok());
+            let rec_end = info_end.unwrap_or_else(|| rec_start + cols[3].len().saturating_sub(1));
+            linear_records.push((rec_start, rec_end, line.to_string()));
+        }
+        let first_vpos = first_record_vpos.expect("expected >= 1 variant record on chr13");
+        assert_ne!(
+            first_vpos,
+            noodles::bgzf::VirtualPosition::default(),
+            "first variant record must begin after BGZF VCF header (non-zero VirtualPosition)"
+        );
+        assert_eq!(
+            linear_records
+                .iter()
+                .map(|(s, e, _)| (*s, *e))
+                .collect::<Vec<_>>(),
+            vec![(50_000, 50_000), (50_100, 135_000), (140_000, 140_000)],
+            "expected exact chr13 variant spans [50000, 50100..135000, 140000]"
+        );
+
+        // Inspect `.csi` via `noodles::csi`: verify window-0-rooted top-most ancestor bin (`585`)
+        // and all populated bins on `chr13` backfilled `loffset == first_vpos` (not 0!).
+        let csi_index = noodles::csi::fs::read(&out_csi).expect("noodles::csi::fs::read");
+        assert_eq!(csi_index.min_shift(), 14);
+        assert_eq!(csi_index.depth(), 6);
+        let hdr = csi_index.header().expect("CSI header");
+        let ref_id = hdr
+            .reference_sequence_names()
+            .get_index_of(b"chr13".as_slice())
+            .expect("chr13 in CSI header");
+        let rs_chr13 = &csi_index.reference_sequences()[ref_id];
+        let min_bin_id = *rs_chr13
+            .index()
+            .keys()
+            .min()
+            .expect("populated bins on chr13");
+        assert_eq!(
+            min_bin_id, 585,
+            "spanning <DEL> 50100..135000 must populate window-0-rooted ancestor bin 585 ([1..1,048,576])"
+        );
+        assert_eq!(
+            rs_chr13.index()[&585],
+            first_vpos,
+            "S-01: window-0-rooted ancestor bin 585 loffset must backfill to first_vpos (not VirtualPosition(0))"
+        );
+        for (&bin_id, &loffset) in rs_chr13.index() {
+            assert_ne!(
+                loffset,
+                noodles::bgzf::VirtualPosition::default(),
+                "S-01: chr13 bin {bin_id} must have non-zero loffset"
+            );
+            assert!(
+                loffset >= first_vpos,
+                "S-01: chr13 bin {bin_id} loffset ({loffset:?}) must be >= first_vpos ({first_vpos:?})"
+            );
+        }
+
+        // Verify CSI indexed region queries match linear scan across leading gap, first locus, and spanning SV!
+        for (q_start, q_end) in [
+            (1usize, 60_000usize),
+            (49_000, 51_000),
+            (1, 10_000),
+            (130_000, 142_000),
+        ] {
+            let s = Position::new(q_start).expect("q_start");
+            let e = Position::new(q_end).expect("q_end");
+            let chunks = csi_index
+                .query(ref_id, (s..=e).into())
+                .expect("csi_index.query");
+            let mut reader =
+                noodles::bgzf::io::Reader::new(fs::File::open(&out_vcf_gz).expect("open vcf.gz"));
+            let mut csi_hits = Vec::new();
+            for ch in chunks {
+                assert!(
+                    ch.start() >= first_vpos,
+                    "S-01: CSI query chunk for chr13:{q_start}-{q_end} must start at/after first_vpos ({:?} < {:?})",
+                    ch.start(),
+                    first_vpos
+                );
+                reader.seek(ch.start()).expect("seek");
+                while reader.virtual_position() < ch.end() {
+                    let mut raw = String::new();
+                    if reader.read_line(&mut raw).expect("read_line") == 0 {
+                        break;
+                    }
+                    let line = raw.trim_end_matches(['\r', '\n']);
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    let cols: Vec<&str> = line.split('\t').collect();
+                    if cols.first().copied() != Some("chr13") {
+                        continue;
+                    }
+                    let rs_p: usize = cols[1].parse().expect("POS");
+                    let re_p = cols[7]
+                        .split(';')
+                        .find_map(|kv| kv.strip_prefix("END=")?.parse::<usize>().ok())
+                        .unwrap_or_else(|| rs_p + cols[3].len().saturating_sub(1));
+                    if rs_p <= q_end && re_p >= q_start {
+                        csi_hits.push(line.to_string());
+                    }
+                }
+            }
+            let linear_hits: Vec<String> = linear_records
+                .iter()
+                .filter(|(rs_p, re_p, _)| *rs_p <= q_end && *re_p >= q_start)
+                .map(|(_, _, l)| l.clone())
+                .collect();
+            assert_eq!(
+                csi_hits, linear_hits,
+                "CSI query chr13:{q_start}-{q_end} must match linear scan"
             );
         }
     }
