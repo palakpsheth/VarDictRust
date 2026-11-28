@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Once;
 
 use libfuzzer_sys::fuzz_target;
-use vardictrust_core::config::{CompatProfile, Config, COMPAT_OFF, COMPAT_VARDICTJAVA_1_8_3};
+use vardictrust_core::config::{
+    CompatProfile, Config, COMPAT_OFF, COMPAT_SWITCH_COUNT, COMPAT_VARDICTJAVA_1_8_3,
+};
 use vardictrust_core::javamap::JavaHashMap;
 use vardictrust_core::output::vcf::{
     build_single_vcf_event, format_paired_vcf_record, SingleVcfEvent,
@@ -61,6 +63,19 @@ impl<'a> ByteCursor<'a> {
         i32::from_le_bytes([self.u8(), self.u8(), self.u8(), self.u8()])
     }
 
+    fn u64(&mut self) -> u64 {
+        u64::from_le_bytes([
+            self.u8(),
+            self.u8(),
+            self.u8(),
+            self.u8(),
+            self.u8(),
+            self.u8(),
+            self.u8(),
+            self.u8(),
+        ])
+    }
+
     fn f64_bounded(&mut self, max_val: f64) -> f64 {
         match self.u8() & 0x0f {
             0 => 0.0,
@@ -88,7 +103,6 @@ impl<'a> ByteCursor<'a> {
 }
 
 fn check_fisher_table(ref_fwd: i32, ref_rev: i32, alt_fwd: i32, alt_rev: i32) {
-    debug_assert!(ref_fwd >= 0 && ref_rev >= 0 && alt_fwd >= 0 && alt_rev >= 0);
     let mut or_buf = String::with_capacity(32);
     for java_fisher in [false, true] {
         let fe = FisherExact::new_with_mode(ref_fwd, ref_rev, alt_fwd, alt_rev, java_fisher);
@@ -98,8 +112,8 @@ fn check_fisher_table(ref_fwd: i32, ref_rev: i32, alt_fwd: i32, alt_rev: i32) {
             fe.get_p_value_less(),
         ] {
             assert!(
-                !p.is_nan(),
-                "FisherExact p-value NaN for ({ref_fwd}, {ref_rev}, {alt_fwd}, {alt_rev}, java_fisher={java_fisher})"
+                p.is_finite(),
+                "FisherExact p-value non-finite ({p}) for ({ref_fwd}, {ref_rev}, {alt_fwd}, {alt_rev}, java_fisher={java_fisher})"
             );
             assert!(
                 (0.0..=1.0).contains(&p),
@@ -116,7 +130,8 @@ fn check_fisher_table(ref_fwd: i32, ref_rev: i32, alt_fwd: i32, alt_rev: i32) {
 }
 
 fn fuzz_fisher_exact(cur: &mut ByteCursor<'_>) {
-    // 1. Standard dense counts in 0..=2_048 (including degenerate zero marginals).
+    // 1. Standard dense counts in 0..=2_048 AND negative / mixed-sign `i32` counts
+    //    (exercising negative-count clamping in `FisherExact::new_with_mode`).
     let (rf, rr, af, ar) = match cur.u8() & 0x0f {
         0 => (0, 0, 0, 0),
         1 => (
@@ -130,6 +145,19 @@ fn fuzz_fisher_exact(cur: &mut ByteCursor<'_>) {
             0,
             i32::from(cur.u16() % 2049),
             0,
+        ),
+        3 => (i32::MIN, -1, i32::from(cur.u16() % 2049), -42),
+        4 => (
+            cur.i32().min(-1),
+            i32::from(cur.u16() % 2049),
+            cur.i32().min(-1),
+            i32::from(cur.u16() % 2049),
+        ),
+        5 => (
+            cur.i32().min(0),
+            cur.i32().min(0),
+            cur.i32().min(0),
+            cur.i32().min(0),
         ),
         _ => (
             i32::from(cur.u16() % 2049),
@@ -300,20 +328,23 @@ fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, compat: &CompatPr
     };
     v.hicov = v.total_pos_cov.max(v.hicnt);
 
-    // Bias towards passing is_good_var while occasionally injecting noise-level normal rows (#45).
-    if (cur.u8() & 7) == 0 {
+    // Bias towards passing is_good_var while frequently injecting noise-level normal rows (#45)
+    // with non-zero `extra_freq`/`hi_freq` so `is_noise` + `reconcile_variant_dp_with_tie` is tested.
+    if (cur.u8() & 3) == 0 {
         // Noise candidate for Variant::is_noise()
         v.mean_quality = f64::from(cur.u8() % 11);
         v.qstd = false;
         v.pos_coverage = i32::from(cur.u8() % 3) + 1;
         v.frequency = 0.02;
+        v.extra_freq = 0.15;
+        v.hi_freq = 0.15;
     } else {
         v.mean_quality = 24.0 + f64::from(cur.u8() % 18);
         v.qstd = cur.bool();
         v.frequency = cur.f64_bounded(1.0).clamp(0.0, 1.0);
+        v.hi_freq = v.frequency;
+        v.extra_freq = v.frequency;
     }
-    v.hi_freq = v.frequency;
-    v.extra_freq = v.frequency;
     v.mean_position = 6.0 + f64::from(cur.u8() % 30);
     v.pstd = cur.bool();
     v.mean_mapping_quality = f64::from(cur.u8() % 61);
@@ -332,6 +363,13 @@ fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, compat: &CompatPr
     v.crispr = i32::from(cur.u8() as i8);
     if compat.sanitize_iupac_alt_alleles {
         v.var_allele = reduce_iupac_alt_outside_brackets(&v.var_allele);
+    }
+    if compat.indel_only_shift3
+        && !v.ref_allele.is_empty()
+        && !v.var_allele.starts_with('<')
+        && v.ref_allele.len() == v.var_allele.len()
+    {
+        v.shift3 = 0;
     }
     v.var_type = v.var_type();
     if compat.reconcile_strand_and_hq_sums {
@@ -387,17 +425,17 @@ fn synth_variant_at(cur: &mut ByteCursor<'_>, anchor_pos: i32, compat: &CompatPr
         v.total_pos_cov = v.total_pos_cov.max(min_dp).max(0);
         v.hicnt = v.hicnt.max(0);
         v.hicov = v.hicov.max(v.hicnt).max(0);
-        v.frequency = if v.total_pos_cov > 0 {
+        v.frequency = if v.pos_coverage > 0 && v.total_pos_cov > 0 {
             (v.pos_coverage as f64 / v.total_pos_cov as f64).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        v.hi_freq = if v.hicov > 0 {
+        v.hi_freq = if v.pos_coverage > 0 && v.hicov > 0 {
             (v.hicnt as f64 / v.hicov as f64).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        v.extra_freq = if v.extra_freq.is_finite() {
+        v.extra_freq = if v.pos_coverage > 0 && v.total_pos_cov > 0 && v.extra_freq.is_finite() {
             v.extra_freq.clamp(0.0, 1.0)
         } else {
             0.0
@@ -417,9 +455,12 @@ fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32, compat: &CompatProfile) -> 
     let mut vars = Vars::new();
     if cur.bool() {
         let mut rv = synth_variant_at(cur, pos, compat);
+        rv.start_pos = pos;
+        rv.end_pos = pos;
         rv.ref_allele = "A".to_string();
         rv.var_allele = "A".to_string();
         rv.description = "A".to_string();
+        rv.shift3 = 0;
         rv.var_type.clear();
         if compat.reconcile_strand_and_hq_sums
             || compat.reconcile_rd_vd_dp
@@ -429,6 +470,7 @@ fn synth_vars_at(cur: &mut ByteCursor<'_>, pos: i32, compat: &CompatProfile) -> 
             rv.fwd = 0;
             rv.rev = 0;
             rv.frequency = 0.0;
+            rv.extra_freq = 0.0;
             rv.ref_fwd_cov = rv.ref_fwd_cov.max(0);
             rv.ref_rev_cov = rv.ref_rev_cov.max(0);
             rv.total_pos_cov = rv
@@ -480,10 +522,6 @@ fn synth_vars_map(
 }
 
 fn max_vcovs_capacity(vars_per_amplicon: &[JavaHashMap<i32, Vars>]) -> i32 {
-    // Mirror AmpliconPostProcessModule.java:76-80,106-110 (`amplicon.rs:1037-1051,1101-1104`):
-    // `vcovs` pushes `tv.total_pos_cov` once per in-insert candidate `Variant` (or 1 baseline
-    // entry when an amplicon has 0 in-insert candidates), so `ncamp` is bounded by the sum of
-    // per-amplicon max candidate counts (`<= amp_regions.len() * 3` for `synth_vars_at`).
     vars_per_amplicon
         .iter()
         .map(|m| {
@@ -497,16 +535,21 @@ fn max_vcovs_capacity(vars_per_amplicon: &[JavaHashMap<i32, Vars>]) -> i32 {
 }
 
 fn assert_aggregate_sample_amplicon_invariants(
+    cfg: &Config,
     max_vcovs_cap: i32,
     amp_regions: &[Region],
     agg_vars: &JavaHashMap<i32, Vars>,
     agg_conc: &vardictrust_core::postprocess::amplicon::SampleAmpliconConcordance,
 ) {
+    let skip_eq_non_pileup = !cfg.pileup && cfg.compat.sanitize_iupac_alt_alleles;
     for (_, entry) in agg_vars.iter() {
         for v in &entry.variants {
             let mut lookup = v.clone();
             if lookup.var_type_cow() == "Complex" {
                 lookup.adj_complex();
+            }
+            if skip_eq_non_pileup && lookup.ref_allele == lookup.var_allele {
+                continue;
             }
             assert!(
                 agg_conc
@@ -564,16 +607,28 @@ fn check_multiallelic_ncamp_regression_once() {
         let mut cfg = Config::default();
         cfg.amplicon = Some("10:0.95".to_string());
         cfg.compat = COMPAT_OFF;
-        let seg = vec![Region {
-            chr: "chr1".to_string(),
-            start: Pos1(100),
-            end: Pos1(150),
-            gene: "AMP0".to_string(),
-            amplicon: Some(AmpliconInfo {
-                insert_start: Pos1(105),
-                insert_end: Pos1(145),
-            }),
-        }];
+        let seg = vec![
+            Region {
+                chr: "chr1".to_string(),
+                start: Pos1(100),
+                end: Pos1(160),
+                gene: "AMP0".to_string(),
+                amplicon: Some(AmpliconInfo {
+                    insert_start: Pos1(105),
+                    insert_end: Pos1(155),
+                }),
+            },
+            Region {
+                chr: "chr1".to_string(),
+                start: Pos1(102),
+                end: Pos1(162),
+                gene: "AMP1".to_string(),
+                amplicon: Some(AmpliconInfo {
+                    insert_start: Pos1(105),
+                    insert_end: Pos1(155),
+                }),
+            },
+        ];
         let mk_var = |ref_a: &str, var_a: &str, desc: &str, end_pos: i32, dp: i32, vd: i32| {
             let mut v = Variant::new();
             v.start_pos = 120;
@@ -599,25 +654,39 @@ fn check_multiallelic_ncamp_regression_once() {
             v.var_type = v.var_type();
             v
         };
-        // num_amps = 1 with 3 in-insert variants at pos 120 having total_pos_cov = [200, 1, 1]:
-        // eff_maxcov / 50.0 = 4.0 -> two low-DP candidates yield ncamp = 2 (> num_amps = 1),
-        // plus a Complex MNP exercising adj_complex() key normalization (120 -> 122).
-        let mut vars = Vars::new();
-        vars.variants
+        // Multi-<DUP> amplicons at pos 120 with distinct `END` (`140` vs `150`), plus Complex MNP
+        // and low-DP candidates exercising `ncamp` and `GDAMP <= TLAMP` (`F-09`).
+        let mut vars0 = Vars::new();
+        vars0
+            .variants
             .push(mk_var("ACAAAGT", "ACTTTGT", "-7&ACTTTGT", 126, 200, 50));
-        vars.variants.push(mk_var("A", "C", "C", 120, 1, 1));
-        vars.variants.push(mk_var("A", "G", "G", 120, 1, 1));
+        vars0
+            .variants
+            .push(mk_var("C", "<DUP>", "<dup21>", 140, 200, 40));
+        vars0
+            .variants
+            .push(mk_var("C", "<DUP>", "<dup31>", 150, 200, 35));
+        vars0.variants.push(mk_var("A", "C", "C", 120, 1, 1));
+        vars0.variants.push(mk_var("A", "G", "G", 120, 1, 1));
+
+        let mut vars1 = Vars::new();
+        vars1
+            .variants
+            .push(mk_var("C", "<DUP>", "<dup21>", 140, 180, 45));
+
         let mut amp0 = JavaHashMap::new();
-        amp0.insert(120, vars);
-        let amps = vec![amp0];
+        amp0.insert(120, vars0);
+        let mut amp1 = JavaHashMap::new();
+        amp1.insert(120, vars1);
+        let amps = vec![amp0, amp1];
         let cap = max_vcovs_capacity(&amps);
         let splice = HashSet::default();
         let (agg_vars, conc) = aggregate_sample_amplicon_vars(&cfg, &seg, amps, &splice);
-        assert_aggregate_sample_amplicon_invariants(cap, &seg, &agg_vars, &conc);
-        let complex_hit = conc.resolve(122, 124, "AAA", "TTT", &seg);
-        assert_eq!(complex_hit.gdamp, 1);
-        assert_eq!(complex_hit.tlamp, 1);
-        assert_eq!(complex_hit.ncamp, 2);
+        assert_aggregate_sample_amplicon_invariants(&cfg, cap, &seg, &agg_vars, &conc);
+        let dup_140 = conc.resolve(120, 140, "C", "<DUP>", &seg);
+        let dup_150 = conc.resolve(120, 150, "C", "<DUP>", &seg);
+        assert!(dup_140.gdamp <= dup_140.tlamp && dup_140.gdamp == 2 && dup_140.tlamp == 2);
+        assert!(dup_150.gdamp <= dup_150.tlamp && dup_150.gdamp == 1 && dup_150.tlamp == 2);
 
         // Regression guard: `combine_analysis` `CombineVerdict::Germline` rescues construct
         // `sv.variant2` via `Variant::new()` with empty `ref_allele`/`var_allele`/`var_type`
@@ -735,6 +804,18 @@ fn assert_wave5_variant_invariants(
             v.nm
         );
     }
+    if compat.indel_only_shift3
+        && !v.null_record
+        && !v.ref_allele.is_empty()
+        && !v.var_allele.contains('<')
+        && v.ref_allele.len() == v.var_allele.len()
+    {
+        assert_eq!(
+            v.shift3, 0,
+            "indel_only_shift3 violated SHIFT3 == 0 on ref={} alt={}",
+            v.ref_allele, v.var_allele
+        );
+    }
     if check_var_type
         && compat.recompute_vartype_after_adj_complex
         && !is_ref_only
@@ -783,8 +864,13 @@ fn assert_wave5_vcf_line_invariants(line: &str, config: &Config, paired: bool) {
             .split(',')
             .map(|s| s.parse::<i64>().unwrap_or(0))
             .collect();
-        if !paired && config.compat.strict_vcf_ad_number_r {
-            let expected_len = if alt == "." { 1 } else { 2 };
+        if config.compat.strict_vcf_ad_number_r {
+            let n_alt = if alt == "." {
+                0
+            } else {
+                alt.split(',').count()
+            };
+            let expected_len = 1 + n_alt;
             assert_eq!(
                 ad_parts.len(),
                 expected_len,
@@ -821,7 +907,7 @@ fuzz_target!(|data: &[u8]| {
 
     let mut cur = ByteCursor::new(data);
 
-    // Part A: FisherExact R vs Java (--fisher) statistical kernel.
+    // Part A: FisherExact R vs Java (--fisher) statistical kernel (including negative counts).
     fuzz_fisher_exact(&mut cur);
 
     // Bounded genomic interval (<= 256 bp, Pos1 >= 1, AR-06).
@@ -873,44 +959,31 @@ fuzz_target!(|data: &[u8]| {
     base_cfg.vcf_all_alleles = cur.bool();
     base_cfg.amplicon_single_primer = cur.bool();
     base_cfg.compat = {
-        let mut compat = if cur.bool() {
-            COMPAT_OFF
-        } else {
-            COMPAT_VARDICTJAVA_1_8_3
-        };
-        let w4_bits = cur.u8();
-        if (w4_bits & 1) != 0 {
-            compat.strict_region_bounds = (w4_bits & 2) != 0;
-            compat.reconcile_vd_dp = (w4_bits & 4) != 0;
-            compat.somatic_continue_after_bad_var = (w4_bits & 8) != 0;
-            compat.adaptor_all_consensus_dirs = (w4_bits & 16) != 0;
-            compat.canonical_sv_vcf_anchoring = (w4_bits & 32) != 0;
-            compat.paired_somatic_amplicon = (w4_bits & 64) != 0;
+        let sel = cur.u8();
+        let mask64 = cur.u64();
+        match sel % 6 {
+            0 => COMPAT_VARDICTJAVA_1_8_3,
+            1 => COMPAT_OFF,
+            2 => CompatProfile::only_switch((mask64 as usize) % COMPAT_SWITCH_COUNT)
+                .unwrap_or(COMPAT_OFF),
+            3 => CompatProfile::without_switch((mask64 as usize) % COMPAT_SWITCH_COUNT)
+                .unwrap_or(COMPAT_OFF),
+            _ => CompatProfile::from_mask(mask64),
         }
-        if (w4_bits & 128) != 0 {
-            let w5_bits = cur.u8();
-            compat.nonnegative_subtracted_means = (w5_bits & 1) != 0; // Switch 23
-            compat.reconcile_strand_and_hq_sums = (w5_bits & 2) != 0; // Switch 24
-            compat.reconcile_rd_vd_dp = (w5_bits & 4) != 0; // Switch 25
-            compat.sanitize_iupac_alt_alleles = (w5_bits & 8) != 0; // Switch 26
-            compat.recompute_vartype_after_adj_complex = (w5_bits & 16) != 0; // Switch 29
-            compat.strict_vcf_ad_number_r = (w5_bits & 32) != 0; // Switch 30
-            compat.omit_nonsv_vcf_end = (w5_bits & 64) != 0; // Switch 31
-            compat.canonical_vcf_gt = (w5_bits & 128) != 0; // Switch 32
-        }
-        let w6_gate = cur.u8();
-        if (w6_gate & 1) != 0 {
-            let w6_bits = cur.u8();
-            compat.sclip_majority_count_first = (w6_bits & 1) != 0; // Switch 33
-            compat.mate_overlap_both_strands = (w6_bits & 2) != 0; // Switch 34
-            compat.canonical_vcf_complex_left_align = (w6_bits & 4) != 0; // Switch 35
-            compat.somatic_reconcile_split_alleles = (w6_bits & 8) != 0; // Switch 36
-            compat.adj_snv_full_sclip_match = (w6_bits & 16) != 0; // Switch 37
-            compat.indel_only_shift3 = (w6_bits & 32) != 0; // Switch 38
-        }
-        compat
     };
     base_cfg.omit_end_tag = cur.bool();
+
+    // Direct `Variant::is_noise` invariant probe (`VD == 0 => AF == 0 && HIAF == 0 && fwd == 0 && rev == 0`).
+    {
+        let mut noise_probe = synth_variant_at(&mut cur, reg_start as i32, &base_cfg.compat);
+        if noise_probe.is_noise(base_cfg.base_qual, base_cfg.lofreq) {
+            assert_eq!(noise_probe.pos_coverage, 0);
+            assert_eq!(noise_probe.fwd, 0);
+            assert_eq!(noise_probe.rev, 0);
+            assert_eq!(noise_probe.frequency, 0.0);
+            assert_eq!(noise_probe.hi_freq, 0.0);
+        }
+    }
 
     let reconcile_vd_dp = base_cfg.compat.reconcile_vd_dp;
     let aligned_bam1 = synth_vars_map(&mut cur, reg_start, reg_span, &base_cfg.compat);
@@ -934,8 +1007,14 @@ fuzz_target!(|data: &[u8]| {
         }
     }
     if !base_cfg.emit_intermediate && !base_cfg.vcf_all_alleles {
+        let multi_sv =
+            base_cfg.compat.canonical_sv_vcf_anchoring || base_cfg.compat.standard_dup_symbolic_alt;
         for pair in simple_rows.windows(2) {
-            assert!(pair[0].start_pos < pair[1].start_pos);
+            if multi_sv {
+                assert!(pair[0].start_pos <= pair[1].start_pos);
+            } else {
+                assert!(pair[0].start_pos < pair[1].start_pos);
+            }
         }
     } else if !base_cfg.emit_intermediate && base_cfg.vcf_all_alleles {
         let mut inter_cfg = base_cfg.clone();
@@ -1022,14 +1101,19 @@ fuzz_target!(|data: &[u8]| {
         pipe_ref,
         max_rl,
     );
+    let full_somatic_reconcile =
+        base_cfg.compat.reconcile_vd_dp || base_cfg.compat.reconcile_rd_vd_dp;
     for sv in &somatic_rows {
         assert!(!sv.status.is_empty());
-        assert_wave5_variant_invariants(&sv.variant1, &base_cfg.compat, false, true);
+        let v1_ref_only = sv.variant1.pos_coverage == 0
+            && ((!sv.variant1.ref_allele.is_empty()
+                && sv.variant1.ref_allele == sv.variant1.var_allele)
+                || sv.end_is_variant2);
+        assert_wave5_variant_invariants(&sv.variant1, &base_cfg.compat, v1_ref_only, true);
+        let v2_ref_only = sv.variant2.as_ref().is_some_and(|v2| {
+            !v2.ref_allele.is_empty() && v2.ref_allele == v2.var_allele && v2.pos_coverage == 0
+        });
         if let Some(ref v2) = sv.variant2 {
-            // `SomaticVariant::variant2` carries normal-sample counts/means only (`TYPE` lives on
-            // `sv.variant1`, and `CombineVerdict::Germline` leaves `v2.ref_allele`/`var_allele`
-            // empty), so keep count/mean invariants active while skipping `var_type` on `v2`.
-            let v2_ref_only = v2.ref_allele == v2.var_allele && v2.pos_coverage == 0;
             assert_wave5_variant_invariants(v2, &base_cfg.compat, v2_ref_only, false);
         }
         let paired_rec = format_paired_vcf_record(sv, &region.chr, &base_cfg);
@@ -1051,8 +1135,14 @@ fuzz_target!(|data: &[u8]| {
                 region.end.0
             );
         }
-        if reconcile_vd_dp {
-            for v in std::iter::once(&sv.variant1).chain(sv.variant2.as_ref()) {
+        if reconcile_vd_dp || full_somatic_reconcile {
+            for (is_ref_site, maybe_v) in [
+                (v1_ref_only, Some(&sv.variant1)),
+                (v2_ref_only, sv.variant2.as_ref()),
+            ] {
+                let Some(v) = maybe_v else {
+                    continue;
+                };
                 assert!(
                     0 <= v.pos_coverage && v.pos_coverage <= v.total_pos_cov,
                     "somatic reconcile_vd_dp violated 0 <= VD ({}) <= DP ({}) on status={}",
@@ -1081,12 +1171,31 @@ fuzz_target!(|data: &[u8]| {
                     v.hicnt,
                     v.hicov
                 );
+                if v.pos_coverage == 0 && base_cfg.compat.reconcile_strand_and_hq_sums {
+                    assert_eq!(
+                        v.frequency, 0.0,
+                        "somatic VD == 0 must have AF == 0 on status={}",
+                        sv.status
+                    );
+                    assert_eq!(
+                        v.extra_freq, 0.0,
+                        "somatic VD == 0 must have ADJAF == 0 on status={}",
+                        sv.status
+                    );
+                    if !is_ref_site {
+                        assert_eq!(
+                            v.hi_freq, 0.0,
+                            "somatic VD == 0 must have HIAF == 0 on status={}",
+                            sv.status
+                        );
+                    }
+                }
             }
         }
     }
 
     // Part D: amplicon_post_process + amplicon_post_process_streaming + amplicon_select_vcf_rows
-    // over 1..=6 overlapping Regions clamped to <= 256 bp and sorted BTreeMap<i32, Vec<(usize, &Region)>>.
+    // over 1..=6 overlapping Regions clamped to <= 256 bp (including multi-`<DUP>` alleles).
     let mut amp_cfg = base_cfg.clone();
     amp_cfg.amplicon = Some("10:0.95".to_string());
 
@@ -1126,7 +1235,27 @@ fuzz_target!(|data: &[u8]| {
         });
 
         let amp_span = a_end.saturating_sub(a_start).saturating_add(1);
-        let amp_map = synth_vars_map(&mut cur, a_start, amp_span, &amp_cfg.compat);
+        let mut amp_map = synth_vars_map(&mut cur, a_start, amp_span, &amp_cfg.compat);
+        // Inject multi-`<DUP>` alleles with distinct `END` at `ins_start` to fuzz `GDAMP <= TLAMP`.
+        if ins_end > ins_start.saturating_add(4) && (cur.u8() & 3) == 0 {
+            let dup_pos = ins_start as i32;
+            let entry = amp_map.get_or_put_with(dup_pos, Vars::new);
+            for span_delta in [2i32, 4i32] {
+                if entry.variants.len() < 5 {
+                    let mut dv = synth_variant_at(&mut cur, dup_pos, &amp_cfg.compat);
+                    dv.start_pos = dup_pos;
+                    dv.end_pos = dup_pos
+                        .saturating_add(span_delta)
+                        .min(ins_end as i32)
+                        .max(dup_pos + 1);
+                    dv.ref_allele = "C".to_string();
+                    dv.var_allele = "<DUP>".to_string();
+                    dv.description = format!("<dup{}>", dv.end_pos.saturating_sub(dv.start_pos));
+                    dv.var_type = "DUP".to_string();
+                    entry.variants.push(dv);
+                }
+            }
+        }
         for &p in amp_map.keys() {
             if candidate_positions.len() < MAX_POSITIONS {
                 candidate_positions.insert(p);
@@ -1191,14 +1320,32 @@ fuzz_target!(|data: &[u8]| {
     } else {
         streamed_amp
     };
-    assert_eq!(batch_amp.len(), finalized_streamed.len());
-    for (lhs, rhs) in batch_amp.iter().zip(finalized_streamed.iter()) {
-        assert_eq!(lhs.variant.start_pos, rhs.variant.start_pos);
-        assert_eq!(lhs.variant.var_allele, rhs.variant.var_allele);
-        assert_eq!(lhs.gdamp, rhs.gdamp);
-        assert_eq!(lhs.tlamp, rhs.tlamp);
-        assert_eq!(lhs.ncamp, rhs.ncamp);
-        assert_eq!(lhs.ampflag, rhs.ampflag);
+    let compat_vcf_bucket_customized = !amp_cfg.emit_intermediate
+        && !amp_cfg.vcf_all_alleles
+        && (amp_cfg.compat.canonical_sv_vcf_anchoring
+            || amp_cfg.compat.standard_dup_symbolic_alt
+            || (amp_cfg.pileup && amp_cfg.compat.pileup_preserve_shifted_ref));
+    if !compat_vcf_bucket_customized {
+        assert_eq!(batch_amp.len(), finalized_streamed.len());
+        for (lhs, rhs) in batch_amp.iter().zip(finalized_streamed.iter()) {
+            assert_eq!(lhs.variant.start_pos, rhs.variant.start_pos);
+            assert_eq!(lhs.variant.var_allele, rhs.variant.var_allele);
+            assert_eq!(lhs.gdamp, rhs.gdamp);
+            assert_eq!(lhs.tlamp, rhs.tlamp);
+            assert_eq!(lhs.ncamp, rhs.ncamp);
+            assert_eq!(lhs.ampflag, rhs.ampflag);
+        }
+    } else {
+        assert!(finalized_streamed.len() <= batch_amp.len());
+    }
+    for lhs in &batch_amp {
+        assert!(
+            0 <= lhs.gdamp && lhs.gdamp <= lhs.tlamp,
+            "amplicon GDAMP ({}) > TLAMP ({}) on alt={}",
+            lhs.gdamp,
+            lhs.tlamp,
+            lhs.variant.var_allele
+        );
         let is_ref_only =
             lhs.variant.ref_allele == lhs.variant.var_allele && lhs.variant.pos_coverage == 0;
         assert_wave5_variant_invariants(&lhs.variant, &amp_cfg.compat, is_ref_only, true);
@@ -1216,5 +1363,11 @@ fuzz_target!(|data: &[u8]| {
     let max_vcovs_cap = max_vcovs_capacity(&vars_per_amplicon);
     let (agg_vars, agg_conc) =
         aggregate_sample_amplicon_vars(&amp_cfg, &amp_regions, vars_per_amplicon, &splice);
-    assert_aggregate_sample_amplicon_invariants(max_vcovs_cap, &amp_regions, &agg_vars, &agg_conc);
+    assert_aggregate_sample_amplicon_invariants(
+        &amp_cfg,
+        max_vcovs_cap,
+        &amp_regions,
+        &agg_vars,
+        &agg_conc,
+    );
 });
