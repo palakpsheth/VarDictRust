@@ -315,6 +315,37 @@ pub(crate) fn merge_i32_intervals(mut ranges: Vec<(i32, i32)>) -> Vec<(i32, i32)
     merged
 }
 
+/// Subtract 1-based closed intervals `covered` from `[lo, hi]`, returning sorted disjoint
+/// unpiled 1-based sub-intervals (`sub_lo >= 1 && sub_lo <= sub_hi`).
+pub(crate) fn subtract_i32_intervals(lo: i32, hi: i32, covered: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    let lo = lo.max(1);
+    if lo > hi {
+        return Vec::new();
+    }
+    let merged = merge_i32_intervals(covered.to_vec());
+    let mut out = Vec::new();
+    let mut cur = lo;
+    for (s, e) in merged {
+        if e < cur {
+            continue;
+        }
+        if s > hi {
+            break;
+        }
+        if s > cur {
+            out.push((cur, s.saturating_sub(1).min(hi)));
+        }
+        if e >= hi {
+            return out;
+        }
+        cur = e.saturating_add(1);
+    }
+    if cur <= hi {
+        out.push((cur, hi));
+    }
+    out
+}
+
 /// Binary-search whether 1-based coordinate `pos` (`pos >= 1`) lies inside `merged`
 /// (as produced by [`merge_i32_intervals`]).
 #[inline]
@@ -8761,8 +8792,97 @@ fn run_somatic<W: EngineWriter>(
             if is_split_tile {
                 let t_start = i32::try_from(region_for_pileup.start.0).unwrap_or(i32::MAX);
                 let t_end = i32::try_from(region_for_pileup.end.0).unwrap_or(i32::MAX);
-                let orig_s = i32::try_from(builder_region.start.0).unwrap_or(1).max(1);
-                let orig_e = i32::try_from(builder_region.end.0).unwrap_or(i32::MAX);
+                let chr_len_i32 = chromosomes_lengths_clone
+                    .get(&builder_region.chr)
+                    .copied()
+                    .and_then(|n| i32::try_from(n).ok())
+                    .filter(|&n| n > 0)
+                    .unwrap_or(i32::MAX);
+                let orig_start_i32 = i32::try_from(builder_region.start.0).unwrap_or(1).max(1);
+                let ref_min_bound = if config_clone.compat.strict_region_bounds {
+                    orig_start_i32
+                } else {
+                    1
+                };
+                let do_left_align = crate::variations::canonical_left_align_enabled(&config_clone);
+                let refresh_vt = config_clone.compat.recompute_vartype_after_adj_complex;
+                let indel_only_shift3 = config_clone.compat.indel_only_shift3;
+                let filter_counterpart_vars = |mut vars_p: crate::variations::Vars,
+                                               trig_vars: &crate::variations::Vars,
+                                               ref_ref: &crate::reference::Reference|
+                 -> crate::variations::Vars {
+                    if vars_p.variants.is_empty() {
+                        return vars_p;
+                    }
+                    let first_orig = vars_p.variants.first().cloned();
+                    let ref_ctx = Some((ref_ref, builder_region.chr.as_str(), ref_min_bound));
+                    let trig_norms: Vec<crate::variations::Variant> = trig_vars
+                        .variants
+                        .iter()
+                        .map(|tv| {
+                            let mut tn = tv.clone();
+                            tn.var_type = tn.var_type();
+                            tn.normalize_postprocess(
+                                ref_ctx,
+                                do_left_align,
+                                refresh_vt,
+                                indel_only_shift3,
+                            );
+                            tn
+                        })
+                        .collect();
+                    vars_p.variants.retain(|cand| {
+                        let mut cand_norm: Option<crate::variations::Variant> = None;
+                        trig_vars
+                            .variants
+                            .iter()
+                            .zip(trig_norms.iter())
+                            .any(|(tv, tn)| {
+                                if cand.description == tv.description
+                                    || (cand.start_pos == tv.start_pos
+                                        && cand.end_pos == tv.end_pos
+                                        && cand.ref_allele == tv.ref_allele
+                                        && cand.var_allele == tv.var_allele)
+                                {
+                                    return true;
+                                }
+                                let cn = cand_norm.get_or_insert_with(|| {
+                                    let mut c = cand.clone();
+                                    c.var_type = c.var_type();
+                                    c.normalize_postprocess(
+                                        ref_ctx,
+                                        do_left_align,
+                                        refresh_vt,
+                                        indel_only_shift3,
+                                    );
+                                    c
+                                });
+                                cn.start_pos == tn.start_pos
+                                    && cn.ref_allele == tn.ref_allele
+                                    && cn.var_allele == tn.var_allele
+                            })
+                    });
+                    if !vars_p.var_desc_to_variant.is_empty() {
+                        let kept = &vars_p.variants;
+                        vars_p
+                            .var_desc_to_variant
+                            .retain(|desc, _| kept.iter().any(|v| &v.description == desc));
+                    }
+                    if vars_p.variants.is_empty() {
+                        vars_p.sv.clear();
+                        if let Some(first) = first_orig {
+                            let mut ph = crate::variations::Variant::new();
+                            ph.ref_allele = first.ref_allele.clone();
+                            ph.var_allele = first.ref_allele;
+                            ph.total_pos_cov = first.total_pos_cov;
+                            ph.ref_fwd_cov = first.ref_fwd_cov;
+                            ph.ref_rev_cov = first.ref_rev_cov;
+                            ph.genotype = first.genotype;
+                            vars_p.variants.push(ph);
+                        }
+                    }
+                    vars_p
+                };
                 let missing_in_2: Vec<i32> = aligned1
                     .iter()
                     .filter_map(|(&p, v1)| {
@@ -8783,8 +8903,8 @@ fn run_somatic<W: EngineWriter>(
                     .collect();
                 let win = combined_max_rl.max(50);
                 for pos in missing_in_2 {
-                    let q_lo = pos.saturating_sub(win).max(orig_s).max(1);
-                    let q_hi = pos.saturating_add(win).min(orig_e).max(q_lo);
+                    let q_lo = pos.saturating_sub(win).clamp(1, chr_len_i32);
+                    let q_hi = pos.saturating_add(win).clamp(q_lo, chr_len_i32);
                     let sub_reg = crate::regions::Region {
                         chr: builder_region.chr.clone(),
                         start: crate::types::Pos1(q_lo as u32),
@@ -8808,21 +8928,24 @@ fn run_somatic<W: EngineWriter>(
                     )?;
                     let sub_builder = crate::tovars::ToVarsBuilder::new(
                         &reference,
-                        &builder_region,
+                        &sub_reg,
                         &chromosomes_lengths_clone,
                         &config_clone,
                     );
-                    if let Some(vars_p) = sub_builder.build_vars_at_position_with_ref_mode(
-                        &vd_sub,
-                        pos,
-                        crate::tovars::RefSiteMode::KeepAll,
+                    if let (Some(vars_p), Some(trig_v1)) = (
+                        sub_builder.build_vars_at_position_with_ref_mode(
+                            &vd_sub,
+                            pos,
+                            crate::tovars::RefSiteMode::KeepAll,
+                        ),
+                        aligned1.get(&pos),
                     ) {
-                        aligned2.insert(pos, vars_p);
+                        aligned2.insert(pos, filter_counterpart_vars(vars_p, trig_v1, &reference));
                     }
                 }
                 for pos in missing_in_1 {
-                    let q_lo = pos.saturating_sub(win).max(orig_s).max(1);
-                    let q_hi = pos.saturating_add(win).min(orig_e).max(q_lo);
+                    let q_lo = pos.saturating_sub(win).clamp(1, chr_len_i32);
+                    let q_hi = pos.saturating_add(win).clamp(q_lo, chr_len_i32);
                     let sub_reg = crate::regions::Region {
                         chr: builder_region.chr.clone(),
                         start: crate::types::Pos1(q_lo as u32),
@@ -8846,16 +8969,19 @@ fn run_somatic<W: EngineWriter>(
                     )?;
                     let sub_builder = crate::tovars::ToVarsBuilder::new(
                         &reference,
-                        &builder_region,
+                        &sub_reg,
                         &chromosomes_lengths_clone,
                         &config_clone,
                     );
-                    if let Some(vars_p) = sub_builder.build_vars_at_position_with_ref_mode(
-                        &vd_sub,
-                        pos,
-                        crate::tovars::RefSiteMode::KeepAll,
+                    if let (Some(vars_p), Some(trig_v2)) = (
+                        sub_builder.build_vars_at_position_with_ref_mode(
+                            &vd_sub,
+                            pos,
+                            crate::tovars::RefSiteMode::KeepAll,
+                        ),
+                        aligned2.get(&pos),
                     ) {
-                        aligned1.insert(pos, vars_p);
+                        aligned1.insert(pos, filter_counterpart_vars(vars_p, trig_v2, &reference));
                     }
                 }
             }
@@ -17563,25 +17689,56 @@ mod tests {
             "F-04 somatic: Tile 2 unowned AF=1.0 spanning deletion must not clobber Tile 1 owned SNV at pos 180"
         );
 
-        // Subtest 1d (Ponytail #2): right-split-only medium deletion (`150 bp <= indel_size = 200`):
+        // Subtest 1d (Ponytail #2 + Re-Review #1): right-split-only medium deletion (`150 bp <= indel_size = 200`)
+        // with 100-bp reads straddling the `200 | 201` split-tile boundary:
         // - `0` `lsplit` reads in Tile 1 `[1, 200]`,
-        // - `8` SNV (`A -> G` at `180`) + `9` WT reads in Tile 1 `[1, 200]` (`RD = 17` at `181`),
+        // - `8` 100-bp SNV (`A -> G` at `180`, `140..=239`) + `9` 100-bp WT reads (`140..=239`) straddling `200 | 201` (`RD = 17` at `181`),
         // - `6` `rsplit` reads (`35S 50M` at `331..=380`) in Tile 2 `[201, 400]`.
-        // Without split-tile backward-overhang `partial_pipeline` when `find_bp != 0`, Tile 2 fabricates
-        // `RD = 0, AF = 0.5000, HIAF = 1.0000` (clobbering Tile 1's `AF = 8/17 = 0.4706` SNV in single-allele
-        // VCF and emitting wrong `RD = 0` in `--vcf-all-alleles` and `.var`).
+        // Skipping seam-straddling reads via `record_overlaps_region` drops all 17 reads (`RD = 0, AF = 0.5000`),
+        // clobbering Tile 1's `AF = 8/17 = 0.4706` SNV in single-allele VCF and emitting wrong `RD = 0` in `-A` and `.var`.
         let f04_ro_bam = dir.path().join("f04_right_only.bam");
-        let mut f04_ro_reads: Vec<RecordBuf> = f04_reads
-            .iter()
-            .filter(|r| {
-                !r.name().is_some_and(|n| {
-                    std::str::from_utf8(n.as_ref())
-                        .unwrap_or("")
-                        .starts_with("f04_lsplit_")
-                })
-            })
-            .cloned()
-            .collect();
+        let mut f04_ro_reads: Vec<RecordBuf> = Vec::new();
+        for i in 0..8usize {
+            let s1 = 140 + (i % 4);
+            let len = 100;
+            let mut seq = ref_f04[(s1 - 1)..(s1 - 1 + len)].to_vec();
+            seq[180 - s1] = b'G';
+            let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+            f04_ro_reads.push(
+                RecordBuf::builder()
+                    .set_name(format!("f04_ro_snv_{i}"))
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(s1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(seq.into())
+                    .set_quality_scores(vec![35u8; len].into())
+                    .build(),
+            );
+        }
+        for i in 0..9usize {
+            let s1 = 140 + (i % 4);
+            let len = 100;
+            let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+            f04_ro_reads.push(
+                RecordBuf::builder()
+                    .set_name(format!("f04_ro_wt_{i}"))
+                    .set_flags(Flags::empty())
+                    .set_reference_sequence_id(0)
+                    .set_alignment_start(Position::try_from(s1).unwrap())
+                    .set_mapping_quality(
+                        noodles::sam::alignment::record::MappingQuality::try_from(60u8).unwrap(),
+                    )
+                    .set_cigar(cigar)
+                    .set_sequence(ref_f04[(s1 - 1)..(s1 - 1 + len)].to_vec().into())
+                    .set_quality_scores(vec![35u8; len].into())
+                    .build(),
+            );
+        }
+        f04_ro_reads.extend(f04_t2_only_reads.iter().cloned());
         f04_ro_reads.sort_by_key(|r| r.alignment_start().unwrap().get());
         write_test_bam(&f04_ro_bam, "chr1", 2000, &f04_ro_reads);
 
@@ -17643,6 +17800,122 @@ mod tests {
             assert_eq!(
                 t_var, u_var,
                 "Subtest 1d ({mode_label} .var): Tiled must match Untiled"
+            );
+        }
+
+        // Subtest 1e (Re-Review #3): 3'-clip loop in `realignlgdel` (`p = 203 >= 201` in Tile 2)
+        // where repeat left-alignment shifts `bp` from `204` left to `199 < 201`, plus 100-bp
+        // straddling WT reads (`150..=249` across `200 | 201`):
+        {
+            let mut ref_1e = ref_f04.clone();
+            // Make 1-based `199..=203` match `349..=353` (`5 bp` repeat) while `198 != 348`:
+            ref_1e[197] = b'A';
+            ref_1e[347] = b'C';
+            for off in 0..5usize {
+                ref_1e[198 + off] = b'T';
+                ref_1e[348 + off] = b'T';
+            }
+            let fa_1e = dir.path().join("f04_1e.fa");
+            let fai_1e = dir.path().join("f04_1e.fa.fai");
+            std::fs::write(
+                &fa_1e,
+                format!(">chr1\n{}\n", std::str::from_utf8(&ref_1e).unwrap()),
+            )
+            .unwrap();
+            std::fs::write(&fai_1e, "chr1\t2000\t6\t2000\t2001\n").unwrap();
+
+            let bam_1e = dir.path().join("f04_1e.bam");
+            let mut reads_1e: Vec<RecordBuf> = Vec::new();
+            // 12 100-bp WT reads `150..=249` straddling `200 | 201`:
+            for i in 0..12usize {
+                let s1 = 150 + (i / 3);
+                let len = 100;
+                let cigar: Cigar = [Op::new(CigarKind::Match, len)].into_iter().collect();
+                reads_1e.push(
+                    RecordBuf::builder()
+                        .set_name(format!("r1e_wt_{i}"))
+                        .set_flags(Flags::empty())
+                        .set_reference_sequence_id(0)
+                        .set_alignment_start(Position::try_from(s1).unwrap())
+                        .set_mapping_quality(
+                            noodles::sam::alignment::record::MappingQuality::try_from(60u8)
+                                .unwrap(),
+                        )
+                        .set_cigar(cigar)
+                        .set_sequence(ref_1e[(s1 - 1)..(s1 - 1 + len)].to_vec().into())
+                        .set_quality_scores(vec![35u8; len].into())
+                        .build(),
+                );
+            }
+            // 6 `50M 35S` reads starting at `154` (`154..=203` -> `soft_clips_3_end` at `p = 203 >= 201` in Tile 2!
+            // Wait: `154..=203` overlaps BOTH Tile 1 and Tile 2, so in Tile 2 `p = 203 >= 201` is inside Tile 2 `[201, 400]`
+            // and `soft_clips_3_end[203]` shifts `bp` from `204` left to `199 < 201`!):
+            for i in 0..6usize {
+                let s1 = 154;
+                let m_len = 50; // 154..=203 (`p = 203` in Tile 2 `[201, 400]`)
+                let s_len = 35; // 1-based `354..=388` (`150 bp` deletion)
+                let mut seq = Vec::with_capacity(m_len + s_len);
+                seq.extend_from_slice(&ref_1e[(s1 - 1)..(s1 - 1 + m_len)]);
+                seq.extend_from_slice(&ref_1e[353..(353 + s_len)]);
+                let cigar: Cigar = [
+                    Op::new(CigarKind::Match, m_len),
+                    Op::new(CigarKind::SoftClip, s_len),
+                ]
+                .into_iter()
+                .collect();
+                reads_1e.push(
+                    RecordBuf::builder()
+                        .set_name(format!("r1e_sc3_{i}"))
+                        .set_flags(Flags::empty())
+                        .set_reference_sequence_id(0)
+                        .set_alignment_start(Position::try_from(s1).unwrap())
+                        .set_mapping_quality(
+                            noodles::sam::alignment::record::MappingQuality::try_from(60u8)
+                                .unwrap(),
+                        )
+                        .set_cigar(cigar)
+                        .set_sequence(seq.into())
+                        .set_quality_scores(vec![35u8; m_len + s_len].into())
+                        .build(),
+                );
+            }
+            reads_1e.sort_by_key(|r| r.alignment_start().unwrap().get());
+            write_test_bam(&bam_1e, "chr1", 2000, &reads_1e);
+
+            let run_1e = |tile_sz: u32, out_vcf: bool| -> String {
+                let cfg = crate::config::Config {
+                    bam: bam_1e.to_string_lossy().into_owned(),
+                    reference: fa_1e.to_string_lossy().into_owned(),
+                    region: Some("chr1:1-600".to_string()),
+                    compat: crate::config::COMPAT_OFF,
+                    emit_intermediate: !out_vcf,
+                    realign: 1,
+                    indel_size: 200,
+                    sv_min_len: 500,
+                    freq: 0.01,
+                    min_reads: 2,
+                    tile_size: Some(tile_sz),
+                    threads: 1,
+                    ..Default::default()
+                };
+                let mut out = Vec::new();
+                run_with_writer(&cfg, &mut out).unwrap();
+                String::from_utf8(out)
+                    .unwrap()
+                    .lines()
+                    .filter(|l| !l.starts_with('#'))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            assert_eq!(
+                run_1e(200, true),
+                run_1e(500_000, true),
+                "Subtest 1e (3'-clip repeat-shifted bp < region_start VCF): Tiled must match Untiled"
+            );
+            assert_eq!(
+                run_1e(200, false),
+                run_1e(500_000, false),
+                "Subtest 1e (3'-clip repeat-shifted bp < region_start .var): Tiled must match Untiled"
             );
         }
 

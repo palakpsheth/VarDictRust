@@ -3339,64 +3339,6 @@ fn realignlgdel_with_split_origin(
                     log::warn!("partial_pipeline failed: {:?}", e);
                 }
             }
-        } else if let Some(orig_start) = internal_split_orig_start {
-            // Split-tile backward-overhang medium deletion (`find_bp != 0`, `bp < region_start_i32`):
-            // when `region.start > orig_start` (internal split-tile boundary), `bp` lies in a prior
-            // tile and was not piled up in this tile's main BAM pass. Run `partial_pipeline_split_overhang`
-            // over `[bp - win, min(bp + win, region_start_i32 - 1)]` (skipping straddling reads already
-            // overlapping `region`) so `bp` receives exact wild-type `ref_coverage` and `RD`.
-            if bp > 0
-                && bp < region_start_i32
-                && !non_insertion_variants
-                    .get(&bp)
-                    .is_some_and(|vm| vm.merge_planted)
-            {
-                let win = max_read_length.max(50);
-                let orig_start_i32 = i32::try_from(orig_start.0).unwrap_or(1).max(1);
-                let q_lo = bp.saturating_sub(win).max(orig_start_i32);
-                let q_hi = bp
-                    .saturating_add(win)
-                    .min(region_start_i32.saturating_sub(1));
-                if q_lo <= q_hi
-                    && !piled_split_overhang_spans
-                        .iter()
-                        .any(|&(s, e)| s <= q_lo && q_hi <= e)
-                {
-                    let tts = q_lo.saturating_sub(1);
-                    let tte = q_hi;
-                    if let Err(e) = ensure_reference_loaded(
-                        reference,
-                        chr,
-                        tts,
-                        tte,
-                        max_read_length,
-                        chr_len,
-                        config,
-                    ) {
-                        log::warn!("ensure_reference_loaded failed: {:?}", e);
-                    }
-                    if let Err(e) = partial_pipeline_split_overhang(
-                        bams,
-                        chr,
-                        q_lo,
-                        q_hi,
-                        &piled_split_overhang_spans,
-                        reference,
-                        config,
-                        region,
-                        non_insertion_variants,
-                        insertion_variants,
-                        ref_coverage,
-                        soft_clips_5_end,
-                        soft_clips_3_end,
-                        splice,
-                        max_read_length,
-                    ) {
-                        log::warn!("partial_pipeline_split_overhang failed: {:?}", e);
-                    }
-                    piled_split_overhang_spans.push((q_lo, q_hi));
-                }
-            }
         }
 
         let mut dellen = p.saturating_sub(bp);
@@ -3438,6 +3380,27 @@ fn realignlgdel_with_split_origin(
             } else {
                 gt = format!("-{}&{}", dellen, String::from_utf8_lossy(&extra_str)).into_bytes();
             }
+        }
+
+        if let Some(orig_start) = internal_split_orig_start {
+            ensure_split_overhang_bp_piled(
+                bp,
+                orig_start,
+                &mut piled_split_overhang_spans,
+                bams,
+                chr,
+                chr_len,
+                reference,
+                config,
+                region,
+                non_insertion_variants,
+                insertion_variants,
+                ref_coverage,
+                soft_clips_5_end,
+                soft_clips_3_end,
+                splice,
+                max_read_length,
+            );
         }
 
         if config.verbose {
@@ -3905,6 +3868,29 @@ fn realignlgdel_with_split_origin(
                     dest.map
                         .insert("SV".to_string(), crate::variations::Variation::new());
                 }
+            }
+        }
+
+        if p >= region_start_i32 {
+            if let Some(orig_start) = internal_split_orig_start {
+                ensure_split_overhang_bp_piled(
+                    bp,
+                    orig_start,
+                    &mut piled_split_overhang_spans,
+                    bams,
+                    chr,
+                    chr_len,
+                    reference,
+                    config,
+                    region,
+                    non_insertion_variants,
+                    insertion_variants,
+                    ref_coverage,
+                    soft_clips_5_end,
+                    soft_clips_3_end,
+                    splice,
+                    max_read_length,
+                );
             }
         }
 
@@ -5887,7 +5873,7 @@ fn ensure_reference_loaded(
     )
 }
 
-fn merge_sclip(dest: &mut Sclip, src: Sclip) {
+pub(crate) fn merge_sclip(dest: &mut Sclip, src: Sclip) {
     let d = &mut dest.variation;
     d.cnt = d.cnt.saturating_add(src.variation.cnt);
     d.fwd = d.fwd.saturating_add(src.variation.fwd);
@@ -5973,13 +5959,14 @@ fn merge_sclip(dest: &mut Sclip, src: Sclip) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn partial_pipeline_split_overhang(
+fn ensure_split_overhang_bp_piled(
+    bp: i32,
+    orig_start: Pos1,
+    piled_split_overhang_spans: &mut Vec<(i32, i32)>,
     bams: Option<&[String]>,
     chr: &str,
-    q_lo_1based: i32,
-    q_hi_1based: i32,
-    prior_spans: &[(i32, i32)],
-    reference: &Reference,
+    chr_len: u32,
+    reference: &mut Reference,
     config: &crate::config::Config,
     region: &crate::regions::Region,
     non_insertion_variants: &mut crate::javamap::JavaHashMap<i32, VariationMap>,
@@ -5989,24 +5976,59 @@ fn partial_pipeline_split_overhang(
     soft_clips_3_end: &mut BTreeMap<i32, Sclip>,
     splice: &mut rustc_hash::FxHashSet<String>,
     max_read_length: i32,
-) -> Result<(), crate::types::VardictError> {
-    partial_pipeline_inner(
-        bams,
-        chr,
-        q_lo_1based.max(1).saturating_sub(1),
-        q_hi_1based,
-        Some(prior_spans),
-        reference,
-        config,
-        region,
-        non_insertion_variants,
-        insertion_variants,
-        ref_coverage,
-        soft_clips_5_end,
-        soft_clips_3_end,
-        splice,
-        max_read_length,
-    )
+) {
+    let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
+    let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
+    if bp <= 0 || bp >= region_start_i32 {
+        return;
+    }
+    let win = max_read_length.max(50);
+    let orig_start_i32 = i32::try_from(orig_start.0).unwrap_or(1).max(1);
+    let q_lo = bp.saturating_sub(win).max(orig_start_i32);
+    let q_hi = bp
+        .saturating_add(win)
+        .min(region_start_i32.saturating_sub(1));
+    if q_lo > q_hi {
+        return;
+    }
+    let mut covered = piled_split_overhang_spans.clone();
+    if region_start_i32 <= region_end_i32 {
+        covered.push((region_start_i32, region_end_i32));
+    }
+    let sub_spans = crate::subtract_i32_intervals(q_lo, q_hi, &covered);
+    for (sub_lo, sub_hi) in sub_spans {
+        let tts = sub_lo.saturating_sub(1);
+        let tte = sub_hi;
+        if let Err(e) =
+            ensure_reference_loaded(reference, chr, tts, tte, max_read_length, chr_len, config)
+        {
+            log::warn!("ensure_reference_loaded failed: {:?}", e);
+        }
+        if let Err(e) = partial_pipeline_inner(
+            bams,
+            chr,
+            tts,
+            tte,
+            Some((sub_lo, sub_hi)),
+            reference,
+            config,
+            region,
+            non_insertion_variants,
+            insertion_variants,
+            ref_coverage,
+            soft_clips_5_end,
+            soft_clips_3_end,
+            splice,
+            max_read_length,
+        ) {
+            log::warn!("partial_pipeline_split_overhang failed: {:?}", e);
+        }
+        piled_split_overhang_spans.push((sub_lo, sub_hi));
+    }
+    if !piled_split_overhang_spans.is_empty() {
+        *piled_split_overhang_spans =
+            crate::merge_i32_intervals(std::mem::take(piled_split_overhang_spans));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6051,7 +6073,7 @@ fn partial_pipeline_inner(
     chr: &str,
     tts: i32,
     tte: i32,
-    skip_overlaps_and_prior: Option<&[(i32, i32)]>,
+    key_bounds_1based: Option<(i32, i32)>,
     reference: &Reference,
     config: &crate::config::Config,
     region: &crate::regions::Region,
@@ -6071,16 +6093,21 @@ fn partial_pipeline_inner(
         return Ok(());
     }
 
-    let start_1based = if skip_overlaps_and_prior.is_some() {
-        tts.saturating_add(1).max(1) as u32
-    } else {
-        tts.max(1) as u32
+    let (start_1based, end_1based) = match key_bounds_1based {
+        Some((sub_lo, sub_hi)) => (sub_lo.max(1) as u32, sub_hi.max(1) as u32),
+        None => (tts.max(1) as u32, tte.max(1) as u32),
+    };
+    let in_bounds = |pos: i32| -> bool {
+        match key_bounds_1based {
+            Some((sub_lo, sub_hi)) => (sub_lo..=sub_hi).contains(&pos),
+            None => true,
+        }
     };
     let mut preprocessor = crate::bam::RecordPreprocessor::new();
     let pileup_region = crate::regions::Region {
         chr: chr.to_string(),
         start: Pos1(start_1based),
-        end: Pos1(tte.max(1) as u32),
+        end: Pos1(end_1based),
         gene: String::new(),
         amplicon: None,
     };
@@ -6112,15 +6139,6 @@ fn partial_pipeline_inner(
         while feed.next_into(&mut r)? {
             if preprocessor.preprocess_record(&r, config) {
                 any_passed = true;
-                if let Some(prior_spans) = skip_overlaps_and_prior {
-                    if crate::record_overlaps_region(&r, region.start.0, region.end.0)
-                        || prior_spans.iter().any(|&(s, e)| {
-                            crate::record_overlaps_region(&r, s.max(1) as u32, e.max(1) as u32)
-                        })
-                    {
-                        continue;
-                    }
-                }
                 parser.parse_cigar(&r)?;
             }
         }
@@ -6132,23 +6150,14 @@ fn partial_pipeline_inner(
     let var_data = parser.into_variation_data_unrebalanced();
     splice.extend(var_data.splice);
 
-    // G3 (mate-window ownership): attribute — don't drop — merged
-    // mate-window VARIANT keys outside the owning tile's active range
-    // (`region` is the tile's active range in tiled runs, the whole BED
-    // region otherwise). The builder ownership gate (post-find_all_sv, with
-    // SV data + both ranges + edge clamping) adjudicates emission, exactly
-    // like the sv-path `merge_planted` set. Dropping here zeroes mate
-    // ref-support for out-of-BED SV rows (corpus CandDel5SV, MarkingDUPSV,
-    // DelOutOfBound): at merge time temp maps never carry SV data (the
-    // parser only uses svflag for duprate), so no merge-time predicate can
-    // spare them. Only variant maps are attributed: ref_coverage/soft-clips
-    // are trigger state, not emission (the builder iterates variant maps),
-    // and gating them would perturb downstream sv-trigger firing vs Java.
     let region_start_i32 = i32::try_from(region.start.0).unwrap_or(i32::MAX);
     let region_end_i32 = i32::try_from(region.end.0).unwrap_or(i32::MAX);
     let mate_owned = |pos: i32| pos >= region_start_i32 && pos <= region_end_i32;
 
     for (pos, cov) in var_data.ref_coverage {
+        if !in_bounds(pos) {
+            continue;
+        }
         let entry = ref_coverage.entry(pos).or_insert(0);
         *entry = entry.saturating_add(cov);
     }
@@ -6157,12 +6166,21 @@ fn partial_pipeline_inner(
     // ACCUMULATE into existing entries. Merge by summing all counts; never
     // discard fresh counts when the position already exists.
     for (pos, sc) in var_data.soft_clips_5_end {
+        if !in_bounds(pos) {
+            continue;
+        }
         merge_sclip(soft_clips_5_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, sc) in var_data.soft_clips_3_end {
+        if !in_bounds(pos) {
+            continue;
+        }
         merge_sclip(soft_clips_3_end.entry(pos).or_insert_with(Sclip::new), sc);
     }
     for (pos, var_map) in var_data.non_insertion_variants.into_entries() {
+        if !in_bounds(pos) {
+            continue;
+        }
         let dest = non_insertion_variants.get_or_put_with(pos, VariationMap::new);
         if !mate_owned(pos) {
             dest.merge_planted = true;
@@ -6187,6 +6205,8 @@ fn partial_pipeline_inner(
                 }
                 v.pp = v.pp.saturating_add(var.pp);
                 v.pq += var.pq;
+                v.pre_anchored_dup |= var.pre_anchored_dup;
+                v.tile_planted |= var.tile_planted;
                 v.overlap_agreed_pairs = v
                     .overlap_agreed_pairs
                     .saturating_add(var.overlap_agreed_pairs);
@@ -6205,6 +6225,9 @@ fn partial_pipeline_inner(
         }
     }
     for (pos, var_map) in var_data.insertion_variants.into_entries() {
+        if !in_bounds(pos) {
+            continue;
+        }
         let dest = insertion_variants.get_or_put_with(pos, VariationMap::new);
         if !mate_owned(pos) {
             dest.merge_planted = true;
@@ -6229,6 +6252,8 @@ fn partial_pipeline_inner(
                 }
                 v.pp = v.pp.saturating_add(var.pp);
                 v.pq += var.pq;
+                v.pre_anchored_dup |= var.pre_anchored_dup;
+                v.tile_planted |= var.tile_planted;
                 v.overlap_agreed_pairs = v
                     .overlap_agreed_pairs
                     .saturating_add(var.overlap_agreed_pairs);
